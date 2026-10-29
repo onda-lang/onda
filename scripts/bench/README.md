@@ -33,139 +33,35 @@ Each run needs a new or empty output directory. Select one or more builtin names
 (`|` separates substring alternatives), pass repeatable `--source`, or explicitly request `--all`.
 Heavy convolution and FFT cases are included in `--all`; select narrow cases during development.
 
-## UI comparison
+## GPU UI measurements
 
 The shared GPU screen has measurement harnesses separate from DSP benchmarks:
 
 ```sh
-# Linux/EGL: unchanged production egui panels versus the shared wgpu screen.
-cargo run --release -p onda_ui --features native-bench --example compare_native \
-  > target/bench-ui-native.json
-
-# Build ui/gpu/pkg first with npm run build:gpu-ui. Requires Chromium.
-CHROME_BIN=/path/to/chromium node scripts/bench/ui-browser.mjs \
-  target/bench-ui-browser.json
+# Render each section of the shared fixture and measure warmed frames.
+cargo run --release -p onda_ui --example panels -- target/ui-panels
 
 # Real standalone playback/control transport, without a window.
 cargo run --release -p onda_run --example scope_cadence \
   > target/bench-ui-cadence.jsonl
 
-# Require smooth fresh-data delivery and exercise the compact display budget.
+# Exercise the compact display budget with a minimum fresh-data rate.
 ONDA_SCOPE_INTERVAL_MS=16 ONDA_SCOPE_COLUMNS=348 ONDA_SCOPE_MIN_HZ=45 \
   cargo run --release -p onda_run --example scope_cadence
 ```
 
-The completed-panel workloads use the shared fixture in ui/gpu/fixtures/panels.json:
+The panel harness uses `ui/gpu/fixtures/panels.json`, writes screenshots, and
+measures scope-only and section-specific updates after warmup. It measures CPU
+submission and GPU completion without window presentation or audio/control IPC.
+Inspect adapter metadata to distinguish hardware from software rendering.
+Build first and collect measurements serially, with other test applications stopped.
 
-```sh
-cargo run --release -p onda_ui --example panels -- target/ui-panels
-ONDA_UI_PANELS=1 CHROME_BIN=/path/to/chromium node scripts/bench/ui-browser.mjs \
-  target/bench-ui-panels-browser.json
-```
-
-They cover each of the seven tabs with a live scope, then with panel-specific updates
-(values, waveforms, typed events, logs, MIDI activity, or smoothing settings).
-The native harness writes one screenshot per tab and measures 240 warmed frames.
-The browser comparison uses one warmed round per panel/scenario/implementation;
-legacy sections are collapsed except scope and the selected section. Setup uses
-the legacy device/settings controls. Layouts and widget implementations differ.
-Build and validate first, stop other test applications, then run measurements
-serially; do not overlap builds with benchmark collection.
-
-The render fixtures use 768×840 pixels, 64 scalar knobs, and 1,024 stereo samples.
-The native harness covers scope-only updates and scope plus changes to one or all
-64 control values. The browser comparison covers scope-only and all 64 values.
-Other editor sections are empty/hidden; layouts and features are not identical.
-Native runs alternate implementations across three rounds, warming for at least
-60 frames and 250 ms before collecting 300 measured frames each. They report CPU submission time and wall time through
-GPU completion, without window presentation or audio/control IPC. The old path
-uses the actual egui layout, widgets, scope, and OpenGL painter, exposed only by
-the `onda_egui/ui-bench` feature. Both paths must use the same GPU; inspect the
-reported adapter names. `ONDA_BENCH_EGL_DEVICE` selects the EGL device index.
-The GPU rows also split value-message cloning/application, scope reduction, and
-render submission. The comparison calls the shared UI directly; producer capture,
-controller wakeups, and host schema publication are outside this measurement.
-For before/after comparisons on hybrid CPUs, build first, then use the same core
-for both runs, for example `taskset -c 0 target/release/examples/compare_native`.
-Elapsed warmup and CPU affinity reduce noise; isolated slow rounds still need
-reproduction before attributing them to a code change.
-
-Browser runs exercise the actual DOM/Canvas2D page and Wasm/WebGPU canvas,
-including the production JavaScript-to-Wasm message bridge. The DOM fixture uses
-raw floats; the GPU fixture uses the compact display-sized envelope returned by
-the current transport. Packet preparation is outside the timed browser loop;
-payload sizes are recorded alongside timings. Each of three
-alternating rounds has 60 warmup updates and 180 measured updates paced by the
-browser's animation clock. Browser main-thread CPU measurements use DevTools'
-`threadTicks` time domain; callback/handler samples use `performance.now()` wall
-time. These metrics exclude compositor/GPU-process CPU and are not directly
-comparable to the native GPU-completion metric. GPU/driver metadata is retained
-so software fallback cannot be mistaken for a hardware measurement.
-`ONDA_UI_CHROME_ARGS` accepts a JSON array of graphics flags for another setup.
-
-The cadence probe starts the real playback child with two nearly inaudible
-outputs and counts fresh scope responses over five seconds at each host polling
-interval. It measures control-data delivery, not display presentation. A 16 ms
-polling setting does not establish a 60 Hz scope: request/reply latency and the
-controller's in-flight scheduling also constrain delivery. Build `onda_cli` in
-release mode first so the child includes transport changes. `ONDA_SCOPE_COLUMNS`
-selects compact packets; unset it for raw floats. `ONDA_SCOPE_INTERVAL_MS` selects
-one interval, `ONDA_SCOPE_SECONDS` controls duration, and `ONDA_SCOPE_MIN_HZ` makes
-the probe fail below the required cadence. All these results
-are scoped benchmarks, not full VS Code/DAW startup or interaction-latency claims.
-
-The [2026-10-26 UI optimization measurements](results/2026-10-26-ui-optimization.json)
-retain before/after samples, hardware metadata, payload sizes, real transport
-cadence, and source hashes. On that fixture, compact envelopes reduce browser
-scope-update CPU from 2.02 to 0.91 ms and serialized scope messages from 40,692
-to 3,756 bytes. Fresh standalone capture delivery rises from 15 to 61 Hz.
-Native rendering remains approximately 0.06 ms through GPU completion.
-
-The [completed-panel measurements](results/2026-10-26-ui-panels.json) retain all
-raw results, source hashes, GPU metadata, and fresh scope cadence. On the
-i9-14900HX / RTX 4080 Laptop GPU at 768×840:
-
-| Workload | Legacy | Shared GPU |
-| --- | ---: | ---: |
-| Native scope, CPU + GPU completion | 0.691 ms | 0.057 ms |
-| Native scope + 64 changing values | 0.673 ms | 0.180 ms |
-| Browser scope, main-thread CPU | 4.584 ms | 0.912 ms |
-| Browser scope + 64 changing values | 8.283 ms | 1.942 ms |
-
-These comparisons take the median of three warmed round summaries. Completing
-the panels leaves the earlier GPU scope/control costs effectively unchanged.
-
-| Active panel, scope + panel changes | Native completion median | Browser CPU per update |
-| --- | ---: | ---: |
-| Parameters | 0.185 ms | 1.471 ms |
-| Input controls | 0.142 ms | 1.320 ms |
-| Buffers / waveforms | 0.170 ms | 1.570 ms |
-| Typed events | 0.079 ms | 1.371 ms |
-| Logs | 0.113 ms | 1.609 ms |
-| MIDI | 0.068 ms | 1.183 ms |
-| Setup | 0.076 ms | 1.304 ms |
-
-Each panel uses one warmed round and the complete fixture, rather than the
-64-control comparison fixture. Native scope-only medians span 0.052–0.204 ms;
-browser scope-only CPU spans 0.872–0.951 ms. Fresh real scope delivery is 61.5 Hz.
-These are rendering/transport measurements, excluding VS Code/DAW presentation,
-audio-processing CPU, and end-to-end input latency.
-
-The [2026-10-27 parameter-update investigation](results/2026-10-27-ui-parameter-updates.json)
-compares the same native harness with and without recent-run text shaping reuse,
-with all benchmark threads pinned to CPU 0. The 64-changing-value workload drops
-from 0.096 to 0.079 ms CPU submission and from 0.176 to 0.157 ms through GPU
-completion. The single-changing-value workload has no material improvement.
-Temporary stage timing found shaping at 24.1 µs before and 8.8 µs after; scene
-rebuilding and glyph preparation remain. Advanced shaping and font fallback are
-preserved; cached runs expire after recent text batches and reset on font changes.
-
-The earlier isolated 0.767 ms round did not recur in the first unchanged rerun
-(0.1686–0.1687 ms); its exact cause was not captured. The imported capture
-subscription, ring-copy, and host-wakeup changes are outside this rendering
-benchmark. Parameter publications use the existing value-only path and do not
-rebuild control schemas. These results explain the remaining rendering work,
-without establishing a regression from those host changes.
+The cadence probe starts the real playback child and counts fresh scope responses.
+Build `onda_cli` in release mode first. `ONDA_SCOPE_COLUMNS` selects compact
+packets; unset it for raw floats. `ONDA_SCOPE_INTERVAL_MS` selects the polling
+interval, `ONDA_SCOPE_SECONDS` controls duration, and `ONDA_SCOPE_MIN_HZ` makes
+the probe fail below the required cadence. These results measure transport
+delivery, not display presentation or end-to-end interaction latency.
 
 ## Custom sources and operator experiments
 

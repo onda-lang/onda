@@ -1,10 +1,8 @@
-//! Shared native run controller for GPU, egui, and webview frontends.
+//! Native run controller for the GPU UI.
 //!
 //! The controller owns source/project filesystem watching, targeted snapshot
 //! invalidation, and disk-validation fallback when watcher coverage is partial.
 
-#[cfg(feature = "native-window")]
-pub mod file_drag;
 mod view_state;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;

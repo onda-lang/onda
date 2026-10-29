@@ -1,6 +1,6 @@
 use super::{
     compile_cmd, parse_args, project_cmd, run_compile, run_run, Command, CompileEmit,
-    DaemonCommand, RunCommand, RunHostKind,
+    DaemonCommand, RunCommand,
 };
 use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
@@ -1430,18 +1430,15 @@ fn parse_explicit_help_returns_help_command() {
 #[test]
 fn parse_run_window_accepts_options_before_input_file() {
     let cmd = parse_args(
-        ["onda", "run", "--theme", "light", "x.onda", "--webview"]
+        ["onda", "run", "--theme", "light", "x.onda"]
             .into_iter()
             .map(str::to_owned),
     )
     .expect("run window args should parse");
     match cmd {
-        Command::Run(RunCommand::Window {
-            input, theme, host, ..
-        }) => {
+        Command::Run(RunCommand::Window { input, theme, .. }) => {
             assert_eq!(input, Some(PathBuf::from("x.onda")));
             assert_eq!(theme, RunThemeMode::Light);
-            assert_eq!(host, RunHostKind::Webview);
         }
         _ => panic!("expected run window command"),
     }
@@ -1746,22 +1743,6 @@ fn parse_run_commands_accept_opt_level() {
             assert_eq!(opt_level, TargetOptLevel::O0);
         }
         _ => panic!("expected run render command"),
-    }
-}
-
-#[test]
-fn parse_run_window_accepts_webview_flag() {
-    let cmd = parse_args(
-        ["onda", "run", "x.onda", "--webview"]
-            .into_iter()
-            .map(str::to_owned),
-    )
-    .expect("run window args should parse");
-    match cmd {
-        Command::Run(RunCommand::Window { host, .. }) => {
-            assert_eq!(host, RunHostKind::Webview);
-        }
-        _ => panic!("expected run window command"),
     }
 }
 

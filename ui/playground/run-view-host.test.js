@@ -26,7 +26,7 @@ test("renderer errors reveal the frame through source changes and reloads retry 
   assert.equal(host.iframe.style.opacity, "");
   host.setPath("other.onda");
   assert.equal(host.iframe.style.opacity, "", "a source change must not conceal the renderer error");
-  await host.handleMessage({type:"webviewReady"});
+  await host.handleMessage({type:"uiReady"});
   assert.equal(host.viewFailed, false);
   host.requestViewReset();
   assert.equal(host.iframe.style.opacity, "0");
@@ -626,7 +626,7 @@ test("parameter edits and resets publish values after the view receives its sche
   });
   await host.handleMessage({ type: "setParam", name: "gain", value: 0.75 });
   assert.equal(messages.length, 0);
-  await host.handleMessage({ type: "webviewReady" });
+  await host.handleMessage({ type: "uiReady" });
   assert.equal(messages.at(-1).type, "state");
   assert.equal(messages.at(-1).state.params[0].value, 0.75);
   assert.deepEqual(messages.at(-1).state.viewState, {
@@ -691,7 +691,7 @@ test("allows browser playback while buffers are unbound", async () => {
     disconnect() {}
   };
   const iframe = {
-    src: "https://onda.test/play/run.html",
+    src: "https://onda.test/play/gpu/index.html",
     contentWindow: { postMessage() {} },
     addEventListener() {},
     removeEventListener() {},
@@ -849,7 +849,7 @@ test("browser run view handles readiness, MIDI activity, and audio gesture bindi
     disconnect() {}
   };
   const iframe = {
-    src: "https://onda.test/play/run.html",
+    src: "https://onda.test/play/gpu/index.html",
     contentWindow: { postMessage: (message) => messages.push(message) },
     addEventListener: t.mock.fn(),
     removeEventListener: t.mock.fn(),
@@ -866,7 +866,7 @@ test("browser run view handles readiness, MIDI activity, and audio gesture bindi
     assert.equal(iframe.style.opacity, "0");
     host.setPath("main.onda");
     assert.equal(messages.length, 0);
-    await host.handleMessage({ type: "webviewReady" });
+    await host.handleMessage({ type: "uiReady" });
     assert.equal(messages.length, 0, "compiler initialization must not publish an unloaded view");
     await host.handleMessage({ type: "runViewReady", readyId: 1 });
     assert.equal(iframe.style.opacity, "0");

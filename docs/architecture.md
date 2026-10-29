@@ -30,10 +30,8 @@ measurement procedures and dated results.
 | `onda_scope` | Bounded min/max scope envelopes, display budgets, and a shared compact binary codec. |
 | `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and shared source formatting. |
 | `onda_cli` | `onda` binary: argument parsing and `compile`/`run`/`daemon`/`lsp` command dispatch. |
-| `onda_egui` | Native egui run host (default `onda run` UI). |
 | `onda_ui` | Host-independent Rust/wgpu run screen, interaction, text, shaders, Wasm canvas, and optional C interface. |
-| `onda_gpu` | Native winit adapter for the shared run screen, selected with `onda run --gpu`. |
-| `onda_webview` | Native webview run host (opt-in via `--webview`). |
+| `onda_gpu` | Native winit adapter for the shared run screen, used by `onda run`. |
 | `onda_examples` | Example `.onda` programs and `.ondaproject` showcases surfaced through `examples/`. |
 
 Non-crate directories of note:
@@ -359,7 +357,6 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   The compiler and processor snapshots contain no parameter smoothing state.
 
 ### `onda_run` (`crates/onda_run/src`)
-- `file_drag.rs`, `file_drag/x11.rs` — optional native-window drag tracking for the egui host. Xlib conversion retains XDND coordinates without changing winit's events; Win32 and AppKit query their native window coordinates. The GPU host uses winit's native file-offer events directly.
 - `child_session.rs` — playback child lifetime, readiness messages, and bounded UTF-8 diagnostics.
 - `control_client.rs` — controller-side JSON control connection and requests.
 - `playback/control_reader.rs` — byte framing that retains partial requests across socket timeouts.
@@ -424,18 +421,6 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `daemon_stdio.rs` — `onda daemon stdio` JSON transport.
 - `diag_print.rs` — terminal diagnostic rendering.
 
-### `onda_egui` (`crates/onda_egui/src`)
-- `lib.rs` — native egui run host, controller integration, parameter/buffer editors, and theme.
-- `buffer_drop.rs` — clipped buffer-card drop targeting, using the shared native drag tracker in `onda_run`.
-- `run_view.rs` — loaded run panels and docked MIDI keyboard, compact source and transport header, device selectors, and section orchestration.
-- `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
-- `input_controls.rs` — optional host-owned Input Controls section and scalar editor rendering
-  shared with Params. `InputControlSection::show` returns value, layout, smoothing, and reset
-  actions for the host to apply; an empty list renders no section. Stock Onda leaves it unused.
-
-### `onda_webview` (`crates/onda_webview/src`)
-- `lib.rs` — webview run host, using `onda_run::RunController` for child processes and control transport.
-
 ### Shared GPU run screen (`crates/onda_ui`, `crates/onda_gpu`, `crates/onda_scope`, `ui/gpu`)
 
 `onda_ui` owns host-independent state and input, the retained visible scene,
@@ -487,8 +472,7 @@ readiness request/response handles either iframe load ordering.
 
 `onda_gpu` supplies the standalone window/event loop and `RunController` adapter.
 The Wasm canvas and optional `include/onda_ui.h` interface let VS Code and JUCE
-use the same UI without owning another event loop. The shared screen follows the
-legacy run layout: one scrolling document of collapsible scope, log, buffers,
+use the same UI without owning another event loop. The shared screen presents one scrolling document of collapsible scope, log, buffers,
 typed events, input controls and parameters, a docked MIDI keyboard, and header
 settings. Empty sections are hidden. Control banks and event panels cache structural layout
 and share offscreen focus stops; scene rebuilds visit only visible rows. Control-bank caches
@@ -525,7 +509,7 @@ load only the fallback fonts needed by visible text. See [integration and verifi
 
 ### Host-provided input controls
 
-The shared `ui/run/run.html` accepts an optional `inputControls` collection separately
+The shared `onda_ui` screen accepts an optional `inputControls` collection separately
 from `params` and displays it above Params when populated. Hosts decide which inputs belong
 in this collection; the compiler and runtime retain one uniform input model. Stock native
 and browser hosts supply no controls, so the section remains hidden.
@@ -552,14 +536,10 @@ and active gestures and do not render other sections. Names must belong to the
 most recently published schema; unknown names are ignored. Schema, layout, and
 editability changes use ordinary `state` messages.
 The browser host publishes parameter edits and resets through `parameterValues`.
-The native webview host uses the same message when a publication changes only
-parameter values; any schema or other host-state change publishes full state.
-
-`ui/run/buffers.js` retains cards while their descriptions and editability are
-unchanged. When those inputs change, it builds the complete replacement off-DOM
-and commits it before measuring waveform canvases, keeping partial layouts from
-clamping the document's scroll position. Theme, resize, and section visibility
-changes redraw existing waveform canvases independently.
+Native and browser hosts use these updates when only values change; schema or
+other host-state changes publish full state. `onda_ui` retains interaction state
+and invalidates the scene only when visible content changes. Waveform geometry
+is cached independently of controls, text, and scope traces.
 
 ## Practical navigation entrypoints
 

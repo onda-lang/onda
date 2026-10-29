@@ -11,11 +11,6 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [features]
 default = []
 ffi = ["dep:raw-window-handle", "dep:pollster"]
-native-bench = []
-
-[[example]]
-name = "compare_native"
-required-features = ["native-bench"]
 
 [dependencies]
 onda_scope = { path = "../onda_scope" }
@@ -37,10 +32,6 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-onda_egui = { path = "../onda_egui", features = ["ui-bench"] }
-egui_glow = "0.31"
-glow = "0.16"
-glutin = "0.32"
 x11-dl = "2.21"
 
 [dev-dependencies]

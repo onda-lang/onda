@@ -108,11 +108,7 @@ Open the standalone run window:
 onda run sine.onda
 ```
 
-The default host uses the native egui interface. To select the webview host explicitly:
-
-```bash
-onda run sine.onda --webview
-```
+The window uses Onda’s shared GPU interface.
 
 You can also run without the UI and set parameters from the command line:
 

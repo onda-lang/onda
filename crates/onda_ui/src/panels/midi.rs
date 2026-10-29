@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_reflows_like_egui_and_keeps_every_note_hit_inside_the_dock() {
+    fn keyboard_reflows_and_keeps_every_note_hit_inside_the_dock() {
         let mut ui = fixture();
         for (width, height, octave, octaves) in [
             (320.0, 840.0, 4, 2),

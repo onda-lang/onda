@@ -73,14 +73,13 @@
     "exported_vst3_smoke": "passed",
     "onda_ui_unit_tests": 23,
     "onda_run_unit_tests": 88,
-    "onda_webview_unit_tests": 4,
     "browser_backends": [
       "hardware WebGPU",
       "software WebGL2"
     ]
   },
   "limits": [
-    "All seven run panels are implemented; the GPU editor remains opt-in.",
+    "This historical record predates making the GPU editor mandatory.",
     "Native text input now has composition and caret-geometry regression coverage; real OS input-method sessions remain unverified.",
     "Functional host checks exclude end-to-end VS Code/DAW performance and startup latency; render/transport performance is recorded separately.",
     "Windows and macOS paths remain unverified.",
@@ -96,7 +95,6 @@
     "Early GUI test attempts included an abort in REAPER's libSwell.so while automating startup dialogs. The cause was not established in Onda code.",
     "The final driver waits for the enabled evaluation button, a mapped JUCE child, and rendered output before input. The recorded final run passes editing, automation, relocation, resizing, reopening, and destruction."
   ],
-  "performance_record": "scripts/bench/results/2026-10-26-ui-panels.json",
   "standalone": {
     "passed": true,
     "checks": [

@@ -19,7 +19,6 @@ path = "src/run_launcher.rs"
 hound = "3.5.1"
 onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }
-onda_egui = { path = "../onda_egui" }
 onda_gpu = { path = "../onda_gpu" }
 onda_frontend = { path = "../onda_frontend" }
 onda_mir = { path = "../onda_mir" }
@@ -33,6 +32,3 @@ serde_json = "1.0"
 
 [build-dependencies]
 embed-resource = "3.0"
-
-[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-onda_webview = { path = "../onda_webview" }

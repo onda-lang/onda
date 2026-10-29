@@ -15,7 +15,7 @@ use onda_run::{
 use onda_semantics::AnalysisOptions;
 
 use super::diag_print::{format_diagnostics, format_run_build_error, format_single_diagnostic};
-use super::{daemon_stdio, DaemonCommand, RunCommand, RunHostKind};
+use super::{daemon_stdio, DaemonCommand, RunCommand};
 
 pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
     match cmd {
@@ -148,13 +148,11 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             theme,
-            host,
         } => {
             let onda_bin = env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "onda".to_owned());
-            run_run_host(
-                host,
+            onda_gpu::run(
                 input.as_deref(),
                 RunHostOptions {
                     sample_rate_hz,
@@ -173,40 +171,6 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             )
         }
     }
-}
-
-fn run_run_host(
-    host: RunHostKind,
-    input: Option<&Path>,
-    options: RunHostOptions,
-) -> Result<(), String> {
-    match resolve_run_host_kind(host) {
-        RunHostKind::Egui => onda_egui::run_run_egui(input, options),
-        RunHostKind::Gpu => onda_gpu::run(input, options),
-        RunHostKind::Webview => run_webview_run(input, options),
-        RunHostKind::Auto => unreachable!("run host should be resolved before launch"),
-    }
-}
-
-fn resolve_run_host_kind(host: RunHostKind) -> RunHostKind {
-    match host {
-        RunHostKind::Auto => default_run_host_kind(),
-        other => other,
-    }
-}
-
-fn default_run_host_kind() -> RunHostKind {
-    RunHostKind::Egui
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn run_webview_run(input: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
-    onda_webview::run_run_window(input, options)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn run_webview_run(_input: Option<&Path>, _options: RunHostOptions) -> Result<(), String> {
-    Err("webview run host is unavailable on this platform/build".to_owned())
 }
 
 fn run_daemon_diagnose(

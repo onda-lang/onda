@@ -18,7 +18,6 @@ const send = (message) => {
   }
   if (browser) browser.send(message);
   else if (vscode) vscode.postMessage(message);
-  else if (window.ipc) window.ipc.postMessage(JSON.stringify(message));
   else
     window.dispatchEvent(new CustomEvent("ondaCommand", { detail: message }));
 };
@@ -185,7 +184,7 @@ function receive(message) {
   if (!message) return;
   if (message.type === "requestRunViewReady") {
     if (renderError) send({ type: "runViewError", message: renderError });
-    else if (ui) send({ type: "webviewReady" });
+    else if (ui) send({ type: "uiReady" });
     return;
   }
   if (message.type === "computerKey") {
@@ -476,7 +475,7 @@ try {
   resize();
   for (const message of pendingState) receive(message);
   pendingState = [];
-  send({ type: "webviewReady" });
+  send({ type: "uiReady" });
   schedule();
 } catch (error) {
   report(error);

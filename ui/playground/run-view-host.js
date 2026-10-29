@@ -63,7 +63,7 @@ export class BrowserRunViewHost {
       if (
         event.source !== this.iframe.contentWindow ||
         event.origin !== this.targetOrigin ||
-        !event.data?.__ondaRunWebview
+        !event.data?.__ondaRunUi
       )
         return;
       void this.handleMessage(event.data.message);
@@ -458,7 +458,7 @@ export class BrowserRunViewHost {
     if (!message) return;
     try {
       switch (message.type) {
-        case "webviewReady":
+        case "uiReady":
           this.viewFailed = false;
           this.ready = true;
           this.postState();

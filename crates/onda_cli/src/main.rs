@@ -42,7 +42,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math] 
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
-    [--theme <auto|dark|light>] [--webview|--gpu] [--meta]
+    [--theme <auto|dark|light>] [--meta]
   
   onda run play <input>              Run realtime playback without the UI
     
@@ -114,8 +114,6 @@ Run Options:
   --control-json         Emit run control handshake on stdout and serve param control over localhost
   --report-sources       Include source graphs and hashes in startup output (requires --control-json)
   --theme                Run window theme: `auto`, `dark`, or `light` (default: auto)
-  --webview              Use the webview run host instead of egui
-  --gpu                  Use the shared experimental wgpu run screen
 
 Project Options:
 
@@ -219,16 +217,7 @@ enum RunCommand {
         fast_math: bool,
         show_meta: bool,
         theme: RunThemeMode,
-        host: RunHostKind,
     },
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum RunHostKind {
-    Auto,
-    Egui,
-    Webview,
-    Gpu,
 }
 
 enum DaemonCommand {

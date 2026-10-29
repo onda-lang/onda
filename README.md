@@ -132,10 +132,8 @@ manifest, or file-backed assets change; unresolved and temporarily missing paths
 onda run examples/basic/sine.onda
 ```
 
-Run host selection:
-- egui is the default run host
-- `--webview` selects the webview run host explicitly
-- `--gpu` selects the experimental shared wgpu run screen; see [GPU UI](ui/gpu/README.md)
+`onda run` uses the shared [GPU UI](ui/gpu/README.md), also used by the plugin,
+VS Code, and browser editors.
 
 ### `onda run play`
 
@@ -270,7 +268,7 @@ The VS Code extension lives in the standalone [`onda-lang/onda-vscode`](https://
 It provides:
 - `.onda` and `.on` language registration
 - builtin LSP through `onda lsp`
-- `Onda: Run File` to launch the `onda run --webview` UI directly in-editor
+- `Onda: Run File` to launch the shared GPU UI directly in-editor
 
 ### Neovim
 

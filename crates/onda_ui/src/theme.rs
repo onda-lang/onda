@@ -1,4 +1,4 @@
-//! Run-view colors and dimensions, matching ui/run/run.html and onda_egui.
+//! Shared run-view colors and dimensions.
 pub(crate) const GUTTER: f32 = 12.0;
 pub(crate) const GAP: f32 = 12.0;
 pub(crate) const SECTION_HEADER_HEIGHT: f32 = 40.0;

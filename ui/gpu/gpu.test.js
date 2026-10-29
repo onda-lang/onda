@@ -21,7 +21,7 @@ async function serveGpuUi(t, beforeRead) {
           width:480px;height:600px;border:0;zoom:1.5}
           </style><iframe src="/index.html?backend=webgl"></iframe><script>
           window.commands=[];addEventListener('message',event=>{
-            if(event.origin===location.origin&&event.data?.__ondaRunWebview)
+            if(event.origin===location.origin&&event.data?.__ondaRunUi)
               commands.push(event.data.message);
           });</script>`);
         return;
@@ -62,7 +62,7 @@ test("GPU wheel scrolling chains to the page when the canvas cannot scroll", { t
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
   const page = await chrome.page({width:1200,height:800});
   await page.navigate(origin + "/scroll-host");
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='webviewReady')"), "embedded renderer");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "embedded renderer");
   let readyId=0;
   const state=async update=>{
     await page.evaluate(`document.querySelector('iframe').contentWindow._onHostMessage({type:'state',state:${JSON.stringify({
@@ -129,7 +129,7 @@ test("partial states during GPU initialization retain schemas and queued values"
     _onHostMessage({type:"state",state:{running:true}});
   `);
   wasm.resolve();
-  await eventually(() => session.evaluate("commands.some(c => c.type === 'webviewReady')"), "initialized GPU renderer");
+  await eventually(() => session.evaluate("commands.some(c => c.type === 'uiReady')"), "initialized GPU renderer");
   await session.evaluate(`(async()=>{
     const {CanvasUi}=await import('./pkg/onda_ui.js');
     const render=CanvasUi.prototype.render;
@@ -167,7 +167,7 @@ for (const clipboard of ["denied", "unavailable"])
       addEventListener('ondaCommand',event=>commands.push(event.detail));
     ` });
     await page.navigate(origin + "/index.html?backend=webgl");
-    await eventually(() => page.evaluate("commands.some(c=>c.type==='webviewReady')"), "GPU renderer");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU renderer");
     await page.evaluate(`(async()=>{
       const {CanvasUi}=await import('./pkg/onda_ui.js');
       const message=CanvasUi.prototype.message;
@@ -190,7 +190,7 @@ for (const clipboard of ["denied", "unavailable"])
     assert.equal(await page.evaluate("commands.some(c=>c.type==='runViewError')"), false);
 
     await page.evaluate("commands=[];_onHostMessage({type:'requestRunViewReady'})");
-    assert.equal(await page.evaluate("commands.some(c=>c.type==='webviewReady')"), true);
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='uiReady')"), true);
     await page.evaluate(`_onHostMessage({type:'state',state:{path:'next.onda',error:null,
       viewState:{readyId:2}}})`);
     await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===2)"), "render after clipboard failure");
@@ -214,7 +214,7 @@ test("fallback font failures retry without blocking transport", { timeout: 30000
     console.warn=(...args)=>fontWarnings.push(args.map(String).join(' '));
   `});
   await page.navigate(origin + "/index.html?backend=webgl");
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='webviewReady')"), "GPU renderer", 10000);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU renderer", 10000);
   await page.evaluate(`(async()=>{
     const {CanvasUi}=await import('./pkg/onda_ui.js');
     const load=CanvasUi.prototype.load_font;
@@ -284,7 +284,7 @@ for (const backend of ["webgpu", "webgl"])
     });
     await evaluate(`new Promise((resolve,reject) => {
     const start=Date.now(); const timer=setInterval(() => {
-      if (window.commands?.some(c => c.type === "webviewReady")) {clearInterval(timer);resolve(true);}
+      if (window.commands?.some(c => c.type === "uiReady")) {clearInterval(timer);resolve(true);}
       else if (Date.now()-start>30000) {clearInterval(timer);reject(new Error(document.getElementById("status")?.textContent));}
     },20);
   })`);
@@ -667,7 +667,7 @@ test("VS Code numeric editors stay aligned with the canvas", { timeout: 30000 },
     });
   ` });
   await session.navigate(`${origin}/index.html?backend=webgl`);
-  await eventually(() => session.evaluate("commands.some(c=>c.type==='webviewReady')"), "VS Code GPU renderer");
+  await eventually(() => session.evaluate("commands.some(c=>c.type==='uiReady')"), "VS Code GPU renderer");
   await session.evaluate(`(async()=>{
     // VS Code injects this default before the webview's own styles.
     const style=document.createElement('style');
@@ -733,7 +733,7 @@ test("VS Code retains folds, scroll, and typed event values across webview reloa
       },
     });
   ` });
-  const ready = () => eventually(() => session.evaluate("commands.some(c => c.type === 'webviewReady')"), "VS Code GPU renderer");
+  const ready = () => eventually(() => session.evaluate("commands.some(c => c.type === 'uiReady')"), "VS Code GPU renderer");
   const publish = state => session.evaluate(`_onHostMessage({type:"state",state:${JSON.stringify(state)}});
     new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
   const wheel = async deltaY => {

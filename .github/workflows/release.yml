@@ -110,7 +110,7 @@ jobs:
         shell: bash
         run: ./scripts/bootstrap-llvm.sh --version "${{ env.LLVM_VERSION }}"
 
-      - name: Build onda and onda_api on Windows
+      - name: Build Onda and native libraries on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -123,11 +123,7 @@ jobs:
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
-          cargo build --release -p onda_cli
-          cargo test --release -p onda_webview --lib windows_webview_startup_shows_run_controls
-          if ($LASTEXITCODE -ne 0) {
-            throw "The Windows webview failed to show the run controls"
-          }
+          cargo build --release -p onda_cli -p onda_ui --features onda_ui/ffi
           $ondaCmakeDir = Join-Path $PWD "cmake"
           cmake `
             -S tests\cmake_sdk `
@@ -153,12 +149,12 @@ jobs:
             throw "onda-run.exe is not a console-free Windows GUI application"
           }
 
-      - name: Build onda and onda_api on Unix
+      - name: Build Onda and native libraries on Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
-          cargo build --release -p onda_cli -p onda_api
+          cargo build --release -p onda_cli -p onda_api -p onda_ui --features onda_ui/ffi
           cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cmake \
@@ -174,7 +170,7 @@ jobs:
         run: |
           bash tests/cmake_sdk/check-macos-deployment-target.sh \
             "$MACOSX_DEPLOYMENT_TARGET" \
-            target/release/onda target/release/libonda.dylib target/release/libonda.a
+            target/release/onda target/release/libonda.dylib target/release/libonda.a target/release/libonda_ui.dylib
 
       - name: Generate Rust third-party licenses
         shell: bash
@@ -211,6 +207,7 @@ jobs:
           Copy-Item target\release\onda.exe $binDir
           Copy-Item target\release\onda-run.exe (Join-Path $packageRoot "Onda.exe")
           Copy-Item target\release\onda.dll $libDir
+          Copy-Item target\release\onda_ui.dll $libDir
           if (Test-Path target\release\onda.lib) {
             Copy-Item target\release\onda.lib $libDir
           }
@@ -221,6 +218,7 @@ jobs:
             Copy-Item target\release\onda.exp $libDir
           }
           Copy-Item include\onda.h $includeDir
+          Copy-Item include\onda_ui.h $includeDir
           Copy-Item include\onda_processor_abi.h $includeDir
           Copy-Item cmake\OndaConfig.cmake $cmakeDir
           Copy-Item LICENSE $packageRoot
@@ -299,6 +297,7 @@ jobs:
           cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             cp target/release/libonda.dylib "$lib_dir/"
+            cp target/release/libonda_ui.dylib "$lib_dir/"
             cp target/release/libonda.a "$lib_dir/"
 
             app_contents="$package_root/Onda.app/Contents"
@@ -331,6 +330,7 @@ jobs:
             test -s "$app_resources/Onda.icns"
           else
             cp target/release/libonda.so "$lib_dir/"
+            cp target/release/libonda_ui.so "$lib_dir/"
             cp target/release/libonda.a "$lib_dir/"
             mkdir -p \
               "$package_root/share/applications" \
@@ -367,6 +367,7 @@ jobs:
             test ! -e "$install_test_data/icons/hicolor/scalable/apps/onda-run.svg"
           fi
           cp include/onda.h "$include_dir/"
+          cp include/onda_ui.h "$include_dir/"
           cp include/onda_processor_abi.h "$include_dir/"
           cp cmake/OndaConfig.cmake "$cmake_dir/"
           cp LICENSE "$package_root/"

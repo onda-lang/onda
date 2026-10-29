@@ -2,7 +2,6 @@
 export function browserBridge(canvas, { message, target, onInput }) {
   if (
     window.parent === window ||
-    window.ipc ||
     typeof acquireVsCodeApi === "function"
   )
     return null;
@@ -10,7 +9,7 @@ export function browserBridge(canvas, { message, target, onInput }) {
   let pointerStop = false;
   const post = (value) =>
     window.parent.postMessage(
-      { __ondaRunWebview: true, message: value },
+      { __ondaRunUi: true, message: value },
       origin,
     );
 

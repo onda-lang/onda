@@ -103,7 +103,7 @@ export async function checkRegressions(page, evaluate) {
       return {tag:e.tagName,value:e.value,size:s.fontSize,family:s.fontFamily};
     })()`);
     if(edit.tag==="TEXTAREA" && ["177","1000"].includes(edit.value)) {
-      assert.equal(edit.size,"12px","smoothing editors must use egui's compact font size");
+      assert.equal(edit.size,"12px","smoothing editors must use the compact font size");
       assert.ok(edit.family.includes("Inter"),"browser editing must match the canvas font");
       smoothing.add(edit.value);
     }

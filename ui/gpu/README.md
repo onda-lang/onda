@@ -1,15 +1,13 @@
 # Shared GPU run screen
 
 The shared Rust/wgpu run screen serves standalone Onda, the VS Code panel,
-the JUCE plugin, and both browser editors. It matches the egui/webview run style:
+the JUCE plugin, and both browser editors. It provides
 a compact source and transport header, collapsible scope, log, buffers, events,
 input controls and parameters, plus a docked MIDI keyboard
 only for patches with `note_on` support. Parameters and input controls default to
 knobs; the segmented Sliders/Knobs selector highlights selection and pointer hover.
-Device settings open from the header. Empty sections are hidden and the document scrolls above the keyboard. Native and VS Code hosts remain opt-in;
-the browser editors use these panels by default.
+Device settings open from the header. Empty sections are hidden and the document scrolls above the keyboard. All hosts use this renderer.
 
-Use `onda_egui` as the reference for spacing, control sizes, and numeric interaction.
 Scalar event fields stay compact, float labels omit binary rounding artifacts,
 and buffer previews use individual sample stems and dots with a separate scale gutter.
 Numeric labels use the declared or adaptive step to limit displayed decimals.
@@ -31,12 +29,12 @@ does not send `computerKey` events, since the DAW owns computer-keyboard MIDI
 routing. It forwards unused keyboard input to the DAW; mouse and touch piano
 input remain available.
 MIDI velocity defaults and resets to 1 in every host; explicit saved values are retained.
-The keyboard adds octaves on wider screens and bounds key sizes like egui. Compact
+The keyboard adds octaves on wider screens and bounds key sizes. Compact
 headers place the source and transport below the logo and actions; bank toolbars
 wrap before their controls overlap the heading.
 
 Section folds, control layouts, and the document scroll position are retained; parameter arrays and
-structured arguments can fold. The log has independent scrolling and tail following. Plugin sessions and VS Code webview state retain presentation and typed
+structured arguments can fold. The log has independent scrolling and tail following. Plugin sessions and VS Code panel state retain presentation and typed
 event values. Browser editors retain these locally across page reloads.
 Number drags save once when released or cancelled. Scroll persistence waits for
 100 ms of inactivity before building a full snapshot;
@@ -49,10 +47,10 @@ exposes the same draft, selection and shaped caret geometry through JUCE's text 
 ## Standalone
 
 ```sh
-cargo run --release -p onda_cli --bin onda -- run --gpu examples/basic/sine.onda
+cargo run --release -p onda_cli --bin onda -- run examples/basic/sine.onda
 ```
 
-`onda run --gpu` without a path opens the source picker, with sample-rate and
+`onda run` without a path opens the source picker, with sample-rate and
 block-size dropdowns and Fast Math before loading a source. Dropdowns have bounded
 scrolling, selected-item highlighting,
 and arrow-key, Enter, Escape, and type-to-search input.
@@ -115,7 +113,7 @@ npm run stage:gpu -- /path/to/onda/ui/gpu
 npm run compile
 ```
 
-Set `onda.run.host` to `gpu`. The extension retains the existing playback
+The extension uses the shared GPU canvas with the existing playback
 subprocess and control socket. Use a CLI built from the same source for compact
 scope requests. Generated GPU assets are staged in `ui/gpu` and
 copied into `out/gpu` during ordinary extension builds. The panel's content
@@ -141,18 +139,17 @@ Configure the plugin integration worktree with:
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DONDA_DEVELOPMENT_SOURCE_DIR=/path/to/onda \
-  -DONDA_PLUGIN_GPU_UI=ON \
   -DONDA_GPU_UI_LIBRARY=/path/to/onda/target/release/libonda_ui.so
 cmake --build build
 ```
 
-Use the corresponding `.dylib` or `.dll` on macOS or Windows. Launch the host
-with `ONDA_GPU_UI=1` to select the GPU editor. `ONDA_GPU_UI_LIBRARY` can override
-the bundled library path at runtime. GPU-enabled builds put the library and font
+Use the corresponding `.dylib` or `.dll` on macOS or Windows.
+`ONDA_GPU_UI_LIBRARY` can override the bundled library path at runtime.
+All builds put the library and font
 licenses inside each VST3 bundle at `Contents/Resources/onda_ui`. The native loader
 finds it relative to its own plugin module, allowing the bundle to be relocated.
-The regular release workflow still leaves this experimental option disabled. The native
-adapter currently has Xlib, Win32, and AppKit handle paths; Linux is verified.
+Release builds obtain the library and header from the Onda SDK. The native
+adapter has Xlib, Win32, and AppKit handle paths.
 
 Scope snapshots cross the C interface as interleaved floats, without JSON.
 Controls consume the plugin's normalized host-domain metadata and send existing
@@ -171,7 +168,7 @@ master sends. It requires X11/XTest, REAPER, and ImageMagick; run it with
 The [Linux host-validation record](host-validation.json) captures checks against
 an installed VSIX in the real VS Code extension host and relocated synth/effect
 bundles in REAPER, with artifact hashes and the remaining limitations. These are
-functional checks; the [render/transport benchmarks](../../scripts/bench/README.md#ui-comparison)
+functional checks; the [render/transport benchmarks](../../scripts/bench/README.md#gpu-ui-measurements)
 measure performance separately.
 
 ## Rendering and verification
@@ -182,13 +179,13 @@ conversion and glyphon for shaping/rasterization. Inter supplies compact UI labe
 JetBrains Mono supplies parameter names, values, logs and diagnostics, including
 real regular and semibold weights. Both are embedded under their SIL Open Font
 License notices in `assets/fonts/`.
-Smoothing fields and layout selectors use egui's compact 12 px proportional text;
+Smoothing fields and layout selectors use compact 12 px proportional text;
 browser text editors follow the canvas field's font and size.
 Noto fallback fonts cover CJK, Arabic, Hebrew and emoji. The build derives a compact
 coverage index from their actual glyph maps;
 native hosts load needed fonts from embedded bytes and browsers fetch only the
 needed self-hosted fonts from `pkg/fonts/`, outside the initial Wasm download.
-Initialization does not scan system fonts. One palette owns the legacy dark/light colors. Primitives,
+Initialization does not scan system fonts. One palette owns the shared dark/light colors. Primitives,
 text, and clear colors use the target's color space, giving native sRGB surfaces
 and browser surfaces the same palette. Vector icons, knob arcs, checkmarks and
 scope channels share antialiased WGSL primitives. Geometry and text are clipped
@@ -251,12 +248,6 @@ The [browser-editor validation record](web-editor-validation.json) records
 real compiler/AudioWorklet checks for both browser hosts, backends, autoplay
 blocking, and hosting without cross-origin isolation.
 
-The [completed-panel results](../../scripts/bench/results/2026-10-26-ui-panels.json)
-include each section, the 64-control legacy comparisons, and real scope delivery.
-Native panel medians span 0.05–0.20 ms through GPU completion; browser main-thread
-CPU spans 0.87–1.61 ms across scope-only and changing-panel fixtures. Presentation
-and host/audio processing are outside those metrics.
-
 ## Input and state interface
 
 State messages retain the existing `state`, `parameterValues`, `scopeData`,
@@ -308,14 +299,14 @@ skipping disabled controls. Enter activates a focused action or commits a draft;
 Escape cancels. Fields accept pasted text and scroll to keep the caret visible.
 Section headers use 40px rows and wrap their tools when needed. Names stay on one line,
 and disclose their full text on hover. Slider headings share the value field's vertical center, and centered
-control headings use egui's compact 12px font at widths up to 400px. Card titles
+control headings use compact 12px font at widths up to 400px. Card titles
 and actions share their content inset. The source picker centers the controls
 actually displayed; settings selectors and buttons share a 32px height.
 Keyboard navigation shows focus; pointer and touch activation retain logical
 focus without leaving action buttons highlighted after the pointer leaves.
-Captured drags keep hover feedback on their owner. Smooth uses the legacy
+Captured drags keep hover feedback on their owner. Smooth uses the
 1 ms per pixel sensitivity, whole-millisecond steps, and a zero lower bound;
-reset preserves the host's exact default. Sliders and knobs use the legacy
+reset preserves the host's exact default. Sliders and knobs use the
 track, thumb, arc, and spacing rules.
 Hovering a parameter or input-control heading reveals its full name and type in
 a wrapped tooltip after 500 ms, including when the compact card clips the heading.

@@ -73,7 +73,7 @@ use regular files and directories for editable, watched inputs.
 onda run examples/basic/sine.onda
 ```
 
-The native egui host is the default. Pass `--webview` to select the webview host. Common options select the sample rate, block size, audio devices, and color theme.
+The native host uses the shared GPU interface. Common options select the sample rate, block size, audio devices, and color theme.
 
 Programs that declare the canonical `note_on` event get a piano at the bottom of either run UI.
 The MIDI selector defaults to **Computer Keyboard**, using
@@ -148,7 +148,7 @@ tokens. Incomplete `when` bodies retain their handler and owner scopes for seman
 
 ### VS Code
 
-The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run File** for launching the webview run interface inside the editor.
+The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run File** for launching the shared GPU run interface inside the editor.
 
 ### Neovim
 

@@ -59,7 +59,7 @@ const initScript = `
       resume(){testResumeCalls++;return super.resume();}
     };
     window.addEventListener("message",event=>{
-      if(event.origin===location.origin && event.data?.__ondaRunWebview)
+      if(event.origin===location.origin && event.data?.__ondaRunUi)
         testCommands.push(event.data.message);
     });
   }
@@ -267,7 +267,7 @@ async function openEditor(t, url, autoplay = true) {
       for(let i=8;i<bytes.length;i++)if(bytes[i]){probe.nonzero=true;break;}
       return scope.call(this,bytes);
     };
-    parent.postMessage({__ondaRunWebview:true,message:{type:"webviewReady"}},location.origin);
+    parent.postMessage({__ondaRunUi:true,message:{type:"uiReady"}},location.origin);
   })()`);
   await eventually(
     () => frame("probe.state.connected===true"),
@@ -555,7 +555,7 @@ for (const host of ["example", "website"]) {
     const chrome = await openChrome(t, flags(true, "webgl"));
     const page = await chrome.page({ width:1600, height:1100, source:initScript });
     await page.call("Page.navigate", { url:`${base}/${host === "website" ? "website/" : ""}?backend=webgl` });
-    await eventually(() => page.evaluate("testCommands.some(c=>c.type==='webviewReady')"), "renderer ready while compiler is loading");
+    await eventually(() => page.evaluate("testCommands.some(c=>c.type==='uiReady')"), "renderer ready while compiler is loading");
     assert.equal(await page.evaluate("document.querySelector('[data-run-view]').style.opacity"), "0");
     assert.deepEqual(await page.evaluate(`(() => {
       const loading = document.querySelector("[data-run-loading]");

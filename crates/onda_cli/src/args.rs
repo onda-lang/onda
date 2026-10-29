@@ -600,7 +600,6 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut fast_math = false;
     let mut show_meta = false;
     let mut theme = RunThemeMode::Auto;
-    let mut host = RunHostKind::Auto;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -652,8 +651,6 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 };
                 theme = parse_run_theme_mode(&value)?;
             }
-            "--webview" => host = RunHostKind::Webview,
-            "--gpu" => host = RunHostKind::Gpu,
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
@@ -705,7 +702,6 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         fast_math,
         show_meta,
         theme,
-        host,
     })
 }
 

@@ -10,13 +10,13 @@
   decide which run-control pieces stay private versus becoming a documented protocol.
 - Keep VSCode syntax highlighting and semantic tokens aligned as the language grows.
 - Add an extension smoke-test path or automation for:
-  `onda lsp`, `Onda: Run File`, semantic tokens, and run webview controls.
+  `onda lsp`, `Onda: Run File`, semantic tokens, and GPU run controls.
 - Improve run panel UX:
   better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
 - Expand declared-event-aware on-screen MIDI controls beyond piano notes:
   - show pitch bend, modulation (CC 1), sustain (CC 64), channel pressure, and configurable CC
     controls only when the corresponding canonical event is declared
-  - share control behavior and reset/lifecycle semantics across egui, native webview, and browser
+  - share control behavior and reset/lifecycle semantics across native and browser GPU hosts
   - validate the existing native timestamp-to-frame scheduling with hardware-backed
     Linux/macOS/Windows coverage, and cover browser MIDI timing separately
 - Improve print/delegate Log UX:
@@ -62,7 +62,7 @@
   - compact inspector for params, buffers, events, and generated code
   - graph minimap only if real patch sizes justify it
 - Integration options:
-  - VSCode webview panel first, sharing the existing run panel transport
+  - VSCode GPU panel first, sharing the existing run panel transport
   - standalone `onda run --graph` or `onda graph <file>` later
   - optional browser-hosted version reusing the existing playground compiler worker and AudioWorklet
     adapter
