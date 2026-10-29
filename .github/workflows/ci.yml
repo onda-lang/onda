@@ -1,10 +1,21 @@
 name: Windows GPU diagnostics
 on:
   workflow_dispatch:
+    inputs:
+      artifact_run:
+        description: Reuse the renderer executable from this diagnostic run
+        type: string
+        default: ''
+      test_filter:
+        description: Optional Rust test name filter
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 jobs:
   build:
+    if: inputs.artifact_run == ''
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -20,6 +31,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
   diagnose:
+    if: ${{ !cancelled() && (needs.build.result == 'success' || inputs.artifact_run != '') }}
     needs: build
     runs-on: windows-latest
     timeout-minutes: 10
@@ -44,15 +56,19 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: renderer-tests
+          run-id: ${{ inputs.artifact_run || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Exercise renderer
         env:
           TEST_BACKEND: ${{ matrix.backend }}
           TEST_THREADS: ${{ matrix.threads }}
+          TEST_FILTER: ${{ inputs.test_filter }}
           RUST_BACKTRACE: '1'
         run: |
           if ($env:TEST_BACKEND) { $env:WGPU_BACKEND = $env:TEST_BACKEND }
           $binary = Get-ChildItem -Filter 'onda_ui-*.exe' | Select-Object -First 1
           $arguments = @('--nocapture')
+          if ($env:TEST_FILTER) { $arguments += $env:TEST_FILTER }
           if ($env:TEST_THREADS -ne '0') { $arguments += "--test-threads=$env:TEST_THREADS" }
           & $binary.FullName @arguments
           if ($LASTEXITCODE -ne 0) { throw "Renderer exited $LASTEXITCODE" }
