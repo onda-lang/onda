@@ -572,6 +572,12 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
+      - name: Install browser test display
+        if: inputs.test_integrations
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth
+
       - name: Install package dependencies
         run: |
           node ./scripts/sync-package-versions.mjs --check
@@ -598,8 +604,8 @@ jobs:
           node scripts/build-website-playground.mjs
           node --test scripts/stage-gpu-ui.test.mjs
           npm run test:playground
-          npm run test:gpu-ui
-          npm run test:gpu-web-editor
+          xvfb-run -a npm run test:gpu-ui
+          xvfb-run -a npm run test:gpu-web-editor
           printf '%s\n' "$GITHUB_SHA" > ui/gpu/onda-source.txt
 
       - name: Upload shared GPU UI

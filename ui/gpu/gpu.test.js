@@ -73,7 +73,7 @@ test("GPU wheel scrolling chains to the page when the canvas cannot scroll", { t
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
   const page = await chrome.page({width:1200,height:800});
   await page.navigate(origin + "/scroll-host");
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "embedded renderer");
+  await eventually(() => page.evaluate("globalThis.commands?.some(c=>c.type==='uiReady')"), "embedded renderer");
   let readyId=0;
   const state=async update=>{
     await page.evaluate(`document.querySelector('iframe').contentWindow._onHostMessage({type:'state',state:${JSON.stringify({
@@ -129,7 +129,7 @@ test("GPU touch pans chain unused distance to the page", { timeout:60000 }, asyn
   await page.call("Emulation.setDeviceMetricsOverride", {width:400,height:800,deviceScaleFactor:1,mobile:true});
   await page.call("Emulation.setTouchEmulationEnabled", {enabled:true,maxTouchPoints:2});
   await page.navigate(origin + "/touch-host");
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "embedded touch renderer");
+  await eventually(() => page.evaluate("globalThis.commands?.some(c=>c.type==='uiReady')"), "embedded touch renderer");
   let readyId = 0;
   const state = async update => {
     await page.evaluate(`document.querySelector('iframe').contentWindow._onHostMessage({type:'state',state:${JSON.stringify({
@@ -254,7 +254,7 @@ for (const clipboard of ["denied", "unavailable"])
       addEventListener('ondaCommand',event=>commands.push(event.detail));
     ` });
     await page.navigate(origin + "/index.html?backend=webgl");
-    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU renderer");
+    await eventually(() => page.evaluate("globalThis.commands?.some(c=>c.type==='uiReady')"), "GPU renderer");
     await page.evaluate(`(async()=>{
       const {CanvasUi}=await import('./pkg/onda_ui.js');
       const message=CanvasUi.prototype.message;
@@ -277,7 +277,7 @@ for (const clipboard of ["denied", "unavailable"])
     assert.equal(await page.evaluate("commands.some(c=>c.type==='runViewError')"), false);
 
     await page.evaluate("commands=[];_onHostMessage({type:'requestRunViewReady'})");
-    assert.equal(await page.evaluate("commands.some(c=>c.type==='uiReady')"), true);
+    assert.equal(await page.evaluate("globalThis.commands?.some(c=>c.type==='uiReady')"), true);
     await page.evaluate(`_onHostMessage({type:'state',state:{path:'next.onda',error:null,
       viewState:{readyId:2}}})`);
     await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===2)"), "render after clipboard failure");
@@ -301,7 +301,7 @@ test("fallback font failures retry without blocking transport", { timeout: 30000
     console.warn=(...args)=>fontWarnings.push(args.map(String).join(' '));
   `});
   await page.navigate(origin + "/index.html?backend=webgl");
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU renderer", 10000);
+  await eventually(() => page.evaluate("globalThis.commands?.some(c=>c.type==='uiReady')"), "GPU renderer", 10000);
   await page.evaluate(`(async()=>{
     const {CanvasUi}=await import('./pkg/onda_ui.js');
     const load=CanvasUi.prototype.load_font;
