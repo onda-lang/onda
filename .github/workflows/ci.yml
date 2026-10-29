@@ -1,81 +1,46 @@
-name: Windows GPU diagnostics
+name: Windows native editor diagnostics
 on:
   workflow_dispatch:
-    inputs:
-      artifact_run:
-        description: Reuse the renderer executable from this diagnostic run
-        type: string
-        default: ''
-      test_filter:
-        description: Optional Rust test name filter
-        type: string
-        default: ''
 permissions:
   contents: read
   actions: read
 jobs:
-  build:
-    if: inputs.artifact_run == ''
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - name: Compile renderer test executable
-        run: |
-          cargo test --release -p onda_ui --features ffi --lib --no-run
-          if ($LASTEXITCODE -ne 0) { throw "Test compilation failed" }
-      - uses: actions/upload-artifact@v6
-        with:
-          name: renderer-tests
-          path: target/release/deps/onda_ui-*.exe
-          retention-days: 1
-          if-no-files-found: error
   diagnose:
-    if: ${{ !cancelled() && (needs.build.result == 'success' || inputs.artifact_run != '') }}
-    needs: build
-    runs-on: windows-latest
-    timeout-minutes: 10
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: default-parallel
-            backend: ''
-            threads: 0
-          - name: default-serial
-            backend: ''
-            threads: 1
-          - name: dx12-serial
-            backend: dx12
-            threads: 1
-          - name: vulkan-serial
-            backend: vulkan
-            threads: 1
-    name: ${{ matrix.name }}
+        runner: [windows-latest, windows-2022]
     steps:
       - uses: actions/download-artifact@v7
         with:
-          name: renderer-tests
-          run-id: ${{ inputs.artifact_run || github.run_id }}
+          name: test-failure-windows-x64
+          run-id: 40904539811
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Exercise renderer
+          path: tests
+      - uses: actions/download-artifact@v7
+        with:
+          name: onda-windows-x64
+          run-id: 40900636570
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: sdk
+      - name: Extract SDK
+        run: |
+          Expand-Archive sdk/onda-0.9.0-windows-x64.zip -DestinationPath sdk
+          $library = (Resolve-Path sdk/onda-0.9.0-windows-x64/lib/onda_ui.dll).Path
+          "ONDA_GPU_UI_LIBRARY=$library" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Output "Debugger available: $(Test-Path 'C:/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe')"
+      - name: Reproduce native editor crash
         env:
-          TEST_BACKEND: ${{ matrix.backend }}
-          TEST_THREADS: ${{ matrix.threads }}
-          TEST_FILTER: ${{ inputs.test_filter }}
           RUST_BACKTRACE: '1'
         run: |
-          if ($env:TEST_BACKEND) { $env:WGPU_BACKEND = $env:TEST_BACKEND }
-          $binary = Get-ChildItem -Filter 'onda_ui-*.exe' | Select-Object -First 1
-          $arguments = @('--nocapture')
-          if ($env:TEST_FILTER) { $arguments += $env:TEST_FILTER }
-          if ($env:TEST_THREADS -ne '0') { $arguments += "--test-threads=$env:TEST_THREADS" }
-          & $binary.FullName @arguments
-          if ($LASTEXITCODE -ne 0) { throw "Renderer exited $LASTEXITCODE" }
+          $binary = Get-ChildItem tests -Recurse -Filter onda_processor_tests.exe | Select-Object -First 1
+          & $binary.FullName GpuEditorTeardown
+          if ($LASTEXITCODE -ne 0) { throw "Native editor exited $LASTEXITCODE" }
       - name: Read native crash module
         if: failure()
         run: |
           Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
-            Where-Object { $_.Message -like '*onda_ui*' } |
+            Where-Object { $_.Message -like '*onda_processor_tests*' } |
             Select-Object TimeCreated, Message | Format-List
           exit 0
