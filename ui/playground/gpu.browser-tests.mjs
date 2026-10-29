@@ -258,6 +258,7 @@ async function openEditor(t, url, autoplay = true) {
     CanvasUi.prototype.render=function(){probe.ui=this;probe.renders=(probe.renders||0)+1;return render.call(this);};
     const message=CanvasUi.prototype.message;
     CanvasUi.prototype.message=function(json){
+      probe.ui=this;
       const m=JSON.parse(json);if(m.type==="state")Object.assign(probe.state,m.state);
       return message.call(this,json);
     };
