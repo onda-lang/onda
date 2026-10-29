@@ -121,7 +121,7 @@ fn source_controller(path: &Path) -> RunController {
 #[test]
 fn stopped_and_replaced_controller_state_clears_the_retained_scope() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("source.onda");
+    let path = directory.path().canonicalize().unwrap().join("source.onda");
     for update in ["stop", "runtime", "schema"] {
         let mut app = App::new(None, RunHostOptions::default());
         app.controller = Some(source_controller(&path));
@@ -151,7 +151,7 @@ fn stopped_and_replaced_controller_state_clears_the_retained_scope() {
 #[test]
 fn log_only_publications_preserve_drafts_and_the_folded_scene() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("source.onda");
+    let path = directory.path().canonicalize().unwrap().join("source.onda");
     let mut app = App::new(None, RunHostOptions::default());
     app.controller = Some(source_controller(&path));
     app.controller.as_mut().unwrap().stop();
@@ -204,7 +204,7 @@ fn log_only_publications_preserve_drafts_and_the_folded_scene() {
 #[test]
 fn transport_shortcuts_ignore_repeats_without_swallowing_other_keys() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("source.onda");
+    let path = directory.path().canonicalize().unwrap().join("source.onda");
     for modifiers in [
         winit::keyboard::ModifiersState::CONTROL,
         winit::keyboard::ModifiersState::META,
@@ -300,7 +300,7 @@ fn reopening_a_source_restores_its_own_layout() {
         ("b.onda", "knobs"),
         ("a.onda", "sliders"),
     ] {
-        let path = directory.path().join(name);
+        let path = directory.path().canonicalize().unwrap().join(name);
         app.controller = Some(source_controller(&path));
         if !app.views.contains_key(path.to_str().unwrap()) {
             app.views.insert(
@@ -353,7 +353,7 @@ fn reopening_the_current_source_restores_event_values_without_replaying_ordinary
     }
 
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("source.onda");
+    let path = directory.path().canonicalize().unwrap().join("source.onda");
     std::fs::write(&path, "sample:\n  out1 = 0.0\n").unwrap();
     let mut app = App::new(
         None,
@@ -401,7 +401,7 @@ fn reopening_the_current_source_restores_event_values_without_replaying_ordinary
 #[test]
 fn parameter_and_midi_commands_preserve_the_ui_schema_and_retained_output() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("source.onda");
+    let path = directory.path().canonicalize().unwrap().join("source.onda");
     let mut app = App::new(None, RunHostOptions::default());
     app.controller = Some(source_controller(&path));
     app.ui.message(
@@ -435,7 +435,11 @@ fn parameter_and_midi_commands_preserve_the_ui_schema_and_retained_output() {
 #[test]
 fn failed_initial_load_retains_the_source_picker() {
     let directory = tempfile::tempdir().unwrap();
-    let missing = directory.path().join("missing.onda");
+    let missing = directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("missing.onda");
     let mut app = App::new(Some(&missing), RunHostOptions::default());
     app.open(missing);
     assert!(app.controller.is_none());
@@ -497,7 +501,7 @@ fn unloading_preserves_the_controllers_device_preferences() {
 #[test]
 fn source_drops_open_the_source_even_over_a_buffer_card() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("new.onda");
+    let path = directory.path().canonicalize().unwrap().join("new.onda");
     std::fs::write(&path, "sample:\n  out1 = 0.0\n").unwrap();
     let mut app = App::new(
         None,
@@ -554,7 +558,8 @@ fn copied_text_survives_the_copy_command_and_remains_available_to_other_clients(
 fn an_idle_loaded_host_waits_for_controller_work_instead_of_polling_at_frame_rate() {
     let directory = tempfile::tempdir().unwrap();
     let mut app = App::new(None, RunHostOptions::default());
-    let mut controller = source_controller(&directory.path().join("source.onda"));
+    let mut controller =
+        source_controller(&directory.path().canonicalize().unwrap().join("source.onda"));
     controller.stop();
     controller.poll();
     app.controller = Some(controller);
