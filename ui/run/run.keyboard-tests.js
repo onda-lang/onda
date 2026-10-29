@@ -92,9 +92,9 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
       assert.equal(await evaluate("__testMessages.findLast(message => message.type === 'viewState').state.octave"),
         4, "saved view state keeps the committed octave while editing");
     }
-    assert.equal(await evaluate("document.querySelector('#piano .piano-key').getAttribute('aria-label')"),
+    assert.equal(await evaluate("'MIDI note ' + document.querySelector('#piano .piano-key').dataset.note"),
       "MIDI note 60", "host updates and resizing keep the committed octave while editing");
-    assert.equal(await evaluate("document.querySelector('#piano [aria-label=\"MIDI note 60\"]').classList.contains('active')"),
+    assert.equal(await evaluate("document.querySelector('#piano [data-note=\"60\"]').classList.contains('active')"),
       true, "host updates preserve the held note highlight while editing the octave");
     await keys([end]);
     assert.equal(await evaluate("document.getElementById('midi-octave').value"), String(octave));
@@ -105,10 +105,10 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
     assert.deepEqual((await midiMessages()).map(note => [note.key, note.pressed]),
       octave === 4 ? [[60, true]] : [[60, true], [60, false]],
       "octave edits release held notes on commit while cancelled or untouched drafts retain them");
-    assert.equal(await evaluate("document.querySelector('#piano .piano-key').getAttribute('aria-label')"),
+    assert.equal(await evaluate("'MIDI note ' + document.querySelector('#piano .piano-key').dataset.note"),
       "MIDI note " + (octave + 1) * 12, "piano labels reflect the committed octave");
     if (octave === 4) {
-      assert.equal(await evaluate("document.querySelector('#piano [aria-label=\"MIDI note 60\"]').classList.contains('active')"),
+      assert.equal(await evaluate("document.querySelector('#piano [data-note=\"60\"]').classList.contains('active')"),
         true, "cancelled and untouched drafts retain the held note highlight");
     }
     await call("input.performActions", { context, actions: [{ type: "key", id: "keyboard",
@@ -245,7 +245,7 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
     await initialize(layout);
     await keys(["9", "9"]);
     await evaluate(`window._onHostMessage({ type: "state", state: { params: [{
-      name: number.getAttribute("aria-label"), type: "f64", value: 2048.987654321,
+      name: number.name, type: "f64", value: 2048.987654321,
       default: ${initial},
     }] }});`);
     await keys([escape]);
@@ -276,7 +276,7 @@ export async function testNumberKeyboardEditing(t, endpoint, pageUrl) {
         name, type: "f32", value: 0.5, default: 0.5,
         rangeMin: 0, rangeMax: 1, scale: "linear",
       })),
-    }}); window.range = document.querySelector('#params [role="slider"]');
+    }}); window.range = document.querySelector('#params .param-slider, #params .param-knob');
     window.number = document.querySelector('#params input');`);
     const position = JSON.parse(await evaluate(`JSON.stringify((() => {
       const rect = range.getBoundingClientRect();

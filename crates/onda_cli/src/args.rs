@@ -653,6 +653,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 theme = parse_run_theme_mode(&value)?;
             }
             "--webview" => host = RunHostKind::Webview,
+            "--gpu" => host = RunHostKind::Gpu,
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),

@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-27",
+  "purpose": "Compare isolated host-data kernels; no end-to-end application speedup claim.",
+  "cpu": "Intel Core i9-14900HX",
+  "platform": "Linux-7.3.0-4-cachyos-x86_64-with-glibc2.44",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "affinity_cpu": 0,
+  "working_trees": {
+    "current": {
+      "head": "1b58ab7b8ae2a038197f877e185197eb26c7568c",
+      "dirty": true
+    },
+    "onda": {
+      "head": "1b58ab7b8ae2a038197f877e185197eb26c7568c",
+      "dirty": true
+    },
+    "onda-shader": {
+      "head": "1b58ab7b8ae2a038197f877e185197eb26c7568c",
+      "dirty": true
+    }
+  },
+  "source_sha256": {
+    "current_playback": "c9a3b8ae461759ddc6c72cee0d5bdf3ad53f3b94db946b1de20111f40909535e",
+    "older_playback": "2c67b723f287623b6578069d3b2b7c91446c1b1689c0ff89049ee0e3bace4a21",
+    "current_ui_model": "10887508007fae3bd2f1b5d85258c92bf70977ea4aba1d256111cd7241707ee6",
+    "current_ui_rlib": "1ebe635f61a8027f7f6525de6df8475d8e59a88b34e6a2e917bc92902bf96895"
+  },
+  "harness_sha256": {
+    "copy.rs": "2f95a477d3d5ab4f0687dabf0aceadbfde9809949c16ef09a3fe33f17acb693a",
+    "publication.rs": "4e635cf013eeaef52581e7292ea38d20f2f1addc94ddf112f58831134e002755"
+  },
+  "methodology": [
+    "Both final experiments pinned to CPU 0 and run sequentially; no concurrent review build or benchmark.",
+    "Copy: exact extracted writer methods, inline(never), runtime-visible 4096-frame capacity; seven rounds with variant order alternated.",
+    "Copy: asserts chronological window equivalence for 1/2/8/64 channels, wraps, exact capacity and oversized aligned blocks.",
+    "Publication: current release RunUi, seven rounds of 500 updates per case after 100 warmup calls; cases in fixed order.",
+    "Publication: includes input Value clone and message application; excludes native host projection, JSON parsing, scene layout, rendering and presentation.",
+    "Results are medians of seven per-round averages, not per-call latency percentiles.",
+    "No CPU governor/turbo isolation; values are local diagnostic evidence."
+  ],
+  "reproduce": [
+    "rustc --edition=2021 -O scripts/bench/results/2026-10-27-ui-host-data/copy.rs -o /tmp/onda-host-copy",
+    "taskset -c 0 /tmp/onda-host-copy",
+    "cargo build --release -p onda_ui --features ffi",
+    "rustc --edition=2021 -O scripts/bench/results/2026-10-27-ui-host-data/publication.rs -L dependency=target/release/deps --extern onda_ui=target/release/libonda_ui.rlib -o /tmp/onda-host-publication",
+    "taskset -c 0 /tmp/onda-host-publication"
+  ]
+}

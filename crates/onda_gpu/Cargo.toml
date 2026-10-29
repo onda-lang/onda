@@ -1,0 +1,25 @@
+[package]
+name = "onda_gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+onda_ui = { path = "../onda_ui" }
+onda_run = { path = "../onda_run" }
+pollster = "0.4"
+rfd = "0.15"
+serde_json = "1"
+url = "2"
+wgpu = "30"
+# Native Wayland file offers are unavailable in 0.30.
+winit = "=0.31.0-beta.4"
+
+[dev-dependencies]
+raw-window-handle = "0.6"
+tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13"

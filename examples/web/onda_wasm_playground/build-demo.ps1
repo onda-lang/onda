@@ -23,6 +23,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 npm run build --prefix $compilerPackage
+npm run build:gpu-ui --prefix $repoRoot
+if ($LASTEXITCODE -ne 0) { throw "GPU UI build failed" }
 
 Remove-Item $compilerOut, $webAudioOut -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $demoDir "onda-webaudio.js"), (Join-Path $demoDir "onda-wasm-processor.js") -Force -ErrorAction SilentlyContinue
@@ -49,17 +51,14 @@ Copy-Item (Join-Path $webAudioPackage "src\worklet.js") (Join-Path $webAudioOut 
 Copy-Item (Join-Path $webAudioPackage "src\processor-constants.js") (Join-Path $webAudioOut "processor-constants.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAudioOut "param-metadata.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\execution-output-ring.js") (Join-Path $webAudioOut "execution-output-ring.js") -Force
-Copy-Item (Join-Path $repoRoot "ui\run\run.html") (Join-Path $demoDir "run.html") -Force
-Copy-Item (Join-Path $repoRoot "ui\run\buffers.js") (Join-Path $demoDir "buffers.js") -Force
-Copy-Item (Join-Path $repoRoot "ui\number-input.js") (Join-Path $demoDir "number-input.js") -Force
-Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $demoDir "param-control.js") -Force
-Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $demoDir "payload.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $webAudioOut "processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $webAudioOut "param-control.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $webAudioOut "payload.js") -Force
 $webAudioSource = Get-Content (Join-Path $webAudioPackage "src\index.js") -Raw
 $webAudioSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $webAudioOut "index.js") -NoNewline
+node (Join-Path $repoRoot "scripts\stage-gpu-ui.mjs") (Join-Path $demoDir "gpu")
+if ($LASTEXITCODE -ne 0) { throw "GPU UI staging failed" }
 node (Join-Path $repoRoot "scripts\bundle-web-playground.mjs") (Join-Path $demoDir "playground.js") (Join-Path $compilerOut "src\worker.js")
 
 Write-Host "Staged @onda-lang/wasm-compiler in: $compilerOut"

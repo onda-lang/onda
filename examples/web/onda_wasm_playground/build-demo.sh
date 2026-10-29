@@ -66,6 +66,7 @@ if [[ "$skip_build" == "1" ]]; then
   ' "$compiler_package"
 else
   npm run build --prefix "$compiler_package"
+  npm run build:gpu-ui --prefix "$repo_root"
 fi
 
 rm -rf "$compiler_out" "$webaudio_out"
@@ -94,16 +95,12 @@ cp "$webaudio_package/src/processor-constants.js" \
 cp "$webaudio_package/src/param-metadata.js" "$webaudio_out/param-metadata.js"
 cp "$webaudio_package/src/execution-output-ring.js" \
   "$webaudio_out/execution-output-ring.js"
-cp "$repo_root/ui/run/run.html" "$demo_dir/run.html"
-cp "$repo_root/ui/run/buffers.js" "$demo_dir/buffers.js"
-cp "$repo_root/ui/number-input.js" "$demo_dir/number-input.js"
-cp "$abi_package/src/param-control.js" "$demo_dir/param-control.js"
-cp "$abi_package/src/payload.js" "$demo_dir/payload.js"
 cp "$abi_package/src/index.js" "$webaudio_out/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$webaudio_out/param-control.js"
 cp "$abi_package/src/payload.js" "$webaudio_out/payload.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$webaudio_package/src/index.js" > "$webaudio_out/index.js"
+node "$repo_root/scripts/stage-gpu-ui.mjs" "$demo_dir/gpu"
 node "$repo_root/scripts/bundle-web-playground.mjs" "$demo_dir/playground.js" \
   "$compiler_out/src/worker.js"
 

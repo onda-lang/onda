@@ -1,0 +1,112 @@
+{
+  "validated_at_utc": "2026-10-26T15:29:58.572016+00:00",
+  "platform": "Linux x86_64",
+  "vscode": {
+    "passed": true,
+    "scope": {
+      "channels": 2,
+      "columns": 355
+    },
+    "extension": "/tmp/onda-vscode-gpu-FYlYNP/extensions/onda-lang.onda-vscode-0.1.38",
+    "vsix": "/home/francesco/Sources/onda-shader2/target/onda-gpu.vsix",
+    "checks": [
+      "real extension host",
+      "real playback",
+      "compact scope",
+      "parameter reaching audio processor",
+      "hidden panel",
+      "show panel",
+      "source reload"
+    ]
+  },
+  "reaper": {
+    "passed": true,
+    "reaper": "7.82/linux-x86_64",
+    "products": [
+      "OndaSynth",
+      "OndaFX"
+    ],
+    "edited_parameters": [
+      "0.043043043464422",
+      "0.043043043464422"
+    ],
+    "automated_parameters": [
+      "0.25",
+      "0.25"
+    ],
+    "loaded_ui_libraries": [
+      "/tmp/onda-gpu-reaper-yy1_6hbo/plugins/OndaFX.vst3/Contents/Resources/onda_ui/libonda_ui.so",
+      "/tmp/onda-gpu-reaper-yy1_6hbo/plugins/OndaSynth.vst3/Contents/Resources/onda_ui/libonda_ui.so"
+    ],
+    "checks": [
+      "relocated bundles",
+      "native GPU editor",
+      "native input",
+      "UI to DAW parameters",
+      "DAW automation",
+      "resize",
+      "hide/show",
+      "editor destruction",
+      "all seven panels rendered with real host state"
+    ]
+  },
+  "reaper_display": "Isolated X11 display (Xvfb, 1280x1024x24)",
+  "artifacts": {
+    "vsix": {
+      "path": "target/onda-gpu.vsix",
+      "sha256": "0ea0b9025a2636a5e7e11496c9f44e492b04107b3cccbdca4ae06021b30f7ec0",
+      "bytes": 3367808
+    },
+    "plugins": {
+      "path": "target/onda-gpu-plugins-local-linux-x64.tar.gz",
+      "sha256": "9a6b5e0bde97b265ab7d6b727df8843cfc917bcd2568355cf981d88b7b083284",
+      "bytes": 111747923
+    }
+  },
+  "runtime_library_sha256": {
+    "OndaSynth.vst3": "b07ac757070ca8fd968ff616127a9d9146a993b002067c581613b8c4125bc07d",
+    "OndaFX.vst3": "b07ac757070ca8fd968ff616127a9d9146a993b002067c581613b8c4125bc07d"
+  },
+  "regression_checks": {
+    "vscode_unit_tests": 173,
+    "native_gpu_smoke": "passed, every panel and scope capture visibility",
+    "exported_vst3_smoke": "passed",
+    "onda_ui_unit_tests": 23,
+    "onda_run_unit_tests": 88,
+    "onda_webview_unit_tests": 4,
+    "browser_backends": [
+      "hardware WebGPU",
+      "software WebGL2"
+    ]
+  },
+  "limits": [
+    "All seven run panels are implemented; the GPU editor remains opt-in.",
+    "Native text input now has composition and caret-geometry regression coverage; real OS input-method sessions remain unverified.",
+    "Functional host checks exclude end-to-end VS Code/DAW performance and startup latency; render/transport performance is recorded separately.",
+    "Windows and macOS paths remain unverified.",
+    "Experimental Chrome SwiftShader WebGPU fails mapped text-buffer growth; hardware WebGPU and software WebGL2 pass.",
+    "Plugin archives are local development builds, not portable release packages."
+  ],
+  "evidence_directory": "target/gpu-host-validation",
+  "reproduce": {
+    "vscode": "DISPLAY=:1 npm run test:gpu-host -- /path/to/onda /path/to/onda-gpu.vsix",
+    "reaper": "xvfb-run -a python3 scripts/test-gpu-reaper.py build"
+  },
+  "test_development_notes": [
+    "Early GUI test attempts included an abort in REAPER's libSwell.so while automating startup dialogs. The cause was not established in Onda code.",
+    "The final driver waits for the enabled evaluation button, a mapped JUCE child, and rendered output before input. The recorded final run passes editing, automation, relocation, resizing, reopening, and destruction."
+  ],
+  "performance_record": "scripts/bench/results/2026-10-26-ui-panels.json",
+  "standalone": {
+    "passed": true,
+    "checks": [
+      "real native window",
+      "real playback/controller",
+      "numeric entry 880 reflected by processor print in Log",
+      "all seven panels",
+      "device/run settings projection"
+    ],
+    "screenshots": "target/gpu-host-validation/standalone-*.png",
+    "display": "private Xvfb (functional check, separate from hardware benchmarks)"
+  }
+}

@@ -6,6 +6,7 @@
 /out/
 /dist/
 /crates/onda_compiler_web/pkg/
+/ui/gpu/pkg/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
@@ -126,3 +127,5 @@ Desktop.ini
 
 # Reproducible SLEEF bitcode embedded in native JIT and AOT output.
 !crates/onda_codegen_llvm/math-kernel/*.bc
+
+/examples/web/onda_wasm_playground/gpu/

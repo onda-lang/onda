@@ -596,13 +596,7 @@ impl egui::Widget for NumberInput<'_> {
                 data.insert_temp(id, state);
             }
         });
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::DragValue,
-                ui.is_enabled(),
-                self.value.text(None),
-            )
-        });
+
         response.on_hover_ui(|ui| {
             ui.label("Drag left/right to adjust; Shift for fine adjustment; click or Tab to type; double-click to reset.");
             if !self.help.is_empty() {

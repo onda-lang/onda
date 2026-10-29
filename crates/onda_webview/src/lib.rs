@@ -46,6 +46,7 @@ mod platform {
     use std::path::{Path, PathBuf};
 
     use image::ImageReader;
+    use onda_run::host_panel_state;
     use onda_run::{
         RunController, RunHostOptions, RunState, RunThemeMode, CONTROLLER_POLL_INTERVAL,
     };
@@ -165,7 +166,7 @@ mod platform {
 
             if let Some(controller) = controller.as_mut() {
                 let poll = controller.poll();
-                if poll.state_changed {
+                if poll.state_changed || poll.log_changed {
                     pending_state_sync = true;
                 }
                 if poll.scope_changed {
@@ -582,113 +583,6 @@ mod platform {
             }
             _ => false,
         }
-    }
-
-    fn host_panel_state(
-        controller: Option<&RunController>,
-        load_error: Option<&str>,
-        options: &RunHostOptions,
-        theme_mode: &str,
-        default_param_smoothing_seconds: f64,
-    ) -> serde_json::Value {
-        if let Some(controller) = controller {
-            return loaded_panel_state(
-                controller.state(),
-                load_error,
-                options,
-                theme_mode,
-                default_param_smoothing_seconds,
-            );
-        }
-        serde_json::json!({
-            "running": false,
-            "connected": false,
-            "path": "",
-            "status": "No file selected",
-            "error": load_error,
-            "outputChannels": 0,
-            "buffers": [],
-            "events": [],
-            "midi": { "available": false, "noteOn": false, "noteOff": false },
-            "logText": "",
-            "logEntries": [],
-            "logRevealed": false,
-            "printOverflowCount": 0,
-            "printTransportDropCount": 0,
-            "delegateOverflowCount": 0,
-            "delegateTransportDropCount": 0,
-            "params": [],
-            "inputDevices": [],
-            "outputDevices": [],
-            "midiInputDevices": [],
-            "currentInputDevice": null,
-            "currentOutputDevice": null,
-            "currentMidiInputDevice": null,
-            "supportsSourceSelection": true,
-            "supportsTransport": true,
-            "supportsDeviceSelection": true,
-            "supportsRunSettings": true,
-            "supportsFastMath": options.show_fast_math,
-            "fastMath": options.fast_math,
-            "supportsParamSmoothing": true,
-            "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
-            "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
-            "supportsScope": true,
-            "supportsProjectExport": false,
-            "canExportProject": false,
-            "sampleRateHz": options.sample_rate_hz,
-            "blockSamples": options.block_samples,
-            "themeMode": theme_mode,
-        })
-    }
-
-    fn loaded_panel_state(
-        state: &RunState,
-        load_error: Option<&str>,
-        options: &RunHostOptions,
-        theme_mode: &str,
-        default_param_smoothing_seconds: f64,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "running": state.running,
-            "connected": state.connected,
-            "path": state.path,
-            "status": state.status,
-            "error": load_error.or(state.error.as_deref()),
-            "outputChannels": state.output_channels,
-            "buffers": state.buffers,
-            "events": state.events,
-            "midi": state.midi,
-            "logText": state.log_text,
-            "logEntries": state.log_entries,
-            "logRevealed": state.log_revealed,
-            "printOverflowCount": state.print_overflow_count,
-            "printTransportDropCount": state.print_transport_drop_count,
-            "delegateOverflowCount": state.delegate_overflow_count,
-            "delegateTransportDropCount": state.delegate_transport_drop_count,
-            "params": state.params,
-            "inputDevices": state.input_devices,
-            "outputDevices": state.output_devices,
-            "midiInputDevices": state.midi_input_devices,
-            "currentInputDevice": state.current_input_device,
-            "currentOutputDevice": state.current_output_device,
-            "currentMidiInputDevice": state.current_midi_input_device,
-            "supportsSourceSelection": true,
-            "supportsTransport": true,
-            "supportsDeviceSelection": true,
-            "supportsRunSettings": true,
-            "supportsFastMath": options.show_fast_math,
-            "fastMath": options.fast_math,
-            "supportsParamSmoothing": true,
-            "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
-            "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
-            "supportsScope": true,
-            "supportsProjectExport": true,
-            "canExportProject": true,
-            "sampleRateHz": options.sample_rate_hz,
-            "blockSamples": options.block_samples,
-            "themeMode": theme_mode,
-        })
     }
 
     fn sync_scope_state(webview: &wry::WebView, state: &RunState) {

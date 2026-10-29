@@ -418,7 +418,7 @@
         box-shadow: none;
       }
 
-      .actions button.secondary:is(:hover, :focus-visible, [aria-expanded="true"]):not(:disabled) {
+      .actions button.secondary:is(:hover, :focus-visible, [data-expanded="true"]):not(:disabled) {
         background: var(--accent-soft);
         border-color: var(--accent);
         color: var(--text);
@@ -714,7 +714,7 @@
         color: var(--muted);
       }
 
-      .param-layout-toggle button[aria-pressed="true"] {
+      .param-layout-toggle button[data-pressed="true"] {
         background: var(--accent-soft);
         color: var(--text);
       }
@@ -754,7 +754,7 @@
         transition: transform 120ms ease;
       }
 
-      .section-toggle[aria-expanded="false"]::before {
+      .section-toggle[data-expanded="false"]::before {
         transform: rotate(-90deg);
       }
 
@@ -1744,7 +1744,7 @@
     </script>
   </head>
   <body>
-    <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+    <svg width="0" height="0" focusable="false" style="position:absolute">
       <defs>
         <symbol id="reset-icon" viewBox="0 0 16 16">
           <path d="M2.5 8a5.5 5.5 0 1 0 1.61-3.89L2.5 5.5M2.5 2v3.5H6" />
@@ -1790,7 +1790,7 @@
               title="Allow faster floating-point optimizations that can change numerical results.">
               <label class="param-setting-label" for="run-fast-math">Fast Math</label>
               <label class="param-toggle">
-                <input type="checkbox" id="run-fast-math" aria-label="Fast Math" />
+                <input type="checkbox" id="run-fast-math" />
               </label>
             </div>
           </div>
@@ -1810,38 +1810,37 @@
               </div>
             </div>
             <div class="hero-controls" id="hero-controls">
-              <div class="transport" id="transport" role="group" aria-label="Playback">
-                <button class="secondary" id="start" type="button" aria-label="Play" title="Play (Ctrl+S / Ctrl+Enter)">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2 14 8 4 14Z" /></svg>
+              <div class="transport" id="transport">
+                <button class="secondary" id="start" type="button" title="Play (Ctrl+S / Ctrl+Enter)">
+                  <svg viewBox="0 0 16 16"><path d="M4 2 14 8 4 14Z" /></svg>
                   <span>Play</span>
                 </button>
-                <button class="secondary" id="stop" type="button" aria-label="Stop" title="Stop (Ctrl+.)">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="1" /></svg>
+                <button class="secondary" id="stop" type="button" title="Stop (Ctrl+.)">
+                  <svg viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="1" /></svg>
                   <span>Stop</span>
                 </button>
               </div>
-              <div class="actions" role="group" aria-label="File and devices">
-                <button class="secondary" id="settings-toggle" type="button" popovertarget="settings-popover"
-                  aria-label="Devices" title="Devices" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings-popover">
-                  <svg viewBox="0 0 16 16" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.5">
+              <div class="actions">
+                <button class="secondary" id="settings-toggle" type="button" popovertarget="settings-popover" title="Devices" data-expanded="false">
+                  <svg viewBox="0 0 16 16" style="fill:none;stroke:currentColor;stroke-width:1.5">
                     <path d="M1 3H3M7 3H15M1 8H9M13 8H15M1 13H5M9 13H15" />
                     <circle cx="5" cy="3" r="2" /><circle cx="11" cy="8" r="2" /><circle cx="7" cy="13" r="2" />
                   </svg>
                 </button>
-                <button class="secondary" id="save-project" type="button" aria-label="Save as project" title="Save as project">
-                  <svg viewBox="0 0 16 16" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round">
+                <button class="secondary" id="save-project" type="button" title="Save as project">
+                  <svg viewBox="0 0 16 16" style="fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round">
                     <path d="M2 1H11L14 4V15H2ZM5 1V6H11V1M5 15V10H11V15" />
                   </svg>
                 </button>
-                <button class="secondary" id="unload" type="button" aria-label="Unload" title="Unload">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2 14 10H2Z" /><rect x="2" y="12" width="12" height="2" rx="1" /></svg>
+                <button class="secondary" id="unload" type="button" title="Unload">
+                  <svg viewBox="0 0 16 16"><path d="M8 2 14 10H2Z" /><rect x="2" y="12" width="12" height="2" rx="1" /></svg>
                 </button>
               </div>
             </div>
           </div>
           <div class="error" id="error"></div>
         </div>
-        <div class="header-popover" id="settings-popover" popover="auto" role="dialog" aria-label="Devices">
+        <div class="header-popover" id="settings-popover" popover="auto">
           <div class="io-settings" id="io-settings">
             <div class="param-setting">
               <label class="param-setting-label" for="input-device">Input Device</label>
@@ -1866,8 +1865,7 @@
               class="section-toggle params-disclosure"
               id="scope-toggle"
               type="button"
-              aria-expanded="true"
-              aria-label="Toggle Scope"
+              data-expanded="true"
             ></button>
             <div class="params-title">Scope</div>
           </div>
@@ -1883,8 +1881,7 @@
               class="section-toggle params-disclosure"
               id="log-toggle"
               type="button"
-              aria-expanded="true"
-              aria-label="Toggle Log"
+              data-expanded="true"
             ></button>
             <div class="params-title">Log</div>
           </div>
@@ -1904,8 +1901,7 @@
               class="section-toggle params-disclosure"
               id="buffers-toggle"
               type="button"
-              aria-expanded="true"
-              aria-label="Toggle Buffers"
+              data-expanded="true"
             ></button>
             <div class="params-title">Buffers</div>
           </div>
@@ -1921,13 +1917,11 @@
               class="section-toggle params-disclosure"
               id="events-toggle"
               type="button"
-              aria-expanded="true"
-              aria-label="Toggle Events"
+              data-expanded="true"
             ></button>
             <div class="params-title">Events</div>
-            <button class="secondary reset-action" id="reset-event-arguments" type="button"
-              aria-label="Reset event arguments to defaults" title="Reset event arguments to defaults">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
+            <button class="secondary reset-action" id="reset-event-arguments" type="button" title="Reset event arguments to defaults">
+              <svg viewBox="0 0 16 16"><use href="#reset-icon" /></svg>
             </button>
           </div>
         </div>
@@ -1942,25 +1936,22 @@
               class="section-toggle params-disclosure"
               id="input-controls-toggle"
               type="button"
-              aria-expanded="true"
-              aria-label="Toggle Input Controls"
+              data-expanded="true"
             ></button>
             <div class="params-title">Input Controls</div>
           </div>
           <div class="section-actions">
-            <button class="secondary reset-action" id="reset-input-controls" type="button"
-              aria-label="Reset input controls to defaults" title="Reset input controls to defaults">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
+            <button class="secondary reset-action" id="reset-input-controls" type="button" title="Reset input controls to defaults">
+              <svg viewBox="0 0 16 16"><use href="#reset-icon" /></svg>
             </button>
             <div class="param-smoothing" id="input-control-smoothing-control" hidden>
               <span class="param-smoothing-label">Smooth</span>
-              <input class="param-number" id="input-control-smoothing-ms" type="number" min="0" step="1"
-                aria-label="Input control smoothing duration in milliseconds" title="Smooths manual input changes. DAW automation and external inputs bypass smoothing. 0 disables smoothing." />
+              <input class="param-number" id="input-control-smoothing-ms" type="number" min="0" step="1" title="Smooths manual input changes. DAW automation and external inputs bypass smoothing. 0 disables smoothing." />
               ms
             </div>
-            <div class="param-layout-toggle" role="group" aria-label="Input control layout">
-              <button type="button" data-control-bank="inputControls" data-param-layout="sliders" aria-pressed="false">Sliders</button>
-              <button type="button" data-control-bank="inputControls" data-param-layout="knobs" aria-pressed="true">Knobs</button>
+            <div class="param-layout-toggle">
+              <button type="button" data-control-bank="inputControls" data-param-layout="sliders" data-pressed="false">Sliders</button>
+              <button type="button" data-control-bank="inputControls" data-param-layout="knobs" data-pressed="true">Knobs</button>
             </div>
           </div>
         </div>
@@ -1975,25 +1966,22 @@
               class="section-toggle params-disclosure"
               id="params-toggle"
               type="button"
-              aria-expanded="true"
-              aria-label="Toggle Params"
+              data-expanded="true"
             ></button>
             <div class="params-title">Params</div>
           </div>
           <div class="section-actions">
-            <button class="secondary reset-action" id="reset-params" type="button"
-              aria-label="Reset parameters to defaults" title="Reset parameters to defaults">
-              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#reset-icon" /></svg>
+            <button class="secondary reset-action" id="reset-params" type="button" title="Reset parameters to defaults">
+              <svg viewBox="0 0 16 16"><use href="#reset-icon" /></svg>
             </button>
             <div class="param-smoothing" id="param-smoothing-control" hidden>
               <span class="param-smoothing-label">Smooth</span>
-              <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1"
-                aria-label="Parameter smoothing duration in milliseconds" title="Smoothing for continuous parameters. 0 disables smoothing." />
+              <input class="param-number" id="param-smoothing-ms" type="number" min="0" step="1" title="Smoothing for continuous parameters. 0 disables smoothing." />
               ms
             </div>
-            <div class="param-layout-toggle" role="group" aria-label="Parameter control layout">
-              <button type="button" data-param-layout="sliders" aria-pressed="false">Sliders</button>
-              <button type="button" data-param-layout="knobs" aria-pressed="true">Knobs</button>
+            <div class="param-layout-toggle">
+              <button type="button" data-param-layout="sliders" data-pressed="false">Sliders</button>
+              <button type="button" data-param-layout="knobs" data-pressed="true">Knobs</button>
             </div>
           </div>
         </div>
@@ -2006,7 +1994,7 @@
       <div class="midi-toolbar">
         <div class="section-heading">
           <button class="section-toggle params-disclosure" id="midi-toggle" type="button"
-            aria-expanded="true" aria-controls="piano" aria-label="Toggle MIDI Keyboard"></button>
+            data-expanded="true"></button>
           <div class="params-title">MIDI Keyboard</div>
         </div>
         <label class="midi-control">
@@ -2016,10 +2004,10 @@
         <label class="midi-control">
           Velocity
           <input class="param-number" id="midi-velocity-value" type="number" min="0" max="1"
-            step="0.01" value="1.00" aria-label="MIDI velocity" />
+            step="0.01" value="1.00" />
         </label>
       </div>
-      <div class="piano" id="piano" aria-label="Musical keyboard"></div>
+      <div class="piano" id="piano"></div>
     </section>
     <script>
       // ---------------------------------------------------------------------------
@@ -2144,7 +2132,7 @@
 
       const THEME_LOGOS = {
         dark: toSvgDataUri(`
-          <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+          <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
             <title id="title">Onda logo dark variant</title>
             <rect width="512" height="512" fill="#0C1E33"/>
             <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
@@ -2160,7 +2148,7 @@
           </svg>
         `),
         light: toSvgDataUri(`
-          <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+          <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
             <title id="title">Onda logo concept</title>
             <rect width="512" height="512" fill="#F5F9FF"/>
             <g transform="translate(256 256) scale(1.30) translate(-256 -256)">
@@ -2302,7 +2290,7 @@
       };
       settingsPopover.addEventListener("toggle", event => {
         const open = event.newState === "open";
-        settingsButton.setAttribute("aria-expanded", String(open));
+        settingsButton.setAttribute("data-expanded", String(open));
         if (open) {
           positionDeviceSettings();
           [...settingsPopover.querySelectorAll("select, button")]
@@ -2830,7 +2818,7 @@
         const base = midiBaseNote();
         for (const key of pianoNode.children) {
           const note = base + Number(key.dataset.noteOffset);
-          key.setAttribute("aria-label", "MIDI note " + note);
+          key.dataset.note = String(note);
           key.classList.toggle(
             "active",
             virtualMidiNoteCounts.has(note) || monitoredMidiNotes.has(note),
@@ -2913,7 +2901,6 @@
       midiOctaveNode.addEventListener("change", () => {
         setMidiOctave(numberInputValue(midiOctaveNode));
       });
-      midiOctaveNode.setAttribute("aria-label", "MIDI octave");
       bindDraggableNumber(midiOctaveNode, {
         speed: 0.1,
         updateValue(value) {
@@ -3097,7 +3084,7 @@
           inputControls: inputControlsBody,
         }[name];
         if (toggle) {
-          toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+          toggle.setAttribute("data-expanded", isOpen ? "true" : "false");
         }
         if (body) {
           body.hidden = !isOpen;
@@ -3162,7 +3149,7 @@
         inputControlsNode.dataset.layout = controlLayouts.inputControls;
         for (const button of paramLayoutButtons) {
           const bank = button.dataset.controlBank || "params";
-          button.setAttribute("aria-pressed",
+          button.setAttribute("data-pressed",
             button.dataset.paramLayout === controlLayouts[bank] ? "true" : "false");
         }
       }
@@ -3374,13 +3361,9 @@
         });
       }
 
-      function initializeRangeControl(control, param, editable = canEditRunControls()) {
+      function initializeRangeControl(control, editable = canEditRunControls()) {
         const canEdit = Boolean(editable);
-        control.setAttribute("role", "slider");
-        control.setAttribute("aria-label", paramDisplayName(param));
-        control.setAttribute("aria-valuemin", String(param.rangeMin));
-        control.setAttribute("aria-valuemax", String(param.rangeMax));
-        control.setAttribute("aria-disabled", canEdit ? "false" : "true");
+        control.setAttribute("data-disabled", canEdit ? "false" : "true");
         return canEdit;
       }
 
@@ -3393,7 +3376,7 @@
       ) {
         const slider = document.createElement("div");
         slider.className = "param-slider";
-        const canEdit = initializeRangeControl(slider, param, editable);
+        const canEdit = initializeRangeControl(slider, editable);
 
         const track = document.createElement("div");
         track.className = "param-slider-track";
@@ -3412,7 +3395,6 @@
             const pct = clamp(ratio, 0, 1) * 100;
             fill.style.width = pct + "%";
             thumb.style.left = pct + "%";
-            slider.setAttribute("aria-valuenow", String(value));
             slider.dataset.value = String(value);
           },
           onInputValue,
@@ -3493,14 +3475,13 @@
         const knob = document.createElement("div");
         knob.className = "param-knob";
         knob.title = "Drag vertically to adjust; Shift for fine adjustment; double-click to reset";
-        const canEdit = initializeRangeControl(knob, param, editable);
+        const canEdit = initializeRangeControl(knob, editable);
 
         const dial = document.createElement("div");
         dial.className = "param-knob-dial";
         const ring = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         ring.classList.add("param-knob-ring");
         ring.setAttribute("viewBox", "0 0 58 58");
-        ring.setAttribute("aria-hidden", "true");
         const ringPath = "M 11.322 46.678 A 25 25 0 1 1 46.678 46.678";
         const track = document.createElementNS("http://www.w3.org/2000/svg", "path");
         track.classList.add("param-knob-ring-track");
@@ -3530,7 +3511,6 @@
               "transform",
               `rotate(${indicatorDegrees} ${KNOB_ARC_CENTER} ${KNOB_ARC_CENTER})`,
             );
-            knob.setAttribute("aria-valuenow", String(value));
             knob.dataset.value = String(value);
           },
           onInputValue,
@@ -3742,7 +3722,7 @@
             edited = false;
             setValue(param.value);
           });
-          input.setAttribute("aria-label", paramDisplayName(param));
+          input.name = param.name;
           const drag = bindDraggableNumber(input, {
             speed: scalarDragSpeedForParam(param),
             dragRange: Number.isFinite(param.rangeMin) && Number.isFinite(param.rangeMax)
@@ -3854,7 +3834,7 @@
               label.className = "param-toggle";
               const input = document.createElement("input");
               input.type = "checkbox";
-              input.setAttribute("aria-label", paramLabel(param));
+              input.name = param.name;
               input.checked = Boolean(param.value);
               input.disabled = !editable;
               input.addEventListener("change", () => {
@@ -4346,7 +4326,7 @@
                 input.value = JSON.stringify(arg.value, null, 2);
                 input.rows = structuredEventVisibleLines(input.value);
                 input.disabled = !state.connected;
-                input.setAttribute("aria-label", arg.name + " JSON value");
+                input.name = arg.name;
                 input.addEventListener("input", () => {
                   input.rows = structuredEventVisibleLines(input.value);
                   try {
@@ -4387,13 +4367,11 @@
                   remove.className = "secondary event-array-action";
                   remove.textContent = "−";
                   remove.title = "Remove last element";
-                  remove.setAttribute("aria-label", "Remove last element");
                   remove.disabled = !state.connected || arg.value.length === 0;
                   const add = document.createElement("button");
                   add.className = "secondary event-array-action";
                   add.textContent = "+";
                   add.title = "Add element";
-                  add.setAttribute("aria-label", "Add element");
                   add.disabled = !state.connected || arg.value.length >= 16;
                   remove.addEventListener("click", () => {
                     arg.value.pop();
@@ -4458,7 +4436,7 @@
               setting.addEventListener("focusout", refreshTrigger);
               for (const input of setting.querySelectorAll("input")) {
                 const index = input.closest(".event-array-element")?.querySelector(".event-array-index");
-                input.setAttribute("aria-label", arg.name + (index ? " " + index.textContent : ""));
+                input.name = arg.name + (index ? " " + index.textContent : "");
               }
               controls.appendChild(setting);
             }

@@ -233,6 +233,7 @@ jobs:
           Copy-Item licenses\LLVM-REGEX-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-UNICODE-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-MSVCSETUPAPI-LICENSE.txt $licensesDir
+          Copy-Item assets\fonts\OFL-*.txt $licensesDir
           Copy-Item target\release-licenses\RUST-DEPENDENCIES.txt $licensesDir
           Copy-Item target\release-licenses\MPL-2.0-SOURCES $licensesDir -Recurse
           Copy-Item README.md $packageRoot
@@ -378,6 +379,7 @@ jobs:
           cp licenses/LLVM-REGEX-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-UNICODE-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-MSVCSETUPAPI-LICENSE.txt "$licenses_dir/"
+          cp assets/fonts/OFL-*.txt "$licenses_dir/"
           cp target/release-licenses/RUST-DEPENDENCIES.txt "$licenses_dir/"
           cp -R target/release-licenses/MPL-2.0-SOURCES "$licenses_dir/"
           cp README.md "$package_root/"

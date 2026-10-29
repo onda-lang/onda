@@ -27,9 +27,12 @@ measurement procedures and dated results.
 | `onda_cpal` | Minimal CPAL/PipeWire backend: device discovery, RT callbacks, sample conversion, and SPSC transport. |
 | `onda_daemon` | Stateful session engine: in-memory analysis overlays and live run sessions. |
 | `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
+| `onda_scope` | Bounded min/max scope envelopes, display budgets, and a shared compact binary codec. |
 | `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and shared source formatting. |
 | `onda_cli` | `onda` binary: argument parsing and `compile`/`run`/`daemon`/`lsp` command dispatch. |
 | `onda_egui` | Native egui run host (default `onda run` UI). |
+| `onda_ui` | Host-independent Rust/wgpu run screen, interaction, text, shaders, Wasm canvas, and optional C interface. |
+| `onda_gpu` | Native winit adapter for the shared run screen, selected with `onda run --gpu`. |
 | `onda_webview` | Native webview run host (opt-in via `--webview`). |
 | `onda_examples` | Example `.onda` programs and `.ondaproject` showcases surfaced through `examples/`. |
 
@@ -356,6 +359,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   The compiler and processor snapshots contain no parameter smoothing state.
 
 ### `onda_run` (`crates/onda_run/src`)
+- `file_drag.rs`, `file_drag/x11.rs` — optional native-window drag tracking for the egui host. Xlib conversion retains XDND coordinates without changing winit's events; Win32 and AppKit query their native window coordinates. The GPU host uses winit's native file-offer events directly.
 - `child_session.rs` — playback child lifetime, readiness messages, and bounded UTF-8 diagnostics.
 - `control_client.rs` — controller-side JSON control connection and requests.
 - `playback/control_reader.rs` — byte framing that retains partial requests across socket timeouts.
@@ -422,9 +426,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 
 ### `onda_egui` (`crates/onda_egui/src`)
 - `lib.rs` — native egui run host, controller integration, parameter/buffer editors, and theme.
-- `buffer_drop.rs`, `buffer_drop/x11.rs` — buffer-card drop targeting and native drag coordinates.
-  Linux observes XDND coordinates through Xlib's event converter while preserving winit's
-  original events; core pointer queries can remain stale during Wayland-to-XWayland drags.
+- `buffer_drop.rs` — clipped buffer-card drop targeting, using the shared native drag tracker in `onda_run`.
 - `run_view.rs` — loaded run panels and docked MIDI keyboard, compact source and transport header, device selectors, and section orchestration.
 - `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
 - `input_controls.rs` — optional host-owned Input Controls section and scalar editor rendering
@@ -433,6 +435,93 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 
 ### `onda_webview` (`crates/onda_webview/src`)
 - `lib.rs` — webview run host, using `onda_run::RunController` for child processes and control transport.
+
+### Shared GPU run screen (`crates/onda_ui`, `crates/onda_gpu`, `crates/onda_scope`, `ui/gpu`)
+
+`onda_ui` owns host-independent state and input, the retained visible scene,
+instanced WGSL primitives and scope traces, and cached glyphon text. It consumes
+the existing run-view state/value messages and returns host commands. Scope
+updates have a separate revision and never rebuild controls or reshape text.
+`RunUi` coordinates the host-owned model with the `interaction` and `editing`
+modules. `Interaction` privately owns pointer and touch gestures, focus, menus,
+hover feedback, and MIDI input ownership; `Editor` privately owns numeric drags,
+drafts, text selection, and composition. Rendering observes them through read-only
+queries. Schema replacement, suspension, and source changes use their cancellation
+operations, which terminate host gestures and release owned notes before replacing
+the affected model data.
+Value updates use bank-specific name indexes, keeping full-bank publications linear.
+Asynchronous hosts publish `schemaReady` after control metadata finishes loading;
+saved presentation waits for it before restoring event values and document scrolling.
+Saved event values carry ordered argument names, shapes, and defaults; restoration
+and live preservation require the same signature. Transport focus identifies the
+button independently of its current Start/Stop action.
+Numeric conversion uses `onda_mir::ParamDomain`. `onda_scope` reduces the complete
+capture to channel-major min/max buckets at two physical pixels per bucket,
+capped at 512 columns. Signed 16-bit extrema preserve peaks without sending
+invisible sample detail. The playback ring produces this envelope directly;
+`getScopeData { columns, maxFrames }` returns its OSQ1 packet in a base64 JSON
+field. Playback capture defaults to off: viewers subscribe with
+`setScopeCaptureEnabled { value: true }` and disable it while hidden or collapsed.
+Disconnect also disables capture. Disabled producers skip the ring lock and copy;
+enabled ring writes and raw reads copy at most two contiguous spans. The standalone
+controller and Wasm canvas share the codec. Plugin floats
+cross the native interface directly and use the same reducer before upload.
+Identical envelopes retain their revision and skip uploads and redraws.
+
+Browser adapters retain the latest scope and each parameter value until the next
+animation frame. Scope packets cross the Wasm boundary as bytes, avoiding sample
+JSON parsing. Hidden views suspend scope polling and drawing. Control sockets
+disable Nagle batching; the controller drains responses before scheduling the
+next capture, allowing fresh data on every polling turn. Replies must match the
+current request; visibility, resolution, transport, and session changes invalidate
+older requests without allowing late replies to release newer ones.
+
+Both browser editors embed the same Wasm canvas through a same-origin iframe
+bridge. `browser-scope.js` reads per-channel analysers at 30 Hz and
+reduces directly into reusable OSQ1 bytes; no interleaved JavaScript array,
+base64, or JSON sample payload is created. Capture stops for hidden pages and
+collapsed scopes. Browser files cross the bridge as `File` objects. The host
+persists presentation and schema-checked event values in local storage and
+coalesces bounded print-log publications into animation frames. An explicit
+readiness request/response handles either iframe load ordering.
+
+`onda_gpu` supplies the standalone window/event loop and `RunController` adapter.
+The Wasm canvas and optional `include/onda_ui.h` interface let VS Code and JUCE
+use the same UI without owning another event loop. The shared screen follows the
+legacy run layout: one scrolling document of collapsible scope, log, buffers,
+typed events, input controls and parameters, a docked MIDI keyboard, and header
+settings. Empty sections are hidden. Control banks and event panels cache structural layout
+and share offscreen focus stops; scene rebuilds visit only visible rows. Control-bank caches
+refresh when schemas, width, layouts, or folds change. Sections cull invisible controls, clip text
+and geometry, and retain their scene across scope frames. Theme colors, vector
+icons and font styles belong to `onda_ui`; the renderer converts colors for the
+surface format so native and browser hosts agree. Presentation and typed event values are
+saved through the existing host view-state mechanism. MIDI ownership is shared
+between physical computer keys, the mouse, and independent piano touches, with explicit release on suspension.
+The native hosts share their run-state JSON projection in onda_run::view_state.
+The standalone GPU adapter uses winit's native Wayland/X11 file offers and event
+coordinates. It fetches URI lists asynchronously, retains the buffer target at the
+drop, and discards late delivery after cancellation or a source change.
+Controller polls distinguish schema, runtime status, log, and scope changes. Native
+GPU commands publish smoothing, value, and log patches; browser state updates and
+VS Code publications omit unchanged banks. The plugin publishes log revisions
+without rebuilding control and event schemas. Worker events coalesce host wakes;
+the native GPU window waits for events, scope deadlines, or infrequent child/source
+maintenance instead of polling at a fixed interval.
+Compact headers move the source and transport below the logo and actions; section
+toolbars wrap before crowding their headings. Filenames and other labels use bounded,
+unwrapped text and disclose their full names on hover.
+Hover disclosure waits 500 ms; idle native and browser hosts schedule a single
+redraw at the shared tooltip deadline. The C adapter advances it on the host's UI timer.
+Shaped runs are shared between recent text batches, with cache expiry and explicit
+invalidation when fallback fonts load. Text drafts and selections belong to the shared UI. The browser overlays a native
+textarea while editing for software keyboards, clipboard, and composition; native
+adapters consume shared clipboard commands and retain clipboard ownership for the window session. Native pointer selection uses the renderer's shaped text hit testing without committing the draft. Native composition uses winit IME events
+or JUCE's text input interface, with shared shaping for caret bounds. Touch gestures retain their original
+scrolling region or control. Diagnostics use cached font measurements to reserve
+their wrapped height before the scene is built. Inter and JetBrains Mono provide the primary
+UI and code fonts. Character coverage generated from bundled Noto fonts lets each host
+load only the fallback fonts needed by visible text. See [integration and verification](../ui/gpu/README.md).
 
 ### Host-provided input controls
 
@@ -690,7 +779,7 @@ and invalidation in detail. The main opportunities exposed to backends are:
   provenance; no registry token is stored in GitHub. Each package's npm settings must authorize
   `onda-lang/onda` and `.github/workflows/release.yml` as its trusted publisher before relying on
   the tag job; newly reserved package names may need a one-time registry-owner bootstrap first.
-- `npm run build:website` builds the browser compiler, bundles its worker, and emits versioned,
+- `npm run build:website` builds the browser compiler and GPU renderer, bundles the compiler worker, and emits versioned,
   content-addressed website assets. It also regenerates `docs/stdlib.md` from the standard-library
   modules embedded in `onda_frontend`, so the repository and website share the same API reference.
   The homepage opens its displayed example in `/playground/`
@@ -700,7 +789,7 @@ and invalidation in detail. The main opportunities exposed to backends are:
   `website/stage.sh` refuses to stage stale or missing browser assets and writes the product version
   into Jekyll data.
 - `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
-  Binaryen assets, then serves the editable playground. The PowerShell equivalent is
+  Binaryen and GPU UI assets, then serves the editable playground. The PowerShell equivalent is
   `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`.
 - `bash ./examples/web/onda_wasm_aot_sample_player/build-demo.sh --serve` compiles the shared sample
   player to MIR and Binaryen Wasm before serving a compiler-free page on port 8788. The PowerShell
@@ -729,9 +818,11 @@ and invalidation in detail. The main opportunities exposed to backends are:
   are internal to generated Wasm, so the render path has no JavaScript math boundary, though native
   LLVM may still execute them faster. The page recompiles against the actual `AudioContext` sample
   rate before constructing a processor, while the adapter rejects mismatched AOT artifacts. The
-  current smoke endpoint proves compilation, but automated browser
-  AudioWorklet playback coverage remains future work. Non-local hosting needs a secure context
-  (normally HTTPS; localhost is exempt).
+  Chrome editor integration suite (`npm run test:gpu-web-editor`) checks real, muted AudioWorklet
+  output via scope data and authored prints, parameter/event edits, buffer picker/drop/clear,
+  MIDI, saved presentation, autoplay blocking, and non-isolated hosting. Non-local hosting needs
+  a secure context (normally HTTPS; localhost is exempt). Authored print transport additionally
+  requires cross-origin isolation; the example server supplies COOP/COEP headers.
 
 ## LLVM dependency strategy
 

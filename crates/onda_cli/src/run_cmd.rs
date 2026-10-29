@@ -182,6 +182,7 @@ fn run_run_host(
 ) -> Result<(), String> {
     match resolve_run_host_kind(host) {
         RunHostKind::Egui => onda_egui::run_run_egui(input, options),
+        RunHostKind::Gpu => onda_gpu::run(input, options),
         RunHostKind::Webview => run_webview_run(input, options),
         RunHostKind::Auto => unreachable!("run host should be resolved before launch"),
     }

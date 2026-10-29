@@ -208,7 +208,7 @@ async function checkThemedFormControls() {
       const toggle = checkbox.closest('.param-toggle');
       const field = toggle.getBoundingClientRect();
       const box = checkbox.getBoundingClientRect();
-      check(toggle.textContent.trim() === '' && checkbox.getAttribute('aria-label')
+      check(toggle.textContent.trim() === ''
         && Math.abs(box.left + box.width / 2 - field.left - field.width / 2) < 1
         && Math.abs(box.top + box.height / 2 - field.top - field.height / 2) < 1,
         'scalar and array boolean event controls center without redundant value labels');
@@ -327,8 +327,8 @@ async function checkDefaultLayout() {
             && Math.abs(rect.top - transport[0].top) < 1),
           `${themeMode}, MIDI ${available}: the compact header keeps three equally sized icon buttons`);
         check([...doc.querySelectorAll(".actions button, .transport button")].every(button =>
-          button.getAttribute("aria-label") && button.title),
-        "every header icon has an accessible name and tooltip");
+          button.title),
+        "every header icon has a tooltip");
         const version = doc.getElementById("onda-version").getBoundingClientRect();
         const logo = doc.getElementById("hero-logo").getBoundingClientRect();
         check(Math.abs(Math.min(logo.left, version.left) - header.left - 13) < 1
@@ -360,7 +360,7 @@ async function checkDefaultLayout() {
           "the labeled Play/Stop button leads the toolbar, aligned with the utility icons");
         const settings = doc.getElementById("settings-toggle");
         const panel = doc.getElementById("settings-popover");
-        check(!panel.matches(":popover-open") && settings.getAttribute("aria-expanded") === "false",
+        check(!panel.matches(":popover-open") && settings.getAttribute("data-expanded") === "false",
           "device settings are hidden by default");
         settings.click();
         await waitFrames(2);
@@ -368,7 +368,7 @@ async function checkDefaultLayout() {
         const devices = [...panel.querySelectorAll("select, #refresh-devices")]
           .filter(control => control.getClientRects().length > 0)
           .map(control => control.getBoundingClientRect());
-        check(panel.matches(":popover-open") && settings.getAttribute("aria-expanded") === "true"
+        check(panel.matches(":popover-open") && settings.getAttribute("data-expanded") === "true"
           && bounds.left >= 12 && bounds.right <= view.innerWidth - 12
           && bounds.top >= 12 && bounds.bottom <= view.innerHeight - 12
           && doc.getElementById("run-header").getBoundingClientRect().height === header.height,
@@ -672,7 +672,7 @@ async function checkDefaultLayout() {
     }
     for (const section of sections) {
       const toggle = doc.getElementById(`${section}-toggle`);
-      if (toggle.getAttribute("aria-expanded") === "true") toggle.click();
+      if (toggle.getAttribute("data-expanded") === "true") toggle.click();
     }
     for (const themeMode of ["light", "dark"]) {
       view._onHostMessage({ type: "state", state: { themeMode } });
@@ -814,7 +814,7 @@ async function checkInputControls() {
     send({ inputControls: [{ ...control, enabled: false, value: 0.4 }] });
     check(doc.querySelector("#input-controls .param-number").disabled
       && doc.querySelector("#input-controls .param-type").textContent === "External input"
-      && doc.querySelector("#input-controls .param-slider").getAttribute("aria-disabled") === "true",
+      && doc.querySelector("#input-controls .param-slider").getAttribute("data-disabled") === "true",
       "externally driven inputs disable every editor control");
     send({ inputControls: [{ ...control, rangeMin: 2, rangeMax: 2, value: 2, default: 2 }] });
     check(doc.querySelector("#input-controls .param-number").disabled
@@ -1015,7 +1015,7 @@ async function checkResponsiveMidiKeyboard() {
     view._onHostMessage({ type: "computerKey", code: "KeyA", pressed: true });
     toggle.click();
     await waitFrames(2);
-    check(piano.hidden && toggle.getAttribute("aria-expanded") === "false"
+    check(piano.hidden && toggle.getAttribute("data-expanded") === "false"
       && dock.getBoundingClientRect().height < expandedHeight - 100
       && !messages().at(-1).pressed,
       "folding the MIDI dock releases held notes and gives space back to the controls");
@@ -1033,13 +1033,13 @@ async function checkResponsiveMidiKeyboard() {
     check(piano.hidden, "restoring the run view retains its MIDI fold state");
     toggle.click();
     await waitFrames(2);
-    check(!piano.hidden && toggle.getAttribute("aria-expanded") === "true",
+    check(!piano.hidden && toggle.getAttribute("data-expanded") === "true",
       "the folded MIDI dock can be reopened");
     for (const [value, octaves, lowest, highest] of [[7, 2, 96, 119], [-1, 10, 0, 119]]) {
       octave.value = String(value);
       octave.dispatchEvent(new view.Event("change", { bubbles: true }));
       await resize(4000);
-      const notes = [...piano.children].map(key => Number(key.getAttribute("aria-label").slice(10)));
+      const notes = [...piano.children].map(key => Number(key.dataset.note));
       check(notes.length === octaves * 12 && new Set(notes).size === notes.length
         && Math.min(...notes) === lowest && Math.max(...notes) === highest,
         `the expanded octave-${value} piano contains distinct valid MIDI notes`);
@@ -1105,6 +1105,15 @@ async function checkPlaygroundLayout() {
       const doc = frame.contentDocument;
       const runFrame = doc.querySelector("[data-run-view]");
       const projectEditor = frame.contentWindow.__testEditor;
+      const projectMenu = doc.querySelector("[data-project-menu]");
+      const shortcuts = doc.querySelector(".project-shortcuts");
+      check(projectMenu.contains(shortcuts) && !projectMenu.open
+        && !shortcuts.checkVisibility(),
+        `${host}: keyboard hints stay inside the closed Project menu`);
+      check(!doc.querySelector("main > header")
+        && doc.querySelector("[data-status]").getAttribute("role") === "status"
+        && doc.querySelector("[data-status]").getBoundingClientRect().width === 1,
+        `${host}: the workspace has no duplicate visible heading or status and retains live announcements`);
       const originalProject = projectEditor.project();
       const constants = { seed: "9007199254740993", weights: [2, 4, 8] };
       projectEditor.replaceProject({ ...originalProject, constants });
@@ -1132,8 +1141,8 @@ async function checkPlaygroundLayout() {
       }});
       const editor = doc.querySelector("[data-editor]");
       check(getComputedStyle(doc.querySelector("[data-editor-font-size]")).backgroundColor
-        === getComputedStyle(doc.querySelector("[data-sample-rate]")).backgroundColor,
-        `${host}: the font number field keeps the compile controls' themed background while editing text`);
+        !== "rgba(0, 0, 0, 0)",
+        `${host}: the font number field keeps its themed background while editing text`);
       if (host === "website") {
         for (const theme of ["light", "dark"]) {
           doc.documentElement.dataset.theme = theme;
@@ -1143,26 +1152,16 @@ async function checkPlaygroundLayout() {
       }
       for (const width of [280, 320, 360, 390, 399, 400, 480, 720, 320, 480]) {
         frame.style.width = `${width}px`;
+        doc.querySelector("[data-project-menu]").open = true;
         await waitFrames(3);
-        const grid = doc.querySelector(".play-control-grid").getBoundingClientRect();
-        const controls = [...doc.querySelectorAll(".play-control-grid input, .play-control-grid select")];
-        const bounds = controls.map(control => control.getBoundingClientRect());
-        check(bounds.every(rect => Math.abs(rect.top - bounds[0].top) < 1
-          && rect.left >= grid.left - 1 && rect.right <= grid.right + 1)
-          && bounds.every((rect, index) => index === 0 || rect.left >= bounds[index - 1].right),
-          `${host}: compile settings shrink together on one row at ${width} pixels`);
-        const context = doc.createElement("canvas").getContext("2d");
-        for (const select of controls.filter(control => control.tagName === "SELECT")) {
-          const style = getComputedStyle(select);
-          context.font = `${style.fontSize} ${style.fontFamily}`;
-          check([...select.options].every(option =>
-            option.label === (width < 400 ? option.value : option.textContent)
-            && option.getAttribute("aria-label") === option.textContent
-            && context.measureText(option.label).width <= select.clientWidth
-              - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
-          `${host}: select values fit and retain accessible units at ${width} pixels`);
-        }
+        const toolbar = doc.querySelector(".project-menu-content").getBoundingClientRect();
+        const font = doc.querySelector("[data-editor-font-size]").getBoundingClientRect();
+        check(font.width <= 54 && font.left >= toolbar.left - 1 && font.right <= toolbar.right + 1,
+          `${host}: the compact font field fits in the Project menu at ${width} pixels`);
+        check(!doc.querySelector("[data-sample-rate], [data-block-size]"),
+          `${host}: compile settings belong to the shared run UI`);
       }
+      doc.querySelector("[data-project-menu]").open = false;
       let desktopEditorWidth;
       let desktopEditorHeight;
       let previousWidePanes;
@@ -1179,23 +1178,21 @@ async function checkPlaygroundLayout() {
         await waitFrames(3);
         const editorPanel = editor.closest("section").getBoundingClientRect();
         const runPanel = runFrame.closest("aside").getBoundingClientRect();
-        const status = doc.querySelector("[data-status]").getBoundingClientRect();
-        const shortcuts = doc.querySelector("[aria-label='Playground keyboard shortcuts']")
-          .getBoundingClientRect();
-        check(status.top < shortcuts.bottom && shortcuts.top < status.bottom
-          && status.right <= shortcuts.left,
-          `${host}: Playing and the shortcuts stay on one line at ${width} pixels`);
-        check([...doc.querySelectorAll("[aria-label='Playground keyboard shortcuts'] kbd")]
-          .every(hint => hint.getBoundingClientRect().width > 0),
-          `${host}: both keyboard shortcut hints remain visible at ${width} pixels`);
-        if (width >= 480) {
-          check([...doc.querySelectorAll("[aria-label='Playground keyboard shortcuts'] > span")]
-            .every(shortcut => {
-              const label = shortcut.firstElementChild.getBoundingClientRect();
-              const keys = shortcut.lastElementChild.getBoundingClientRect();
-              return label.right <= keys.left && label.top < keys.bottom && keys.top < label.bottom;
-            }), `${host}: shortcut labels and keys stay horizontal when space is available at ${width} pixels`);
-        }
+        projectMenu.open = true;
+        const menu = doc.querySelector(".project-menu-content").getBoundingClientRect();
+        const hints = shortcuts.getBoundingClientRect();
+        check(menu.left >= 0 && menu.right <= width
+          && hints.top >= doc.querySelector(".editor-font-size").getBoundingClientRect().bottom,
+          `${host}: shortcut hints sit below Font size within the Project popup at ${width} pixels`);
+        check([...shortcuts.querySelectorAll("kbd")].every(hint => {
+          const rect = hint.getBoundingClientRect();
+          return rect.width > 0 && rect.left >= menu.left && rect.right <= menu.right
+            && rect.bottom <= menu.bottom && hint.scrollWidth <= hint.clientWidth;
+        }) && [...shortcuts.children].every(shortcut =>
+          shortcut.firstElementChild.getBoundingClientRect().right
+            < shortcut.lastElementChild.getBoundingClientRect().left),
+          `${host}: Play and Stop labels and keys fit without wrapping at ${width} pixels`);
+        projectMenu.open = false;
         check(doc.documentElement.scrollWidth <= doc.documentElement.clientWidth
           && runDoc.querySelector(".shell").scrollWidth === runDoc.querySelector(".shell").clientWidth,
           `${host}: the ${width}-pixel playground and run controls avoid horizontal overflow`);
@@ -1206,11 +1203,11 @@ async function checkPlaygroundLayout() {
           `${host}: the real CodeMirror editor fills its available height at ${width} pixels`);
         const geometry = JSON.stringify([
           ".project-file", ".project-file-select", ".project-file-add",
-          ".project-file-menu-trigger", ".project-file-actions button",
+          ".project-file-menu-trigger", ".project-menu-content button",
         ].map(selector => {
           const style = getComputedStyle(doc.querySelector(selector));
           return ["fontSize", "lineHeight", "paddingTop", "paddingBottom", "paddingLeft",
-            "paddingRight", "height", selector === ".project-file-actions button" ? "minWidth" : "width", "borderTopWidth", "borderRadius"]
+            "paddingRight", "height", selector === ".project-menu-content button" ? "minWidth" : "width", "borderTopWidth", "borderRadius"]
             .map(property => style[property]);
         }));
         if (host === "website") controlGeometry.set(width, geometry);
@@ -1272,17 +1269,11 @@ async function checkPlaygroundLayout() {
           previousWidePanes = panes;
         }
       }
-      const shortcutHelp = doc.querySelector("[aria-label='Playground keyboard shortcuts']");
-      shortcutHelp.style.width = "160px";
-      await waitFrames(2);
-      check([...shortcutHelp.children].every(shortcut =>
-        shortcut.lastElementChild.getBoundingClientRect().top >= shortcut.firstElementChild.getBoundingClientRect().bottom),
-        `${host}: shortcut labels wrap above their keys when the available row width is constrained`);
-      shortcutHelp.style.width = "";
       const fontInput = doc.querySelector("[data-editor-font-size]");
       const storageKey = "onda.browser-ide.editor-font-size.v1";
       const storedFont = () => frame.contentWindow.localStorage.getItem(storageKey);
       const typeFont = value => {
+        doc.querySelector("[data-project-menu]").open = true;
         fontInput.focus();
         fontInput.value = value;
         fontInput.dispatchEvent(new frame.contentWindow.Event("input", { bubbles: true }));
@@ -1506,7 +1497,7 @@ try {
     "Params header controls wrap within a narrow run view");
   shell.style.width = "";
   check(document.getElementById("params").dataset.layout === "knobs"
-    && document.querySelector('#params-section [data-param-layout="knobs"]').getAttribute("aria-pressed") === "true"
+    && document.querySelector('#params-section [data-param-layout="knobs"]').getAttribute("data-pressed") === "true"
     && document.querySelector("#params .param-knob"),
     "the run view defaults to knobs without a saved layout preference");
   check(getComputedStyle(shell).visibility === "visible",
@@ -1589,7 +1580,7 @@ try {
     send({ events: numberEvents, logText: "during event drag" });
     pointer("pointerup", 120);
     check(input.value === expected && input.readOnly && document.contains(input),
-      `${input.getAttribute("aria-label")} drags use the shared sensitivity and survive refreshes`);
+      `${input.name} drags use the shared sensitivity and survive refreshes`);
   }
   check(eventMessages().length === beforeEventDrag,
     "editing event numbers does not trigger the event");
@@ -1653,7 +1644,7 @@ try {
     edit(input, input === exact || input === sliceElement ? "-" : "9");
     input.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
     check(input.value === expected && input.readOnly && document.activeElement !== input,
-      `${input.getAttribute("aria-label")} double-click resets its own declared default and clears drafts`);
+      `${input.name} double-click resets its own declared default and clears drafts`);
   }
   check(secondElement.value === "2", "resetting an event array element retains the other elements");
   const singlePointer = pointerControl(single);
@@ -1678,7 +1669,7 @@ try {
     "leaving an empty event number restores the last valid value");
   const sliceArg = sliceElement.closest(".event-array-arg");
   [...sliceArg.querySelectorAll("button")].find(button => button.textContent === "+").click();
-  const addedElement = document.querySelector('input[aria-label="slice [1]"]');
+  const addedElement = document.querySelector('input[name="slice [1]"]');
   check(addedElement?.readOnly && addedElement.value === "0", "new slice elements also use the shared number widget");
   const addedPointer = pointerControl(addedElement);
   addedPointer("pointerdown", 100);
@@ -1717,17 +1708,17 @@ try {
       for (const [pixels, expected] of steps) {
         pointer("pointermove", 100 + pixels, { shiftKey });
         check(input.value === String(expected) && sentInteger() === expected,
-          `${input.getAttribute("aria-label")} ${shiftKey ? "fine" : "normal"} drags display the integer they send at ${pixels} pixels`);
+          `${input.name} ${shiftKey ? "fine" : "normal"} drags display the integer they send at ${pixels} pixels`);
       }
       const [pixels, expected] = steps.at(-1);
       pointer("pointerup", 100 + pixels, { shiftKey });
       check(input.readOnly && input.value === String(expected) && sentInteger() === expected,
-        `${input.getAttribute("aria-label")} release keeps its canonical integer`);
+        `${input.name} release keeps its canonical integer`);
       pointer("pointerdown", 100);
       pointer("pointermove", 103);
       pointer("pointerup", 103);
       check(input.value === String(expected + 1) && sentInteger() === expected + 1,
-        `${input.getAttribute("aria-label")} later drags start from the displayed integer`);
+        `${input.name} later drags start from the displayed integer`);
     }
     check(integerInputs[2].value === "7", "integer element drags retain neighboring elements");
   }
@@ -1747,59 +1738,59 @@ try {
     const pointer = pointerControl(input);
     check(input.value === ["0.1235", "0"][index]
       && triggerPrecise()[index] === preciseDefaults[index],
-      `${input.getAttribute("aria-label")} displays compact decimals while retaining its exact default`);
+      `${input.name} displays compact decimals while retaining its exact default`);
     pointer("pointerdown", 100);
     pointer("pointermove", 104, { shiftKey: true });
     check(input.value === ["0.1275", "0.004"][index],
-      `${input.getAttribute("aria-label")} fine drags display compact decimals`);
+      `${input.name} fine drags display compact decimals`);
     pointer("pointerup", 104, { shiftKey: true });
     const firstTarget = preciseDefaults[index] + 4 * 0.01 * 0.1;
     check(triggerPrecise()[index] === firstTarget,
-      `${input.getAttribute("aria-label")} fine drags preserve full event precision`);
+      `${input.name} fine drags preserve full event precision`);
     pointer("pointerdown", 100);
     pointer("pointermove", 104, { shiftKey: true });
     send({ events: preciseEvents, logText: "precise event drag" });
     pointer("pointerup", 104, { shiftKey: true });
     check(input.value === ["0.1315", "0.008"][index]
       && triggerPrecise()[index] === firstTarget + 4 * 0.01 * 0.1,
-      `${input.getAttribute("aria-label")} later drags start from the exact event value`);
+      `${input.name} later drags start from the exact event value`);
     input.focus();
     check(input.value === ["0.13146", "0.00801"][index],
-      `${input.getAttribute("aria-label")} typing starts with at most five decimal places`);
+      `${input.name} typing starts with at most five decimal places`);
     edit(input, "9");
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     check(input.value === ["0.1315", "0.008"][index]
       && triggerPrecise()[index] === firstTarget + 4 * 0.01 * 0.1,
-      `${input.getAttribute("aria-label")} Escape restores the exact value behind the compact display`);
+      `${input.name} Escape restores the exact value behind the compact display`);
     pointer("pointerdown", 100);
     pointer("pointermove", 103.7);
     pointer("pointermove", 107.2);
     pointer("pointerup", 107.2);
     check(input.value === ["0.2035", "0.08"][index]
       && Math.abs(triggerPrecise()[index] - (firstTarget + 0.004 + 0.072)) < 1e-15,
-      `${input.getAttribute("aria-label")} fractional pointer movement stays compact without rounding its payload`);
+      `${input.name} fractional pointer movement stays compact without rounding its payload`);
     edit(input, "9");
     input.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
     check(triggerPrecise()[index] === preciseDefaults[index],
-      `${input.getAttribute("aria-label")} resets restore the exact floating default`);
+      `${input.name} resets restore the exact floating default`);
     input.focus();
     check(input.value === ["0.12346", "1.23457e-5"][index],
-      `${input.getAttribute("aria-label")} focusing shortens ordinary and tiny values`);
+      `${input.name} focusing shortens ordinary and tiny values`);
     input.blur();
     check(triggerPrecise()[index] === preciseDefaults[index],
-      `${input.getAttribute("aria-label")} focus and blur preserve event precision`);
+      `${input.name} focus and blur preserve event precision`);
     const typed = preciseDefaults[index] + 0.000000001;
     edit(input, String(typed));
     check(document.activeElement === input && !input.validity.customError
       && !document.querySelector(".event-trigger").disabled,
-      `${input.getAttribute("aria-label")} accepts fractional event drafts outside its keyboard increment grid`);
+      `${input.name} accepts fractional event drafts outside its keyboard increment grid`);
     const messagesBeforeTypingTrigger = eventMessages().length;
     check(triggerPrecise()[index] === typed
       && eventMessages().length === messagesBeforeTypingTrigger + 1,
-      `${input.getAttribute("aria-label")} sends its exact typed value without requiring blur`);
+      `${input.name} sends its exact typed value without requiring blur`);
     input.blur();
     check(input.value === ["0.1235", "0"][index] && triggerPrecise()[index] === typed,
-      `${input.getAttribute("aria-label")} leaving a precise draft restores the compact display and retains the typed value`);
+      `${input.name} leaving a precise draft restores the compact display and retains the typed value`);
   }
   preciseInputs[0].focus();
   const preciseValues = triggerPrecise();
@@ -1846,7 +1837,7 @@ try {
     ?.state.events[0].values[0] === 0.25,
     "argument resets replace the retained view snapshot");
 
-  document.querySelector('[aria-label="Add element"]').click();
+  document.querySelector('[title="Add element"]').click();
   let arrayInput = document.querySelector(".event-array-element input");
   edit(arrayInput, "0.625");
   refresh();
@@ -1855,7 +1846,7 @@ try {
   document.querySelector(".event-trigger").click();
   check(window.__testMessages.at(-1).values[2][0] === 0.625,
     "slice handlers retain current values");
-  document.querySelector('[aria-label="Remove last element"]').click();
+  document.querySelector('[title="Remove last element"]').click();
   check(!document.querySelector(".event-array-element input"),
     "slice shape changes rebuild the necessary controls");
 
@@ -1995,11 +1986,11 @@ try {
         : curve === null ? 80 + 11920 * normalized
         : 80 + 11920 * Math.expm1(curve * normalized) / Math.expm1(curve);
       if (step !== null) expected = 80 + Math.round((expected - 80) / step) * step;
-      const actual = Number(knob.getAttribute("aria-valuenow"));
+      const actual = Number(knob.getAttribute("data-value"));
       check(Math.abs(actual / expected - 1) < 1e-12,
         `${scale} curve=${curve} step=${step} knob applies Shift=${shiftKey} per movement at ${pixels} pixels`);
     }
-    const beforeRelease = Number(knob.getAttribute("aria-valuenow"));
+    const beforeRelease = Number(knob.getAttribute("data-value"));
     pointer("pointerup", 100, { clientY: 3097.5, shiftKey: true });
     check(paramMessages().at(-1)?.commit === true && paramMessages().at(-1).value === beforeRelease,
       `${scale} curve=${curve} knob release preserves the fine drag value`);
@@ -2043,15 +2034,15 @@ try {
             await waitFrames(1);
             const expected = initial * Math.pow(150, pixels / 375);
             const live = paramMessages().at(-1);
-            const rangeValue = Number(number.closest(".param").querySelector('[role="slider"]')
-              .getAttribute("aria-valuenow"));
+            const rangeValue = Number(number.closest(".param").querySelector('.param-slider, .param-knob')
+              .getAttribute("data-value"));
             check(live.commit === false && Math.abs(live.value / expected - 1) < 1e-12
               && rangeValue === live.value,
               `${layout} ${type} log drags follow equal ratios from ${initial} Hz at ${pixels} pixels, Shift=${shiftKey}`);
             send({ params: [cutoff] });
             check(document.querySelector('#params input') === number
-              && Number(number.closest(".param").querySelector('[role="slider"]')
-                .getAttribute("aria-valuenow")) === live.value,
+              && Number(number.closest(".param").querySelector('.param-slider, .param-knob')
+                .getAttribute("data-value")) === live.value,
               `${layout} log drags retain their canonical value through host refreshes`);
           }
           pointer("pointerup", 100 + 75 * distance, { shiftKey });
@@ -2071,12 +2062,12 @@ try {
         rangeMin: 80, rangeMax: 12000, scale, curve }] });
       const number = document.querySelector('#params input');
       const pointer = pointerControl(number);
-      const range = number.closest(".param").querySelector('[role="slider"]');
+      const range = number.closest(".param").querySelector('.param-slider, .param-knob');
       pointer("pointerdown", 100);
       for (const [pixels, normalized] of [[187.5, 0.5], [375, 1], [562.5, 1],
         [525, 0.9], [-150, 0], [-112.5, 0.1]]) {
         pointer("pointermove", 100 + pixels);
-        const actual = Number(range.getAttribute("aria-valuenow"));
+        const actual = Number(range.getAttribute("data-value"));
         const expected = normalized === 0 ? 80 : normalized === 1 ? 12000
           : scale === "log" ? 80 * Math.pow(150, normalized)
           : 80 + 11920 * Math.expm1(curve * normalized) / Math.expm1(curve);
@@ -2084,7 +2075,7 @@ try {
           `${layout} ${scale} curve=${curve} number drags follow the declared mapping and reverse at bounds (${pixels} pixels)`);
       }
       pointer("pointerup", -12.5);
-      check(paramMessages().at(-1)?.value === Number(range.getAttribute("aria-valuenow")),
+      check(paramMessages().at(-1)?.value === Number(range.getAttribute("data-value")),
         `${layout} scaled number drag release preserves the range control value`);
       edit(number, "440");
       number.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2171,8 +2162,8 @@ try {
       `${layout} release discards the pending live message`);
     gainPointer("pointerdown", 100);
     gainPointer("pointermove", 10000);
-    check(gain.value === "1" && gain.closest(".param").querySelector('[role="slider"]')
-      .getAttribute("aria-valuenow") === "1", `${layout} number drags clamp and synchronize the range control`);
+    check(gain.value === "1" && gain.closest(".param").querySelector('.param-slider, .param-knob')
+      .getAttribute("data-value") === "1", `${layout} number drags clamp and synchronize the range control`);
     gainPointer("pointermove", 9990);
     check(Math.abs(Number(gain.value) - (1 - 10 / 375)) < 0.0005,
       `${layout} reverses immediately after reaching a bound`);
@@ -2206,8 +2197,8 @@ try {
     gain.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
     check(gain.value === "0.25" && gain.readOnly && document.activeElement !== gain
       && paramMessages().at(-1)?.value === 0.25 && paramMessages().at(-1)?.commit === true
-      && gain.closest(".param").querySelector('[role="slider"]')
-        .getAttribute("aria-valuenow") === "0.25",
+      && gain.closest(".param").querySelector('.param-slider, .param-knob')
+        .getAttribute("data-value") === "0.25",
       `${layout} double-click restores the declared default, discards drafts, and synchronizes the range control`);
     offset.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
     check(offset.value === "2" && paramMessages().at(-1)?.name === "offset"
@@ -2291,8 +2282,8 @@ try {
             ? Array.from({ length: 745 }, (_, index) => (index + 6) / 2) : [187.5, 375];
           for (const pixels of [...moves, 750, 562.5]) {
             pointer("pointermove", 100 + pixels * distance, { shiftKey });
-            const value = Number(number.closest(".param").querySelector('[role="slider"]')
-              .getAttribute("aria-valuenow"));
+            const value = Number(number.closest(".param").querySelector('.param-slider, .param-knob')
+              .getAttribute("data-value"));
             if (pixels === 187.5 || pixels === 562.5) {
               check(value === minimum + (maximum - minimum) * 0.5,
                 `${layout} extreme-range drags reach the midpoint and reverse after overshooting`);
@@ -2334,8 +2325,8 @@ try {
   pitchPointer("pointerdown", 100);
   pitchPointer("pointermove", 120);
   const expectedPitch = 100 * Math.pow(50, 20 / 375);
-  check(Math.abs(Number(pitch.closest(".param").querySelector('[role="slider"]')
-    .getAttribute("aria-valuenow")) / expectedPitch - 1) < 1e-12
+  check(Math.abs(Number(pitch.closest(".param").querySelector('.param-slider, .param-knob')
+    .getAttribute("data-value")) / expectedPitch - 1) < 1e-12
     && Math.abs(Number(pitch.value) - expectedPitch) < 0.05,
     "logarithmic parameter number drags follow the log domain and synchronize the range control");
   document.querySelector('#params-section [data-param-layout="knobs"]').click();
@@ -2415,7 +2406,7 @@ try {
         const checkbox = toggle.querySelector('input');
         const box = checkbox.getBoundingClientRect();
         const controls = card.querySelector('.param-controls').getBoundingClientRect();
-        check(toggle.textContent.trim() === '' && checkbox.getAttribute('aria-label') === name.textContent
+        check(toggle.textContent.trim() === ''
           && box.width === 24 && box.height === 24
           && Math.abs(box.left + box.width / 2 - controls.left - controls.width / 2) < 1
           && Math.abs(box.top + box.height / 2 - controls.top - controls.height / 2) < 1,
@@ -2771,7 +2762,7 @@ try {
     "view restore recovers keyboard controls and incomplete event drafts");
   check(!document.querySelector(".event-structured-arg").open
     && !document.querySelector(".param-array").open
-    && document.getElementById("events-toggle").getAttribute("aria-expanded") === "false"
+    && document.getElementById("events-toggle").getAttribute("data-expanded") === "false"
     && Math.abs(scrollNode.scrollTop - savedView.scrollY) < 1,
     "view restore recovers folds and scroll position");
   paramsList.style.minHeight = "";
@@ -2785,7 +2776,7 @@ try {
     && document.querySelector("#midi-velocity-value").value === "1.00"
     && document.querySelector(".event-structured-arg").open
     && document.querySelector(".param-array").open
-    && document.getElementById("events-toggle").getAttribute("aria-expanded") === "true",
+    && document.getElementById("events-toggle").getAttribute("data-expanded") === "true",
     "loading a project without view state restores view defaults");
 
   const beforeDeferred = restoreCount();

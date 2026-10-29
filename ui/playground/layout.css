@@ -1,13 +1,13 @@
 /* Shared workspace geometry and controls; hosts own branding and colors. */
-:is(.play-shortcuts, .shortcut-help) {
-  min-width: 0;
-  flex-shrink: 1;
-}
-
-:is(.play-shortcut, .shortcut) {
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  row-gap: 4px;
+/* Canvas status is visible in the run view; retain live announcements here. */
+.play-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .play-workspace {
@@ -21,65 +21,83 @@
 .play-editor {
   display: flex;
   flex-direction: column;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-.play-toolbar {
+.project-menu { position: relative; flex: 0 0 auto; margin-left: auto; padding-left: 6px; }
+
+.project-menu-trigger {
   display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: .75rem;
-  font: 13px/1.45 var(--sans, system-ui, sans-serif);
-}
-
-.play-control-grid label { display: grid; min-width: 0; gap: 5px; color: var(--text); font-size: clamp(10px, 4.3cqi, 13px); }
-
-.play-toolbar .play-control-grid :is(input, select) {
-  width: 100%;
-  min-width: 0;
-  height: calc(1.45em + 16px);
-  padding: 7px clamp(4px, 2cqi, 9px);
-  border-radius: 5px;
-  font: clamp(10px, 3.4cqi, 14px)/1.45 var(--mono);
-}
-
-.play-toolbar .play-control-grid select {
-  appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-  background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%;
-  background-size: 4px 4px;
-  background-repeat: no-repeat;
-  padding-right: 24px;
-}
-
-.play-control-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .6fr);
-  container-type: inline-size;
-  flex: 0 1 28rem;
-  min-width: 0;
-  max-width: 100%;
-  margin-right: auto;
-  gap: clamp(4px, 1.5vw, 12px);
-}
-
-.project-file-actions {
-  display: flex;
-  flex: 0 1 auto;
-  flex-wrap: wrap;
   align-items: center;
-  min-width: 0;
-  max-width: 100%;
-  gap: .25rem;
+  justify-content: center;
+  gap: 9px;
+  min-height: 30px;
+  height: 100%;
+  margin-bottom: -1px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font: 12px/1.45 var(--sans, system-ui, sans-serif);
+  list-style: none;
+  cursor: pointer;
 }
+.project-menu-trigger::-webkit-details-marker { display: none; }
+.project-menu-trigger::after { width: 5px; height: 5px; margin-top: -3px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); content: ""; }
+.project-menu-trigger:hover, .project-menu-trigger:focus-visible, .project-menu[open] > summary { border-color: var(--ink) var(--ink) var(--line); background: var(--soft); color: var(--ink); }
+.project-menu-trigger:focus-visible { outline: none; }
+
+.project-menu-content {
+  position: absolute;
+  z-index: 1000;
+  top: calc(100% + 5px);
+  right: 0;
+  width: 212px;
+  max-width: calc(100vw - 40px);
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 25%);
+}
+.project-menu-content button { display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 3px; background: transparent; color: var(--ink); font: 12px/1.45 var(--sans, system-ui, sans-serif); text-align: left; }
+.project-menu-content button:is(:hover, :focus-visible):not(:disabled) { background: var(--soft); outline: none; }
+
+.editor-font-size {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font: 12px/1.45 var(--sans, system-ui, sans-serif);
+}
+
+.project-menu .editor-font-size input {
+  width: 52px;
+  height: 28px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  text-align: center;
+  font: 12px/1.45 var(--mono);
+}
+
+.project-shortcuts { display: grid; gap: 9px; margin: 0; padding: 11px 9px 9px; border-top: 1px solid var(--line); color: var(--muted); font: 12px/1.45 var(--sans, system-ui, sans-serif); }
+.project-shortcuts > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.project-shortcuts dd { display: grid; gap: 4px; margin: 0; }
+.project-shortcuts kbd { padding: 0; border: 0; background: none; color: inherit; font: 11px/1.45 var(--mono); white-space: nowrap; }
 
 /* File tabs, actions, and menus have identical geometry in both hosts. */
-.project-files { display: grid; gap: 0; grid-template-columns: minmax(0, 1fr) 30px; align-items: end; min-width: 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
-.project-file-tabs { display: flex; grid-column: 1; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
-button.project-file-add { display: grid; grid-column: 2; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border-color: transparent transparent var(--line); border-radius: 4px 4px 0 0; background: transparent; color: var(--muted); font: 16px/1 var(--sans, system-ui, sans-serif); }
-button.project-file-add:hover, button.project-file-add:focus-visible { background: var(--soft); color: var(--ink); }
-.project-file-actions button { padding: 5px 7px; font-size: 12px; }
-.project-file-actions button:is(:hover, :focus-visible):not(:disabled) { border-color: var(--ink); background: var(--soft); }
+.project-files { display: flex; gap: 0; align-items: stretch; min-width: 0; border-bottom: 1px solid var(--line); }
+.project-file-tabs { display: flex; flex: 0 1 auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; align-items: end; gap: 0; scrollbar-width: thin; }
+button.project-file-add { display: grid; place-items: center; align-self: flex-start; flex: 0 0 30px; width: 30px; min-height: 30px; margin-bottom: -1px; padding: 0; border: 0; border-bottom: 1px solid transparent; border-radius: 4px 4px 0 0; background: transparent; background-clip: padding-box; color: var(--muted); font: 16px/1 var(--sans, system-ui, sans-serif); }
+button.project-file-add:hover, button.project-file-add:focus-visible { background-color: var(--soft); color: var(--ink); }
 .project-file {
   display: flex;
   align-items: center;
@@ -150,11 +168,15 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
 .project-file-menu button:hover:not(:disabled), .project-file-menu button:focus-visible { background: var(--soft); outline: none; }
 .project-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .project-file-main, .project-file-library, .project-file-errors { flex: 0 0 auto; padding: 1px 4px; border-radius: 999px; font: 650 8px/1.25 var(--sans, system-ui, sans-serif); letter-spacing: .04em; text-transform: uppercase; }
-.project-file-main { background: var(--soft); color: var(--ink); }
+.project-file-main { background: var(--line); color: var(--ink); }
 .project-file-library { border: 1px solid var(--line); color: var(--muted); }
 .project-file-errors { min-width: 16px; background: #8a3a45; color: #fff; text-align: center; }
 .project-file[data-active="true"] { border-color: var(--line) var(--line) var(--code-bg); background: var(--code-bg); color: var(--ink); }
 .project-file[data-kind="library"] .project-file-name { font-style: italic; }
+.project-file-create { position: relative; overflow: visible; border-color: var(--line) var(--line) var(--code-bg); background: var(--code-bg); cursor: text; }
+.project-file-create:focus-within { border-color: var(--ink) var(--ink) var(--code-bg); }
+.project-file-create > input[type="text"] { box-sizing: border-box; width: 100%; height: 28px; min-height: 0; padding: 6px 8px; border: 0; border-radius: inherit; outline: none; box-shadow: none; background: transparent; color: var(--ink); font: inherit; }
+.project-file-create-error { position: absolute; z-index: 1000; top: calc(100% + 5px); left: 0; width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font: 12px/1.45 var(--sans, system-ui, sans-serif); overflow-wrap: anywhere; box-shadow: 0 10px 30px rgb(0 0 0 / 25%); }
 
 .play-source-editor {
   --onda-editor-font-size: 16px;
@@ -165,6 +187,7 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 0 0 5px 5px;
+  border-top: 0;
   background: var(--code-bg);
 }
 
@@ -174,10 +197,27 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
 }
 
 .play-run-panel {
+  position: relative;
   display: flex;
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.play-run-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  background: var(--code-bg);
+}
+
+.play-run-loading[hidden] {
+  display: none;
 }
 
 .play-run-view {
@@ -185,7 +225,7 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
   flex: 1 1 auto;
   width: 100%;
   min-height: var(--play-run-height, 620px);
-  border: 0;
+  border: 1px solid var(--line);
   border-radius: 5px;
   background: var(--code-bg);
 }
@@ -201,24 +241,17 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
 }
 
 @media (max-width: 720px) {
-  .play-editor { padding: .75rem; }
   .play-source-editor {
     --onda-editor-font-size: 12px;
     height: min(62svh, 540px);
     min-height: 360px;
   }
-  .project-file-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: .5rem;
-    width: 100%;
-  }
   .play-run-view { min-height: 680px; }
-  .project-files {
-    grid-template-columns: minmax(0, 1fr) 44px;
-  }
-  .project-file-actions button { min-height: 44px; }
-  button.project-file-add { width: 44px; min-height: 44px; font-size: 20px; }
+  .project-menu-trigger, .project-menu-content button { min-height: 44px; }
+  .project-menu .editor-font-size input { height: 44px; }
+  button.project-file-add { flex-basis: 44px; width: 44px; min-height: 44px; font-size: 20px; }
+  .project-file-create { flex-basis: 176px; width: 176px; min-height: 44px; font-size: 12px; }
+  .project-file-create > input { min-height: 42px; }
   .project-file { flex-basis: 176px; width: 176px; min-width: 176px; max-width: 176px; min-height: 44px; font-size: 12px; }
   button.project-file-select { padding-left: 11px; }
   button.project-file-menu-trigger, button.project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }

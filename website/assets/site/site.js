@@ -19,7 +19,6 @@ import { highlightOnda } from "./onda-highlighter.js";
     if (siteIcon) siteIcon.href = siteIcon.dataset[resolved];
     if (themeButton) {
       themeButton.title = `Theme: ${selected}`;
-      themeButton.setAttribute('aria-label', `Theme: ${selected}. Change color theme`);
     }
   };
 
@@ -35,8 +34,7 @@ import { highlightOnda } from "./onda-highlighter.js";
   const menuButton = document.querySelector('.menu-toggle');
   const menu = document.querySelector('#main-nav');
   menuButton?.addEventListener('click', () => {
-    const open = menu.classList.toggle('open');
-    menuButton.setAttribute('aria-expanded', String(open));
+    menu.classList.toggle('open');
   });
 
   document.querySelectorAll('code.language-onda').forEach(highlightOnda);

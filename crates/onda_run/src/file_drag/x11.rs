@@ -10,7 +10,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use eframe::egui;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use x11_dl::xlib::{self, xEvent, Display, XEvent, Xlib};
 use x11rb::{protocol::xproto::ConnectionExt, rust_connection::RustConnection};
@@ -73,7 +72,7 @@ impl DragPosition {
             atoms,
             position: Arc::new(Mutex::new(None)),
         };
-        // SAFETY: eframe supplies its live Xlib display. The public Xlib hook
+        // SAFETY: The host supplies its live Xlib display. The public Xlib hook
         // changes only event conversion, under the display lock. We retain and
         // call the previous converter and restore it when its last target exits.
         unsafe {
@@ -113,7 +112,7 @@ impl DragPosition {
         })
     }
 
-    pub(super) fn position(&self) -> Option<egui::Pos2> {
+    pub(super) fn position(&self) -> Option<[f32; 2]> {
         let (x, y) = (*self.target.position.lock().ok()?)?;
         let translated = self
             .connection
@@ -121,16 +120,13 @@ impl DragPosition {
             .ok()?
             .reply()
             .ok()?;
-        Some(egui::pos2(
-            f32::from(translated.dst_x),
-            f32::from(translated.dst_y),
-        ))
+        Some([f32::from(translated.dst_x), f32::from(translated.dst_y)])
     }
 }
 
 impl Drop for DragPosition {
     fn drop(&mut self) {
-        // SAFETY: The tracker belongs to the app, which exits before eframe's
+        // SAFETY: The tracker belongs to the app, which exits before the host's
         // display closes. Use the same lock order as installation and conversion.
         unsafe {
             (self.xlib.XLockDisplay)(self.display.as_ptr());
@@ -336,7 +332,7 @@ mod tests {
                 send(atoms.XdndPosition, (x << 16) | y);
                 assert_eq!(
                     tracker.position(),
-                    Some(egui::pos2(x as f32 - 100.0, y as f32 - 100.0))
+                    Some([x as f32 - 100.0, y as f32 - 100.0])
                 );
             }
             send(atoms.XdndLeave, 0);

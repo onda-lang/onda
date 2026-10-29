@@ -136,7 +136,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Enlarge boolean checkboxes to 24 px and center them beneath parameter and input-control
   headings and within event fields in egui and the shared webview. Remove redundant On/Off
-  labels while preserving accessible names, keyboard interaction, and read-only controls.
+  labels while preserving keyboard interaction, and read-only controls.
 - Use Onda's light and dark theme colors for both checked and unchecked webview checkboxes.
 
 ### Fixed
@@ -229,7 +229,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Compact run headers across egui, webview, and the browser playground, with the version centered
   below the logo, the filename and status aligned to the left, and a single labeled Play/Stop
   button. Device selection and Refresh move into a Devices popover; Save as project and Unload
-  have direct icon buttons with accessible names and tooltips.
+  have direct icon buttons with tooltips.
 - Both native run hosts default to 720 × 840 logical units. Shared panel spacing, flat fills,
   and a 160-unit scope let eight knobs fit in two rows with the docked MIDI keyboard visible.
   Narrow views wrap header controls and parameter settings without overflowing.

@@ -1,0 +1,17 @@
+[
+  {
+    "poll_interval_ms": 33,
+    "duration_seconds": 3.000095314,
+    "fresh_snapshots": 91,
+    "controller_polls": 182,
+    "event_driven": true,
+    "updates_per_second": 30.332309678546302,
+    "median_gap_ms": 33.28083699999995,
+    "packet_bytes": 2792
+  },
+  {
+    "scope_hidden": true,
+    "duration_seconds": 1.200083082,
+    "controller_polls": 2
+  }
+]

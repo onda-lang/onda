@@ -1,47 +1,27 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-#[cfg(target_os = "linux")]
-use raw_window_handle::HasDisplayHandle;
-use raw_window_handle::HasWindowHandle;
-#[cfg(not(target_os = "linux"))]
-use raw_window_handle::RawWindowHandle;
-
-#[cfg(target_os = "linux")]
-mod x11;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 #[derive(Default)]
-pub(super) struct FileDrag {
-    #[cfg(target_os = "linux")]
-    x11: Option<x11::DragPosition>,
-    #[cfg(not(target_os = "linux"))]
-    window: Option<RawWindowHandle>,
-}
+pub(super) struct FileDrag(onda_run::file_drag::FileDragPosition);
 
 impl FileDrag {
     pub(super) fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Install tracking once, before any drag, including in the unloaded file picker.
-        // An unavailable tracker stays disabled rather than retrying every frame.
-        #[cfg(target_os = "linux")]
-        {
-            let x11 = cc
-                .window_handle()
-                .ok()
-                .zip(cc.display_handle().ok())
-                .and_then(|(window, display)| {
-                    x11::DragPosition::new(window.as_raw(), display.as_raw()).ok()
-                });
-            Self { x11 }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Self {
-                window: cc.window_handle().ok().map(|window| window.as_raw()),
-            }
-        }
+        let tracker = cc
+            .window_handle()
+            .ok()
+            .zip(cc.display_handle().ok())
+            .map(|(window, display)| {
+                // SAFETY: The app is destroyed before eframe closes its window and display.
+                unsafe {
+                    onda_run::file_drag::FileDragPosition::new(window.as_raw(), display.as_raw())
+                }
+            })
+            .unwrap_or_default();
+        Self(tracker)
     }
 
-    // OS drags can suppress normal pointer events, and winit's file events carry no position.
     pub(super) fn pointer_position(&self, ctx: &egui::Context) -> Option<egui::Pos2> {
         let (hovered, dropped) = ctx.input(|input| {
             (
@@ -55,63 +35,14 @@ impl FileDrag {
         if hovered {
             ctx.request_repaint_after(super::CONTROLLER_POLL_INTERVAL);
         }
-        #[cfg(target_os = "linux")]
-        let position = self.x11.as_ref()?.position();
-        #[cfg(not(target_os = "linux"))]
-        let position = native_pointer_position(self.window?);
-        // AppKit uses logical points; X11 and Win32 use physical pixels.
+        let [x, y] = self.0.position()?;
         let scale = if cfg!(target_os = "macos") {
             ctx.zoom_factor()
         } else {
             ctx.pixels_per_point()
         };
-        Some(position? / scale)
+        Some(egui::pos2(x / scale, y / scale))
     }
-}
-
-#[cfg(target_os = "windows")]
-fn native_pointer_position(handle: RawWindowHandle) -> Option<egui::Pos2> {
-    use windows_sys::Win32::{
-        Foundation::POINT, Graphics::Gdi::ScreenToClient, UI::WindowsAndMessaging::GetCursorPos,
-    };
-
-    let RawWindowHandle::Win32(handle) = handle else {
-        return None;
-    };
-    let mut position = POINT { x: 0, y: 0 };
-    // SAFETY: The frame supplies a live HWND, and both APIs write to our local POINT.
-    unsafe {
-        if GetCursorPos(&mut position) == 0
-            || ScreenToClient(handle.hwnd.get() as _, &mut position) == 0
-        {
-            return None;
-        }
-    }
-    Some(egui::pos2(position.x as f32, position.y as f32))
-}
-
-#[cfg(target_os = "macos")]
-fn native_pointer_position(handle: RawWindowHandle) -> Option<egui::Pos2> {
-    use objc2_app_kit::NSView;
-
-    let RawWindowHandle::AppKit(handle) = handle else {
-        return None;
-    };
-    // SAFETY: eframe owns this live NSView, and App::update runs on the main thread.
-    let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-    let window = view.window()?;
-    let position = view.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
-    let y = if view.isFlipped() {
-        position.y
-    } else {
-        view.bounds().size.height - position.y
-    };
-    Some(egui::pos2(position.x as f32, y as f32))
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-fn native_pointer_position(_handle: RawWindowHandle) -> Option<egui::Pos2> {
-    None
 }
 
 fn is_buffer_file(path: &Path) -> bool {

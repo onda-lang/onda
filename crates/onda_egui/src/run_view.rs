@@ -832,9 +832,7 @@ impl HeaderIcon {
             Self::Unload => "Unload",
             Self::Reset(label) => label,
         };
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-        });
+
         let color = ui.style().interact(&response).fg_stroke.color;
         let center = if matches!(self, Self::Play | Self::Stop) {
             let text = ui.painter().layout_no_wrap(

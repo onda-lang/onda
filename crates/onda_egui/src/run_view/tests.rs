@@ -31,8 +31,7 @@ fn boolean_event_controls_center_and_keep_their_editing_behavior() {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             crate::render_event_scalar_editor(
-                                                ui, "gate", "bool", &mut value, None, connected,
-                                                width,
+                                                ui, "bool", &mut value, None, connected, width,
                                             );
                                         },
                                     )

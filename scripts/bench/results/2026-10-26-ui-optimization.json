@@ -1,0 +1,1254 @@
+{
+  "measured_at_utc": "2026-10-26T12:51:03.955113+00:00",
+  "workspace_head": "1b58ab7b8ae2a038197f877e185197eb26c7568c",
+  "working_tree_dirty": true,
+  "comparison": "Shared GPU UI before and after scope transport/rendering optimization; legacy egui and DOM references measured in both builds.",
+  "cpu": "Intel Core i9-14900HX",
+  "gpu": "NVIDIA GeForce RTX 4080 Laptop GPU",
+  "browser": {
+    "protocolVersion": "1.3",
+    "product": "Chrome/156.0.8078.47",
+    "revision": "@1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775",
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+    "jsVersion": "15.6.75.19"
+  },
+  "fixture": {
+    "viewport": [
+      768,
+      840
+    ],
+    "controls": 64,
+    "channels": 2,
+    "source_frames": 1024,
+    "envelope_columns": 348
+  },
+  "notes": [
+    "Native metrics are the median of three warmed round medians through GPU completion. Presentation and IPC are excluded.",
+    "Browser metrics are the median of three round means using DevTools threadTicks TaskDuration. GPU and compositor process CPU are excluded.",
+    "Browser packets are prepared outside timing, modeling producer-side reduction. Serialized fixture message sizes include base64 and JSON.",
+    "Cadence uses the real playback subprocess and controller at a 16 ms poll interval. It measures fresh capture responses, not window presentation.",
+    "The native completion timing is effectively unchanged at about 0.06 ms. Do not claim a native rendering speedup from this change.",
+    "Legacy and GPU layouts cover common first-screen features and do not have full editor feature parity.",
+    "Previous measurements were captured earlier in this session. Cross-build timings are not isolated measurements of each individual optimization."
+  ],
+  "summary": [
+    {
+      "metric": "native_cpu_and_gpu_ms",
+      "scenario": "scope_only",
+      "previous_gpu": 0.056603,
+      "optimized_gpu": 0.057977,
+      "change_percent": 2.4274331749200684
+    },
+    {
+      "metric": "browser_main_thread_cpu_ms",
+      "scenario": "scope_only",
+      "previous_gpu": 2.0245444444444445,
+      "optimized_gpu": 0.9113500000000002,
+      "change_percent": -54.984934882470114
+    },
+    {
+      "metric": "native_cpu_and_gpu_ms",
+      "scenario": "scope_and_64_values",
+      "previous_gpu": 0.172435,
+      "optimized_gpu": 0.178056,
+      "change_percent": 3.2597790471771804
+    },
+    {
+      "metric": "browser_main_thread_cpu_ms",
+      "scenario": "scope_and_64_values",
+      "previous_gpu": 2.987633333333333,
+      "optimized_gpu": 1.9374999999999998,
+      "change_percent": -35.14933782592687
+    }
+  ],
+  "scope_fixture_wire_bytes": {
+    "raw_json": 40692,
+    "compact_base64_json": 3756,
+    "compact_binary": 2792
+  },
+  "cadence": {
+    "previous": [
+      {
+        "poll_interval_ms": 50,
+        "duration_seconds": 5.037995831,
+        "fresh_snapshots": 50,
+        "updates_per_second": 9.92457766784467,
+        "median_gap_ms": 100.7388979999999
+      },
+      {
+        "poll_interval_ms": 16,
+        "duration_seconds": 5.010483375,
+        "fresh_snapshots": 77,
+        "updates_per_second": 15.367771355359936,
+        "median_gap_ms": 65.09827900000009
+      }
+    ],
+    "optimized": [
+      {
+        "poll_interval_ms": 16,
+        "duration_seconds": 5.015374099,
+        "fresh_snapshots": 308,
+        "updates_per_second": 61.4111476526758,
+        "median_gap_ms": 16.295361999999702,
+        "packet_bytes": 2792
+      }
+    ]
+  },
+  "native": {
+    "previous": {
+      "window": [
+        768,
+        840
+      ],
+      "controls": 64,
+      "channels": 2,
+      "samples_per_channel": 1024,
+      "warmup_frames": 60,
+      "measured_frames": 300,
+      "wgpu_adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 4080 Laptop GPU\", vendor: 4318, device: 10144, device_type: DiscreteGpu, device_pci_bus_id: \"0000:01:00.0\", driver: \"NVIDIA\", driver_info: \"615.78.08\", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: Some(false), limit_bucket: None }",
+      "results": [
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_only",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.646434,
+            "p95_ms": 0.677459,
+            "mean_ms": 0.649081363333333
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.6719360000000001,
+            "p95_ms": 0.708161,
+            "mean_ms": 0.6794016866666672
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_only",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.013824,
+            "p95_ms": 0.01468,
+            "mean_ms": 0.014726276666666666
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.056603,
+            "p95_ms": 0.058524,
+            "mean_ms": 0.05759739
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_only",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.014205,
+            "p95_ms": 0.016485,
+            "mean_ms": 0.018053996666666666
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.057108000000000006,
+            "p95_ms": 0.060131,
+            "mean_ms": 0.06112265666666668
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_only",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.643585,
+            "p95_ms": 0.673806,
+            "mean_ms": 0.6469779399999996
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.670902,
+            "p95_ms": 0.701884,
+            "mean_ms": 0.6794322033333331
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_only",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.642305,
+            "p95_ms": 0.6769360000000001,
+            "mean_ms": 0.6452885999999998
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.668272,
+            "p95_ms": 0.711058,
+            "mean_ms": 0.6739351966666667
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_only",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.013606,
+            "p95_ms": 0.015113999999999999,
+            "mean_ms": 0.017447893333333332
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.056448,
+            "p95_ms": 0.059761,
+            "mean_ms": 0.060423656666666666
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_and_64_values",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.624131,
+            "p95_ms": 0.664594,
+            "mean_ms": 0.6281046033333333
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.6518729999999999,
+            "p95_ms": 0.698639,
+            "mean_ms": 0.6620381633333335
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_and_64_values",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.12515700000000002,
+            "p95_ms": 0.135835,
+            "mean_ms": 0.12629514333333325
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.170946,
+            "p95_ms": 0.182415,
+            "mean_ms": 0.17227901000000004
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_and_64_values",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.126744,
+            "p95_ms": 0.12913,
+            "mean_ms": 0.13068392000000006
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.172435,
+            "p95_ms": 0.177892,
+            "mean_ms": 0.17655172666666663
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_and_64_values",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.624254,
+            "p95_ms": 0.662991,
+            "mean_ms": 0.6325306300000002
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.651888,
+            "p95_ms": 0.6919749999999999,
+            "mean_ms": 0.6609500366666671
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_and_64_values",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.6249680000000001,
+            "p95_ms": 0.6590170000000001,
+            "mean_ms": 0.6283861333333337
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.651888,
+            "p95_ms": 0.6883940000000001,
+            "mean_ms": 0.6568050599999998
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_and_64_values",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.128006,
+            "p95_ms": 0.132718,
+            "mean_ms": 0.13243515666666664
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.173833,
+            "p95_ms": 0.183531,
+            "mean_ms": 0.17841996666666668
+          }
+        }
+      ],
+      "opengl_adapter": "NVIDIA GeForce RTX 4080 Laptop GPU/PCIe/SSE2"
+    },
+    "optimized": {
+      "window": [
+        768,
+        840
+      ],
+      "controls": 64,
+      "channels": 2,
+      "samples_per_channel": 1024,
+      "warmup_frames": 60,
+      "measured_frames": 300,
+      "wgpu_adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 4080 Laptop GPU\", vendor: 4318, device: 10144, device_type: DiscreteGpu, device_pci_bus_id: \"0000:01:00.0\", driver: \"NVIDIA\", driver_info: \"615.78.08\", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: Some(false), limit_bucket: None }",
+      "results": [
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_only",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.668377,
+            "p95_ms": 0.724089,
+            "mean_ms": 0.6735566199999996
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.697202,
+            "p95_ms": 0.765873,
+            "mean_ms": 0.7083488466666669
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_only",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.017686,
+            "p95_ms": 0.020404,
+            "mean_ms": 0.019860940000000004
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.05801,
+            "p95_ms": 0.062381,
+            "mean_ms": 0.06031974999999997
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_only",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.017240000000000002,
+            "p95_ms": 0.018099999999999998,
+            "mean_ms": 0.020984193333333342
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.057551,
+            "p95_ms": 0.059759,
+            "mean_ms": 0.06154313666666664
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_only",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.666859,
+            "p95_ms": 0.720192,
+            "mean_ms": 0.6713991266666668
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.695648,
+            "p95_ms": 0.7614679999999999,
+            "mean_ms": 0.7074477266666676
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_only",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.678029,
+            "p95_ms": 0.7290760000000001,
+            "mean_ms": 0.6829609166666665
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.709703,
+            "p95_ms": 0.770841,
+            "mean_ms": 0.7157695266666672
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_only",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.017627,
+            "p95_ms": 0.020965,
+            "mean_ms": 0.02213570333333335
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.057977,
+            "p95_ms": 0.06261800000000001,
+            "mean_ms": 0.06250860333333338
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_and_64_values",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.667308,
+            "p95_ms": 0.708903,
+            "mean_ms": 0.6663401733333328
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.691829,
+            "p95_ms": 0.749049,
+            "mean_ms": 0.7023835933333331
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_and_64_values",
+          "round": 0,
+          "cpu_submit": {
+            "median_ms": 0.140288,
+            "p95_ms": 0.154315,
+            "mean_ms": 0.14291145333333322
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.185143,
+            "p95_ms": 0.200815,
+            "mean_ms": 0.18976035333333316
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_and_64_values",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.133896,
+            "p95_ms": 0.151035,
+            "mean_ms": 0.1405677433333332
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.177558,
+            "p95_ms": 0.196946,
+            "mean_ms": 0.1861313733333334
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_and_64_values",
+          "round": 1,
+          "cpu_submit": {
+            "median_ms": 0.6852079999999999,
+            "p95_ms": 0.748196,
+            "mean_ms": 0.69498726
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.714029,
+            "p95_ms": 0.779961,
+            "mean_ms": 0.7260452999999997
+          }
+        },
+        {
+          "implementation": "egui_glow",
+          "scenario": "scope_and_64_values",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.6556510000000001,
+            "p95_ms": 0.718106,
+            "mean_ms": 0.6609600266666669
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.6849799999999999,
+            "p95_ms": 0.7578520000000001,
+            "mean_ms": 0.6935259766666666
+          }
+        },
+        {
+          "implementation": "shared_wgpu",
+          "scenario": "scope_and_64_values",
+          "round": 2,
+          "cpu_submit": {
+            "median_ms": 0.134189,
+            "p95_ms": 0.150853,
+            "mean_ms": 0.14142441333333322
+          },
+          "cpu_and_gpu": {
+            "median_ms": 0.178056,
+            "p95_ms": 0.19752999999999998,
+            "mean_ms": 0.18734402333333341
+          }
+        }
+      ],
+      "opengl_adapter": "NVIDIA GeForce RTX 4080 Laptop GPU/PCIe/SSE2"
+    }
+  },
+  "browser_gpu_metadata": {
+    "previous": {
+      "devices": [
+        {
+          "vendorId": 4318,
+          "deviceId": 10144,
+          "vendorString": "Google Inc. (NVIDIA)",
+          "deviceString": "ANGLE (NVIDIA, Vulkan 1.4.351 (NVIDIA NVIDIA GeForce RTX 4080 Laptop GPU (0x000027A0)), NVIDIA-615.78.8.0)",
+          "driverVendor": "NVIDIA",
+          "driverVersion": "615.78.8.0"
+        }
+      ],
+      "auxAttributes": {
+        "amdSwitchable": false,
+        "canSupportThreadedTextureMailbox": false,
+        "directRenderingVersion": "",
+        "displayType": "ANGLE_VULKAN",
+        "glExtensions": "GL_AMD_performance_monitor GL_ANGLE_base_vertex_base_instance_shader_builtin GL_ANGLE_blob_cache GL_ANGLE_client_arrays GL_ANGLE_copy_texture_3d GL_ANGLE_depth_texture GL_ANGLE_framebuffer_blit GL_ANGLE_framebuffer_multisample GL_ANGLE_get_image GL_ANGLE_get_serialized_context_string GL_ANGLE_get_tex_level_parameter GL_ANGLE_instanced_arrays GL_ANGLE_logic_op GL_ANGLE_memory_object_flags GL_ANGLE_memory_size GL_ANGLE_multi_draw GL_ANGLE_pack_reverse_row_order GL_ANGLE_polygon_mode GL_ANGLE_program_binary_readiness_query GL_ANGLE_program_cache_control GL_ANGLE_read_only_depth_stencil_feedback_loops GL_ANGLE_relaxed_vertex_attribute_type GL_ANGLE_renderability_validation GL_ANGLE_request_extension GL_ANGLE_rgbx_internal_format GL_ANGLE_robust_client_memory GL_ANGLE_robust_fragment_shader_output GL_ANGLE_shader_pixel_local_storage GL_ANGLE_shader_pixel_local_storage_coherent GL_ANGLE_stencil_texturing GL_ANGLE_texture_compression_dxt3 GL_ANGLE_texture_compression_dxt5 GL_ANGLE_texture_multisample GL_ANGLE_texture_usage GL_ANGLE_translated_shader_source GL_ANGLE_vulkan_image GL_ANGLE_yuv_internal_format GL_ARM_rgba8 GL_ARM_shader_framebuffer_fetch GL_CHROMIUM_bind_generates_resource GL_CHROMIUM_bind_uniform_location GL_CHROMIUM_copy_compressed_texture GL_CHROMIUM_copy_texture GL_CHROMIUM_lose_context GL_EXT_EGL_image_array GL_EXT_EGL_image_external_wrap_modes GL_EXT_EGL_image_storage GL_EXT_base_instance GL_EXT_blend_func_extended GL_EXT_blend_minmax GL_EXT_buffer_storage GL_EXT_clear_texture GL_EXT_clip_control GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_compressed_ETC1_RGB8_sub_texture GL_EXT_conservative_depth GL_EXT_copy_image GL_EXT_debug_label GL_EXT_debug_marker GL_EXT_depth_clamp GL_EXT_discard_framebuffer GL_EXT_disjoint_timer_query GL_EXT_draw_buffers GL_EXT_draw_buffers_indexed GL_EXT_draw_elements_base_vertex GL_EXT_float_blend GL_EXT_frag_depth GL_EXT_fragment_shading_rate GL_EXT_fragment_shading_rate_primitive GL_EXT_instanced_arrays GL_EXT_map_buffer_range GL_EXT_memory_object GL_EXT_memory_object_fd GL_EXT_multisample_compatibility GL_EXT_occlusion_query_boolean GL_EXT_polygon_offset_clamp GL_EXT_read_format_bgra GL_EXT_render_snorm GL_EXT_robustness GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_semaphore GL_EXT_semaphore_fd GL_EXT_separate_shader_objects GL_EXT_shader_framebuffer_fetch GL_EXT_shader_framebuffer_fetch_non_coherent GL_EXT_shader_non_constant_global_initializers GL_EXT_shader_texture_lod GL_EXT_shadow_samplers GL_EXT_texture_border_clamp GL_EXT_texture_compression_bptc GL_EXT_texture_compression_dxt1 GL_EXT_texture_compression_rgtc GL_EXT_texture_compression_s3tc_srgb GL_EXT_texture_filter_anisotropic GL_EXT_texture_format_BGRA8888 GL_EXT_texture_lod_bias GL_EXT_texture_mirror_clamp_to_edge GL_EXT_texture_norm16 GL_EXT_texture_rg GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_decode GL_EXT_texture_shadow_lod GL_EXT_texture_storage GL_EXT_texture_type_2_10_10_10_REV GL_EXT_unpack_subimage GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_KHR_debug GL_KHR_robustness GL_NV_fence GL_NV_framebuffer_blit GL_NV_pack_subimage GL_NV_pixel_buffer_object GL_NV_polygon_mode GL_NV_read_depth GL_NV_read_depth_stencil GL_NV_read_stencil GL_NV_shader_noperspective_interpolation GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_compressed_ETC1_RGB8_texture GL_OES_compressed_paletted_texture GL_OES_copy_image GL_OES_depth24 GL_OES_depth32 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_draw_buffers_indexed GL_OES_draw_elements_base_vertex GL_OES_element_index_uint GL_OES_fbo_render_mipmap GL_OES_get_program_binary GL_OES_mapbuffer GL_OES_packed_depth_stencil GL_OES_required_internalformat GL_OES_rgb8_rgba8 GL_OES_sample_shading GL_OES_sample_variables GL_OES_shader_multisample_interpolation GL_OES_standard_derivatives GL_OES_surfaceless_context GL_OES_texture_3D GL_OES_texture_border_clamp GL_OES_texture_float GL_OES_texture_float_linear GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_texture_npot GL_OES_texture_stencil8 GL_OES_texture_storage_multisample_2d_array GL_OES_vertex_array_object GL_OES_vertex_half_float GL_OES_vertex_type_10_10_10_2 GL_OVR_multiview GL_OVR_multiview2 GL_QCOM_shading_rate GL_QCOM_texture_lod_bias ",
+        "glImplementationParts": "(gl=egl-angle,angle=vulkan)",
+        "glRenderer": "ANGLE (NVIDIA, Vulkan 1.4.351 (NVIDIA NVIDIA GeForce RTX 4080 Laptop GPU (0x000027A0)), NVIDIA-615.78.8.0)",
+        "glResetNotificationStrategy": 33362,
+        "glVendor": "Google Inc. (NVIDIA)",
+        "glVersion": "OpenGL ES 3.0 (ANGLE 2.1.28973 git hash: 3b89d84e9d59)",
+        "glWsExtensions": "EGL_EXT_create_context_robustness EGL_ANGLE_surface_orientation EGL_KHR_create_context EGL_KHR_image EGL_KHR_image_base EGL_EXT_image_gl_colorspace EGL_KHR_gl_colorspace EGL_KHR_gl_texture_2D_image EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_texture_3D_image EGL_KHR_gl_renderbuffer_image EGL_KHR_get_all_proc_addresses EGL_KHR_fence_sync EGL_KHR_wait_sync EGL_ANGLE_create_context_webgl_compatibility EGL_CHROMIUM_create_context_bind_generates_resource EGL_KHR_swap_buffers_with_damage EGL_EXT_pixel_format_float EGL_KHR_surfaceless_context EGL_ANGLE_display_texture_share_group EGL_ANGLE_display_semaphore_share_group EGL_ANGLE_create_context_client_arrays EGL_ANGLE_program_cache_control EGL_ANGLE_robust_resource_initialization EGL_ANGLE_create_context_extensions_enabled EGL_ANDROID_blob_cache EGL_ANDROID_recordable EGL_ANDROID_native_fence_sync EGL_ANGLE_create_context_backwards_compatible EGL_KHR_no_config_context EGL_IMG_context_priority EGL_KHR_create_context_no_error EGL_EXT_image_dma_buf_import EGL_EXT_image_dma_buf_import_modifiers EGL_KHR_reusable_sync EGL_EXT_buffer_age EGL_KHR_mutable_render_buffer EGL_ANGLE_create_surface_swap_interval EGL_ANGLE_vulkan_image EGL_KHR_partial_update EGL_ANGLE_global_fence_sync EGL_ANGLE_memory_usage_report ",
+        "glWsVendor": "Google Inc. (NVIDIA)",
+        "glWsVersion": "1.5 (ANGLE 2.1.28973 git hash: 3b89d84e9d59)",
+        "hardwareSupportsVulkan": true,
+        "inProcessGpu": false,
+        "initializationTime": 0.225285,
+        "isAsan": false,
+        "isClangCoverage": false,
+        "jpegDecodeAcceleratorSupported": false,
+        "maxMsaaSamples": "8",
+        "optimus": false,
+        "passthroughCmdDecoder": true,
+        "pixelShaderVersion": "3.00",
+        "processCrashCount": 0,
+        "sandboxed": false,
+        "skiaBackendType": "GaneshVulkan",
+        "subpixelFontRendering": true,
+        "targetCpuBits": 64,
+        "vertexShaderVersion": "3.00",
+        "visibilityCallbackCallCount": 0
+      },
+      "featureStatus": {
+        "2d_canvas": "enabled",
+        "direct_rendering_display_compositor": "disabled_off_ok",
+        "gpu_compositing": "enabled",
+        "multiple_raster_threads": "enabled_on",
+        "opengl": "enabled_on",
+        "rasterization": "enabled",
+        "raw_draw": "disabled_off_ok",
+        "skia_graphite": "disabled_off",
+        "trees_in_viz": "disabled_off",
+        "video_decode": "enabled",
+        "video_encode": "disabled_software",
+        "vulkan": "enabled_on",
+        "webgl": "enabled",
+        "webgpu": "enabled",
+        "webgpu_on_vk_via_gl_interop": "disabled_off",
+        "webnn": "disabled_off"
+      },
+      "driverBugWorkarounds": [
+        "enable_webgl_timer_query_extensions",
+        "exit_on_context_lost",
+        "disabled_extension_GL_KHR_blend_equation_advanced",
+        "disabled_extension_GL_KHR_blend_equation_advanced_coherent"
+      ],
+      "videoDecoding": [],
+      "videoEncoding": []
+    },
+    "optimized": {
+      "devices": [
+        {
+          "vendorId": 4318,
+          "deviceId": 10144,
+          "vendorString": "Google Inc. (NVIDIA)",
+          "deviceString": "ANGLE (NVIDIA, Vulkan 1.4.351 (NVIDIA NVIDIA GeForce RTX 4080 Laptop GPU (0x000027A0)), NVIDIA-615.78.8.0)",
+          "driverVendor": "NVIDIA",
+          "driverVersion": "615.78.8.0"
+        }
+      ],
+      "auxAttributes": {
+        "amdSwitchable": false,
+        "canSupportThreadedTextureMailbox": false,
+        "directRenderingVersion": "",
+        "displayType": "ANGLE_VULKAN",
+        "glExtensions": "GL_AMD_performance_monitor GL_ANGLE_base_vertex_base_instance_shader_builtin GL_ANGLE_blob_cache GL_ANGLE_client_arrays GL_ANGLE_copy_texture_3d GL_ANGLE_depth_texture GL_ANGLE_framebuffer_blit GL_ANGLE_framebuffer_multisample GL_ANGLE_get_image GL_ANGLE_get_serialized_context_string GL_ANGLE_get_tex_level_parameter GL_ANGLE_instanced_arrays GL_ANGLE_logic_op GL_ANGLE_memory_object_flags GL_ANGLE_memory_size GL_ANGLE_multi_draw GL_ANGLE_pack_reverse_row_order GL_ANGLE_polygon_mode GL_ANGLE_program_binary_readiness_query GL_ANGLE_program_cache_control GL_ANGLE_read_only_depth_stencil_feedback_loops GL_ANGLE_relaxed_vertex_attribute_type GL_ANGLE_renderability_validation GL_ANGLE_request_extension GL_ANGLE_rgbx_internal_format GL_ANGLE_robust_client_memory GL_ANGLE_robust_fragment_shader_output GL_ANGLE_shader_pixel_local_storage GL_ANGLE_shader_pixel_local_storage_coherent GL_ANGLE_stencil_texturing GL_ANGLE_texture_compression_dxt3 GL_ANGLE_texture_compression_dxt5 GL_ANGLE_texture_multisample GL_ANGLE_texture_usage GL_ANGLE_translated_shader_source GL_ANGLE_vulkan_image GL_ANGLE_yuv_internal_format GL_ARM_rgba8 GL_ARM_shader_framebuffer_fetch GL_CHROMIUM_bind_generates_resource GL_CHROMIUM_bind_uniform_location GL_CHROMIUM_copy_compressed_texture GL_CHROMIUM_copy_texture GL_CHROMIUM_lose_context GL_EXT_EGL_image_array GL_EXT_EGL_image_external_wrap_modes GL_EXT_EGL_image_storage GL_EXT_base_instance GL_EXT_blend_func_extended GL_EXT_blend_minmax GL_EXT_buffer_storage GL_EXT_clear_texture GL_EXT_clip_control GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_compressed_ETC1_RGB8_sub_texture GL_EXT_conservative_depth GL_EXT_copy_image GL_EXT_debug_label GL_EXT_debug_marker GL_EXT_depth_clamp GL_EXT_discard_framebuffer GL_EXT_disjoint_timer_query GL_EXT_draw_buffers GL_EXT_draw_buffers_indexed GL_EXT_draw_elements_base_vertex GL_EXT_float_blend GL_EXT_frag_depth GL_EXT_fragment_shading_rate GL_EXT_fragment_shading_rate_primitive GL_EXT_instanced_arrays GL_EXT_map_buffer_range GL_EXT_memory_object GL_EXT_memory_object_fd GL_EXT_multisample_compatibility GL_EXT_occlusion_query_boolean GL_EXT_polygon_offset_clamp GL_EXT_read_format_bgra GL_EXT_render_snorm GL_EXT_robustness GL_EXT_sRGB GL_EXT_sRGB_write_control GL_EXT_semaphore GL_EXT_semaphore_fd GL_EXT_separate_shader_objects GL_EXT_shader_framebuffer_fetch GL_EXT_shader_framebuffer_fetch_non_coherent GL_EXT_shader_non_constant_global_initializers GL_EXT_shader_texture_lod GL_EXT_shadow_samplers GL_EXT_texture_border_clamp GL_EXT_texture_compression_bptc GL_EXT_texture_compression_dxt1 GL_EXT_texture_compression_rgtc GL_EXT_texture_compression_s3tc_srgb GL_EXT_texture_filter_anisotropic GL_EXT_texture_format_BGRA8888 GL_EXT_texture_lod_bias GL_EXT_texture_mirror_clamp_to_edge GL_EXT_texture_norm16 GL_EXT_texture_rg GL_EXT_texture_sRGB_R8 GL_EXT_texture_sRGB_decode GL_EXT_texture_shadow_lod GL_EXT_texture_storage GL_EXT_texture_type_2_10_10_10_REV GL_EXT_unpack_subimage GL_KHR_blend_equation_advanced GL_KHR_blend_equation_advanced_coherent GL_KHR_debug GL_KHR_robustness GL_NV_fence GL_NV_framebuffer_blit GL_NV_pack_subimage GL_NV_pixel_buffer_object GL_NV_polygon_mode GL_NV_read_depth GL_NV_read_depth_stencil GL_NV_read_stencil GL_NV_shader_noperspective_interpolation GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_EGL_image_external_essl3 GL_OES_EGL_sync GL_OES_compressed_ETC1_RGB8_texture GL_OES_compressed_paletted_texture GL_OES_copy_image GL_OES_depth24 GL_OES_depth32 GL_OES_depth_texture GL_OES_depth_texture_cube_map GL_OES_draw_buffers_indexed GL_OES_draw_elements_base_vertex GL_OES_element_index_uint GL_OES_fbo_render_mipmap GL_OES_get_program_binary GL_OES_mapbuffer GL_OES_packed_depth_stencil GL_OES_required_internalformat GL_OES_rgb8_rgba8 GL_OES_sample_shading GL_OES_sample_variables GL_OES_shader_multisample_interpolation GL_OES_standard_derivatives GL_OES_surfaceless_context GL_OES_texture_3D GL_OES_texture_border_clamp GL_OES_texture_float GL_OES_texture_float_linear GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_texture_npot GL_OES_texture_stencil8 GL_OES_texture_storage_multisample_2d_array GL_OES_vertex_array_object GL_OES_vertex_half_float GL_OES_vertex_type_10_10_10_2 GL_OVR_multiview GL_OVR_multiview2 GL_QCOM_shading_rate GL_QCOM_texture_lod_bias ",
+        "glImplementationParts": "(gl=egl-angle,angle=vulkan)",
+        "glRenderer": "ANGLE (NVIDIA, Vulkan 1.4.351 (NVIDIA NVIDIA GeForce RTX 4080 Laptop GPU (0x000027A0)), NVIDIA-615.78.8.0)",
+        "glResetNotificationStrategy": 33362,
+        "glVendor": "Google Inc. (NVIDIA)",
+        "glVersion": "OpenGL ES 3.0 (ANGLE 2.1.28973 git hash: 3b89d84e9d59)",
+        "glWsExtensions": "EGL_EXT_create_context_robustness EGL_ANGLE_surface_orientation EGL_KHR_create_context EGL_KHR_image EGL_KHR_image_base EGL_EXT_image_gl_colorspace EGL_KHR_gl_colorspace EGL_KHR_gl_texture_2D_image EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_texture_3D_image EGL_KHR_gl_renderbuffer_image EGL_KHR_get_all_proc_addresses EGL_KHR_fence_sync EGL_KHR_wait_sync EGL_ANGLE_create_context_webgl_compatibility EGL_CHROMIUM_create_context_bind_generates_resource EGL_KHR_swap_buffers_with_damage EGL_EXT_pixel_format_float EGL_KHR_surfaceless_context EGL_ANGLE_display_texture_share_group EGL_ANGLE_display_semaphore_share_group EGL_ANGLE_create_context_client_arrays EGL_ANGLE_program_cache_control EGL_ANGLE_robust_resource_initialization EGL_ANGLE_create_context_extensions_enabled EGL_ANDROID_blob_cache EGL_ANDROID_recordable EGL_ANDROID_native_fence_sync EGL_ANGLE_create_context_backwards_compatible EGL_KHR_no_config_context EGL_IMG_context_priority EGL_KHR_create_context_no_error EGL_EXT_image_dma_buf_import EGL_EXT_image_dma_buf_import_modifiers EGL_KHR_reusable_sync EGL_EXT_buffer_age EGL_KHR_mutable_render_buffer EGL_ANGLE_create_surface_swap_interval EGL_ANGLE_vulkan_image EGL_KHR_partial_update EGL_ANGLE_global_fence_sync EGL_ANGLE_memory_usage_report ",
+        "glWsVendor": "Google Inc. (NVIDIA)",
+        "glWsVersion": "1.5 (ANGLE 2.1.28973 git hash: 3b89d84e9d59)",
+        "hardwareSupportsVulkan": true,
+        "inProcessGpu": false,
+        "initializationTime": 0.226646,
+        "isAsan": false,
+        "isClangCoverage": false,
+        "jpegDecodeAcceleratorSupported": false,
+        "maxMsaaSamples": "8",
+        "optimus": false,
+        "passthroughCmdDecoder": true,
+        "pixelShaderVersion": "3.00",
+        "processCrashCount": 0,
+        "sandboxed": false,
+        "skiaBackendType": "GaneshVulkan",
+        "subpixelFontRendering": true,
+        "targetCpuBits": 64,
+        "vertexShaderVersion": "3.00",
+        "visibilityCallbackCallCount": 0
+      },
+      "featureStatus": {
+        "2d_canvas": "enabled",
+        "direct_rendering_display_compositor": "disabled_off_ok",
+        "gpu_compositing": "enabled",
+        "multiple_raster_threads": "enabled_on",
+        "opengl": "enabled_on",
+        "rasterization": "enabled",
+        "raw_draw": "disabled_off_ok",
+        "skia_graphite": "disabled_off",
+        "trees_in_viz": "disabled_off",
+        "video_decode": "enabled",
+        "video_encode": "disabled_software",
+        "vulkan": "enabled_on",
+        "webgl": "enabled",
+        "webgpu": "enabled",
+        "webgpu_on_vk_via_gl_interop": "disabled_off",
+        "webnn": "disabled_off"
+      },
+      "driverBugWorkarounds": [
+        "enable_webgl_timer_query_extensions",
+        "exit_on_context_lost",
+        "disabled_extension_GL_KHR_blend_equation_advanced",
+        "disabled_extension_GL_KHR_blend_equation_advanced_coherent"
+      ],
+      "videoDecoding": [],
+      "videoEncoding": []
+    }
+  },
+  "browser_samples": {
+    "previous": [
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_only",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 1.199999999254942,
+          "p95_ms": 1.6000000014901161,
+          "mean_ms": 1.1988888887274596
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.30000000074505806,
+          "p95_ms": 0.5,
+          "mean_ms": 0.32999999986754525
+        },
+        "wall_ms": 3030.400000002235,
+        "context": "webgpu",
+        "error": null,
+        "cpu_task_ms_per_update": 2.0136055555555554,
+        "script_ms_per_update": 1.5347,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_only",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.030555555514163443
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.19999999925494194,
+          "p95_ms": 0.30000000074505806,
+          "mean_ms": 0.1711111110324661
+        },
+        "wall_ms": 3031.199999999255,
+        "context": "2d",
+        "error": null,
+        "cpu_task_ms_per_update": 4.648566666666667,
+        "script_ms_per_update": 0.22832222222222226,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_only",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.031111111098693477
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.19999999925494194,
+          "p95_ms": 0.30000000074505806,
+          "mean_ms": 0.18388888897995154
+        },
+        "wall_ms": 3029.199999999255,
+        "context": "2d",
+        "error": null,
+        "cpu_task_ms_per_update": 4.613477777777778,
+        "script_ms_per_update": 0.2310944444444445,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_only",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 1.199999999254942,
+          "p95_ms": 1.5,
+          "mean_ms": 1.2161111114339695
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.30000000074505806,
+          "p95_ms": 0.5,
+          "mean_ms": 0.3316666665590472
+        },
+        "wall_ms": 3030.699999999255,
+        "context": "webgpu",
+        "error": null,
+        "cpu_task_ms_per_update": 2.0245444444444445,
+        "script_ms_per_update": 1.5526166666666668,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_only",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 1.199999999254942,
+          "p95_ms": 1.4000000022351742,
+          "mean_ms": 1.2277777778191699
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.30000000074505806,
+          "p95_ms": 0.5,
+          "mean_ms": 0.33777777747147614
+        },
+        "wall_ms": 3030.199999999255,
+        "context": "webgpu",
+        "error": null,
+        "cpu_task_ms_per_update": 2.0549055555555555,
+        "script_ms_per_update": 1.5695333333333332,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_only",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.03166666666252745
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.19999999925494194,
+          "p95_ms": 0.30000000074505806,
+          "mean_ms": 0.1655555557459593
+        },
+        "wall_ms": 3030.900000002235,
+        "context": "2d",
+        "error": null,
+        "cpu_task_ms_per_update": 4.605099999999999,
+        "script_ms_per_update": 0.2267111111111111,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 1.4000000022351742,
+          "p95_ms": 2,
+          "mean_ms": 1.486111111049023
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 1,
+          "p95_ms": 1.3999999985098839,
+          "mean_ms": 1.026111111148364
+        },
+        "wall_ms": 3031.10000000149,
+        "context": "webgpu",
+        "error": null,
+        "cpu_task_ms_per_update": 2.987633333333333,
+        "script_ms_per_update": 2.506877777777778,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.7999999970197678,
+          "p95_ms": 1.199999999254942,
+          "mean_ms": 0.7749999997516474
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.10000000149011612,
+          "p95_ms": 0.20000000298023224,
+          "mean_ms": 0.10444444475902451
+        },
+        "wall_ms": 3031.5,
+        "context": "2d",
+        "error": null,
+        "cpu_task_ms_per_update": 8.44505,
+        "script_ms_per_update": 0.8821611111111112,
+        "layout_ms_per_update": 1.8796666666666668,
+        "recalc_ms_per_update": 1.2229388888888888
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.8000000007450581,
+          "p95_ms": 1.0999999977648258,
+          "mean_ms": 0.7888888888474967
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.10000000149011612,
+          "p95_ms": 0.19999999925494194,
+          "mean_ms": 0.10055555570870638
+        },
+        "wall_ms": 3030.199999999255,
+        "context": "2d",
+        "error": null,
+        "cpu_task_ms_per_update": 8.27405,
+        "script_ms_per_update": 0.8937999999999999,
+        "layout_ms_per_update": 1.829222222222222,
+        "recalc_ms_per_update": 1.2190666666666665
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 1.5,
+          "p95_ms": 2,
+          "mean_ms": 1.491111111164921
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 1,
+          "p95_ms": 1.3999999985098839,
+          "mean_ms": 1.0166666667080588
+        },
+        "wall_ms": 3030.7000000029802,
+        "context": "webgpu",
+        "error": null,
+        "cpu_task_ms_per_update": 2.9738277777777777,
+        "script_ms_per_update": 2.495527777777778,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 1.5,
+          "p95_ms": 2,
+          "mean_ms": 1.5105555556093653
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 1,
+          "p95_ms": 1.300000000745058,
+          "mean_ms": 1.0338888889592555
+        },
+        "wall_ms": 3031.5,
+        "context": "webgpu",
+        "error": null,
+        "cpu_task_ms_per_update": 3.0198611111111116,
+        "script_ms_per_update": 2.53875,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.7999999970197678,
+          "p95_ms": 1.2999999970197678,
+          "mean_ms": 0.8111111110283269
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.10000000149011612,
+          "p95_ms": 0.20000000298023224,
+          "mean_ms": 0.11055555552658107
+        },
+        "wall_ms": 3031.099999997765,
+        "context": "2d",
+        "error": null,
+        "cpu_task_ms_per_update": 8.909300000000002,
+        "script_ms_per_update": 0.9318833333333334,
+        "layout_ms_per_update": 1.9689722222222221,
+        "recalc_ms_per_update": 1.2790666666666666
+      }
+    ],
+    "optimized": [
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_only",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.01888888885991441
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.3999999985098839,
+          "p95_ms": 0.5,
+          "mean_ms": 0.36777777758737407
+        },
+        "wall_ms": 3031.199999999255,
+        "context": "webgpu",
+        "scope_wire_bytes": 3756,
+        "error": null,
+        "cpu_task_ms_per_update": 0.8918333333333334,
+        "script_ms_per_update": 0.4056222222222222,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_only",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.02555555548104975
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.19999999925494194,
+          "p95_ms": 0.30000000074505806,
+          "mean_ms": 0.14999999983443155
+        },
+        "wall_ms": 3031.300000000745,
+        "context": "2d",
+        "scope_wire_bytes": 40692,
+        "error": null,
+        "cpu_task_ms_per_update": 3.8411500000000003,
+        "script_ms_per_update": 0.1997611111111111,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_only",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.029999999950329464
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.19999999925494194,
+          "p95_ms": 0.30000000074505806,
+          "mean_ms": 0.16333333346992732
+        },
+        "wall_ms": 3030.199999999255,
+        "context": "2d",
+        "scope_wire_bytes": 40692,
+        "error": null,
+        "cpu_task_ms_per_update": 4.313072222222223,
+        "script_ms_per_update": 0.2122277777777778,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_only",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.026666666608717707
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.3999999985098839,
+          "p95_ms": 0.6000000014901161,
+          "mean_ms": 0.40055555558453004
+        },
+        "wall_ms": 3031.300000000745,
+        "context": "webgpu",
+        "scope_wire_bytes": 3756,
+        "error": null,
+        "cpu_task_ms_per_update": 0.9334500000000001,
+        "script_ms_per_update": 0.4349333333333334,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_only",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.020555555613504514
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.3999999985098839,
+          "p95_ms": 0.5999999977648258,
+          "mean_ms": 0.37333333320501777
+        },
+        "wall_ms": 3030.60000000149,
+        "context": "webgpu",
+        "scope_wire_bytes": 3756,
+        "error": null,
+        "cpu_task_ms_per_update": 0.9113500000000002,
+        "script_ms_per_update": 0.41753333333333337,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_only",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.02666666658802165
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.19999999925494194,
+          "p95_ms": 0.30000000074505806,
+          "mean_ms": 0.18277777772810724
+        },
+        "wall_ms": 3030.099999997765,
+        "context": "2d",
+        "scope_wire_bytes": 40692,
+        "error": null,
+        "cpu_task_ms_per_update": 4.675555555555556,
+        "script_ms_per_update": 0.2378611111111111,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.05333333338300387
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 1.300000000745058,
+          "p95_ms": 1.800000000745058,
+          "mean_ms": 1.3894444442457623
+        },
+        "wall_ms": 3030.10000000149,
+        "context": "webgpu",
+        "scope_wire_bytes": 3756,
+        "error": null,
+        "cpu_task_ms_per_update": 1.9374999999999998,
+        "script_ms_per_update": 1.4479833333333334,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.7999999970197678,
+          "p95_ms": 1.199999999254942,
+          "mean_ms": 0.773333333267106
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.10000000149011612,
+          "p95_ms": 0.20000000298023224,
+          "mean_ms": 0.10388888905031814
+        },
+        "wall_ms": 3030.60000000149,
+        "context": "2d",
+        "scope_wire_bytes": 40692,
+        "error": null,
+        "cpu_task_ms_per_update": 8.340655555555557,
+        "script_ms_per_update": 0.8852055555555555,
+        "layout_ms_per_update": 1.852111111111111,
+        "recalc_ms_per_update": 1.2020444444444445
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.7999999970197678,
+          "p95_ms": 1.199999999254942,
+          "mean_ms": 0.8027777779019541
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.10000000149011612,
+          "p95_ms": 0.20000000298023224,
+          "mean_ms": 0.10166666667080587
+        },
+        "wall_ms": 3028.199999999255,
+        "context": "2d",
+        "scope_wire_bytes": 40692,
+        "error": null,
+        "cpu_task_ms_per_update": 8.552944444444442,
+        "script_ms_per_update": 0.9131444444444445,
+        "layout_ms_per_update": 1.9003611111111107,
+        "recalc_ms_per_update": 1.2457277777777775
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "handler": {
+          "count": 180,
+          "median_ms": 0,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.04277777775294251
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 1.300000000745058,
+          "p95_ms": 1.7999999970197678,
+          "mean_ms": 1.360555555547277
+        },
+        "wall_ms": 3031.400000002235,
+        "context": "webgpu",
+        "scope_wire_bytes": 3756,
+        "error": null,
+        "cpu_task_ms_per_update": 1.8861055555555555,
+        "script_ms_per_update": 1.407627777777778,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "shared_wasm",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.09999999776482582,
+          "p95_ms": 0.10000000149011612,
+          "mean_ms": 0.05777777781089147
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 1.4000000022351742,
+          "p95_ms": 1.800000000745058,
+          "mean_ms": 1.4355555554851889
+        },
+        "wall_ms": 3031.2999999970198,
+        "context": "webgpu",
+        "scope_wire_bytes": 3756,
+        "error": null,
+        "cpu_task_ms_per_update": 1.9915333333333334,
+        "script_ms_per_update": 1.48835,
+        "layout_ms_per_update": 0,
+        "recalc_ms_per_update": 0
+      },
+      {
+        "implementation": "dom_canvas2d",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "handler": {
+          "count": 180,
+          "median_ms": 0.8000000007450581,
+          "p95_ms": 1.1000000014901161,
+          "mean_ms": 0.7933333333374726
+        },
+        "render_callback": {
+          "count": 180,
+          "median_ms": 0.10000000149011612,
+          "p95_ms": 0.20000000298023224,
+          "mean_ms": 0.10500000001241763
+        },
+        "wall_ms": 3030.7999999970198,
+        "context": "2d",
+        "scope_wire_bytes": 40692,
+        "error": null,
+        "cpu_task_ms_per_update": 8.91312222222222,
+        "script_ms_per_update": 0.9081277777777779,
+        "layout_ms_per_update": 1.9484888888888892,
+        "recalc_ms_per_update": 1.2442166666666667
+      }
+    ]
+  },
+  "validation": {
+    "scope_tests": 4,
+    "ui_model_tests": 10,
+    "run_controller_playback_tests": 88,
+    "cli_tests": 79,
+    "vscode_tests": 173,
+    "browser_backends": [
+      "webgpu",
+      "webgl2"
+    ],
+    "native_juce_smoke": "passed",
+    "clippy_native_and_wasm": "passed"
+  },
+  "optimized_source_sha256": {
+    "crates/onda_scope/src/lib.rs": "fb9f735c5e609239a9ca7b3cd7e97dc8e8a7ac6345e81ab763c826353d687ffc",
+    "crates/onda_run/src/control_client.rs": "91382e4ece3c8beeefd074f4bf6c148af9d3484876e2132bc7eae7f680d11e50",
+    "crates/onda_run/src/lib.rs": "7fb45fd9ed9455751058833fd63c7f851611b3bc65dec0e0708eb4c7ebff813f",
+    "crates/onda_run/src/playback.rs": "c9a3b8ae461759ddc6c72cee0d5bdf3ad53f3b94db946b1de20111f40909535e",
+    "crates/onda_ui/src/model.rs": "c9815ef993c01aa7a5cadab797da7b706f6e94cdf35f84720dc4b348dd0c4c73",
+    "crates/onda_ui/src/renderer.rs": "074f8c6305907e8340ba0181306a83b6371c1e0e2ce352564d9680176840bb47",
+    "crates/onda_ui/src/ui.wgsl": "a04fee084100da3c78068fc19515e12805c93f022eb9ff14ba77d0c4c848ccc4",
+    "crates/onda_ui/src/web.rs": "f90ab7adb09e103aabc19b48b4e7840f1b0d0e8d0ec4728fdb568d82b6877bea",
+    "ui/gpu/host.js": "9f729b3cd5f1b38cfa936a54fde6b9ebd0258f563147e3f1558e83df9d5e2e04",
+    "ui/gpu/pkg/onda_ui_bg.wasm": "c3c1e3895123d89d8fc26d7eef314233109307e70659d8d49e60afd59470f2b4",
+    "scripts/bench/ui-browser.mjs": "c6010627cfe2823de7ccce4937b87e19598bd0e8f50c641d37c972be29d0ddd7",
+    "crates/onda_ui/examples/compare_native.rs": "18a983d716e504eeddc48a253cb41c4148411d08a86d9bfdff6d9f37528c4414",
+    "crates/onda_run/examples/scope_cadence.rs": "8d271267f0ebeedaeb3c9e44f2c303041ee16ecc82df72036e3ea12be5ea7538",
+    "crates/onda_gpu/src/lib.rs": "62eca6f7396b604a0b750a491b6ad0d9a40cb5c6e3e2cb85cfde0d526b006b57"
+  }
+}

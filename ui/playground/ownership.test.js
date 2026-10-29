@@ -33,7 +33,7 @@ test("the shared run view presents the browser compiler's Onda version", async (
   assert.match(runView, /ondaVersionNumberNode\.textContent = ondaVersion/);
   assert.match(runView, /showOndaVersion\(incoming\.ondaVersion\)/);
   assert.match(playground, /import \{ createCompiler, ONDA_VERSION \}/);
-  assert.match(playground, /runView\.setState\(\{\s*ondaVersion: ONDA_VERSION,\s*paramSmoothingMs,/);
+  assert.match(playground, /runView\.setState\(\{\s*ondaVersion: ONDA_VERSION,/);
 });
 
 test("the shared run view keeps its scope visible while a source is loaded", async () => {
@@ -200,7 +200,7 @@ test("the shared run view keeps i64 event values outside JavaScript numbers", as
 test("the empty native run view owns its compile settings", async () => {
   const [runView, webview] = await Promise.all([
     readFile(resolve(repoRoot, "ui/run/run.html"), "utf8"),
-    readFile(resolve(repoRoot, "crates/onda_webview/src/lib.rs"), "utf8"),
+    readFile(resolve(repoRoot, "crates/onda_run/src/view_state.rs"), "utf8"),
   ]);
 
   assert.match(runView, /id="run-sample-rate"/);
@@ -222,12 +222,12 @@ test("the loaded run view includes active compile settings in its status", async
 test("the shared run view offers a device-cached knob layout", async () => {
   const runView = await readFile(resolve(repoRoot, "ui/run/run.html"), "utf8");
 
-  assert.match(runView, /data-param-layout="sliders" aria-pressed="false">Sliders/);
-  assert.match(runView, /data-param-layout="knobs" aria-pressed="true">Knobs/);
+  assert.match(runView, /data-param-layout="sliders" data-pressed="false">Sliders/);
+  assert.match(runView, /data-param-layout="knobs" data-pressed="true">Knobs/);
   assert.match(runView, /onda\.run-view\.param-layout\.v1/);
   assert.match(runView, /localStorage\.setItem\(key, controlLayouts\[bank\]\)/);
   assert.match(runView, /function createKnobControl\(/);
-  assert.match(runView, /knob\.setAttribute\("role", "slider"\)|initializeRangeControl\(knob, param, editable\)/);
+  assert.match(runView, /initializeRangeControl\(knob, editable\)/);
   assert.match(runView, /paramLayout === "knobs" \? createKnobControl : createSliderControl/);
   assert.match(
     runView,
@@ -319,15 +319,15 @@ test("the browser editor starts loaded projects as soon as the compiler is ready
 
   assert.match(
     playground,
-    /if \(initialProjectError\)[\s\S]*?else \{[\s\S]*?setStatus\("Ready", "ready"\);\s+await runProject\(\);/,
+    /if \(initialProjectError\)[\s\S]*?else \{[\s\S]*?setStatus\("Ready"\);\s+await runProject\(\);/,
   );
   assert.match(
     playground,
-    /async function openProjectFile[\s\S]*?setStatus\("Project loaded", "ready"\);\s+await runProject\(\);/,
+    /async function openProjectFile[\s\S]*?setStatus\("Project loaded"\);\s+await runProject\(\);/,
   );
 });
 
-test("browser compile settings default to 512 samples and recompile on change", async () => {
+test("browser compile settings live in the shared run UI and recompile on change", async () => {
   const [playground, examplePage, websitePage, runViewHost] = await Promise.all([
     readFile(resolve(repoRoot, "ui/playground/live.js"), "utf8"),
     readFile(resolve(repoRoot, "examples/web/onda_wasm_playground/index.html"), "utf8"),
@@ -336,13 +336,13 @@ test("browser compile settings default to 512 samples and recompile on change", 
   ]);
 
   for (const page of [examplePage, websitePage]) {
-    assert.match(page, /<option value="512" selected>512 samples<\/option>/);
-    assert.doesNotMatch(page, /<option value="1024" selected>/);
+    assert.doesNotMatch(page, /data-sample-rate|data-block-size/);
+    assert.match(page, /class="editor-font-size"/);
   }
   assert.match(runViewHost, /blockSamples: 512/);
   assert.match(
     playground,
-    /async function applyCompileOptions\(\)[\s\S]*?setAnalysisOptions\(options\)[\s\S]*?compiler \? runProject\(\) : null/,
+    /async function applyCompileOptions\(settings\)[\s\S]*?setAnalysisOptions\(options\)[\s\S]*?compiler \? runProject\(\) : null/,
   );
   assert.match(
     playground,
@@ -350,7 +350,7 @@ test("browser compile settings default to 512 samples and recompile on change", 
   );
   assert.match(
     playground,
-    /control\.addEventListener\("change", \(\) => void applyCompileOptions\(\)\)/,
+    /setRunSettings: \(\{ sampleRateHz, blockSamples \}\) =>\s+applyCompileOptions/,
   );
 });
 
@@ -363,7 +363,7 @@ test("the browser editor applies source with the save or run shortcut", async ()
   const saveOrRun = /event\.key === "Enter" \|\| event\.key\.toLowerCase\(\) === "s"/;
   assert.match(playground, saveOrRun);
   assert.match(runView, saveOrRun);
-  assert.match(playground, /const modSaveHandled = !sampleRateEl\.dispatchEvent\(saveEvent\)/);
+  assert.match(playground, /const modSaveHandled = !editorFontSizeEl\.dispatchEvent\(saveEvent\)/);
 });
 
 test("both native hosts preserve runtime options across unload", async () => {

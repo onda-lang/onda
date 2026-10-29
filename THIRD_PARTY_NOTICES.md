@@ -15,6 +15,9 @@ The complete applicable license texts accompany each distribution:
 - `licenses/LLVM-UNICODE-LICENSE.txt` — Unicode code and data included in LLVM Support.
 - `licenses/LLVM-MSVCSETUPAPI-LICENSE.txt` — Microsoft setup API code included in LLVM's Windows
   support.
+- `licenses/OFL-Inter.txt` — Inter, embedded in the shared GPU UI (SIL Open Font License 1.1).
+- `licenses/OFL-JetBrainsMono.txt` — JetBrains Mono, embedded in the shared GPU UI (SIL Open Font License 1.1).
+- `licenses/OFL-Noto*.txt` — Noto script and emoji fallback fonts (SIL Open Font License 1.1).
 - `licenses/RUST-DEPENDENCIES.txt` — Rust crates used by native and WebAssembly builds.
 - `licenses/MPL-2.0-SOURCES/` — exact source packages for MPL-2.0 Rust dependencies in native builds.
 - `licenses/BINARYEN-LICENSE.txt` — Binaryen, used by browser compiler builds.
@@ -23,3 +26,5 @@ The complete applicable license texts accompany each distribution:
 
 Not every distribution contains every component. A distribution may therefore
 omit license files for components it does not contain.
+
+Browser GPU bundles carry the font notices beside the renderer Wasm in `gpu/pkg/`.

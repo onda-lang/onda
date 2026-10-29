@@ -17,6 +17,9 @@ members = [
   "crates/onda_cpal",
   "crates/onda_run",
   "crates/onda_egui",
+  "crates/onda_ui",
+  "crates/onda_scope",
+  "crates/onda_gpu",
   "crates/onda_webview",
   "crates/onda_examples",
 ]

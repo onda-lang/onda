@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc::Sender, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use super::{
@@ -30,7 +30,7 @@ impl ChildSession {
         onda_path: &Path,
         options: &RunHostOptions,
         generation: u64,
-        event_tx: Sender<ControllerEvent>,
+        event_tx: super::EventSender,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(&options.onda_bin);
         cmd.arg("run")

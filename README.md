@@ -73,7 +73,7 @@ Tagged releases attach portable tarballs and publish the four public npm package
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend
 - [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
 - [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
-- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
+- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground with shared WebGPU/WebGL2 run panels
 - [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
 
 ## The `onda` CLI
@@ -135,6 +135,7 @@ onda run examples/basic/sine.onda
 Run host selection:
 - egui is the default run host
 - `--webview` selects the webview run host explicitly
+- `--gpu` selects the experimental shared wgpu run screen; see [GPU UI](ui/gpu/README.md)
 
 ### `onda run play`
 

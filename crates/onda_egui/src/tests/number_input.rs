@@ -1030,7 +1030,6 @@ fn event_number_reset_discards_a_draft_when_the_click_is_in_one_frame() {
                 }
                 render_event_scalar_editor(
                     ui,
-                    "test",
                     ty,
                     &mut value,
                     Some(&original),

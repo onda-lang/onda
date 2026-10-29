@@ -16,7 +16,9 @@ editable Onda source
 The shared UI consumes the public `@onda-lang/wasm-compiler`, `@onda-lang/processor-abi`, and
 `@onda-lang/webaudio` APIs. It contains a CodeMirror project editor with line numbers and multiple
 in-memory files, backed by the same Onda LSP implementation as `onda-vscode`. The existing shared
-`ui/run/run.html` view provides scope, parameter, event, typed-buffer, reset, stop, and play controls.
+Rust/wgpu canvas in `ui/gpu` provides all seven run panels, scope, and transport controls.
+It selects hardware WebGPU when available and falls back to WebGL2; append `?backend=webgl`
+to select WebGL2 explicitly. The CodeMirror source editor remains separate.
 Rust analysis, semantic compilation, and Binaryen O4 optimization run through the compiler package's
 module worker, so neither LSP requests nor compilation block editor interaction.
 The source is compiled in the browser; there is no compiler service, native Onda CLI, LLVM, or
@@ -70,7 +72,8 @@ bash ./examples/web/onda_wasm_playground/build-demo.sh --skip-build --serve
 
 This refreshes all staged UI and JavaScript assets using the existing compiler build.
 Omit `--serve` if the server is already running, then reload the page.
-Omit `--skip-build` when changing the Rust compiler or its packaged backend.
+Omit `--skip-build` when changing the Rust compiler, GPU renderer, or packaged backend.
+Alternatively, rebuild just the GPU renderer with `npm run build:gpu-ui` before staging.
 
 Use **Share** to copy a URL-fragment snapshot containing every project source file and the main and
 active files. The fragment stays in the browser and is compressed when supported. Compile settings
@@ -99,7 +102,7 @@ The scripts:
 - install the root npm workspace and its pinned `binaryen` dependency when it is missing
 - build the Rust frontend with `wasm-pack --release`, then optimize it with the workspace-pinned
   Binaryen `wasm-opt -O4`
-- stage the compiler, shared LSP/run view, ABI, and Web Audio modules
+- build the shared GPU renderer as Wasm and stage it with the compiler, LSP, ABI, and Web Audio modules
 - bundle the canonical `ui/playground` runtime and compiler worker, including Binaryen dependencies,
   into this example's static host
 - optionally start `server.mjs` on `127.0.0.1:8787`
@@ -123,6 +126,7 @@ All browser packages can be tested from the root workspace:
 npm ci
 npm run test:web
 npm run test:onda --workspace @onda-lang/binaryen-web
+CHROME_BIN=/path/to/chromium npm run test:gpu-web-editor
 ```
 
 The packaged-layout smoke test is also available separately:
@@ -206,5 +210,7 @@ the processor from starting.
   native hardware FMA in dense sample loops.
 - The standalone example stages development assets without compression or immutable URLs. The
   website build emits versioned assets; broader Chromium/Firefox/Safari audio coverage remains.
-- The current browser smoke endpoint verifies source-to-Wasm page compilation, not automated audible
-  AudioWorklet output; browser-audio automation remains a roadmap item.
+- Printed output requires cross-origin isolation (COOP/COEP headers), which the included server enables.
+  Without isolation, audio, controls, and scope still work, but authored prints are unavailable.
+- The Chrome integration suite verifies real, muted AudioWorklet processing for both browser hosts;
+  broader browser coverage and audible output checks remain manual.

@@ -206,7 +206,7 @@ mod tests {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let context = RunControlServerContext {
             control_tx,
-            scope_ring: Arc::new(Mutex::new(ScopeRing::new(0, 0))),
+            scope_ring: Arc::new(ScopeCapture::default()),
             stop_flag: stop_flag.clone(),
             output_rx,
             dropped_delegate_occurrences: Arc::new(AtomicU32::new(0)),

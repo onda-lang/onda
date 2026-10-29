@@ -3,6 +3,8 @@ import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { stageGpuUi } from "./stage-gpu-ui.mjs";
+
 import { bundleCompilerWorker, bundlePlayground } from "./bundle-web-playground.mjs";
 import { writeBundledJavaScriptLicenses } from "./bundled-javascript-licenses.mjs";
 import { buildExampleProjectCatalog } from "./example-projects.mjs";
@@ -84,9 +86,7 @@ const [playgroundBuild] = await Promise.all([
     resolve(assetsRoot, "example-projects.json"),
     `${JSON.stringify(catalog)}\n`,
   )),
-  cp(resolve(repoRoot, "ui/run/run.html"), resolve(assetsRoot, "run.html")),
-  cp(resolve(repoRoot, "ui/run/buffers.js"), resolve(assetsRoot, "buffers.js")),
-  cp(resolve(repoRoot, "ui/number-input.js"), resolve(assetsRoot, "number-input.js")),
+  stageGpuUi(resolve(assetsRoot, "gpu")),
 ]);
 
 const workerBuild = await bundleCompilerWorker(resolve(assetsRoot, "compiler-worker.js"));

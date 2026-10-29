@@ -1,0 +1,51 @@
+[package]
+name = "onda_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[features]
+default = []
+ffi = ["dep:raw-window-handle", "dep:pollster"]
+native-bench = []
+
+[[example]]
+name = "compare_native"
+required-features = ["native-bench"]
+
+[dependencies]
+onda_scope = { path = "../onda_scope" }
+bytemuck = { version = "1.25", features = ["derive"] }
+glyphon = "0.12"
+cosmic-text = { version = "0.19", features = ["shape-run-cache"] }
+ttf-parser = "0.25"
+onda_mir = { path = "../onda_mir" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+web-time = "1.1"
+wgpu = { version = "30", features = ["webgl"] }
+raw-window-handle = { version = "0.6", optional = true }
+pollster = { version = "0.4", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+onda_egui = { path = "../onda_egui", features = ["ui-bench"] }
+egui_glow = "0.31"
+glow = "0.16"
+glutin = "0.32"
+x11-dl = "2.21"
+
+[dev-dependencies]
+pollster = "0.4"
+png = "0.18"
+
+[build-dependencies]
+ttf-parser = "0.25"

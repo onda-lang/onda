@@ -1,0 +1,137 @@
+{
+  "date": "2026-10-26",
+  "productVersion": "0.8.40",
+  "platform": "Linux x64",
+  "browser": "Google Chrome 156.0.8078.47",
+  "websiteAssets": "assets/play/v0.8.40-27bebdb263f0",
+  "validation": {
+    "npm run test:playground": {
+      "passed": 105
+    },
+    "cargo test -p onda_ui --lib": {
+      "passed": 25
+    },
+    "CHROME_BIN=/usr/bin/google-chrome-stable npm run test:gpu-ui": {
+      "passed": 2
+    },
+    "CHROME_BIN=/usr/bin/google-chrome-stable npm run test:gpu-web-editor": {
+      "passed": 5
+    }
+  },
+  "editors": [
+    {
+      "host": "example",
+      "backend": "webgpu",
+      "passed": true,
+      "adapter": {
+        "vendor": "nvidia",
+        "fallback": false
+      },
+      "scopePacketBytes": 2360,
+      "checks": [
+        "source compilation",
+        "real AudioWorklet playback",
+        "bounded live scope",
+        "parameter print",
+        "structured event/i64/non-finite payload",
+        "source recompilation",
+        "event preservation",
+        "file picker",
+        "buffer drop/clear",
+        "MIDI down/up",
+        "parent keys",
+        "pointer MIDI ownership through parent focus handoff",
+        "logs",
+        "MIDI settings",
+        "scope collapse/resume",
+        "theme",
+        "saved presentation"
+      ]
+    },
+    {
+      "host": "example",
+      "backend": "webgl",
+      "passed": true,
+      "adapter": null,
+      "scopePacketBytes": 2360,
+      "checks": [
+        "source compilation",
+        "real AudioWorklet playback",
+        "bounded live scope",
+        "parameter print",
+        "structured event/i64/non-finite payload",
+        "source recompilation",
+        "event preservation",
+        "file picker",
+        "buffer drop/clear",
+        "MIDI down/up",
+        "parent keys",
+        "pointer MIDI ownership through parent focus handoff",
+        "logs",
+        "MIDI settings",
+        "scope collapse/resume",
+        "theme",
+        "saved presentation"
+      ]
+    },
+    {
+      "host": "website",
+      "backend": "webgpu",
+      "passed": true,
+      "adapter": {
+        "vendor": "nvidia",
+        "fallback": false
+      },
+      "scopePacketBytes": 2312,
+      "checks": [
+        "source compilation",
+        "real AudioWorklet playback",
+        "bounded live scope",
+        "parameter print",
+        "structured event/i64/non-finite payload",
+        "source recompilation",
+        "event preservation",
+        "file picker",
+        "buffer drop/clear",
+        "MIDI down/up",
+        "parent keys",
+        "pointer MIDI ownership through parent focus handoff",
+        "logs",
+        "MIDI settings",
+        "scope collapse/resume",
+        "theme",
+        "saved presentation"
+      ]
+    }
+  ],
+  "additionalChecks": [
+    "Blocked autoplay: Stop never resumes audio; a subsequent trusted Play works",
+    "Without cross-origin isolation: real audio and scope work; a frequency change is verified from output zero crossings",
+    "GPU canvas pixels contain drawn controls and scope; matching renderer bytes staged for example and website"
+  ],
+  "scopeTransport": {
+    "format": "OSQ1 Uint8Array",
+    "columnsPerChannelMaximum": 512,
+    "stereoPacketBytesMaximum": 4104,
+    "hiddenOrCollapsed": "capture suspended"
+  },
+  "limits": [
+    "Functional validation, not a browser-editor latency or CPU-speedup measurement",
+    "Linux Chrome tested; Firefox/Safari and other operating systems remain unverified",
+    "Authored prints require cross-origin isolation; audio and controls work without it",
+    "Browser fields use native text input; real OS input-method sessions remain unverified",
+    "Linux headless Vulkan page screenshots can omit iframe layers; hardware canvas pixels are checked directly and the WebGL page screenshot uses the software compositor"
+  ],
+  "sha256": {
+    "ui/gpu/pkg/onda_ui_bg.wasm": "b689bf33a789967244771592fdfac77dfc209843973a8d4db25aad7d8063400e",
+    "ui/gpu/host.js": "7666a573b871be6819e3d632c795635603e5cb15d25c18ff0bfd79b2883d86a3",
+    "ui/gpu/browser.js": "526757ee598764071485567611802584eea7205343c7c9c8d6de8de8ce4b15a9",
+    "ui/gpu/protocol.js": "c09658022c819ad40f61b77dbe43186b7ff63d3b3a8a172370005c878a9fafe7",
+    "ui/playground/live.js": "1cb5ec67db8c28bb95e9718cc6413633a6af9c1aab21ef023e0d98b7183f43f2",
+    "ui/playground/editor.js": "5989dd832a0ef1575efdb6b4732a48fc24b434bb3ba63bf56d0d9ae1c7357d8a",
+    "ui/playground/run-view-host.js": "e1f3ed26cb43bf49617d356d921c0495fad0d0e91730d479b664d81e7dfdc37e",
+    "ui/playground/browser-scope.js": "291d4019a09dbb92a17636be4c21235c881e3b818684d3d049b900db77d4f4e0",
+    "ui/playground/audio-activation.js": "b048789760d299b48de661aef42e48a9c886f63519d66a8b04b1a02891a22495",
+    "ui/playground/gpu.browser-tests.mjs": "9007aa0bd5b8d712bf9625e07b6e2ced9e1c9a7959f095a74026151552ceeabf"
+  }
+}

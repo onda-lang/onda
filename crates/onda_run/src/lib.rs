@@ -1,18 +1,23 @@
-//! Shared native run controller for the egui and webview frontends.
+//! Shared native run controller for GPU, egui, and webview frontends.
 //!
 //! The controller owns source/project filesystem watching, targeted snapshot
 //! invalidation, and disk-validation fallback when watcher coverage is partial.
 
+#[cfg(feature = "native-window")]
+pub mod file_drag;
+mod view_state;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+pub use view_state::{host_panel_state, log_panel_state, runtime_panel_state};
 
+use base64::Engine as _;
 pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
@@ -26,8 +31,10 @@ use sha2::{Digest, Sha256};
 
 mod child_session;
 mod control_client;
+mod controller_events;
 use child_session::ChildSession;
 use control_client::IpcBridge;
+use controller_events::EventSender;
 
 mod midi;
 mod playback;
@@ -210,6 +217,7 @@ impl ControllerEvent {
 
 #[derive(Debug)]
 enum PendingCommand {
+    Scope,
     BindBuffer { name: String, path: String },
     ClearBuffer { name: String },
     Play,
@@ -316,7 +324,7 @@ pub struct RunController {
     options: RunHostOptions,
     state: RunState,
     events_rx: Receiver<ControllerEvent>,
-    events_tx: Sender<ControllerEvent>,
+    events_tx: EventSender,
     bridge: IpcBridge,
     child: ChildSession,
     child_generation: u64,
@@ -335,14 +343,24 @@ pub struct RunController {
     active_virtual_notes: HashSet<i32>,
     processing_requested: bool,
     scope_polling_active: bool,
-    scope_polling_in_flight: bool,
+    scope_request: Option<u64>,
     last_scope_poll: Instant,
+    scope_poll_interval: Duration,
+    scope_columns: Option<usize>,
+    scope_envelope: onda_scope::Envelope,
+    scope_visible: bool,
+    scope_capture_enabled: bool,
+    next_maintenance: Instant,
     source_compilation: SourceCompilationState,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PollResult {
+    /// Host state other than log output changed.
     pub state_changed: bool,
+    /// Control schemas or source identity changed; publish a full panel state.
+    pub schema_changed: bool,
+    pub log_changed: bool,
     pub scope_changed: bool,
 }
 
@@ -358,7 +376,7 @@ impl RunController {
         let launch_path = std::fs::canonicalize(&input_path)
             .map_err(|e| format!("cannot resolve path {}: {e}", onda_path.display()))?;
         let (onda_path, project_watch_paths) = resolve_run_input_paths(&launch_path)?;
-        let (events_tx, events_rx) = mpsc::channel();
+        let (events_tx, events_rx) = EventSender::channel();
         let bridge = IpcBridge::new();
         let state = RunState::new(&launch_path, &options);
         let source_watch_revision = SourceWatchRevision::default();
@@ -406,8 +424,14 @@ impl RunController {
             active_virtual_notes: Default::default(),
             processing_requested: true,
             scope_polling_active: false,
-            scope_polling_in_flight: false,
+            scope_request: None,
             last_scope_poll: Instant::now(),
+            scope_poll_interval: CONTROLLER_POLL_INTERVAL,
+            scope_columns: None,
+            scope_envelope: Default::default(),
+            scope_visible: true,
+            scope_capture_enabled: false,
+            next_maintenance: std::time::Instant::now(),
             source_compilation: SourceCompilationState::Compiling(pending_sources),
         };
         controller.state.running = true;
@@ -417,6 +441,56 @@ impl RunController {
 
     pub fn state(&self) -> &RunState {
         &self.state
+    }
+
+    /// Visualization cadence is independent of source watching and audio processing.
+    pub fn set_scope_poll_interval(&mut self, interval: Duration) {
+        self.scope_poll_interval = interval.max(Duration::from_millis(8));
+    }
+
+    pub fn set_scope_columns(&mut self, columns: usize) {
+        let columns = Some(columns.clamp(1, onda_scope::MAX_COLUMNS));
+        if self.scope_columns != columns {
+            self.scope_columns = columns;
+            self.scope_request = None;
+        }
+    }
+    pub fn scope_envelope(&self) -> Option<&onda_scope::Envelope> {
+        self.scope_columns.map(|_| &self.scope_envelope)
+    }
+    pub fn set_scope_visible(&mut self, visible: bool) {
+        if self.scope_visible != visible {
+            self.scope_visible = visible;
+            self.scope_request = None;
+            self.sync_scope_capture();
+        }
+    }
+
+    /// Wake the host event loop when controller work arrives. The callback must
+    /// only schedule work; it can run on any producer thread.
+    pub fn set_wakeup(&self, wakeup: impl Fn() + Send + Sync + 'static) {
+        self.events_tx.set_wakeup(wakeup);
+    }
+
+    /// Scope cadence and infrequent child/source maintenance are the only timers.
+    pub fn next_poll_deadline(&self) -> Instant {
+        if self.scope_capture_enabled && self.scope_request.is_none() {
+            self.next_maintenance
+                .min(self.last_scope_poll + self.scope_poll_interval)
+        } else {
+            self.next_maintenance
+        }
+    }
+
+    fn sync_scope_capture(&mut self) {
+        let enabled = self.scope_polling_active && self.scope_visible && self.bridge.is_connected();
+        if self.scope_capture_enabled != enabled {
+            self.bridge
+                .send_command_notification("setScopeCaptureEnabled", &json!({"value":enabled}));
+            self.scope_capture_enabled = enabled;
+            self.scope_request = None;
+            self.last_scope_poll = Instant::now();
+        }
     }
 
     pub fn options(&self) -> &RunHostOptions {
@@ -494,18 +568,9 @@ impl RunController {
     }
 
     pub fn poll(&mut self) -> PollResult {
+        self.events_tx.begin_poll();
+        self.next_maintenance = Instant::now() + SOURCE_WATCH_FALLBACK_INTERVAL;
         let mut result = PollResult::default();
-
-        if self.scope_polling_active
-            && !self.scope_polling_in_flight
-            && self.last_scope_poll.elapsed() >= CONTROLLER_POLL_INTERVAL
-        {
-            let _ = self
-                .bridge
-                .send_command("getScopeData", &json!({ "maxFrames": SCOPE_MAX_FRAMES }));
-            self.scope_polling_in_flight = true;
-            self.last_scope_poll = Instant::now();
-        }
 
         while let Ok(event) = self.events_rx.try_recv() {
             if !event.is_current_for(self.child_generation) {
@@ -515,10 +580,13 @@ impl RunController {
                 ControllerEvent::ChildReady { ready, .. } => {
                     self.handle_child_ready(*ready);
                     result.state_changed = true;
+                    result.schema_changed = true;
                 }
                 ControllerEvent::TcpResponse { line, .. } => {
                     let response = self.handle_tcp_response(&line);
                     result.state_changed |= response.state_changed;
+                    result.schema_changed |= response.schema_changed;
+                    result.log_changed |= response.log_changed;
                     result.scope_changed |= response.scope_changed;
                 }
                 ControllerEvent::SourcesMayHaveChanged {
@@ -528,6 +596,7 @@ impl RunController {
                     if self.sources_require_recompile(&changed_paths) {
                         self.recompile_after_source_change(&changed_paths);
                         result.state_changed = true;
+                        result.schema_changed = true;
                     } else if self.watched_sources.iter().any(|path| !path.exists()) {
                         // A parent of an unresolved nested candidate may have
                         // just appeared. Retarget the watch as the path becomes
@@ -538,6 +607,7 @@ impl RunController {
                         if !sources_are_current || !self.source_compilation.matches(&refreshed) {
                             self.recompile_after_source_change(&changed_paths);
                             result.state_changed = true;
+                            result.schema_changed = true;
                         } else {
                             self.acknowledge_source_watch_revision(watch_batch);
                         }
@@ -546,6 +616,7 @@ impl RunController {
                     } else {
                         self.recompile_after_source_change(&changed_paths);
                         result.state_changed = true;
+                        result.schema_changed = true;
                     }
                 }
             }
@@ -553,11 +624,28 @@ impl RunController {
 
         if self.validate_degraded_source_watch() {
             result.state_changed = true;
+            result.schema_changed = true;
         }
 
         if let Some((code, error)) = self.child.try_take_exit() {
             self.handle_child_exited(code, error);
             result.state_changed = true;
+            result.schema_changed = true;
+        }
+
+        self.sync_scope_capture();
+        if self.scope_capture_enabled
+            && self.scope_request.is_none()
+            && self.last_scope_poll.elapsed() >= self.scope_poll_interval
+        {
+            self.scope_request = self.bridge.send_command(
+                "getScopeData",
+                &json!({ "maxFrames": SCOPE_MAX_FRAMES, "columns": self.scope_columns }),
+            );
+            if let Some(id) = self.scope_request {
+                self.pending_commands.insert(id, PendingCommand::Scope);
+            }
+            self.last_scope_poll = Instant::now();
         }
 
         result
@@ -570,7 +658,7 @@ impl RunController {
                 self.pending_commands.insert(id, PendingCommand::Play);
             }
             self.scope_polling_active = true;
-            self.scope_polling_in_flight = false;
+            self.scope_request = None;
             self.last_scope_poll = Instant::now();
             self.state.running = true;
             self.state.connected = true;
@@ -578,6 +666,7 @@ impl RunController {
             self.state.error = None;
             self.state.scope_channels = 0;
             self.state.scope_samples.clear();
+            self.scope_envelope.clear();
             return Ok(());
         }
         self.restart_with_status("Starting...")
@@ -592,17 +681,20 @@ impl RunController {
             self.advance_child_generation();
             self.child.kill();
             self.bridge.disconnect();
+            self.scope_capture_enabled = false;
             self.source_compilation = SourceCompilationState::None;
             self.compiled_watch_revision = None;
         }
         self.scope_polling_active = false;
-        self.scope_polling_in_flight = false;
+        self.sync_scope_capture();
+        self.scope_request = None;
         self.state.running = false;
         self.state.connected = false;
         self.state.status = "Stopped".to_owned();
         self.state.error = None;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
+        self.scope_envelope.clear();
     }
 
     pub fn refresh_devices(&mut self) {
@@ -798,11 +890,13 @@ impl RunController {
         self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
+        self.scope_capture_enabled = false;
         self.source_compilation = SourceCompilationState::None;
         self.compiled_watch_revision = None;
         self.pending_commands.clear();
         self.scope_polling_active = false;
-        self.scope_polling_in_flight = false;
+        self.sync_scope_capture();
+        self.scope_request = None;
         self.state.running = false;
         self.state.connected = false;
         self.state.status = status.to_owned();
@@ -810,6 +904,7 @@ impl RunController {
         self.state.output_channels = 0;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
+        self.scope_envelope.clear();
 
         match ChildSession::spawn(
             &self.launch_path,
@@ -905,6 +1000,7 @@ impl RunController {
         self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
+        self.scope_capture_enabled = false;
         self.pending_commands.clear();
         self.source_compilation = SourceCompilationState::None;
         self.compiled_watch_revision = None;
@@ -913,6 +1009,7 @@ impl RunController {
         self.state.error = None;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
+        self.scope_envelope.clear();
     }
 
     fn handle_child_ready(&mut self, ready: ReadyEvent) {
@@ -1013,7 +1110,7 @@ impl RunController {
 
         self.refresh_processing_state();
         self.scope_polling_active = self.state.running;
-        self.scope_polling_in_flight = false;
+        self.scope_request = None;
         self.last_scope_poll = Instant::now();
     }
 
@@ -1144,8 +1241,10 @@ impl RunController {
     fn handle_child_exited(&mut self, code: Option<i32>, error: Option<String>) {
         self.active_virtual_notes.clear();
         self.scope_polling_active = false;
-        self.scope_polling_in_flight = false;
+        self.sync_scope_capture();
+        self.scope_request = None;
         self.bridge.disconnect();
+        self.scope_capture_enabled = false;
         self.pending_commands.clear();
         self.source_compilation.mark_failed();
         self.compiled_watch_revision = None;
@@ -1156,6 +1255,7 @@ impl RunController {
         self.state.output_channels = 0;
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
+        self.scope_envelope.clear();
     }
 
     fn handle_tcp_response(&mut self, line: &str) -> PollResult {
@@ -1201,7 +1301,7 @@ impl RunController {
                     .state
                     .print_transport_drop_count
                     .saturating_add(transport_drop_count);
-                poll.state_changed = true;
+                poll.log_changed = true;
                 return poll;
             }
             if resp.get("event").and_then(Value::as_str) == Some("delegates") {
@@ -1245,10 +1345,14 @@ impl RunController {
                     .state
                     .delegate_transport_drop_count
                     .saturating_add(transport_drop_count);
-                poll.state_changed = true;
+                poll.log_changed = true;
                 return poll;
             }
             let id = resp.get("id").and_then(Value::as_u64);
+            let scope_reply = id.is_some() && id == self.scope_request;
+            if scope_reply {
+                self.scope_request = None;
+            }
             if resp.get("cancelled").and_then(Value::as_bool) == Some(true) {
                 if let Some(id) = id {
                     self.pending_commands.remove(&id);
@@ -1256,10 +1360,15 @@ impl RunController {
                 return poll;
             }
             let succeeded = resp.get("ok").and_then(Value::as_bool).unwrap_or(true);
-            if let Some(command) = id.and_then(|id| self.pending_commands.remove(&id)) {
+            let command = id.and_then(|id| self.pending_commands.remove(&id));
+            if matches!(command, Some(PendingCommand::Scope)) && !scope_reply {
+                return poll;
+            }
+            if let Some(command) = command.filter(|c| !matches!(c, PendingCommand::Scope)) {
                 if succeeded {
                     match command {
                         PendingCommand::BindBuffer { name, path } => {
+                            poll.schema_changed = true;
                             self.preserved_buffers
                                 .insert(name.clone(), PreservedBufferBinding::File(path.clone()));
                             update_buffer_loaded_path(&mut self.state.buffers, &name, Some(&path));
@@ -1267,6 +1376,7 @@ impl RunController {
                             self.refresh_processing_state();
                         }
                         PendingCommand::ClearBuffer { name } => {
+                            poll.schema_changed = true;
                             self.preserved_buffers
                                 .insert(name.clone(), PreservedBufferBinding::Cleared);
                             update_buffer_loaded_path(&mut self.state.buffers, &name, None);
@@ -1278,7 +1388,7 @@ impl RunController {
                             self.state.status = "Running".to_owned();
                             self.scope_polling_active = true;
                         }
-                        PendingCommand::ResetParams => {}
+                        PendingCommand::ResetParams | PendingCommand::Scope => {}
                     }
                 } else {
                     match command {
@@ -1288,10 +1398,10 @@ impl RunController {
                             self.state.running = false;
                             self.active_virtual_notes.clear();
                             self.scope_polling_active = false;
-                            self.scope_polling_in_flight = false;
+                            self.scope_request = None;
                             self.state.status = "Runtime error".to_owned();
                         }
-                        PendingCommand::ResetParams => {}
+                        PendingCommand::ResetParams | PendingCommand::Scope => {}
                     }
                 }
                 poll.state_changed = true;
@@ -1307,12 +1417,22 @@ impl RunController {
                     self.state.buffers = buffers.clone();
                     self.refresh_processing_state();
                     poll.state_changed = true;
+                    poll.schema_changed = true;
+                }
+                if let Some(packet) = result.get("packet").and_then(Value::as_str) {
+                    if !scope_reply || !self.scope_polling_active || !self.scope_visible {
+                        return poll;
+                    }
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(packet) {
+                        if self.scope_envelope.read_packet(&bytes).is_ok() {
+                            poll.scope_changed = true;
+                        }
+                    }
                 }
                 let channels = result.get("channels").and_then(Value::as_u64);
                 let samples = result.get("samples").and_then(Value::as_array);
                 if let (Some(channels), Some(samples)) = (channels, samples) {
-                    self.scope_polling_in_flight = false;
-                    if !self.scope_polling_active {
+                    if !scope_reply || !self.scope_polling_active || !self.scope_visible {
                         return poll;
                     }
                     self.state.scope_channels = channels as usize;
@@ -1337,7 +1457,7 @@ impl RunController {
         };
         self.scope_polling_active = self.state.running;
         if !self.state.running {
-            self.scope_polling_in_flight = false;
+            self.scope_request = None;
         }
     }
 }
@@ -1467,6 +1587,7 @@ impl Drop for RunController {
     fn drop(&mut self) {
         self.child.kill();
         self.bridge.disconnect();
+        self.scope_capture_enabled = false;
     }
 }
 
@@ -2307,7 +2428,7 @@ fn digest_file(path: &Path) -> Option<[u8; 32]> {
 fn start_source_watcher(
     paths: &[PathBuf],
     revision: SourceWatchRevision,
-    events_tx: Sender<ControllerEvent>,
+    events_tx: EventSender,
 ) -> (Option<FileWatcher>, HashMap<PathBuf, notify::RecursiveMode>) {
     let plan = source_watch_plan(paths);
     let watched_roots = plan.roots.clone();
@@ -2603,9 +2724,9 @@ mod tests {
         reconcile_preserved_events, reconcile_preserved_params, record_notification_is_visible,
         relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
         source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
-        ControllerEvent, FileWatcher, ParamDomain, ParamScalarType, ParamScale, PendingCommand,
-        PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunHostOptions, RunParamInfo,
-        RunParamWire, SourceCompilationState, SourceWatchRevision,
+        ControllerEvent, EventSender, FileWatcher, ParamDomain, ParamScalarType, ParamScale,
+        PendingCommand, PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunHostOptions,
+        RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
     };
     use onda_daemon::RunEventValue;
     use serde_json::{json, Value};
@@ -2623,7 +2744,7 @@ mod tests {
     fn controller_without_child() -> super::RunController {
         let path = PathBuf::from("scope.onda");
         let options = RunHostOptions::default();
-        let (events_tx, events_rx) = mpsc::channel();
+        let (events_tx, events_rx) = EventSender::channel();
         super::RunController {
             state: super::RunState::new(&path, &options),
             launch_path: path.clone(),
@@ -2650,16 +2771,96 @@ mod tests {
             active_virtual_notes: Default::default(),
             processing_requested: true,
             scope_polling_active: true,
-            scope_polling_in_flight: true,
+            scope_request: Some(99),
             last_scope_poll: std::time::Instant::now(),
+            scope_poll_interval: super::CONTROLLER_POLL_INTERVAL,
+            scope_columns: None,
+            scope_envelope: Default::default(),
+            scope_visible: true,
+            scope_capture_enabled: false,
+            next_maintenance: std::time::Instant::now(),
             source_compilation: SourceCompilationState::None,
         }
     }
 
     #[test]
+    fn polling_distinguishes_log_output_from_other_state_changes() {
+        let mut controller = controller_without_child();
+        let send = |controller: &super::RunController, message: Value| {
+            controller
+                .events_tx
+                .send(ControllerEvent::TcpResponse {
+                    generation: controller.child_generation,
+                    line: message.to_string(),
+                })
+                .unwrap();
+        };
+        send(
+            &controller,
+            json!({"event":"print","text":"hello\n",
+            "entries":[{"source":{"file":"main.onda","line":12}}]}),
+        );
+        send(
+            &controller,
+            json!({"event":"delegates","occurrences":[],"overflowCount":2}),
+        );
+        let changes = controller.poll();
+        assert!(changes.log_changed);
+        assert!(!changes.state_changed);
+        assert!(!changes.scope_changed);
+        assert_eq!(controller.state.log_text, "hello\n");
+        assert_eq!(controller.state.delegate_overflow_count, 2);
+        assert!(!controller.poll().log_changed);
+
+        send(&controller, json!({"event":"print","text":"next\n"}));
+        send(&controller, json!({"ok":false,"error":"failed"}));
+        let changes = controller.poll();
+        assert!(changes.log_changed && changes.state_changed);
+        assert_eq!(controller.state.error.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn scope_reply_can_start_the_next_capture_in_the_same_poll() {
+        use std::io::BufRead;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut controller = controller_without_child();
+        controller
+            .bridge
+            .connect(
+                listener.local_addr().unwrap().port(),
+                1,
+                controller.events_tx.clone(),
+            )
+            .unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        controller.scope_capture_enabled = true;
+        controller.last_scope_poll = std::time::Instant::now() - super::CONTROLLER_POLL_INTERVAL;
+        controller
+            .events_tx
+            .send(ControllerEvent::TcpResponse {
+                generation: 1,
+                line: json!({"id":99,"result":{"channels":1,"samples":[0.5]}}).to_string(),
+            })
+            .unwrap();
+        assert!(controller.poll().scope_changed);
+        let mut request = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut request)
+            .expect("next capture must not wait for another UI poll");
+        assert_eq!(
+            serde_json::from_str::<Value>(&request).unwrap()["command"],
+            "getScopeData"
+        );
+    }
+
+    #[test]
     fn stop_clears_scope_samples_and_ignores_in_flight_captures() {
         let mut controller = controller_without_child();
-        let captured = json!({ "result": { "channels": 1, "samples": [0.25, -0.5, 0.75] } });
+        let captured =
+            json!({ "id":99, "result": { "channels": 1, "samples": [0.25, -0.5, 0.75] } });
         assert!(
             controller
                 .handle_tcp_response(&captured.to_string())
@@ -2670,7 +2871,7 @@ mod tests {
         assert_eq!(controller.state.scope_channels, 0);
         assert!(controller.state.scope_samples.is_empty());
 
-        let late = json!({ "result": { "channels": 1, "samples": [0, 0, 0] } });
+        let late = json!({ "id":99, "result": { "channels": 1, "samples": [0, 0, 0] } });
         assert!(
             !controller
                 .handle_tcp_response(&late.to_string())
@@ -2678,6 +2879,115 @@ mod tests {
         );
         assert_eq!(controller.state.scope_channels, 0);
         assert!(controller.state.scope_samples.is_empty());
+    }
+
+    #[test]
+    fn compact_scope_rejects_invalid_and_late_packets() {
+        use base64::Engine;
+        let mut controller = controller_without_child();
+        controller.set_scope_columns(2);
+        controller.scope_request = Some(99);
+        let mut frame = onda_scope::Envelope::default();
+        frame.set_interleaved(1, &[0.25, -0.5, 1.0], 2);
+        let captured = json!({"id":99,"result":{"packet":base64::engine::general_purpose::STANDARD.encode(frame.packet())}}).to_string();
+        assert!(controller.handle_tcp_response(&captured).scope_changed);
+        assert_eq!(controller.scope_envelope(), Some(&frame));
+        assert!(
+            !controller
+                .handle_tcp_response(r#"{"result":{"packet":"broken"}}"#)
+                .scope_changed
+        );
+        assert_eq!(controller.scope_envelope(), Some(&frame));
+        assert!(controller.scope_request.is_none());
+        controller.stop();
+        assert!(!controller.handle_tcp_response(&captured).scope_changed);
+        assert_eq!(controller.scope_envelope().unwrap().columns(), 0);
+    }
+
+    #[test]
+    fn scope_visibility_and_columns_reject_stale_replies_without_clearing_current_request() {
+        let mut controller = controller_without_child();
+        controller.set_scope_visible(false);
+        controller.set_scope_visible(true);
+        controller.scope_request = Some(100);
+        let stale = json!({"id":99,"result":{"channels":1,"samples":[0.5]}});
+        assert!(
+            !controller
+                .handle_tcp_response(&stale.to_string())
+                .scope_changed
+        );
+        assert_eq!(controller.scope_request, Some(100));
+        controller.set_scope_columns(2);
+        controller.scope_request = Some(101);
+        controller
+            .pending_commands
+            .insert(100, PendingCommand::Scope);
+        let stale = json!({"id":100,"ok":false,"error":"old scope request"});
+        assert!(
+            !controller
+                .handle_tcp_response(&stale.to_string())
+                .scope_changed
+        );
+        assert_eq!(controller.scope_request, Some(101));
+        assert!(controller.state.error.is_none());
+        let failed = json!({"id":101,"ok":false,"error":"capture failed"});
+        assert!(
+            !controller
+                .handle_tcp_response(&failed.to_string())
+                .scope_changed
+        );
+        assert!(controller.scope_request.is_none());
+    }
+
+    #[test]
+    fn scope_subscription_tracks_visibility_and_stop_and_only_polls_when_due() {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut controller = controller_without_child();
+        controller.scope_request = None;
+        controller.set_scope_visible(false);
+        controller
+            .bridge
+            .connect(
+                listener.local_addr().unwrap().port(),
+                1,
+                controller.events_tx.clone(),
+            )
+            .unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut read = || {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        controller.poll();
+        assert!(!controller.scope_capture_enabled);
+        controller.set_scope_visible(true);
+        assert_eq!(
+            read(),
+            json!({"command":"setScopeCaptureEnabled","value":true})
+        );
+        assert!(
+            controller.next_poll_deadline()
+                <= std::time::Instant::now() + super::CONTROLLER_POLL_INTERVAL
+        );
+        controller.last_scope_poll -= super::CONTROLLER_POLL_INTERVAL;
+        controller.poll();
+        assert_eq!(read()["command"], "getScopeData");
+        assert!(
+            controller.next_poll_deadline()
+                > std::time::Instant::now() + super::CONTROLLER_POLL_INTERVAL
+        );
+        controller.set_scope_visible(false);
+        assert_eq!(
+            read(),
+            json!({"command":"setScopeCaptureEnabled","value":false})
+        );
+        assert!(controller.scope_request.is_none());
     }
 
     #[test]

@@ -9,6 +9,8 @@ use onda_run::{
 };
 use serde_json::{Number, Value};
 
+#[cfg(feature = "ui-bench")]
+pub mod benchmark;
 mod buffer_drop;
 pub mod input_controls;
 mod number_input;
@@ -920,13 +922,8 @@ impl RunApp {
                     columns[2].with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                         label(ui, "Fast Math");
                         let width = ui.available_width();
-                        centered_checkbox(
-                            ui,
-                            &mut self.options.fast_math,
-                            egui::vec2(width, 30.0),
-                            "Fast Math",
-                        )
-                        .on_hover_text(fast_math_help);
+                        centered_checkbox(ui, &mut self.options.fast_math, egui::vec2(width, 30.0))
+                            .on_hover_text(fast_math_help);
                     });
                 }
             });
@@ -934,13 +931,8 @@ impl RunApp {
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
                     label(ui, "Fast Math");
-                    centered_checkbox(
-                        ui,
-                        &mut self.options.fast_math,
-                        egui::vec2(80.0, 30.0),
-                        "Fast Math",
-                    )
-                    .on_hover_text(fast_math_help);
+                    centered_checkbox(ui, &mut self.options.fast_math, egui::vec2(80.0, 30.0))
+                        .on_hover_text(fast_math_help);
                 });
             }
         });
@@ -1735,7 +1727,7 @@ fn render_event_arg_editor(
             },
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            render_event_scalar_editor(ui, label, ty, value, default, connected, 112.0)
+            render_event_scalar_editor(ui, ty, value, default, connected, 112.0)
         });
     });
 }
@@ -1872,7 +1864,6 @@ fn render_event_array_editor(
                                         ui.push_id(("event-array-element", index), |ui| {
                                             render_event_scalar_editor(
                                                 ui,
-                                                &format!("{label}[{index}]"),
                                                 scalar_ty,
                                                 element,
                                                 default.and_then(|values| values.get(index)),
@@ -1906,7 +1897,6 @@ fn render_event_array_editor(
 
 fn render_event_scalar_editor(
     ui: &mut egui::Ui,
-    label: &str,
     ty: &str,
     value: &mut Value,
     default: Option<&Value>,
@@ -1917,7 +1907,7 @@ fn render_event_scalar_editor(
         let mut checked = value.as_bool().unwrap_or(false);
         let changed = ui
             .add_enabled_ui(connected, |ui| {
-                centered_checkbox(ui, &mut checked, egui::vec2(width, 24.0), label).changed()
+                centered_checkbox(ui, &mut checked, egui::vec2(width, 24.0)).changed()
             })
             .inner;
         if changed {
@@ -2078,26 +2068,16 @@ fn render_param_grid(
     }
 }
 
-fn centered_checkbox(
-    ui: &mut egui::Ui,
-    checked: &mut bool,
-    size: egui::Vec2,
-    label: &str,
-) -> egui::Response {
-    let response = ui
-        .scope(|ui| {
-            let scale = 24.0 / ui.spacing().icon_width;
-            ui.spacing_mut().icon_width = 24.0;
-            ui.spacing_mut().icon_width_inner *= scale;
-            ui.spacing_mut().interact_size.y = 24.0;
-            ui.spacing_mut().button_padding.y = 0.0;
-            ui.add_sized(size, egui::Checkbox::without_text(checked))
-        })
-        .inner;
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *checked, label)
-    });
-    response
+fn centered_checkbox(ui: &mut egui::Ui, checked: &mut bool, size: egui::Vec2) -> egui::Response {
+    ui.scope(|ui| {
+        let scale = 24.0 / ui.spacing().icon_width;
+        ui.spacing_mut().icon_width = 24.0;
+        ui.spacing_mut().icon_width_inner *= scale;
+        ui.spacing_mut().interact_size.y = 24.0;
+        ui.spacing_mut().button_padding.y = 0.0;
+        ui.add_sized(size, egui::Checkbox::without_text(checked))
+    })
+    .inner
 }
 
 fn render_boolean_param_editor(
@@ -2109,7 +2089,7 @@ fn render_boolean_param_editor(
     ui.add_space(4.0);
     let mut checked = value.as_bool().unwrap_or(false);
     let size = egui::vec2(ui.available_width(), ui.available_height().max(24.0));
-    if centered_checkbox(ui, &mut checked, size, &spec.display_name()).changed() {
+    if centered_checkbox(ui, &mut checked, size).changed() {
         ParamEditOutcome::Commit(Value::Bool(checked))
     } else {
         ParamEditOutcome::None
@@ -2279,13 +2259,7 @@ fn render_param_heading(
         rect.left() + leading_space,
         rect.center().y - name_galley.size().y / 2.0,
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Label,
-            ui.is_enabled(),
-            format!("{} {}", spec.display_name(), spec.ty),
-        )
-    });
+
     response.on_hover_text(format!("{} ({})", spec.display_name(), spec.ty));
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let type_x = (name_pos.x + name_galley.size().x + gap).min(rect.right() - type_galley.size().x);
@@ -2359,7 +2333,6 @@ fn render_param_knob(
     let size = egui::vec2(64.0, 64.0);
     let sense = egui::Sense::click_and_drag().difference(egui::Sense::FOCUSABLE);
     let (rect, mut response) = ui.allocate_exact_size(size, sense);
-    response.widget_info(|| egui::WidgetInfo::slider(ui.is_enabled(), *value, spec.display_name()));
 
     let mut next_value = *value;
     if response.drag_started() {
@@ -3572,7 +3545,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = initial;
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-                render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
             });
             let start = rect.center();
             let end = start + egui::vec2(20.0, 0.0);
@@ -3582,7 +3555,7 @@ mod tests {
                 (0.3, pointer_button(end, false)),
             ] {
                 widget_frame(&ctx, time, events, |ui| {
-                    render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
+                    render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
                 });
             }
             assert_eq!(value, expected, "{ty} drag must match the web view");
@@ -3599,20 +3572,18 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = serde_json::json!(initial.to_string());
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
             });
             let start = rect.center();
             widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
-                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
             });
             for (index, x) in movement.iter().enumerate() {
                 widget_frame(
                     &ctx,
                     0.2 + index as f64 * 0.1,
                     vec![egui::Event::PointerMoved(start + egui::vec2(*x, 0.0))],
-                    |ui| {
-                        render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
-                    },
+                    |ui| render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0),
                 );
             }
             assert_eq!(value, serde_json::json!(expected.to_string()));
@@ -3624,17 +3595,17 @@ mod tests {
         let ctx = egui::Context::default();
         let mut value = serde_json::json!(0.0);
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-            render_event_scalar_editor(ui, "test", "f64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0)
         });
         let start = rect.center();
         widget_frame(&ctx, 0.1, pointer_button(start, true), |ui| {
-            render_event_scalar_editor(ui, "test", "f64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0)
         });
         widget_frame(
             &ctx,
             0.2,
             vec![egui::Event::PointerMoved(start + egui::vec2(20.0, 20.0))],
-            |ui| render_event_scalar_editor(ui, "test", "f64", &mut value, None, true, 112.0),
+            |ui| render_event_scalar_editor(ui, "f64", &mut value, None, true, 112.0),
         );
         assert_eq!(value, serde_json::json!(0.2));
     }
@@ -3860,7 +3831,7 @@ mod tests {
         let initial = "9007199254740993";
         let mut value = serde_json::json!(initial);
         let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-            render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
         });
         let pos = rect.center();
         for (time, events) in [
@@ -3869,12 +3840,12 @@ mod tests {
             (0.2, vec![egui::Event::Text("9007199254740998".into())]),
         ] {
             widget_frame(&ctx, time, events, |ui| {
-                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
             });
         }
         assert_eq!(value, serde_json::json!("9007199254740998"));
         widget_frame(&ctx, 0.3, key_event(egui::Key::Escape), |ui| {
-            render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+            render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
         });
         assert_eq!(value, serde_json::json!(initial));
         assert!(ctx.memory(|memory| memory.focused().is_none()));
@@ -3884,7 +3855,7 @@ mod tests {
             (0.8, key_event(egui::Key::ArrowUp)),
         ] {
             widget_frame(&ctx, time, events, |ui| {
-                render_event_scalar_editor(ui, "test", "i64", &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, "i64", &mut value, None, true, 112.0)
             });
         }
         assert_eq!(value, serde_json::json!("9007199254740994"));
@@ -3966,7 +3937,7 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = initial;
             let render = |ui: &mut egui::Ui| {
-                render_event_scalar_editor(ui, "test", ty, &mut value, Some(&default), true, 112.0)
+                render_event_scalar_editor(ui, ty, &mut value, Some(&default), true, 112.0)
             };
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], render);
             let pos = rect.center();
@@ -3979,15 +3950,7 @@ mod tests {
                 (0.4, vec![]),
             ] {
                 widget_frame(&ctx, time, events, |ui| {
-                    render_event_scalar_editor(
-                        ui,
-                        "test",
-                        ty,
-                        &mut value,
-                        Some(&default),
-                        true,
-                        112.0,
-                    )
+                    render_event_scalar_editor(ui, ty, &mut value, Some(&default), true, 112.0)
                 });
                 if time >= 0.3 {
                     assert_eq!(value, default, "{ty} default must survive the next frame");
@@ -4002,11 +3965,11 @@ mod tests {
             let ctx = egui::Context::default();
             let mut value = serde_json::json!(9);
             let (rect, _) = widget_frame(&ctx, 0.0, vec![], |ui| {
-                render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
+                render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
             });
             for (time, pressed) in [(0.1, true), (0.15, false), (0.2, true), (0.25, false)] {
                 widget_frame(&ctx, time, pointer_button(rect.center(), pressed), |ui| {
-                    render_event_scalar_editor(ui, "test", ty, &mut value, None, true, 112.0)
+                    render_event_scalar_editor(ui, ty, &mut value, None, true, 112.0)
                 });
             }
             let expected = if ty == "i64" {

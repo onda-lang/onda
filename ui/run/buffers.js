@@ -186,8 +186,6 @@
           const preview = document.createElement("div");
           preview.className = "buffer-waveform";
           const canvas = document.createElement("canvas");
-          canvas.setAttribute("role", "img");
-          canvas.setAttribute("aria-label", bufferWaveformSummary(waveform));
           canvas.title = bufferWaveformSummary(waveform);
           canvas.__ondaBufferWaveform = waveform;
           preview.appendChild(canvas);

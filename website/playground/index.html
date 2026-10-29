@@ -6,63 +6,37 @@ section: playground
 permalink: /playground/
 ---
 
-<main class="play-main" id="main-content">
-  <header class="play-intro">
-    <div>
-      <h1>Onda playground</h1>
-    </div>
-    <div class="play-intro-meta">
-      <span class="status" aria-live="polite" data-status>Loading compiler...</span>
-      <span class="play-intro-divider" aria-hidden="true"></span>
-      <p class="play-shortcuts" aria-label="Playground keyboard shortcuts">
-        <span class="play-shortcut"><span>Play</span><kbd aria-label="Control or Command plus S or Enter">Ctrl/⌘ S · ↵</kbd></span>
-        <span class="play-shortcut"><span>Stop</span><kbd aria-label="Control or Command plus period">Ctrl/⌘ .</kbd></span>
-      </p>
-    </div>
-  </header>
+<main class="play-main" id="main-content" aria-label="Onda playground">
+  <span class="play-status" role="status" data-status>Loading compiler...</span>
 
   <div class="play-workspace">
     <section class="play-panel play-editor">
-      <div class="play-toolbar">
-        <div class="play-control-grid">
-          <label>
-            <span>Sample rate</span>
-            <select data-sample-rate>
-              <option value="44100">44100 Hz</option>
-              <option value="48000" selected>48000 Hz</option>
-            </select>
-          </label>
-          <label>
-            <span>Block size</span>
-            <select data-block-size>
-              <option value="128">128 samples</option>
-              <option value="256">256 samples</option>
-              <option value="512" selected>512 samples</option>
-              <option value="1024">1024 samples</option>
-              <option value="2048">2048 samples</option>
-            </select>
-          </label>
-          <label>
-            <span>Font size</span>
-            <input type="number" min="6" max="40" step="1" value="16" inputmode="numeric" aria-label="Editor font size in pixels" title="Clear the value to restore automatic sizing: 16px on desktop and touch screens, 12px in narrow desktop windows." data-editor-font-size>
-          </label>
-        </div>
-        <div class="project-file-actions">
-          <button type="button" data-new-project>New project</button>
-          <button type="button" data-open-project>Open project</button>
-          <button type="button" data-download-project>Download project</button>
-          <button type="button" data-share-project>Share</button>
-        </div>
-      </div>
-
       <div class="project-files">
-        <div class="project-file-tabs" role="tablist" aria-label="Project files" data-file-tabs></div>
-        <button class="project-file-add" type="button" data-new-file aria-label="New file" title="New file">+</button>
+        <div class="project-file-tabs" data-file-tabs></div>
+        <button class="project-file-add" type="button" data-new-file title="New file" aria-label="New file" disabled>+</button>
+        <details class="project-menu" data-project-menu>
+          <summary class="project-menu-trigger">Project</summary>
+          <div class="project-menu-content">
+            <button type="button" data-new-project>New project</button>
+            <button type="button" data-open-project>Open project</button>
+            <button type="button" data-download-project>Download project</button>
+            <button type="button" data-share-project>Share</button>
+            <label class="editor-font-size">
+              <span>Font size</span>
+              <input type="number" min="6" max="40" step="1" value="16" inputmode="numeric" title="Clear the value to restore automatic sizing: 16px on desktop and touch screens, 12px in narrow desktop windows." data-editor-font-size>
+            </label>
+            <dl class="project-shortcuts" aria-label="Keyboard shortcuts">
+              <div><dt>Play</dt><dd><kbd>Ctrl/⌘ S</kbd><kbd>Ctrl/⌘ ↵</kbd></dd></div>
+              <div><dt>Stop</dt><dd><kbd>Ctrl/⌘ .</kbd></dd></div>
+            </dl>
+          </div>
+        </details>
       </div>
-      <div class="play-source-editor" aria-label="Onda project editor" data-editor></div>
+      <div class="play-source-editor" data-editor></div>
     </section>
 
-    <aside class="play-panel play-run-panel" aria-label="Onda run controls">
+    <aside class="play-panel play-run-panel" aria-busy="true">
+      <p class="play-run-loading" data-run-loading aria-hidden="true">Loading compiler...</p>
       <iframe class="play-run-view" title="Onda run view" data-run-view></iframe>
     </aside>
   </div>
@@ -83,7 +57,7 @@ permalink: /playground/
     workerUrl: {{ site.data.onda.asset_path | append: '/compiler-worker.js' | relative_url | jsonify }},
     frontendWasm: {{ site.data.onda.asset_path | append: '/onda_compiler_web_bg.wasm' | relative_url | jsonify }},
     workletUrl: {{ site.data.onda.asset_path | append: '/worklet.js' | relative_url | jsonify }},
-    runViewUrl: {{ site.data.onda.asset_path | append: '/run.html' | relative_url | jsonify }},
+    runViewUrl: {{ site.data.onda.asset_path | append: '/gpu/index.html' | relative_url | jsonify }},
     exampleCatalogUrl: {{ site.data.onda.asset_path | append: '/example-projects.json' | relative_url | jsonify }},
     smokeResultUrl: {{ '/__result' | relative_url | jsonify }}
   };

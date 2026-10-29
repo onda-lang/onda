@@ -1,0 +1,946 @@
+{
+  "date": "2026-10-27",
+  "question": "Why are changing-value frames slower than scope-only frames, and did prior host optimizations cause the cost?",
+  "environment": {
+    "cpu": "Intel Core i9-14900HX",
+    "affinity": "taskset -c 0 (all benchmark threads)",
+    "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+    "gpu": "AdapterInfo { name: \"NVIDIA GeForce RTX 4080 Laptop GPU\", vendor: 4318, device: 10144, device_type: DiscreteGpu, device_pci_bus_id: \"0000:01:00.0\", driver: \"NVIDIA\", driver_info: \"615.78.08\", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: Some(false), limit_bucket: None }"
+  },
+  "method": {
+    "command": "cargo build --release -p onda_ui --features native-bench --example compare_native; taskset -c 0 target/release/examples/compare_native",
+    "before": "Same screen and expanded benchmark, without cosmic-text/shape-run-cache or the cache clear/trim calls.",
+    "after": "Advanced shaping with cosmic-text/shape-run-cache, trim(2) after each prepared batch, cache reset on font loading.",
+    "rounds": 3,
+    "warmup_min_frames": 60,
+    "warmup_min_ms": 250,
+    "measured_frames": 300,
+    "summary_metric": "Median of three round medians; all durations in milliseconds.",
+    "excludes": [
+      "window presentation",
+      "audio processing",
+      "scope producer",
+      "controller wakeups",
+      "host schema publication"
+    ],
+    "value_publication": "Includes cloning the prebuilt parameterValues message and applying it; no JSON serialization/parsing.",
+    "profile": "Separate temporary instrumentation; microsecond shaping/glyph figures are diagnostic, not end-to-end timings."
+  },
+  "findings": [
+    "The previous 0.767 ms changing-value round did not recur in the first unchanged rerun (0.168584-0.168675 ms). Its exact cause was not captured.",
+    "Parameter values invalidate the visible scene; scene rebuilding, text shaping, and glyph preparation add work that scope-only frames reuse.",
+    "Recent-run shaping reuse helps repeated values across labels; the single-changing-value workload has no material improvement.",
+    "The imported opt-in capture, ring copying, and wakeups are outside this benchmark. Partial schema publication is also outside it; measured value messages do not rebuild control schemas."
+  ],
+  "summary": [
+    {
+      "scenario": "scope_only",
+      "before": {
+        "value_publication": 2.6000000000000002e-05,
+        "scope_reduction": 0.017612,
+        "render_submit": 0.027373000000000005,
+        "cpu_submit": 0.045023,
+        "cpu_and_gpu": 0.118682
+      },
+      "after": {
+        "value_publication": 2.6000000000000002e-05,
+        "scope_reduction": 0.01762,
+        "render_submit": 0.027388999999999997,
+        "cpu_submit": 0.045052999999999996,
+        "cpu_and_gpu": 0.118261
+      }
+    },
+    {
+      "scenario": "scope_and_1_value",
+      "before": {
+        "value_publication": 0.000411,
+        "scope_reduction": 0.006916,
+        "render_submit": 0.047437,
+        "cpu_submit": 0.054759999999999996,
+        "cpu_and_gpu": 0.117773
+      },
+      "after": {
+        "value_publication": 0.000417,
+        "scope_reduction": 0.00691,
+        "render_submit": 0.047370999999999996,
+        "cpu_submit": 0.054684,
+        "cpu_and_gpu": 0.122504
+      }
+    },
+    {
+      "scenario": "scope_and_64_values",
+      "before": {
+        "value_publication": 0.013468,
+        "scope_reduction": 0.006943999999999999,
+        "render_submit": 0.075066,
+        "cpu_submit": 0.09550299999999999,
+        "cpu_and_gpu": 0.175861
+      },
+      "after": {
+        "value_publication": 0.013207,
+        "scope_reduction": 0.006937000000000002,
+        "render_submit": 0.058557,
+        "cpu_submit": 0.078834,
+        "cpu_and_gpu": 0.15673900000000002
+      }
+    }
+  ],
+  "diagnostic_profile": {
+    "before": {
+      "shaping_us": 24.116,
+      "glyph_preparation_us": 13.364
+    },
+    "after": {
+      "shaping_us": 8.845,
+      "glyph_preparation_us": 13.291
+    }
+  },
+  "before_raw": {
+    "window": [
+      768,
+      840
+    ],
+    "controls": 64,
+    "channels": 2,
+    "samples_per_channel": 1024,
+    "warmup_min_frames": 60,
+    "warmup_min_ms": 250,
+    "measured_frames": 300,
+    "wgpu_adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 4080 Laptop GPU\", vendor: 4318, device: 10144, device_type: DiscreteGpu, device_pci_bus_id: \"0000:01:00.0\", driver: \"NVIDIA\", driver_info: \"615.78.08\", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: Some(false), limit_bucket: None }",
+    "results": [
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_only",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.651177,
+          "p95_ms": 0.686105,
+          "mean_ms": 0.6546191966666662
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.6771579999999999,
+          "p95_ms": 0.7125560000000001,
+          "mean_ms": 0.6866419366666666
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_only",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.058325999999999996,
+          "p95_ms": 0.060248,
+          "mean_ms": 0.06118715333333332
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.14726799999999998,
+          "p95_ms": 0.15242899999999998,
+          "mean_ms": 0.14645766333333332
+        },
+        "value_publication": {
+          "median_ms": 3.2999999999999996e-05,
+          "p95_ms": 3.5000000000000004e-05,
+          "mean_ms": 3.1543333333333415e-05
+        },
+        "scope_reduction": {
+          "median_ms": 0.02277,
+          "p95_ms": 0.022913,
+          "mean_ms": 0.021170386666666666
+        },
+        "render_submit": {
+          "median_ms": 0.03550400000000001,
+          "p95_ms": 0.037034,
+          "mean_ms": 0.03998522333333334
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_only",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.044841,
+          "p95_ms": 0.05013,
+          "mean_ms": 0.050754613333333316
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.118682,
+          "p95_ms": 0.125805,
+          "mean_ms": 0.12461942666666669
+        },
+        "value_publication": {
+          "median_ms": 2.6000000000000002e-05,
+          "p95_ms": 2.9e-05,
+          "mean_ms": 2.6120000000000038e-05
+        },
+        "scope_reduction": {
+          "median_ms": 0.017599,
+          "p95_ms": 0.019386999999999998,
+          "mean_ms": 0.017450823333333323
+        },
+        "render_submit": {
+          "median_ms": 0.027211,
+          "p95_ms": 0.030921,
+          "mean_ms": 0.033277669999999995
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_only",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.651421,
+          "p95_ms": 0.68242,
+          "mean_ms": 0.6534690433333339
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.671309,
+          "p95_ms": 0.7061320000000001,
+          "mean_ms": 0.6810737466666668
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_only",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.652035,
+          "p95_ms": 0.686719,
+          "mean_ms": 0.6535957766666662
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.671459,
+          "p95_ms": 0.710531,
+          "mean_ms": 0.6816919166666672
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_only",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.045023,
+          "p95_ms": 0.05047,
+          "mean_ms": 0.05160143666666668
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.117953,
+          "p95_ms": 0.125587,
+          "mean_ms": 0.12446689000000004
+        },
+        "value_publication": {
+          "median_ms": 2.6000000000000002e-05,
+          "p95_ms": 2.9999999999999997e-05,
+          "mean_ms": 2.6913333333333396e-05
+        },
+        "scope_reduction": {
+          "median_ms": 0.017612,
+          "p95_ms": 0.019436,
+          "mean_ms": 0.017827766666666665
+        },
+        "render_submit": {
+          "median_ms": 0.027373000000000005,
+          "p95_ms": 0.030784000000000002,
+          "mean_ms": 0.03374675666666664
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_1_value",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.64962,
+          "p95_ms": 0.682436,
+          "mean_ms": 0.6518128733333325
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.669381,
+          "p95_ms": 0.706337,
+          "mean_ms": 0.6756043566666666
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_1_value",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.054652,
+          "p95_ms": 0.056405,
+          "mean_ms": 0.05490183999999999
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.118385,
+          "p95_ms": 0.1206,
+          "mean_ms": 0.11869084333333327
+        },
+        "value_publication": {
+          "median_ms": 0.000411,
+          "p95_ms": 0.000471,
+          "mean_ms": 0.00041523666666666684
+        },
+        "scope_reduction": {
+          "median_ms": 0.006912,
+          "p95_ms": 0.006951,
+          "mean_ms": 0.006925413333333332
+        },
+        "render_submit": {
+          "median_ms": 0.047318,
+          "p95_ms": 0.049116,
+          "mean_ms": 0.04756119
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_1_value",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.054759999999999996,
+          "p95_ms": 0.058866,
+          "mean_ms": 0.05873147999999998
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.11721,
+          "p95_ms": 0.121662,
+          "mean_ms": 0.12116902333333329
+        },
+        "value_publication": {
+          "median_ms": 0.000406,
+          "p95_ms": 0.00046699999999999997,
+          "mean_ms": 0.0004067466666666663
+        },
+        "scope_reduction": {
+          "median_ms": 0.006916,
+          "p95_ms": 0.007450000000000001,
+          "mean_ms": 0.006974553333333331
+        },
+        "render_submit": {
+          "median_ms": 0.047437,
+          "p95_ms": 0.050752000000000005,
+          "mean_ms": 0.051350180000000016
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_1_value",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.651674,
+          "p95_ms": 0.68206,
+          "mean_ms": 0.6539639133333333
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.671039,
+          "p95_ms": 0.701586,
+          "mean_ms": 0.6758695566666666
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_1_value",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.652682,
+          "p95_ms": 0.68344,
+          "mean_ms": 0.6536344999999997
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.6692560000000001,
+          "p95_ms": 0.704477,
+          "mean_ms": 0.6756138133333336
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_1_value",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.054958,
+          "p95_ms": 0.057382,
+          "mean_ms": 0.05879073333333333
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.117773,
+          "p95_ms": 0.120846,
+          "mean_ms": 0.12168934333333335
+        },
+        "value_publication": {
+          "median_ms": 0.000468,
+          "p95_ms": 0.0005589999999999999,
+          "mean_ms": 0.000481943333333333
+        },
+        "scope_reduction": {
+          "median_ms": 0.006916,
+          "p95_ms": 0.006969,
+          "mean_ms": 0.006945439999999997
+        },
+        "render_submit": {
+          "median_ms": 0.047563,
+          "p95_ms": 0.049988000000000005,
+          "mean_ms": 0.051363349999999995
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.632471,
+          "p95_ms": 0.658811,
+          "mean_ms": 0.6385464233333338
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.651238,
+          "p95_ms": 0.6818339999999999,
+          "mean_ms": 0.6608912266666664
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.09495100000000001,
+          "p95_ms": 0.09787699999999999,
+          "mean_ms": 0.09886389000000007
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.174355,
+          "p95_ms": 0.180029,
+          "mean_ms": 0.17840167666666673
+        },
+        "value_publication": {
+          "median_ms": 0.013249,
+          "p95_ms": 0.013737000000000001,
+          "mean_ms": 0.013315403333333337
+        },
+        "scope_reduction": {
+          "median_ms": 0.006935999999999998,
+          "p95_ms": 0.007004999999999999,
+          "mean_ms": 0.006953506666666668
+        },
+        "render_submit": {
+          "median_ms": 0.074737,
+          "p95_ms": 0.077456,
+          "mean_ms": 0.0785949800000001
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.09550299999999999,
+          "p95_ms": 0.09770999999999999,
+          "mean_ms": 0.09576621333333334
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.175861,
+          "p95_ms": 0.179147,
+          "mean_ms": 0.17642394999999997
+        },
+        "value_publication": {
+          "median_ms": 0.013468,
+          "p95_ms": 0.013882,
+          "mean_ms": 0.013559793333333332
+        },
+        "scope_reduction": {
+          "median_ms": 0.006943999999999999,
+          "p95_ms": 0.006995000000000001,
+          "mean_ms": 0.006950589999999998
+        },
+        "render_submit": {
+          "median_ms": 0.075066,
+          "p95_ms": 0.076968,
+          "mean_ms": 0.07525583
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.6321330000000001,
+          "p95_ms": 0.665815,
+          "mean_ms": 0.6352081233333334
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.661084,
+          "p95_ms": 0.701171,
+          "mean_ms": 0.6698149700000003
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.718263,
+          "p95_ms": 0.76649,
+          "mean_ms": 0.6919229299999998
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.7635470000000001,
+          "p95_ms": 0.8051039999999999,
+          "mean_ms": 0.7311853066666664
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.101487,
+          "p95_ms": 0.167161,
+          "mean_ms": 0.11311687666666669
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.9994190000000001,
+          "p95_ms": 1.105659,
+          "mean_ms": 0.9083519333333332
+        },
+        "value_publication": {
+          "median_ms": 0.014837000000000001,
+          "p95_ms": 0.018397,
+          "mean_ms": 0.015395743333333328
+        },
+        "scope_reduction": {
+          "median_ms": 0.007092000000000003,
+          "p95_ms": 0.0074730000000000005,
+          "mean_ms": 0.00712343
+        },
+        "render_submit": {
+          "median_ms": 0.079733,
+          "p95_ms": 0.141523,
+          "mean_ms": 0.09059770333333333
+        }
+      }
+    ],
+    "opengl_adapter": "NVIDIA GeForce RTX 4080 Laptop GPU/PCIe/SSE2"
+  },
+  "after_raw": {
+    "window": [
+      768,
+      840
+    ],
+    "controls": 64,
+    "channels": 2,
+    "samples_per_channel": 1024,
+    "warmup_min_frames": 60,
+    "warmup_min_ms": 250,
+    "measured_frames": 300,
+    "wgpu_adapter": "AdapterInfo { name: \"NVIDIA GeForce RTX 4080 Laptop GPU\", vendor: 4318, device: 10144, device_type: DiscreteGpu, device_pci_bus_id: \"0000:01:00.0\", driver: \"NVIDIA\", driver_info: \"615.78.08\", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: Some(false), limit_bucket: None }",
+    "results": [
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_only",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.652624,
+          "p95_ms": 0.681006,
+          "mean_ms": 0.6538462533333336
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.677447,
+          "p95_ms": 0.714569,
+          "mean_ms": 0.6871084433333332
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_only",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.054569,
+          "p95_ms": 0.058483999999999994,
+          "mean_ms": 0.057297603333333315
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.132953,
+          "p95_ms": 0.137707,
+          "mean_ms": 0.13463482333333338
+        },
+        "value_publication": {
+          "median_ms": 3.1e-05,
+          "p95_ms": 3.4e-05,
+          "mean_ms": 2.9826666666666602e-05
+        },
+        "scope_reduction": {
+          "median_ms": 0.021391999999999998,
+          "p95_ms": 0.021606999999999998,
+          "mean_ms": 0.01994966666666667
+        },
+        "render_submit": {
+          "median_ms": 0.033124,
+          "p95_ms": 0.034616,
+          "mean_ms": 0.037318110000000015
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_only",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.04114,
+          "p95_ms": 0.045201000000000005,
+          "mean_ms": 0.040495143333333324
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.11298899999999999,
+          "p95_ms": 0.118674,
+          "mean_ms": 0.11243692000000002
+        },
+        "value_publication": {
+          "median_ms": 2.4e-05,
+          "p95_ms": 2.7e-05,
+          "mean_ms": 2.3853333333333348e-05
+        },
+        "scope_reduction": {
+          "median_ms": 0.016087,
+          "p95_ms": 0.017592999999999998,
+          "mean_ms": 0.01582857333333333
+        },
+        "render_submit": {
+          "median_ms": 0.024985999999999998,
+          "p95_ms": 0.027647,
+          "mean_ms": 0.024642716666666675
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_only",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.647701,
+          "p95_ms": 0.67661,
+          "mean_ms": 0.6494287366666668
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.668102,
+          "p95_ms": 0.704203,
+          "mean_ms": 0.6770982599999996
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_only",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.649366,
+          "p95_ms": 0.681473,
+          "mean_ms": 0.6518292300000004
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.6702319999999999,
+          "p95_ms": 0.701549,
+          "mean_ms": 0.6790075299999995
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_only",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.045052999999999996,
+          "p95_ms": 0.047457000000000006,
+          "mean_ms": 0.044948683333333295
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.118261,
+          "p95_ms": 0.121628,
+          "mean_ms": 0.11806087666666677
+        },
+        "value_publication": {
+          "median_ms": 2.6000000000000002e-05,
+          "p95_ms": 2.9e-05,
+          "mean_ms": 2.623666666666674e-05
+        },
+        "scope_reduction": {
+          "median_ms": 0.01762,
+          "p95_ms": 0.018502,
+          "mean_ms": 0.01757381333333334
+        },
+        "render_submit": {
+          "median_ms": 0.027388999999999997,
+          "p95_ms": 0.028965000000000005,
+          "mean_ms": 0.02734863333333333
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_1_value",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.6468729999999999,
+          "p95_ms": 0.6793870000000001,
+          "mean_ms": 0.6487342333333334
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.667569,
+          "p95_ms": 0.699274,
+          "mean_ms": 0.6723721566666669
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_1_value",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.055019000000000005,
+          "p95_ms": 0.057176000000000005,
+          "mean_ms": 0.055344133333333344
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.127802,
+          "p95_ms": 0.130216,
+          "mean_ms": 0.1281109899999998
+        },
+        "value_publication": {
+          "median_ms": 0.000427,
+          "p95_ms": 0.000479,
+          "mean_ms": 0.0004296666666666668
+        },
+        "scope_reduction": {
+          "median_ms": 0.007012,
+          "p95_ms": 0.007204999999999999,
+          "mean_ms": 0.007031276666666666
+        },
+        "render_submit": {
+          "median_ms": 0.047603000000000006,
+          "p95_ms": 0.04957400000000001,
+          "mean_ms": 0.04788319000000002
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_1_value",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.054592999999999996,
+          "p95_ms": 0.058403000000000004,
+          "mean_ms": 0.05861927999999999
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.122504,
+          "p95_ms": 0.128606,
+          "mean_ms": 0.12645322999999992
+        },
+        "value_publication": {
+          "median_ms": 0.000417,
+          "p95_ms": 0.0005,
+          "mean_ms": 0.00042610333333333326
+        },
+        "scope_reduction": {
+          "median_ms": 0.00691,
+          "p95_ms": 0.0069889999999999996,
+          "mean_ms": 0.006952049999999998
+        },
+        "render_submit": {
+          "median_ms": 0.047269,
+          "p95_ms": 0.051011,
+          "mean_ms": 0.05124112666666665
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_1_value",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.649959,
+          "p95_ms": 0.677449,
+          "mean_ms": 0.6514159133333334
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.6704289999999999,
+          "p95_ms": 0.6995509999999999,
+          "mean_ms": 0.6745489299999998
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_1_value",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.647548,
+          "p95_ms": 0.677333,
+          "mean_ms": 0.6498192433333333
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.668319,
+          "p95_ms": 0.699213,
+          "mean_ms": 0.6730326700000001
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_1_value",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.054684,
+          "p95_ms": 0.056253,
+          "mean_ms": 0.05833948666666669
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.12176300000000001,
+          "p95_ms": 0.12349600000000001,
+          "mean_ms": 0.12534116000000003
+        },
+        "value_publication": {
+          "median_ms": 0.00041600000000000003,
+          "p95_ms": 0.000495,
+          "mean_ms": 0.0004210600000000001
+        },
+        "scope_reduction": {
+          "median_ms": 0.006908,
+          "p95_ms": 0.006953,
+          "mean_ms": 0.006931750000000002
+        },
+        "render_submit": {
+          "median_ms": 0.047370999999999996,
+          "p95_ms": 0.04880400000000001,
+          "mean_ms": 0.05098667666666668
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.6326339999999999,
+          "p95_ms": 0.6693870000000001,
+          "mean_ms": 0.6352205366666663
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.652993,
+          "p95_ms": 0.686623,
+          "mean_ms": 0.6623452166666663
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_64_values",
+        "round": 0,
+        "cpu_submit": {
+          "median_ms": 0.078332,
+          "p95_ms": 0.082952,
+          "mean_ms": 0.08256343666666667
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.157379,
+          "p95_ms": 0.163527,
+          "mean_ms": 0.16155857999999998
+        },
+        "value_publication": {
+          "median_ms": 0.013177,
+          "p95_ms": 0.013857,
+          "mean_ms": 0.013269736666666658
+        },
+        "scope_reduction": {
+          "median_ms": 0.006937000000000002,
+          "p95_ms": 0.007071000000000001,
+          "mean_ms": 0.006994269999999996
+        },
+        "render_submit": {
+          "median_ms": 0.058176000000000005,
+          "p95_ms": 0.062275,
+          "mean_ms": 0.06229943000000001
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.078834,
+          "p95_ms": 0.087299,
+          "mean_ms": 0.08381675333333334
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.156262,
+          "p95_ms": 0.166001,
+          "mean_ms": 0.16140267666666663
+        },
+        "value_publication": {
+          "median_ms": 0.013207,
+          "p95_ms": 0.014807,
+          "mean_ms": 0.01348434666666666
+        },
+        "scope_reduction": {
+          "median_ms": 0.0069349999999999985,
+          "p95_ms": 0.007493,
+          "mean_ms": 0.007067886666666662
+        },
+        "render_submit": {
+          "median_ms": 0.058557,
+          "p95_ms": 0.065124,
+          "mean_ms": 0.06326452000000002
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_64_values",
+        "round": 1,
+        "cpu_submit": {
+          "median_ms": 0.632981,
+          "p95_ms": 0.660125,
+          "mean_ms": 0.6388404400000002
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.656391,
+          "p95_ms": 0.690178,
+          "mean_ms": 0.6658454733333334
+        }
+      },
+      {
+        "implementation": "egui_glow",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.6333260000000001,
+          "p95_ms": 0.669405,
+          "mean_ms": 0.6359794799999999
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.657965,
+          "p95_ms": 0.699171,
+          "mean_ms": 0.6677915600000003
+        }
+      },
+      {
+        "implementation": "shared_wgpu",
+        "scenario": "scope_and_64_values",
+        "round": 2,
+        "cpu_submit": {
+          "median_ms": 0.07924099999999999,
+          "p95_ms": 0.08763499999999999,
+          "mean_ms": 0.08033897666666674
+        },
+        "cpu_and_gpu": {
+          "median_ms": 0.15673900000000002,
+          "p95_ms": 0.165657,
+          "mean_ms": 0.15809733666666675
+        },
+        "value_publication": {
+          "median_ms": 0.013403,
+          "p95_ms": 0.014440999999999999,
+          "mean_ms": 0.013526506666666665
+        },
+        "scope_reduction": {
+          "median_ms": 0.006940999999999999,
+          "p95_ms": 0.007511,
+          "mean_ms": 0.007054333333333339
+        },
+        "render_submit": {
+          "median_ms": 0.058851,
+          "p95_ms": 0.065127,
+          "mean_ms": 0.059758136666666635
+        }
+      }
+    ],
+    "opengl_adapter": "NVIDIA GeForce RTX 4080 Laptop GPU/PCIe/SSE2"
+  },
+  "source_sha256_final": {
+    "crates/onda_ui/examples/compare_native.rs": "655f5c6b929e293bd8cc4c0ae0a7f17cf262d69e3289fc8a202674eb7151de36",
+    "crates/onda_ui/src/renderer.rs": "5d8fcd2705ec9eb1ba02e5de74ff2ecb61b370039891ea2c1ec5685cf6e1007f",
+    "crates/onda_ui/src/model.rs": "10887508007fae3bd2f1b5d85258c92bf70977ea4aba1d256111cd7241707ee6",
+    "crates/onda_ui/Cargo.toml": "ba68972dbb4bbff8f2052a0c6c9e1bbed8a459edb6df076be442aa43b35201d2"
+  }
+}

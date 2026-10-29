@@ -15,14 +15,15 @@ import {
   prepareBufferBindings,
 } from "./browser-buffers.js";
 import { compilationKey } from "./compile-cache.js";
-import { bindCompileSettingLabels } from "./compile-setting-labels.js";
 import { normalizeStoredProject, OndaProjectEditor } from "./editor.js";
 import { bindEditorFontSize } from "./editor-font-size.js";
+import { bindProjectMenu } from "./project-menu.js";
+import { bindNewFileButton } from "./new-file.js";
 import { loadExampleProject } from "./examples.js";
 import { OndaBrowserLsp } from "./lsp-client.js";
 import { BrowserMidiInputs, isMidiKeyboardEditingTarget } from "./midi.js";
 import { BrowserMicrophoneInput } from "./microphone.js";
-import { BrowserParamSmoothing } from "./param-smoothing.js";
+import { BrowserParamSmoothing, DEFAULT_PARAM_SMOOTHING_MS } from "./param-smoothing.js";
 import { BrowserRunViewHost, BrowserScopeSource } from "./run-view-host.js";
 import { bindAudioActivation } from "./audio-activation.js";
 import {
@@ -45,11 +46,10 @@ const openProjectButton = document.querySelector("[data-open-project]");
 const downloadProjectButton = document.querySelector("[data-download-project]");
 const newFileButton = document.querySelector("[data-new-file]");
 const shareProjectButton = document.querySelector("[data-share-project]");
-const sampleRateEl = document.querySelector("[data-sample-rate]");
-const blockSizeEl = document.querySelector("[data-block-size]");
 const editorFontSizeEl = document.querySelector("[data-editor-font-size]");
 const runViewFrame = document.querySelector("[data-run-view]");
-bindCompileSettingLabels(document);
+const runLoadingEl = document.querySelector("[data-run-loading]");
+bindProjectMenu(document.querySelector("[data-project-menu]"));
 
 const pageParams = new URLSearchParams(window.location.search);
 const smokeMode = pageParams.has("smoke");
@@ -59,9 +59,9 @@ const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
+let compileSettings = { sampleRate: 48_000, blockSize: 512 };
 const paramSmoothing = new BrowserParamSmoothing(Math.max(...supportedSampleRates),
   () => audioProcessor, error => runView.showError(error));
-const paramSmoothingMs = paramSmoothing.milliseconds;
 
 let compiler = null;
 let languageServer = null;
@@ -86,14 +86,23 @@ const bufferFiles = new Map();
 const microphoneInput = new BrowserMicrophoneInput();
 let midiInputs = null;
 
-runViewFrame.src = hostedAssets.runViewUrl ?? "./run.html";
+const runViewUrl = new URL(hostedAssets.runViewUrl ?? "./gpu/index.html", location.href);
+if (pageParams.get("backend") === "webgl") runViewUrl.searchParams.set("backend","webgl");
+runViewFrame.src = runViewUrl.href;
 const runView = new BrowserRunViewHost(runViewFrame, {
+  loadingChanged: loading => {
+    if (loading && runLoadingEl.hidden) runLoadingEl.textContent = "Preparing controls...";
+    runLoadingEl.hidden = !loading;
+    runViewFrame.parentElement.setAttribute("aria-busy", String(loading));
+  },
   start: () => runProject(),
   resume: resumeAudio,
   stop: () => stopExecution(),
   resetParams: () => resetRunParams(),
   setParam: (name, value) => audioProcessor?.setParam(name, value),
   setParamSmoothing: milliseconds => paramSmoothing.set(milliseconds),
+  setRunSettings: ({ sampleRateHz, blockSamples }) =>
+    applyCompileOptions({ sampleRate: sampleRateHz, blockSize: blockSamples }),
   triggerEvent: (name, values) => audioProcessor?.trigger(name, values),
   midiEventsChanged: (events) => midiInputs?.setDeclared(events),
   refreshMidiInputs: async () => {
@@ -114,6 +123,7 @@ const runView = new BrowserRunViewHost(runViewFrame, {
   },
   bindBufferFile: (name, file) => bindBufferFile(name, file),
   clearBuffer: (name) => clearBuffer(name),
+  scopeConfig: configuration => scopeSource.configure(configuration),
   error: (error) => {
     runView.setError(error);
     setErrorStatus();
@@ -121,8 +131,10 @@ const runView = new BrowserRunViewHost(runViewFrame, {
 });
 runView.setState({
   ondaVersion: ONDA_VERSION,
-  paramSmoothingMs,
-  paramSmoothingDefaultMs: paramSmoothingMs,
+  paramSmoothingMs: paramSmoothing.milliseconds,
+  paramSmoothingDefaultMs: DEFAULT_PARAM_SMOOTHING_MS,
+  sampleRateOptions: [...supportedSampleRates],
+  blockSizeOptions: [...supportedBlockSizes],
 });
 midiInputs = new BrowserMidiInputs({
   onState: ({ devices, current }) => runView.setMidiInputs(devices, current),
@@ -153,13 +165,13 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) runView.releaseVirtualMidiNotes();
 });
 
-function setStatus(text, kind = "") {
+function setStatus(text, loading = false) {
   statusEl.textContent = text;
-  statusEl.className = `status ${kind}`.trim();
+  if (loading) runLoadingEl.textContent = text;
 }
 
 function setErrorStatus() {
-  setStatus("Error", "fail");
+  setStatus("Error");
 }
 
 function reportSmokeResult(result) {
@@ -176,9 +188,9 @@ function errorMessage(error) {
   return String(error?.message ?? error);
 }
 
-function compileOptions() {
-  const sampleRate = Number(sampleRateEl.value);
-  const blockSize = Number(blockSizeEl.value);
+function compileOptions(settings = compileSettings) {
+  const sampleRate = Number(settings.sampleRate);
+  const blockSize = Number(settings.blockSize);
   if (!supportedSampleRates.has(sampleRate)) {
     throw new Error("sample rate must be 44100 or 48000 Hz");
   }
@@ -194,13 +206,13 @@ function restoreCompileOptions() {
     const sampleRate = Number(stored?.sampleRate);
     const blockSize = Number(stored?.blockSize);
     if (supportedSampleRates.has(sampleRate)) {
-      sampleRateEl.value = String(sampleRate);
+      compileSettings.sampleRate = sampleRate;
     }
     if (supportedBlockSizes.has(blockSize)) {
-      blockSizeEl.value = String(blockSize);
+      compileSettings.blockSize = blockSize;
     }
   } catch {
-    // The HTML defaults remain available when storage is disabled or malformed.
+    // Use the default settings when storage is disabled or malformed.
   }
 }
 
@@ -248,9 +260,9 @@ async function runProject() {
   const needsCompilation = !artifact || artifactCompilationKey !== key;
   if (needsCompilation) {
     runView.setCompiling(project.entry, options);
-    setStatus("Compiling...");
+    setStatus("Compiling...", true);
   } else {
-    setStatus("Starting...");
+    setStatus("Starting...", true);
   }
   try {
     if (needsCompilation) {
@@ -266,6 +278,7 @@ async function runProject() {
     }
     localStorage.setItem(projectStorageKey, JSON.stringify(projectEditor.project()));
     runView.setArtifact(artifact, bufferFiles);
+    setStatus("Preparing controls...", true);
     await startAudio();
     if (generation !== runGeneration) return;
     const runViewDocument = runViewFrame.contentDocument;
@@ -289,17 +302,13 @@ async function runProject() {
       hasLineNumbers: Boolean(editorEl.querySelector(".cm-lineNumbers")),
       hasLspDiagnostics: projectEditor.diagnostics.has(projectEditor.active),
       hasSharedRunView: Boolean(runViewFrame.contentWindow),
+      hasGpuRunView: Boolean(runViewDocument?.querySelector("#onda-ui")),
+      runViewBackend: runViewDocument?.querySelector("#onda-ui")?.dataset.backend,
       hasSeparateRunButton: Boolean(document.querySelector("[data-run-project]")),
       hasMasterGain: Boolean(document.querySelector("[data-gain]")),
-      hasDeviceControls: !runViewDocument?.querySelector("#refresh-devices")?.hidden,
+      hasDeviceControls: runView.state.supportsMidiInputSelection,
       pageTheme: resolvedPageTheme(),
       runViewTheme: runViewDocument?.documentElement.dataset.theme ?? null,
-      runViewMatchesEditorBackground: Boolean(runViewDocument)
-        && getComputedStyle(runViewDocument.documentElement).backgroundColor
-          === getComputedStyle(editorEl.querySelector(".cm-editor")).backgroundColor,
-      scrollbarsMatch: Boolean(runViewDocument)
-        && getComputedStyle(document.documentElement).scrollbarColor
-          === getComputedStyle(runViewDocument.documentElement).scrollbarColor,
       hasMainFileTab: Boolean(fileTabsEl.querySelector(".project-file-main")),
       hasEntryFileLabel: fileTabsEl.textContent.toLowerCase().includes("entry"),
       hasTabFileMenu: Boolean(fileTabsEl.querySelector(".project-file-menu-trigger")),
@@ -309,7 +318,6 @@ async function runProject() {
       hasDownloadProjectButton: Boolean(downloadProjectButton),
       microphonePermissionRequested: microphoneInput.permissionRequested,
       tabStripFits: fileTabsEl.scrollWidth <= fileTabsEl.clientWidth,
-      sampleRateLabels: [...sampleRateEl.options].map((option) => option.textContent),
       themeFollowsPage,
       ...editorBindings,
     });
@@ -325,10 +333,12 @@ async function runProject() {
   }
 }
 
-async function applyCompileOptions() {
+async function applyCompileOptions(settings) {
   try {
-    const options = compileOptions();
+    const options = compileOptions(settings);
+    compileSettings = options;
     saveCompileOptions(options);
+    runView.setState({ sampleRateHz: options.sampleRate, blockSamples: options.blockSize });
     const analysisUpdate = languageServer?.setAnalysisOptions(options);
     const compilation = compiler ? runProject() : null;
     await analysisUpdate;
@@ -399,7 +409,7 @@ async function smokeEditorBindings() {
     bubbles: true,
     cancelable: true,
   });
-  const modEnterHandled = !sampleRateEl.dispatchEvent(runEvent);
+  const modEnterHandled = !editorFontSizeEl.dispatchEvent(runEvent);
   const saveEvent = new KeyboardEvent("keydown", {
     key: "s",
     code: "KeyS",
@@ -407,7 +417,7 @@ async function smokeEditorBindings() {
     bubbles: true,
     cancelable: true,
   });
-  const modSaveHandled = !sampleRateEl.dispatchEvent(saveEvent);
+  const modSaveHandled = !editorFontSizeEl.dispatchEvent(saveEvent);
 
   const definitionModeEvent = new KeyboardEvent("keydown", {
     key: "Control",
@@ -524,6 +534,9 @@ async function smokeEditorBindings() {
     && projectEditor.paths().length === projectFileCount;
 
   const originalFontSize = editorFontSizeControl.value;
+  const projectMenu = editorFontSizeEl.closest("details");
+  const menuWasOpen = projectMenu.open;
+  projectMenu.open = true;
   editorFontSizeEl.focus();
   editorFontSizeEl.value = "23";
   editorFontSizeEl.dispatchEvent(new Event("input", { bubbles: true }));
@@ -539,6 +552,7 @@ async function smokeEditorBindings() {
     : null;
   editorFontSizeEl.blur();
   editorFontSizeControl.set(originalFontSize);
+  projectMenu.open = menuWasOpen;
   const editorFontSizeHandled =
     editorFontSizeImmediately === "23px"
     && editorFontSizeAfterMeasure === "23px";
@@ -624,7 +638,7 @@ async function smokeEditorBindings() {
     bubbles: true,
     cancelable: true,
   });
-  const ctrlPeriodHandled = !blockSizeEl.dispatchEvent(stopEvent);
+  const ctrlPeriodHandled = !editorFontSizeEl.dispatchEvent(stopEvent);
 
   const runViewWindow = runViewFrame.contentWindow;
   const runViewDocument = runViewFrame.contentDocument;
@@ -758,7 +772,8 @@ async function startAudio() {
           `browser selected unsupported ${context.sampleRate} Hz audio; use a 44100 or 48000 Hz output device`,
         );
       }
-      sampleRateEl.value = String(context.sampleRate);
+      compileSettings.sampleRate = context.sampleRate;
+      saveCompileOptions(compileSettings);
       const options = {
         sampleRate: context.sampleRate,
         blockSize: Number(metadata.compile.block_size),
@@ -786,6 +801,8 @@ async function startAudio() {
       params,
       buffers,
       workletUrl: hostedAssets.workletUrl,
+      ...(typeof SharedArrayBuffer === "function"
+        ? { onPrint: output => runView.appendPrint(output) } : {}),
     });
 
     // The preference may have changed while the processor was being created.
@@ -867,7 +884,7 @@ function updateAudioStatus() {
   const playing = context.state === "running";
   runView.setRunning(context.sampleRate,
     playing ? undefined : "Click, tap, or press a key to enable audio");
-  setStatus(playing ? "Playing" : "Audio ready", playing ? "playing" : "ready");
+  setStatus(playing ? "Playing" : "Audio ready");
 }
 
 async function closeAudioContext() {
@@ -922,7 +939,7 @@ function scheduleProjectSave(project) {
 }
 
 async function loadToolchain() {
-  setStatus("Loading compiler...");
+  setStatus("Loading compiler...", true);
   const compilerLoading = createCompiler({
     worker: true,
     workerUrl: hostedAssets.workerUrl,
@@ -947,13 +964,12 @@ async function loadToolchain() {
   const capabilities = await languageServer.initialize(compileOptions());
   projectEditor.connectLanguageServer(languageServer, capabilities);
   await languageServer.syncProject(projectEditor.compilerProject());
-  runView.setPath(projectEditor.entry);
   const initialProjectError = sharedSessionError ?? requestedExampleError;
   if (initialProjectError) {
     runView.setError(initialProjectError);
     setErrorStatus();
   } else {
-    setStatus("Ready", "ready");
+    setStatus("Ready");
     await runProject();
   }
 }
@@ -968,6 +984,10 @@ function smokeBufferFile() {
 
 function initializeEditor(initialSharedSession, initialExampleProject) {
   restoreCompileOptions();
+  runView.setState({
+    sampleRateHz: compileSettings.sampleRate,
+    blockSamples: compileSettings.blockSize,
+  });
   let storedProject = normalizeStoredProject(initialSharedSession ?? initialExampleProject);
   if (!storedProject && !smokeMode && !requestedExample) {
     try {
@@ -996,6 +1016,8 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
       sources: { "main.onda": "# Loading the bundled Onda example...\n" },
     },
   });
+  runView.setPath(projectEditor.entry);
+  bindNewFileButton(newFileButton, projectEditor);
   editorFontSizeControl = bindEditorFontSize(editorFontSizeEl, projectEditor);
 }
 
@@ -1021,7 +1043,7 @@ async function createNewProject() {
   url.searchParams.delete("example");
   url.hash = "";
   history.replaceState(null, "", url);
-  setStatus("Ready", "ready");
+  setStatus("Ready");
 }
 
 async function openProjectFile(file) {
@@ -1066,7 +1088,7 @@ async function openProjectFile(file) {
     url.searchParams.delete("example");
     url.hash = "";
     history.replaceState(null, "", url);
-    setStatus("Project loaded", "ready");
+    setStatus("Project loaded");
     await runProject();
   } catch (error) {
     runView.setError(error);
@@ -1134,7 +1156,7 @@ async function downloadProject() {
     const stem = project.entry.split("/").at(-1)?.replace(/\.(?:onda|on)$/i, "")
       || "onda-project";
     downloadBytes(archive, `${stem}-project.zip`, "application/zip");
-    setStatus("Project downloaded", "ready");
+    setStatus("Project downloaded");
   } catch (error) {
     runView.setError(error);
     setErrorStatus();
@@ -1185,7 +1207,7 @@ async function shareProject() {
     }
     if (!copied) window.prompt("Copy this playground link", url.href);
     shareProjectButton.textContent = copied ? "Copied" : "Link ready";
-    setStatus(copied ? "Link copied" : "Link ready", "ready");
+    setStatus(copied ? "Link copied" : "Link ready");
     setTimeout(() => {
       shareProjectButton.textContent = "Share";
     }, 1800);
@@ -1199,24 +1221,18 @@ async function shareProject() {
 newProjectButton.addEventListener("click", () => void createNewProject());
 openProjectButton.addEventListener("click", chooseProjectFile);
 downloadProjectButton.addEventListener("click", () => void downloadProject());
-newFileButton.addEventListener("click", () => {
-  const path = prompt("New project-relative Onda file", "module.onda")?.trim();
-  if (path) editProject(() => projectEditor.add(path));
-});
 shareProjectButton.addEventListener("click", () => void shareProject());
 
-for (const control of [sampleRateEl, blockSizeEl]) {
-  control.addEventListener("change", () => void applyCompileOptions());
-}
 document.addEventListener("keydown", handlePlaygroundShortcut, { capture: true });
 const unbindAudioActivation = bindAudioActivation(document, {
   resume: resumeAudio,
   stop: stopExecution,
 });
 
-window.addEventListener("pagehide", () => {
+window.addEventListener("pagehide", (event) => {
+  if (event.persisted) return;
   unbindAudioActivation();
-  scopeSource.stop();
+  scopeSource.dispose();
   microphoneInput.close();
   runView.dispose();
   languageServer?.dispose();

@@ -27,6 +27,7 @@ import { tags } from "@lezer/highlight";
 import { projectUriToPath } from "./lsp-client.js";
 import { completionIconMasks, completionType } from "./completions.js";
 import { reorderMap } from "./tab-order.js";
+import { editorSelection } from "./editor-selection.js";
 
 const sectionWords = new Set([
   "ins", "inputs", "outs", "outputs", "params", "kins", "kouts",
@@ -70,7 +71,6 @@ class DiagnosticLineMarker extends GutterMarker {
     const number = document.createElement("span");
     number.textContent = String(this.number);
     number.title = this.tooltip;
-    number.setAttribute("aria-label", this.tooltip);
     return number;
   }
 }
@@ -318,7 +318,7 @@ const ondaEditorTheme = EditorView.theme({
     overflow: "auto",
     fontFamily: "inherit",
   },
-  ".cm-content": { minHeight: "100%", padding: "4px 0 16px", caretColor: "var(--code-ink)" },
+  ".cm-content": { minHeight: "100%", padding: "0 0 16px", caretColor: "var(--code-ink)" },
   ".cm-gutters": {
     color: "var(--muted)",
     backgroundColor: "var(--code-bg)",
@@ -333,10 +333,7 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-lineNumbers .cm-onda-diagnostic-error, .cm-lineNumbers .cm-onda-diagnostic-warning, .cm-lineNumbers .cm-onda-diagnostic-info, .cm-lineNumbers .cm-onda-diagnostic-hint": {
     cursor: "help",
   },
-  ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--soft) 58%, transparent)" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-    backgroundColor: "color-mix(in srgb, var(--ink) 24%, transparent) !important",
-  },
+  ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--line) 58%, transparent)" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--code-ink)" },
   ".cm-panels, .cm-tooltip": { color: "var(--text)", backgroundColor: "var(--surface)" },
   ".cm-tooltip": { border: "1px solid var(--line)" },
@@ -494,6 +491,8 @@ export class OndaProjectEditor {
         performance.now() - this.editorBlurredAt < 500
         && this.view.dom.isConnected
         && !this.view.hasFocus
+        && [this.view.dom.ownerDocument.body, this.view.scrollDOM]
+          .includes(this.view.dom.ownerDocument.activeElement)
       ) {
         this.view.focus();
       }
@@ -597,6 +596,7 @@ export class OndaProjectEditor {
       doc: source,
       extensions: [
         minimalSetup,
+        editorSelection,
         // A sticky gutter can cover the caret when mobile browsers adjust
         // their visual viewport for the on-screen keyboard. Let the gutter
         // participate in horizontal scrolling on compact/touch layouts.
@@ -1035,7 +1035,6 @@ export class OndaProjectEditor {
     this.fileMenu = null;
     listeners.abort();
     element.remove();
-    trigger.setAttribute("aria-expanded", "false");
     if (restoreFocus && trigger.isConnected) trigger.focus();
   }
 
@@ -1048,13 +1047,11 @@ export class OndaProjectEditor {
 
     const menu = document.createElement("div");
     menu.className = "project-file-menu";
-    menu.setAttribute("role", "menu");
 
     const action = (text, className, callback, disabled = false) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = className;
-      button.setAttribute("role", "menuitem");
       button.textContent = text;
       button.disabled = disabled;
       button.addEventListener("click", () => {
@@ -1106,7 +1103,6 @@ export class OndaProjectEditor {
     window.addEventListener("resize", () => this.closeFileMenu(), options);
     window.addEventListener("scroll", () => this.closeFileMenu(), { ...options, capture: true });
     this.fileMenu = { element: menu, trigger, listeners };
-    trigger.setAttribute("aria-expanded", "true");
     menu.querySelector("button:not(:disabled)")?.focus();
   }
 
@@ -1124,14 +1120,11 @@ export class OndaProjectEditor {
       tab.dataset.active = String(path === this.active);
       tab.dataset.kind = info?.kind ?? "project";
       tab.dataset.errors = String(errorCount);
-      tab.setAttribute("role", "presentation");
       tab.draggable = true;
       tab.addEventListener("dragstart", (event) => this.startTabDrag(path, tab, event));
       tab.addEventListener("dragend", () => this.cancelTabDrag(path));
       selectButton.type = "button";
       selectButton.className = "project-file-select";
-      selectButton.setAttribute("role", "tab");
-      selectButton.setAttribute("aria-selected", String(path === this.active));
       const label = info?.label ?? path;
       selectButton.title = path === this.entry ? `${label} (main file)` : label;
       const name = document.createElement("span");
@@ -1165,9 +1158,6 @@ export class OndaProjectEditor {
         menuButton.className = "project-file-menu-trigger";
         menuButton.textContent = "⋯";
         menuButton.draggable = false;
-        menuButton.setAttribute("aria-label", `Actions for ${label}`);
-        menuButton.setAttribute("aria-haspopup", "menu");
-        menuButton.setAttribute("aria-expanded", "false");
         menuButton.title = `Actions for ${label}`;
         menuButton.addEventListener("pointerdown", (event) => event.stopPropagation());
         menuButton.addEventListener("click", (event) => {
@@ -1182,7 +1172,6 @@ export class OndaProjectEditor {
         closeButton.type = "button";
         closeButton.className = "project-file-close";
         closeButton.textContent = "×";
-        closeButton.setAttribute("aria-label", `Close ${label}`);
         closeButton.title = `Close ${label}`;
         closeButton.addEventListener("click", () => this.close(path));
       }
