@@ -102,7 +102,7 @@ jobs:
             libdbus-1-dev \
             libasound2-dev \
             libudev-dev \
-            libxkbcommon-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 \
             libwayland-dev \
             libx11-dev \
             libxi-dev \
