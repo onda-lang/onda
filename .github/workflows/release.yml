@@ -166,7 +166,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
           cargo build --release -p onda_cli -p onda_ui --features onda_ui/ffi
           if ($LASTEXITCODE -ne 0) { throw "Onda and GPU UI build failed" }
-          cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
+          # Hosted WARP faults in d3d10warp.dll when independent GPU tests run concurrently.
+          cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { throw "GPU UI tests failed" }
           $ondaCmakeDir = Join-Path $PWD "cmake"
           cmake `
