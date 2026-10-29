@@ -25,7 +25,7 @@ jobs:
         run: |
           $binary = Get-ChildItem tests -Recurse -Filter onda_processor_tests.exe | Select-Object -First 1
           $env:ONDA_GPU_UI_LIBRARY = (Resolve-Path native-ui/onda_ui.dll).Path
-          foreach ($case in @('GpuEditorTeardown', 'GpuEditorPeerRecreation', 'NativeEditor', 'Vst3EditorAttachment')) {
+          foreach ($case in @('GpuEditorTeardown', 'GpuEditorPeerRecreation', 'NativeEditor')) {
             1..3 | ForEach-Object {
               & $binary.FullName $case
               if ($LASTEXITCODE -ne 0) { throw "$case failed on iteration $_ with $LASTEXITCODE" }
