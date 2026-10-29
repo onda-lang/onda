@@ -65,6 +65,7 @@ jobs:
     needs: validate
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -161,8 +162,10 @@ jobs:
           $llvmBinDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
+          if ($LASTEXITCODE -ne 0) { throw "Onda API build failed" }
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
-          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
+          if ($LASTEXITCODE -ne 0) { throw "Onda API validation failed" }
+          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization --test target_initialization -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
           cargo build --release -p onda_cli -p onda_ui --features onda_ui/ffi
           if ($LASTEXITCODE -ne 0) { throw "Onda and GPU UI build failed" }
@@ -175,7 +178,9 @@ jobs:
             -B target\cmake-sdk `
             -A x64 `
             "-DOnda_DIR=$ondaCmakeDir"
+          if ($LASTEXITCODE -ne 0) { throw "CMake SDK configuration failed" }
           cmake --build target\cmake-sdk --config Release
+          if ($LASTEXITCODE -ne 0) { throw "CMake SDK validation failed" }
 
           $resources = & llvm-readobj --coff-resources target\release\onda.exe
           if ($LASTEXITCODE -ne 0 -or -not ($resources -match 'Type:\s+(?:GROUP_)?ICON\b')) {
@@ -202,7 +207,7 @@ jobs:
           cargo build --release -p onda_cli -p onda_api -p onda_ui --features onda_ui/ffi
           if [[ "$RUNNER_OS" == Linux ]]; then export WGPU_BACKEND=vulkan; fi
           cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
-          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
+          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization --test target_initialization -- --nocapture
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cmake \
             -S tests/cmake_sdk \
