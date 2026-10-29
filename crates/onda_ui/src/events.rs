@@ -1,6 +1,6 @@
 //! Typed event values and their editor paths. JSON transport remains lossless
 //! for i64 and non-finite floats; shape validation happens before dispatch.
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EventField {

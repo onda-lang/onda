@@ -630,8 +630,13 @@ for (const [host, backend] of [
   ["example", "webgpu"],
   ["example", "webgl"],
   ["website", "webgpu"],
+  ["website", "webgl"],
 ]) {
-  test(`GPU web editor ${host} ${backend}`, { timeout: 120000 }, async (t) => {
+  test(`GPU web editor ${host} ${backend}`, {
+    timeout: 120000,
+    skip: backend === "webgpu" && process.env.ONDA_UI_TEST_WEBGPU === "0"
+      ? "requires a hardware WebGPU adapter" : false,
+  }, async (t) => {
     const base = await serve(t);
     const { page, frame, geometry, click, section, key } = await openEditor(
       t,

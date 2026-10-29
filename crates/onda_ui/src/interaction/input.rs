@@ -37,6 +37,10 @@ pub enum Input {
         id: u64,
         x: f32,
         y: f32,
+        /// Scroll distance independent of local coordinates when the host moves
+        /// the view during a pan. Positive values scroll down.
+        #[serde(default, rename = "deltaY")]
+        delta_y: Option<f32>,
     },
     TouchEnd {
         #[serde(default)]
@@ -128,7 +132,7 @@ impl RunUi {
             self.scroll_region_by(
                 self.scroll_region(self.interaction.pointer[0], self.interaction.pointer[1]),
                 delta,
-            )
+            ) != 0.0
         }
     }
     pub(crate) fn pointer_captured(&self) -> bool {
@@ -169,7 +173,7 @@ impl RunUi {
         }
         match input {
             Input::TouchStart { id, x, y } => self.touch_start(id, x, y),
-            Input::TouchMove { id, x, y } => self.touch_move(id, x, y),
+            Input::TouchMove { id, x, y, delta_y } => self.touch_move(id, x, y, delta_y),
             Input::TouchEnd { id } => self.touch_end(id),
             Input::TouchCancel { id } => self.touch_cancel(id),
             Input::PointerMove { x, y, fine } => {

@@ -7,7 +7,11 @@ export async function checkRegressions(page, evaluate) {
   await state({path:"hover-delay.onda",running:false,supportsScope:false,
     params:[],inputControls:[],buffers:[],events:[],logText:"",logRevealed:false,
     midi:{noteOn:false},midiKeyboardInteractive:false,viewState:{reset:true}});
-  const screenshot = async () => (await page("Page.captureScreenshot")).data;
+  // Headless Vulkan page captures can omit the WebGPU canvas layer.
+  const webgpu = await evaluate("document.querySelector('canvas').dataset.backend==='webgpu'");
+  const screenshot = async () => webgpu
+    ? evaluate("document.querySelector('canvas').toDataURL()")
+    : (await page("Page.captureScreenshot")).data;
   await page("Input.dispatchMouseEvent", {type:"mouseMoved",x:700,y:800});
   const plain = await screenshot();
   await page("Input.dispatchMouseEvent", {type:"mouseMoved",x:100,y:35});

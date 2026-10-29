@@ -76,9 +76,26 @@ npm run build:gpu-ui
 CHROME_BIN=/path/to/chromium npm run test:gpu-ui
 ```
 
+Browser tests exercise both hardware WebGPU and software WebGL2 by default.
+Set `ONDA_UI_TEST_WEBGPU=0` on machines without a hardware adapter; the WebGPU
+cases are reported as skipped. Hosted CI runs this software path. Build and
+stage both browser hosts before running editor integration tests:
+
+```sh
+npm run build --workspace @onda-lang/wasm-compiler
+npm run build:gpu-ui
+bash examples/web/onda_wasm_playground/build-demo.sh --skip-build
+node scripts/build-website-playground.mjs
+CHROME_BIN=/path/to/chromium npm run test:gpu-web-editor
+```
+
 The build requires `npm ci`, `wasm-pack`, and the Rust `wasm32-unknown-unknown` target.
 It uses the workspace-pinned Binaryen optimizer, matching the browser compiler build.
-It generates `ui/gpu/pkg`, which is ignored by Git. Serve `ui/gpu` over localhost
+It generates `ui/gpu/pkg`, which is ignored by Git. After a successful build,
+`pkg/build.json` records the Onda version and SHA-256 checksums of the browser
+host, Wasm, glue, fonts, and notices. Rebuild after changing the version or any
+runtime asset; consumers verify this manifest before staging and packaging.
+Serve `ui/gpu` over localhost
 or HTTPS and publish existing run-view messages to `window._onHostMessage`.
 Commands use the existing VS Code/IPC bridge or an `ondaCommand` CustomEvent.
 WebGPU is selected when a hardware adapter is available; otherwise the canvas uses
@@ -277,6 +294,12 @@ Touch adapters send `touchStart { id, x, y }`, `touchMove { id, x, y }`,
 other gestures retain one controlling finger.
 Vertical swipes pan the original document, log, settings, or menu; horizontal number
 drags and direct slider, knob, and MIDI gestures keep their control ownership.
+Unconsumed vertical pan distance emits `scrollParent { deltaY }` in logical pixels.
+The browser adapter applies it to scrollable ancestors across same-origin frames,
+respecting their overscroll policy. Hosts without an enclosing scroller ignore it.
+Browser `touchMove` events include optional `deltaY` (positive to scroll down),
+measured independently of local coordinates so scrolling the page under a finger
+does not alter its movement.
 Releasing computer keys preserves pointer-owned MIDI notes and active field drafts.
 Keys include Enter, Escape, Backspace, Delete, ArrowLeft, ArrowRight, Home, End,
 Tab, SelectAll, Copy, and Cut. Shift extends text selections; `copyText { text }`

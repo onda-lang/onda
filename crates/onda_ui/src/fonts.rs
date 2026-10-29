@@ -1,7 +1,7 @@
 //! Deterministic primary fonts, with script fallbacks loaded only when needed.
+use glyphon::fontdb;
 #[cfg(not(target_arch = "wasm32"))]
 use glyphon::FontSystem;
-use glyphon::fontdb;
 use std::sync::{Arc, LazyLock};
 
 const INTER: &[u8] = include_bytes!("../../../assets/fonts/Inter.ttf");

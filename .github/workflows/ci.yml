@@ -4,13 +4,15 @@ on:
   pull_request:
     paths-ignore:
       - "*.md"
-      - "assets/**"
+      - "assets/png/**"
+      - "assets/svg/**"
       - "docs/**"
   push:
     branches: [main]
     paths-ignore:
       - "*.md"
-      - "assets/**"
+      - "assets/png/**"
+      - "assets/svg/**"
       - "docs/**"
 
 permissions:
@@ -30,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ONDA_CLI: ${{ github.workspace }}/target/debug/onda
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v6
 
@@ -71,7 +74,8 @@ jobs:
             libxcursor-dev \
             libxrandr-dev \
             libxinerama-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            mesa-vulkan-drivers
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
@@ -145,7 +149,11 @@ jobs:
 
   browser:
     name: Browser and npm packages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      CHROME_BIN: /usr/bin/google-chrome
+      # Hosted runners exercise software WebGL; WebGPU tests require a GPU host.
+      ONDA_UI_TEST_WEBGPU: "0"
     steps:
       - uses: actions/checkout@v6
 
@@ -170,12 +178,16 @@ jobs:
           npm run check:versions
           npm run check:stdlib-docs
           npm run check:api-docs
-          npm run test:run-view
+          npm run build --workspace @onda-lang/wasm-compiler
+          npm run build:gpu-ui
+          bash examples/web/onda_wasm_playground/build-demo.sh --skip-build
+          node scripts/build-website-playground.mjs
           npm run test:playground
           npm test --workspace @onda-lang/processor-abi
           npm test --workspace @onda-lang/binaryen-web
           npm test --workspace @onda-lang/webaudio
-          npm run build --workspace @onda-lang/wasm-compiler
+          npm run test:gpu-ui
+          npm run test:gpu-web-editor
           npm run check:examples
           npm run test:built --workspace @onda-lang/wasm-compiler
           npm run test:pack:built --workspace @onda-lang/wasm-compiler

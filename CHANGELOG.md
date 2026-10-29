@@ -5,6 +5,45 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.9.0]
+
+Onda's run interfaces now share one GPU-accelerated UI across the standalone app,
+VS Code, the VST3 plugin, and both browser editors.
+
+### Added
+
+- `onda_ui`, a shared Rust/wgpu renderer and interaction layer for parameters, input
+  controls, buffer waveforms, typed events, logs, scopes, MIDI, and run settings.
+- `onda_gpu`, the native window and input adapter used by `onda` and `onda run` on
+  Linux, macOS, and Windows. Browser and VS Code panels run the same UI as WebAssembly,
+  using hardware WebGPU when available and WebGL2 otherwise.
+- Multilingual text rendering, clipboard and IME editing, mobile text input, and
+  multi-touch piano gestures in the shared UI.
+- Native `onda_ui` shared library, `onda_ui.h`, and font licenses in release SDKs
+  for embedding the renderer in the plugin and other native hosts.
+- Versioned GPU browser bundles with asset checksums; staging and packaging verify
+  that the renderer matches the selected Onda release.
+
+### Changed
+
+- Use the same layout, controls, themes, and interaction behavior across run hosts,
+  with collapsible sections and saved control layouts, folds, and scroll positions.
+- Cache text and layout, draw visible rows, and redraw on changes. Scope capture
+  runs independently at 30 Hz, skips unchanged uploads, and stops while hidden or
+  collapsed; hidden views suspend rendering.
+
+### Fixed
+
+- Let touch swipes continue scrolling the surrounding page when the GPU panel fits
+  or reaches a scroll boundary. Preserve control and piano gestures, account for
+  scaled iframes, and respect nested scroll containers and overscroll containment.
+
+### Removed
+
+- Previous egui, native webview, and DOM-rendered run interfaces and their backend
+  selection options. The shared GPU UI is now the run interface for every host.
+- Run UI accessibility integration.
+
 ## [0.8.40]
 
 ### Fixed

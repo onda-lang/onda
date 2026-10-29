@@ -41,14 +41,15 @@ impl RunUi {
             ScrollRegion::Document
         }
     }
-    pub(crate) fn scroll_region_by(&mut self, region: ScrollRegion, delta: f32) -> bool {
+    /// Returns the distance consumed, including a partial move at a boundary.
+    pub(crate) fn scroll_region_by(&mut self, region: ScrollRegion, delta: f32) -> f32 {
         if !delta.is_finite() {
-            return false;
+            return 0.0;
         }
         let moved = match region {
             ScrollRegion::Menu => {
                 let Some(menu) = &self.interaction.chooser else {
-                    return false;
+                    return 0.0;
                 };
                 let max = (menu.id.spec(self).choices.len() as f32 * 28.0 + 8.0
                     - self.scene.menu_rect[3])
@@ -56,19 +57,21 @@ impl RunUi {
                 let menu = self.interaction.chooser.as_mut().unwrap();
                 let scroll = (menu.scroll + delta).clamp(0.0, max);
                 if menu.scroll == scroll {
-                    return false;
+                    return 0.0;
                 }
+                let moved = scroll - menu.scroll;
                 menu.scroll = scroll;
-                true
+                moved
             }
             ScrollRegion::Popup => {
                 let max = (self.scene.popup_height - self.scene.popup_rect[3]).max(0.0);
                 let scroll = (self.interaction.popup_scroll + delta).clamp(0.0, max);
                 if self.interaction.popup_scroll == scroll {
-                    return false;
+                    return 0.0;
                 }
+                let moved = scroll - self.interaction.popup_scroll;
                 self.interaction.popup_scroll = scroll;
-                true
+                moved
             }
             ScrollRegion::Log => {
                 let max = self.scene.log_max_scroll;
@@ -80,22 +83,23 @@ impl RunUi {
                 let scroll = (old + delta).clamp(0.0, max);
                 let follow = scroll >= max;
                 if scroll == old && follow == self.presentation.log_follow {
-                    return false;
+                    return 0.0;
                 }
                 self.presentation.log_scroll = scroll;
                 self.presentation.log_follow = follow;
                 self.presentation.scrolled();
-                scroll != old
+                scroll - old
             }
             ScrollRegion::Document => {
                 let max = (self.scene.content_height - self.scene.viewport_height).max(0.0);
                 let scroll = (self.scroll + delta).clamp(0.0, max);
                 if self.scroll == scroll {
-                    return false;
+                    return 0.0;
                 }
+                let moved = scroll - self.scroll;
                 self.scroll = scroll;
                 self.presentation.scrolled();
-                true
+                moved
             }
         };
         self.invalidate();
@@ -155,7 +159,7 @@ impl RunUi {
         }
         self.interaction.touch = Some(touch);
     }
-    pub(crate) fn touch_move(&mut self, id: u64, x: f32, y: f32) {
+    pub(crate) fn touch_move(&mut self, id: u64, x: f32, y: f32, delta_y: Option<f32>) {
         if !x.is_finite() || !y.is_finite() {
             return;
         }
@@ -204,7 +208,15 @@ impl RunUi {
                 region,
                 horizontal: false,
             } => {
-                self.scroll_region_by(region, touch.previous[1] - y);
+                let delta = delta_y.unwrap_or(touch.previous[1] - y);
+                if delta.is_finite() {
+                    let remaining = delta - self.scroll_region_by(region, delta);
+                    if remaining != 0.0 {
+                        self.commands.push(serde_json::json!({
+                            "type":"scrollParent", "deltaY":remaining
+                        }));
+                    }
+                }
             }
             Mode::Pan {
                 horizontal: true, ..
@@ -262,6 +274,113 @@ impl RunUi {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn touch_pans_forward_only_the_distance_left_after_reaching_an_edge() {
+        let mut ui = RunUi::default();
+        ui.resize(360.0, 400.0, 1.0);
+        ui.message(json!({"type":"state","state":{
+            "path":"scroll.onda","supportsScope":false,
+            "params":(0..20).map(|i|json!({"name":format!("p{i}"),"type":"f64","value":0})).collect::<Vec<_>>()
+        }}));
+        ui.scroll(100_000.0, false);
+        ui.scroll(-25.0, false);
+        ui.take_commands();
+        ui.input(Input::TouchStart {
+            id: 1,
+            x: 8.0,
+            y: 300.0,
+        });
+        ui.input(Input::TouchMove {
+            id: 1,
+            x: 8.0,
+            y: 200.0,
+            delta_y: None,
+        });
+        assert_eq!(
+            ui.take_commands(),
+            [json!({"type":"scrollParent","deltaY":75.0})]
+        );
+
+        // Parent scrolling can leave local coordinates unchanged under a moving finger.
+        ui.input(Input::TouchMove {
+            id: 1,
+            x: 8.0,
+            y: 200.0,
+            delta_y: Some(50.0),
+        });
+        assert_eq!(
+            ui.take_commands(),
+            [json!({"type":"scrollParent","deltaY":50.0})]
+        );
+        ui.input(Input::TouchMove {
+            id: 2,
+            x: 8.0,
+            y: 100.0,
+            delta_y: Some(50.0),
+        });
+        ui.input(Input::TouchMove {
+            id: 1,
+            x: 8.0,
+            y: 200.0,
+            delta_y: Some(f32::NAN),
+        });
+        assert!(ui.take_commands().is_empty());
+
+        let bottom = ui.scroll;
+        ui.input(Input::TouchMove {
+            id: 1,
+            x: 8.0,
+            y: 200.0,
+            delta_y: Some(-50.0),
+        });
+        assert_eq!(ui.scroll, bottom - 50.0);
+        assert!(ui.take_commands().is_empty());
+        ui.input(Input::TouchCancel { id: 1 });
+        ui.input(Input::TouchMove {
+            id: 1,
+            x: 8.0,
+            y: 100.0,
+            delta_y: Some(100.0),
+        });
+        assert!(ui.take_commands().is_empty());
+    }
+
+    #[test]
+    fn captured_controls_and_piano_touches_never_scroll_the_parent() {
+        for target in [Target::Control(0), Target::Note(60)] {
+            let mut ui = RunUi::default();
+            ui.message(json!({"type":"state","state":{
+                "path":"touch.onda","supportsScope":false,"midi":{"noteOn":true},
+                "params":[{"name":"gain","type":"f64","value":0.5,"rangeMin":0.0,"rangeMax":1.0}]
+            }}));
+            ui.prepare_scene();
+            let rect = ui
+                .scene
+                .hits
+                .iter()
+                .find(|hit| hit.target == target)
+                .unwrap()
+                .rect
+                .0;
+            let x = rect[0] + rect[2] * 0.5;
+            let y = rect[1] + rect[3] - 4.0;
+            ui.input(Input::TouchStart { id: 1, x, y });
+            ui.input(Input::TouchMove {
+                id: 1,
+                x,
+                y: y - 100.0,
+                delta_y: Some(100.0),
+            });
+            ui.input(Input::TouchEnd { id: 1 });
+            let commands = ui.take_commands();
+            assert!(commands
+                .iter()
+                .any(|c| c["type"] == "setParam" || c["type"] == "midiNote"));
+            assert!(!commands.iter().any(|c| c["type"] == "scrollParent"));
+            assert_eq!(ui.scroll, 0.0);
+        }
+    }
 
     #[test]
     fn wheel_consumption_tracks_movement_at_both_document_edges() {

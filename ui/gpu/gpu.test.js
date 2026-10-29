@@ -26,6 +26,17 @@ async function serveGpuUi(t, beforeRead) {
           });</script>`);
         return;
       }
+      if (path === "/touch-host") {
+        res.setHeader("Content-Type", "text/html");
+        res.end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+          <style>body{margin:0;height:2400px}iframe{display:block;margin-top:100px;
+          width:360px;height:680px;border:0}</style><iframe src="/index.html?backend=webgl"></iframe>
+          <script>window.commands=[];addEventListener('message',event=>{
+            if(event.origin===location.origin&&event.data?.__ondaRunUi)
+              commands.push(event.data.message);
+          });</script>`);
+        return;
+      }
       if (
         !/^\/(?:index\.html|host\.js|browser\.js|protocol\.js|text-input\.js|pkg\/(?:fonts\/)?[\w.-]+)$/.test(
           path,
@@ -109,6 +120,82 @@ test("GPU wheel scrolling chains to the page when the canvas cannot scroll", { t
   await state({});
   await wheel(-200,await editPoint());
   await eventually(() => page.evaluate("scrollY<300"), "page scroll over a numeric editor at the canvas top", 3000);
+});
+
+test("GPU touch pans chain unused distance to the page", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:400,height:800});
+  await page.call("Emulation.setDeviceMetricsOverride", {width:400,height:800,deviceScaleFactor:1,mobile:true});
+  await page.call("Emulation.setTouchEmulationEnabled", {enabled:true,maxTouchPoints:2});
+  await page.navigate(origin + "/touch-host");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "embedded touch renderer");
+  let readyId = 0;
+  const state = async update => {
+    await page.evaluate(`document.querySelector('iframe').contentWindow._onHostMessage({type:'state',state:${JSON.stringify({
+      path:"touch.onda",supportsScope:false,supportsTransport:false,supportsViewState:true,
+      params:[],...update,viewState:{reset:true,readyId:++readyId},
+    })}})`);
+    await eventually(() => page.evaluate(`commands.some(c=>c.type==='runViewReady'&&c.readyId===${readyId})`), "rendered touch state");
+  };
+  const swipe = async (x, from, to) => {
+    await page.call("Input.dispatchTouchEvent", {type:"touchStart",touchPoints:[{id:1,x,y:from}]});
+    for (let step = 1; step <= 10; step++)
+      await page.call("Input.dispatchTouchEvent", {type:"touchMove",touchPoints:[{id:1,x,y:from+(to-from)*step/10}]});
+    await page.call("Input.dispatchTouchEvent", {type:"touchEnd",touchPoints:[]});
+  };
+  await state({});
+  await swipe(180, 650, 350);
+  await eventually(() => page.evaluate("scrollY>250"), "full page pan through a fitting canvas", 3000);
+
+  await page.evaluate("scrollTo(0,0)");
+  await state({params:Array.from({length:80},(_,i)=>({name:"p"+i,type:"f64",value:0}))});
+  await swipe(8, 650, 350);
+  await eventually(() => page.evaluate("commands.findLast(c=>c.type==='viewState')?.state.scrollTop>250"), "internal touch pan");
+  assert.equal(await page.evaluate("scrollY"), 0, "the inner document consumes available distance");
+  await page.evaluate("document.querySelector('iframe').contentDocument.querySelector('canvas').dispatchEvent(new WheelEvent('wheel',{deltaY:100000,clientX:8,clientY:400,cancelable:true}))");
+  await eventually(() => page.evaluate("commands.findLast(c=>c.type==='viewState')?.state.scrollTop>1000"), "inner document bottom");
+  await swipe(8, 650, 350);
+  await eventually(() => page.evaluate("scrollY>250"), "page pan at the canvas bottom", 3000);
+
+  await page.evaluate("scrollTo(0,300)");
+  await state({});
+  await swipe(180, 150, 350);
+  await eventually(() => page.evaluate("scrollY<150"), "page pan at the canvas top", 3000);
+
+  await page.evaluate("scrollTo(0,0);document.querySelector('iframe').style.zoom='1.5'");
+  await state({});
+  await swipe(180, 650, 350);
+  await eventually(() => page.evaluate("scrollY>250&&scrollY<350"), "page pan through a scaled iframe", 3000);
+
+  await page.evaluate(`(()=>{
+    scrollTo(0,0);
+    const frame=document.querySelector('iframe'),container=document.createElement('div');
+    container.id='scroller';
+    container.style.cssText='height:680px;width:360px;overflow:auto;margin-top:100px';
+    frame.before(container);
+    frame.style.zoom='';frame.style.marginTop='0';
+    container.append(frame);
+    const spacer=document.createElement('div');spacer.style.height='100px';container.append(spacer);
+    document.documentElement.style.scrollBehavior='smooth';
+  })()`);
+  await eventually(() => page.evaluate("commands.filter(c=>c.type==='uiReady').length>1"), "reparented iframe renderer");
+  await state({});
+  await swipe(180, 650, 590);
+  await eventually(() => page.evaluate("document.getElementById('scroller').scrollTop>40"), "nearest scrollable ancestor", 3000);
+  assert.equal(await page.evaluate("scrollY"), 0);
+  await page.evaluate("document.getElementById('scroller').scrollTop=50");
+  await swipe(180, 650, 350);
+  await eventually(() => page.evaluate("scrollY>200"), "remaining pan reaches the page in the same gesture", 3000);
+  assert.equal(await page.evaluate("document.getElementById('scroller').scrollTop"), 100);
+
+  await page.evaluate("scrollTo({top:0,behavior:'instant'});document.getElementById('scroller').style.overscrollBehaviorY='contain'");
+  await swipe(180, 600, 400);
+  assert.equal(await page.evaluate("scrollY"), 0, "respect the containing element's overscroll policy");
+
+  await page.evaluate("document.getElementById('scroller').lastElementChild.remove()");
+  await swipe(180, 600, 400);
+  assert.equal(await page.evaluate("scrollY"), 0, "containment also applies when the ancestor's content fits");
 });
 
 test("partial states during GPU initialization retain schemas and queued values", { timeout: 60000 }, async t => {
@@ -250,10 +337,29 @@ test("fallback font failures retry without blocking transport", { timeout: 30000
   assert.equal(await page.evaluate("fontAttempts"), 3, "loaded fonts must not be fetched again");
 });
 
+test("automatic backend selection uses WebGL for software adapters", async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({ source: `
+    Object.defineProperty(navigator, "gpu", { value: {
+      requestAdapter: async () => ({ info: { isFallbackAdapter: true } }),
+    } });
+    window.commands = [];
+    window.addEventListener("ondaCommand", event => commands.push(event.detail));
+  ` });
+  await page.navigate(`${origin}/index.html`);
+  await eventually(() => page.evaluate("commands.some(c => c.type === 'uiReady')"), "automatic WebGL fallback");
+  assert.equal(await page.evaluate("document.querySelector('canvas').dataset.backend"), "webgl");
+});
+
 // Real canvas, Wasm, text, shader pipelines, and pointer/keyboard events. CDP
 // uses Node's WebSocket so this test needs only a Chromium executable.
 for (const backend of ["webgpu", "webgl"])
-  test(`GPU run screen (${backend})`, { timeout: 90000 }, async (t) => {
+  test(`GPU run screen (${backend})`, {
+    timeout: 90000,
+    skip: backend === "webgpu" && process.env.ONDA_UI_TEST_WEBGPU === "0"
+      ? "requires a hardware WebGPU adapter" : false,
+  }, async (t) => {
     const origin = await serveGpuUi(t);
     const args = JSON.parse(
       process.env.ONDA_UI_CHROME_ARGS ||
@@ -265,6 +371,13 @@ for (const backend of ["webgpu", "webgl"])
     const session = await chrome.page();
     const page = session.call;
     const evaluate = session.evaluate;
+    if (backend === "webgpu") {
+      await session.navigate(`${origin}/away`);
+      await eventually(() => evaluate(`(async()=>{
+        const adapter=await navigator.gpu?.requestAdapter();
+        return Boolean(adapter) && adapter.info?.isFallbackAdapter!==true;
+      })()`), "hardware GPU adapter");
+    }
     await page("Page.enable");
     await page("Page.addScriptToEvaluateOnNewDocument", {
       source: `window.commands = [];
@@ -288,6 +401,7 @@ for (const backend of ["webgpu", "webgl"])
       else if (Date.now()-start>30000) {clearInterval(timer);reject(new Error(document.getElementById("status")?.textContent));}
     },20);
   })`);
+    assert.equal(await evaluate("document.querySelector('canvas').dataset.backend"), backend);
     const state = {
       type: "state",
       state: {

@@ -1,6 +1,6 @@
 //! Complete-screen timings and visual artifacts using the production renderer.
 use onda_ui::{Renderer, RunUi};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
 fn stats(mut xs: Vec<f64>) -> Value {

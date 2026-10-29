@@ -6,6 +6,8 @@ export function browserBridge(canvas, { message, target, onInput }) {
   )
     return null;
   const origin = window.location.origin;
+  const touches = new Map();
+  window.addEventListener("blur", () => touches.clear());
   let pointerStop = false;
   const post = (value) =>
     window.parent.postMessage(
@@ -76,9 +78,24 @@ export function browserBridge(canvas, { message, target, onInput }) {
   return {
     send(value) {
       if (value.type === "chooseBufferFile") chooseFile(value.name);
+      else if (value.type === "scrollParent") scrollParents(canvas, value.deltaY);
       else post(value);
     },
     gesture,
+    touchDelta(event) {
+      const previous = touches.get(event.pointerId);
+      if (event.type !== "pointerdown" && event.type !== "pointermove") {
+        touches.delete(event.pointerId);
+        return;
+      }
+      touches.set(event.pointerId, event.screenY);
+      if (previous === undefined || event.type === "pointerdown") return 0;
+      // Local coordinates change when an ancestor scrolls under the finger.
+      let scale = elementScale(canvas);
+      for (let frame = window.frameElement; frame; frame = frame.ownerDocument.defaultView.frameElement)
+        scale *= elementScale(frame);
+      return (previous - event.screenY) / scale;
+    },
   };
 
   function gesture(event, stop = false) {
@@ -118,5 +135,35 @@ export function browserBridge(canvas, { message, target, onInput }) {
     window.addEventListener("focus", cancel, { once: true });
     document.body.append(input);
     input.click();
+  }
+}
+
+function elementScale(element) {
+  return element.offsetHeight ? element.getBoundingClientRect().height / element.offsetHeight : 1;
+}
+
+// Follow the DOM scroll chain, including same-origin iframe boundaries. A pan
+// may use the end of one scroller and continue into the next in the same move.
+function scrollParents(element, delta) {
+  if (!Number.isFinite(delta)) return;
+  for (element = element.parentElement; element && delta; element = element.parentElement) {
+    const document = element.ownerDocument;
+    const style = document.defaultView.getComputedStyle(element);
+    const scrollable = /^(auto|scroll)$/.test(style.overflowY)
+      || (element === document.scrollingElement && style.overflowY === "visible");
+    if (scrollable && element.scrollHeight > element.clientHeight) {
+      const scale = elementScale(element);
+      const previous = element.scrollTop;
+      element.scrollBy({ top: delta / scale, behavior: "instant" });
+      delta -= (element.scrollTop - previous) * scale;
+    }
+    if (scrollable && style.overscrollBehaviorY !== "auto") return;
+    if (!element.parentElement) {
+      const frame = document.defaultView.frameElement;
+      if (frame) {
+        delta *= elementScale(frame);
+        element = frame;
+      }
+    }
   }
 }

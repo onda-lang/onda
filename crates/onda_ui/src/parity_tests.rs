@@ -270,6 +270,7 @@ fn touch_pans_the_document_without_editing_a_number() {
         id: 0,
         x,
         y: y - 100.0,
+        delta_y: None,
     });
     ui.input(Input::TouchEnd { id: 0 });
     assert_eq!(ui.scroll, 100.0);
@@ -291,6 +292,7 @@ fn touch_controls_and_log_panning_keep_their_owner() {
         id: 0,
         x: x + 50.0,
         y,
+        delta_y: None,
     });
     ui.input(Input::TouchEnd { id: 0 });
     assert!(ui
@@ -309,6 +311,7 @@ fn touch_controls_and_log_panning_keep_their_owner() {
         id: 0,
         x: x + 40.0,
         y: y + 240.0,
+        delta_y: None,
     });
     ui.input(Input::TouchEnd { id: 0 });
     assert!(!ui.presentation.log_follow);

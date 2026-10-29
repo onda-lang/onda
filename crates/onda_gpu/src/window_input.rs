@@ -110,6 +110,7 @@ impl App {
                 id: finger_id.into_raw() as u64,
                 x,
                 y,
+                delta_y: None,
             });
         } else if primary {
             self.pointer = [x, y];

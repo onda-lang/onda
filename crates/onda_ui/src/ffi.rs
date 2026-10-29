@@ -1,8 +1,8 @@
 use crate::{Input, RunUi, SurfaceRenderer};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::{
-    ffi::{CStr, CString, c_char},
-    panic::{AssertUnwindSafe, catch_unwind},
+    ffi::{c_char, CStr, CString},
+    panic::{catch_unwind, AssertUnwindSafe},
 };
 
 pub struct OndaUi {

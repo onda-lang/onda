@@ -1,5 +1,5 @@
-use crate::{Input, Key, RunUi, editing::Field, scene::Target};
-use serde_json::{Value, json};
+use crate::{editing::Field, scene::Target, Input, Key, RunUi};
+use serde_json::{json, Value};
 
 fn fixture() -> RunUi {
     let mut ui = RunUi::default();
@@ -97,20 +97,18 @@ fn editing_navigation_and_menu_search_consume_keyboard_input() {
         key: Key::Copy,
         shift: false
     }));
-    assert!(
-        ui.take_commands()
-            .iter()
-            .any(|c| c["type"] == "copyText" && c["text"] == "0.5")
-    );
+    assert!(ui
+        .take_commands()
+        .iter()
+        .any(|c| c["type"] == "copyText" && c["text"] == "0.5"));
     assert!(ui.input(Input::Key {
         key: Key::Enter,
         shift: false
     }));
-    assert!(
-        ui.take_commands()
-            .iter()
-            .any(|c| c["type"] == "setParam" && c["value"] == 0.5)
-    );
+    assert!(ui
+        .take_commands()
+        .iter()
+        .any(|c| c["type"] == "setParam" && c["value"] == 0.5));
     assert!(!ui.input(Input::Text { text: " ".into() }));
     ui.message(json!({"type":"state","state":{
         "supportsRunSettings":true,"canSetSampleRate":true,"sampleRateHz":48000
@@ -161,7 +159,12 @@ fn touch_chords_glissando_and_shared_notes_keep_independent_owners() {
     );
     ui.input(Input::TouchEnd { id: 1 });
     assert!(notes(&mut ui).is_empty(), "another finger still owns C");
-    ui.input(Input::TouchMove { id: 2, x, y });
+    ui.input(Input::TouchMove {
+        id: 2,
+        x,
+        y,
+        delta_y: None,
+    });
     let released = notes(&mut ui);
     assert_eq!(released.len(), 1);
     assert_eq!(
@@ -349,11 +352,9 @@ fn focus_loss_commits_valid_drafts_and_releases_notes_without_committing_invalid
         }
         assert_eq!(ui.controls[0].value, expected.unwrap_or(0.0));
         assert!(!ui.editing());
-        assert!(
-            commands
-                .iter()
-                .any(|c| c["type"] == "midiNote" && c["pressed"] == false)
-        );
+        assert!(commands
+            .iter()
+            .any(|c| c["type"] == "midiNote" && c["pressed"] == false));
         assert!(ui.interaction.midi().keyboard.is_empty());
     }
 }
@@ -440,11 +441,10 @@ fn schema_replacement_ends_a_numeric_drag_and_releases_owned_notes_once() {
         y,
         fine: false,
     });
-    assert!(
-        ui.take_commands()
-            .iter()
-            .any(|command| { command["type"] == "setParam" && command["commit"] == false })
-    );
+    assert!(ui
+        .take_commands()
+        .iter()
+        .any(|command| { command["type"] == "setParam" && command["commit"] == false }));
 
     ui.message(json!({"type":"state","state":{
         "params":[{"name":"replacement","type":"f64","value":0.5}]

@@ -1,6 +1,6 @@
 //! C interface regressions using a host-owned native surface.
 use super::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use x11_dl::xlib::{Display, Window, Xlib};
 
 struct TestWindow {
@@ -93,8 +93,14 @@ fn initial_state_restores_scroll_before_first_resize_or_render() {
             serde_json::from_slice(CStr::from_ptr(onda_ui_commands(ui)).to_bytes()).unwrap();
         let view = commands.iter().find(|c| c["type"] == "viewState").unwrap();
         assert_eq!(view["state"]["scrollTop"], 101.0);
-        assert_eq!(onda_ui_input(ui, c"{\"type\":\"text\",\"text\":\" \"}".as_ptr()), 0);
-        assert_eq!(onda_ui_input(ui, c"{\"type\":\"key\",\"key\":\"Tab\"}".as_ptr()), 1);
+        assert_eq!(
+            onda_ui_input(ui, c"{\"type\":\"text\",\"text\":\" \"}".as_ptr()),
+            0
+        );
+        assert_eq!(
+            onda_ui_input(ui, c"{\"type\":\"key\",\"key\":\"Tab\"}".as_ptr()),
+            1
+        );
         assert_eq!(onda_ui_input(ui, c"invalid JSON".as_ptr()), -1);
     }
 }

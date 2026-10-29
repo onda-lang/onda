@@ -502,7 +502,8 @@ invalidation when fallback fonts load. Text drafts and selections belong to the 
 textarea while editing for software keyboards, clipboard, and composition; native
 adapters consume shared clipboard commands and retain clipboard ownership for the window session. Native pointer selection uses the renderer's shaped text hit testing without committing the draft. Native composition uses winit IME events
 or JUCE's text input interface, with shared shaping for caret bounds. Touch gestures retain their original
-scrolling region or control. Diagnostics use cached font measurements to reserve
+scrolling region or control. Unused vertical pan distance passes to the browser's
+DOM scroll chain; touch deltas stay independent of page movement. Diagnostics use cached font measurements to reserve
 their wrapped height before the scene is built. Inter and JetBrains Mono provide the primary
 UI and code fonts. Character coverage generated from bundled Noto fonts lets each host
 load only the fallback fonts needed by visible text. See [integration and verification](../ui/gpu/README.md).

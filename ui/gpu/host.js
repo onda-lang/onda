@@ -288,6 +288,7 @@ canvas.addEventListener("pointerdown", (event) => {
     x: event.offsetX,
     y: event.offsetY,
   }) : undefined;
+  if (event.pointerType === "touch") browser?.touchDelta(event);
   browser?.gesture(
     event,
     ui?.pointer_stops(event.offsetX,event.offsetY) || result?.some((command) => command.type === "stop"),
@@ -306,22 +307,26 @@ canvas.addEventListener("pointermove", (event) => {
     x: event.offsetX,
     y: event.offsetY,
     fine: event.shiftKey,
+    deltaY: event.pointerType === "touch" ? browser?.touchDelta(event) : undefined,
   });
 });
 canvas.addEventListener("pointerleave", () => input({ type: "pointerLeave" }));
 canvas.addEventListener("pointerup", (event) => {
+  if (event.pointerType === "touch") browser?.touchDelta(event);
   if (event.button === 0 && (event.isPrimary || event.pointerType === "touch")) {
     const result = input({ type:event.pointerType === "touch" ? "touchEnd" : "pointerUp", id:event.pointerId });
     browser?.gesture(event,result?.some(command => command.type === "stop"));
   }
 });
 canvas.addEventListener("pointercancel", event => {
+  if (event.pointerType === "touch") browser?.touchDelta(event);
   if (event.pointerType === "touch") input({ type:"touchCancel", id:event.pointerId });
   else if (event.isPrimary) input({ type: "focusLost" });
 });
-canvas.addEventListener("lostpointercapture", event =>
-  input({ type:event.pointerType === "touch" ? "touchCancel" : "pointerUp", id:event.pointerId }),
-);
+canvas.addEventListener("lostpointercapture", event => {
+  if (event.pointerType === "touch") browser?.touchDelta(event);
+  input({ type:event.pointerType === "touch" ? "touchCancel" : "pointerUp", id:event.pointerId });
+});
 canvas.addEventListener("blur", event => {
   if (event.relatedTarget !== editor.element) input({ type: "focusLost" });
 });

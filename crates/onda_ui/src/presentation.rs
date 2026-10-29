@@ -289,6 +289,7 @@ mod tests {
                 id: 1,
                 x: x + 30.0,
                 y,
+                delta_y: None,
             });
             assert!(ui.take_commands().is_empty());
             let value = ui.events[0].args[0].value[0].clone();
