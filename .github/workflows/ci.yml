@@ -136,7 +136,7 @@ jobs:
         run: |
           ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --no-fail-fast
+          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --test target_initialization --no-fail-fast
       - name: Test Windows JIT, AOT linking, and target ABIs
         if: runner.os == 'Windows'
         shell: pwsh
@@ -144,7 +144,7 @@ jobs:
           ./scripts/bootstrap-llvm.ps1 -Version "$env:LLVM_VERSION"
           . ./scripts/use-msvc-env.ps1
           . ./scripts/use-llvm-env.ps1 -Flavor prebuilt -Version "$env:LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --no-fail-fast
+          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --test target_initialization --no-fail-fast
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
 
   browser:
@@ -169,6 +169,8 @@ jobs:
 
       - name: Install browser build tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth
           npm ci
           cargo install wasm-pack --locked
           cargo install cargo-about --version 0.9.2 --locked --features cli
@@ -186,8 +188,8 @@ jobs:
           npm test --workspace @onda-lang/processor-abi
           npm test --workspace @onda-lang/binaryen-web
           npm test --workspace @onda-lang/webaudio
-          npm run test:gpu-ui
-          npm run test:gpu-web-editor
+          xvfb-run -a npm run test:gpu-ui
+          xvfb-run -a npm run test:gpu-web-editor
           npm run check:examples
           npm run test:built --workspace @onda-lang/wasm-compiler
           npm run test:pack:built --workspace @onda-lang/wasm-compiler
