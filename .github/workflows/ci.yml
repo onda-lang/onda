@@ -14,9 +14,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Bootstrap LLVM
-        run: ./scripts/bootstrap-llvm.sh --version 22.1.0
+        run: ./scripts/bootstrap-llvm.sh --version 21.1.2
       - name: Reproduce concurrent compiler tests with immediate failure output
         shell: bash
         run: |
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version 22.1.0
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version 21.1.2
           cargo test --release -p onda_codegen_llvm --test math_policy -- --nocapture
