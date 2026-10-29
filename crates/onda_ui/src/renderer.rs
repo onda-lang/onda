@@ -185,8 +185,6 @@ impl Renderer {
         consumed
     }
     pub async fn new(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> Result<Self, String> {
-        #[cfg(test)]
-        eprintln!("[DEBUG-gpu-ci] adapter: {:?}", adapter.get_info());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("Onda UI"),
