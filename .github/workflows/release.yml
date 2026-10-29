@@ -1,4 +1,5 @@
 name: Build Onda Releases
+run-name: ${{ inputs.test_integrations && 'GPU integration dry run' || 'Build Onda' }} — ${{ github.ref_name }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -11,8 +12,20 @@ on:
       publish_release:
         description: "Publish archives to a GitHub release"
         required: true
-        default: true
+        default: false
         type: boolean
+      test_integrations:
+        description: Build and test plugins and VSIX packages using this unpublished Onda build
+        type: boolean
+        default: false
+      plugin_ref:
+        description: Full onda-plugin source commit for integration builds
+        type: string
+        default: 0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+      vscode_ref:
+        description: Full onda-vscode source commit for integration builds
+        type: string
+        default: b75bb3f2849d7de452d3be526090a5e1d21d4f40
   push:
     tags:
       - "v*"
@@ -22,7 +35,34 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Validate dry-run inputs and record source revisions
+        env:
+          INTEGRATIONS: ${{ inputs.test_integrations }}
+          PUBLISH: ${{ inputs.publish_release }}
+          PLUGIN_REF: ${{ inputs.plugin_ref }}
+          VSCODE_REF: ${{ inputs.vscode_ref }}
+        run: |
+          if [[ "$INTEGRATIONS" == true ]]; then
+            test "$PUBLISH" != true || { echo 'Integration builds cannot publish releases' >&2; exit 1; }
+            for ref in "$PLUGIN_REF" "$VSCODE_REF"; do
+              [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo 'Integration sources must be full commit SHAs' >&2; exit 1; }
+            done
+            {
+              echo '## GPU integration dry run'
+              echo "Onda: $GITHUB_SHA"
+              echo "Plugin: $PLUGIN_REF"
+              echo "VS Code: $VSCODE_REF"
+              echo 'Publication disabled. Packages are retained as workflow artifacts for 14 days.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
+    needs: validate
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -69,7 +109,8 @@ jobs:
             libxcursor-dev \
             libxrandr-dev \
             libxinerama-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            mesa-vulkan-drivers xvfb xauth weston
 
           pipewire_version="$(pkg-config --modversion libpipewire-0.3)"
           if ! printf '%s\n%s\n' "0.3.53" "$pipewire_version" | sort -V -C; then
@@ -124,6 +165,9 @@ jobs:
           cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
           cargo build --release -p onda_cli -p onda_ui --features onda_ui/ffi
+          if ($LASTEXITCODE -ne 0) { throw "Onda and GPU UI build failed" }
+          cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
+          if ($LASTEXITCODE -ne 0) { throw "GPU UI tests failed" }
           $ondaCmakeDir = Join-Path $PWD "cmake"
           cmake `
             -S tests\cmake_sdk `
@@ -155,6 +199,8 @@ jobs:
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
           cargo build --release -p onda_cli -p onda_api -p onda_ui --features onda_ui/ffi
+          if [[ "$RUNNER_OS" == Linux ]]; then export WGPU_BACKEND=vulkan; fi
+          cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
           cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
           cargo test --release -p onda_api --test events_c_api project_buffer_updates
           cmake \
@@ -163,6 +209,28 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DOnda_DIR="$PWD/cmake"
           cmake --build target/cmake-sdk --parallel
+
+      - name: Test Linux X11 and Wayland adapters
+        if: runner.os == 'Linux' && inputs.test_integrations
+        env:
+          WGPU_BACKEND: vulkan
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          xvfb-run -a cargo test --release -p onda_ui --features ffi --lib ffi::tests -- --ignored
+          xvfb-run -a cargo test --release -p onda_gpu --lib native_x11 -- --ignored
+          export XDG_RUNTIME_DIR
+          XDG_RUNTIME_DIR="$(mktemp -d)"
+          export WAYLAND_DISPLAY=wayland-onda
+          weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --log="$RUNNER_TEMP/weston.log" &
+          compositor=$!
+          trap 'kill "$compositor"; wait "$compositor" || true' EXIT
+          for attempt in {1..100}; do
+            if [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then break; fi
+            kill -0 "$compositor" || { cat "$RUNNER_TEMP/weston.log"; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          cargo test --release -p onda_gpu --lib standalone_prefers_native_wayland_over_the_xwayland_bridge -- --ignored
 
       - name: Verify macOS deployment targets
         if: runner.os == 'macOS'
@@ -453,14 +521,32 @@ jobs:
           $module = Join-Path $PWD "target\cmake-sdk-packaged\Release\onda_cmake_shared_smoke.dll"
           .\tests\cmake_sdk\check-windows-shared-library.ps1 -Consumer $module
 
+      - name: Certify unpublished SDK artifacts
+        if: inputs.test_integrations
+        shell: python
+        run: |
+          import hashlib, os
+          from pathlib import Path
+          root = Path("dist")
+          archives = sorted([*root.glob("*.zip"), *root.glob("*.tar.xz")])
+          assert len(archives) == 1, archives
+          with archives[0].open("rb") as archive:
+              digest = hashlib.file_digest(archive, "sha256").hexdigest()
+          (root / "SHA256SUMS.txt").write_text(f"{digest}  {archives[0].name}\n")
+          (root / "onda-source.txt").write_text(os.environ["GITHUB_SHA"] + "\n")
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
         with:
           name: onda-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/*.${{ matrix.archive_ext }}
-          retention-days: 1
+          path: |
+            dist/*.${{ matrix.archive_ext }}
+            dist/SHA256SUMS.txt
+            dist/onda-source.txt
+          retention-days: 14
 
   web:
+    needs: validate
     name: WebAssembly compiler packages
     runs-on: ubuntu-24.04
 
@@ -501,6 +587,30 @@ jobs:
           npm run test:built --workspace @onda-lang/wasm-compiler
           npm run test:pack:built --workspace @onda-lang/wasm-compiler
 
+      - name: Build and test shared GPU UI and web editors
+        if: inputs.test_integrations
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+          ONDA_UI_TEST_WEBGPU: "0"
+        run: |
+          npm run build:gpu-ui
+          bash examples/web/onda_wasm_playground/build-demo.sh --skip-build
+          node scripts/build-website-playground.mjs
+          node --test scripts/stage-gpu-ui.test.mjs
+          npm run test:playground
+          npm run test:gpu-ui
+          npm run test:gpu-web-editor
+          printf '%s\n' "$GITHUB_SHA" > ui/gpu/onda-source.txt
+
+      - name: Upload shared GPU UI
+        if: inputs.test_integrations
+        uses: actions/upload-artifact@v6
+        with:
+          name: onda-gpu-ui
+          path: ui/gpu/
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Pack WebAssembly packages
         run: |
           node ./scripts/stage-web-api-docs.mjs
@@ -515,7 +625,27 @@ jobs:
         with:
           name: onda-web-packages
           path: dist/*.tgz
-          retention-days: 1
+          retention-days: 14
+
+  plugin:
+    if: github.event_name == 'workflow_dispatch' && inputs.test_integrations
+    needs: [build, web]
+    permissions:
+      contents: read
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+    with:
+      source_ref: ${{ inputs.plugin_ref }}
+      onda_source_ref: ${{ github.sha }}
+
+  vscode:
+    if: github.event_name == 'workflow_dispatch' && inputs.test_integrations
+    needs: [build, web]
+    permissions:
+      contents: read
+    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@b75bb3f2849d7de452d3be526090a5e1d21d4f40
+    with:
+      source_ref: ${{ inputs.vscode_ref }}
+      onda_source_ref: ${{ github.sha }}
 
   npm-publish:
     name: Publish npm packages
@@ -568,7 +698,7 @@ jobs:
 
   release:
     name: Publish Release
-    if: ${{ github.event_name == 'push' || inputs.publish_release }}
+    if: ${{ github.event_name == 'push' || (inputs.publish_release && !inputs.test_integrations) }}
     needs: [build, web]
     runs-on: ubuntu-22.04
 

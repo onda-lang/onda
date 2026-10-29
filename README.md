@@ -255,6 +255,31 @@ Already-compiled native processor objects do not require `libonda`: include
 entrypoints directly. The paired JSON descriptor supplies storage sizes, alignments, defaults, and
 interface layouts. See the native raw-object example for a complete link command.
 
+## Cross-platform integration dry run
+
+Manually run **Build Onda Releases** on the branch to test with
+`test_integrations=true`, `publish_release=false`, and full commit SHAs in
+`plugin_ref` and `vscode_ref`. All source changes must first be committed and
+pushed. The workflow records the three revisions in its run summary.
+
+The run builds the ordinary Onda release archives for Linux x64, Windows x64,
+and macOS ARM64, plus the shared browser GPU UI. It then calls the plugin and
+VS Code packaging workflows, using those exact unpublished artifacts instead
+of downloading an Onda release. Archive checksums and source revisions are
+verified before consumption. The reusable workflow revisions are pinned in
+`release.yml`; update those pins when changing the downstream build logic.
+
+Validation includes shared Rust UI tests, isolated X11 tests and Wayland backend
+selection on Linux, browser UI/editor tests, plugin core/native tests and VST3
+validation, and packaged-compiler checks for each platform VSIX. Hosted runners
+use available graphics backends; hardware performance and full DAW interaction
+still require testing on real machines.
+
+Archives, GPU assets, VSIX packages, and plugin test logs stay attached to the
+workflow run for 14 days. Integration mode rejects publication requests and
+never creates releases or publishes npm packages or extensions. Ordinary manual
+builds also default to `publish_release=false`.
+
 ## VST3 plugin
 
 The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides
