@@ -302,12 +302,10 @@ fn reopening_a_source_restores_its_own_layout() {
     ] {
         let path = directory.path().canonicalize().unwrap().join(name);
         app.controller = Some(source_controller(&path));
-        if !app.views.contains_key(path.to_str().unwrap()) {
-            app.views.insert(
-                path.to_string_lossy().into_owned(),
-                json!({"paramLayout":layout}),
-            );
-        }
+        let view_path = app.controller.as_ref().unwrap().state().path.clone();
+        app.views
+            .entry(view_path)
+            .or_insert_with(|| json!({"paramLayout":layout}));
         app.publish();
         assert_eq!(app.panel_state()["schemaReady"], false);
         app.ui.input(Input::Scroll { delta: 0.0 });
@@ -366,6 +364,7 @@ fn reopening_the_current_source_restores_event_values_without_replaying_ordinary
         },
     );
     app.drop_files(std::slice::from_ref(&path), None);
+    let view_path = app.controller.as_ref().unwrap().state().path.clone();
     publish_ready(&mut app);
     focus_argument(&mut app);
     app.input(Input::Text { text: "77".into() });
@@ -373,10 +372,7 @@ fn reopening_the_current_source_restores_event_values_without_replaying_ordinary
         key: Key::Enter,
         shift: false,
     });
-    assert_eq!(
-        app.views[path.to_str().unwrap()]["eventValues"][0]["values"][0],
-        "77"
-    );
+    assert_eq!(app.views[&view_path]["eventValues"][0]["values"][0], "77");
 
     for _ in 0..2 {
         app.drop_files(std::slice::from_ref(&path), None);
