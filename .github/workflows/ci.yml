@@ -12,6 +12,11 @@ jobs:
       matrix:
         runner: [windows-latest]
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build native UI with primary Windows backends
+        run: cargo build --release -p onda_ui --features ffi
       - uses: actions/download-artifact@v7
         with:
           name: test-failure-windows-x64
@@ -30,20 +35,25 @@ jobs:
           $library = (Resolve-Path sdk/onda-0.9.0-windows-x64/lib/onda_ui.dll).Path
           "ONDA_GPU_UI_LIBRARY=$library" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Output "Debugger available: $(Test-Path 'C:/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe')"
-      - name: Reproduce native editor crash
+      - name: Repeat saved editor test with original and rebuilt DLLs
         env:
           RUST_BACKTRACE: '1'
         run: |
           $binary = Get-ChildItem tests -Recurse -Filter onda_processor_tests.exe | Select-Object -First 1
-          $symbols = "$($binary.DirectoryName);srv*$env:RUNNER_TEMP/symbols*https://msdl.microsoft.com/download/symbols"
+          $failures = 0
           1..5 | ForEach-Object {
-          & 'C:/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe' -hd -lines -y $symbols -c 'sxi ld;sxi ud;sxe av;g;.ecxr;kv;lm;q' $binary.FullName GpuEditorTeardown
+            & $binary.FullName GpuEditorTeardown
+            if ($LASTEXITCODE -ne 0) { $failures++ }
           }
-          exit 1
-      - name: Read native crash module
-        if: failure()
-        run: |
-          Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue |
-            Where-Object { $_.Message -like '*onda_processor_tests*' } |
-            Select-Object TimeCreated, Message | Format-List
-          exit 0
+          Write-Output "Original DLL failures: $failures / 5"
+          $env:ONDA_GPU_UI_LIBRARY = (Resolve-Path target/release/onda_ui.dll).Path
+          1..30 | ForEach-Object {
+            & $binary.FullName GpuEditorTeardown
+            if ($LASTEXITCODE -ne 0) { throw "Rebuilt DLL crashed on iteration $_ with $LASTEXITCODE" }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: primary-backends-ui
+          path: target/release/onda_ui.dll
+          retention-days: 1

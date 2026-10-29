@@ -53,7 +53,14 @@ unsafe fn surface(
         ),
         _ => return Err("Unsupported or invalid native UI handles".into()),
     };
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    // WGL owns a detached cleanup thread that can outlive this unloadable DLL.
+    // Use the primary Windows backends, which do not start that thread.
+    #[cfg(target_os = "windows")]
+    {
+        descriptor.backends = wgpu::Backends::DX12 | wgpu::Backends::VULKAN;
+    }
+    let instance = wgpu::Instance::new(descriptor);
     // SAFETY: handle validity and lifetime are part of the C interface contract.
     let surface = unsafe {
         instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
