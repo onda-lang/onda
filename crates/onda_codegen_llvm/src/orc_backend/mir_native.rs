@@ -27,8 +27,7 @@ use llvm_sys::target::{
     LLVMABIAlignmentOfType, LLVMABISizeOfType, LLVMByteOrder, LLVMCreateTargetData,
     LLVMDisposeTargetData, LLVMPointerSize, LLVMStoreSizeOfType, LLVMTargetDataRef,
     LLVM_InitializeAllAsmParsers, LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos,
-    LLVM_InitializeAllTargetMCs, LLVM_InitializeAllTargets, LLVM_InitializeNativeAsmParser,
-    LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget,
+    LLVM_InitializeAllTargetMCs, LLVM_InitializeAllTargets,
 };
 use llvm_sys::target_machine::{
     LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMDisposeTargetMachine,
@@ -3606,7 +3605,7 @@ fn compile_native_jit(
     program: &onda_mir::OptimizedProgram,
     options: MirCompileOptions,
 ) -> Result<(NativeOrcProcess, NativeLayouts), MirCodegenError> {
-    initialize_native_llvm()?;
+    initialize_codegen_targets();
     unsafe {
         let builder = LLVMOrcCreateLLJITBuilder();
         if builder.is_null() {
@@ -3740,7 +3739,7 @@ fn emit_native_ir(
     program: &onda_mir::OptimizedProgram,
     options: MirCompileOptions,
 ) -> Result<String, MirCodegenError> {
-    initialize_native_llvm()?;
+    initialize_codegen_targets();
     unsafe {
         let target_machine = super::jit_utils::create_host_target_machine(options.opt_level)
             .map_err(codegen_diagnostic)?;
@@ -4005,6 +4004,8 @@ fn wasm_u32_leb(bytes: &[u8], cursor: &mut usize) -> Result<u32, MirCodegenError
 }
 
 fn initialize_codegen_targets() {
+    // Native and cross-target compilation share LLVM's unsynchronized registry.
+    // They must use the same once guard, including the first registration.
     super::llvm_helpers::CODEGEN_TARGETS_INIT.get_or_init(|| unsafe {
         LLVM_InitializeAllTargetInfos();
         LLVM_InitializeAllTargets();
@@ -4157,25 +4158,6 @@ unsafe fn verify_module(module: LLVMModuleRef) -> Result<(), MirCodegenError> {
     Err(MirCodegenError::llvm(format!(
         "native MIR LLVM verification failed: {detail}"
     )))
-}
-
-fn initialize_native_llvm() -> Result<(), MirCodegenError> {
-    let error = super::llvm_helpers::NATIVE_INIT_ERR.get_or_init(|| unsafe {
-        if LLVM_InitializeNativeTarget() != 0 {
-            return Some("LLVM_InitializeNativeTarget failed".to_owned());
-        }
-        if LLVM_InitializeNativeAsmPrinter() != 0 {
-            return Some("LLVM_InitializeNativeAsmPrinter failed".to_owned());
-        }
-        if LLVM_InitializeNativeAsmParser() != 0 {
-            return Some("LLVM_InitializeNativeAsmParser failed".to_owned());
-        }
-        None
-    });
-    match error {
-        Some(error) => Err(MirCodegenError::llvm(error.clone())),
-        None => Ok(()),
-    }
 }
 
 fn codegen_diagnostic(diagnostic: Diagnostic) -> MirCodegenError {
