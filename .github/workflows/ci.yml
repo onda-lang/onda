@@ -1,193 +1,238 @@
-name: CI
-
+name: GPU package diagnostics
 on:
-  pull_request:
-    paths-ignore:
-      - "*.md"
-      - "assets/png/**"
-      - "assets/svg/**"
-      - "docs/**"
-  push:
-    branches: [main]
-    paths-ignore:
-      - "*.md"
-      - "assets/png/**"
-      - "assets/svg/**"
-      - "docs/**"
-
+  workflow_dispatch:
+    inputs:
+      artifact_run:
+        type: string
+        default: "40896550117"
+      onda_source_ref:
+        type: string
+        default: 0b29e441ba8503678d801af2617387bb3f8da9e0
+      source_ref:
+        type: string
+        default: 1d85823ddfcdf082556df17362a6857087bf1d39
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-  LLVM_VERSION: 21.1.2
-
+  actions: read
 jobs:
-  native:
-    name: Native compiler and backend parity
-    runs-on: ubuntu-latest
-    env:
-      ONDA_CLI: ${{ github.workspace }}/target/debug/onda
-      WGPU_BACKEND: vulkan
+  stage:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/download-artifact@v7
         with:
-          components: rustfmt, clippy
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Verify embedded SLEEF kernels
-        run: |
-          python3 scripts/build-native-math-kernel.py --check
-          python3 scripts/generate-vector-math-references.py --check
-
-      - name: Test benchmark inspection and bounds
-        run: python3 -m unittest discover -s scripts/bench -p 'test_*.py'
-
-      - name: Test C processor ABI header
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -pedantic \
-            tests/onda_processor_abi_header_test.c -lm \
-            -o /tmp/onda_processor_abi_header_test
-          /tmp/onda_processor_abi_header_test
-
-      - name: Install native system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libpipewire-0.3-dev \
-            libdbus-1-dev \
-            libasound2-dev \
-            libudev-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libgl1-mesa-dev \
-            mesa-vulkan-drivers
-
-      - name: Bootstrap LLVM
-        run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
-
-      - name: Test and lint Rust
-        shell: bash
-        run: |
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace
-          cargo clippy --workspace --all-targets --no-deps -- -D warnings
-          cargo build -p onda_cli
-          cargo build --release -p onda_api
-
-      - name: Test CMake SDK
-        shell: bash
-        run: |
-          cmake \
-            -S tests/cmake_sdk \
-            -B /tmp/onda-cmake-sdk \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DOnda_DIR="$PWD/cmake"
-          cmake --build /tmp/onda-cmake-sdk --parallel
-          module=/tmp/onda-cmake-sdk/libonda_cmake_static_smoke.so
-          bash tests/cmake_sdk/check-exports.sh "$module"
-          bash tests/cmake_sdk/check-linux-shared-library.sh \
-            target/release/libonda.so \
-            /tmp/onda-cmake-sdk/libonda_cmake_shared_smoke.so
-
+          name: onda-linux-x64
+          path: onda-linux-x64
+          run-id: ${{ inputs.artifact_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: onda-linux-x64
+          path: onda-linux-x64
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/download-artifact@v7
+        with:
+          name: onda-macos-arm64
+          path: onda-macos-arm64
+          run-id: ${{ inputs.artifact_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: onda-macos-arm64
+          path: onda-macos-arm64
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/download-artifact@v7
+        with:
+          name: onda-gpu-ui
+          path: onda-gpu-ui
+          run-id: ${{ inputs.artifact_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: onda-gpu-ui
+          path: onda-gpu-ui
+          retention-days: 1
+          if-no-files-found: error
+  plugin-linux-x64:
+    needs: stage
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+    with:
+      source_ref: 0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+      platform: linux-x64
+      onda_source_ref: ${{ inputs.onda_source_ref }}
+  plugin-macos-arm64:
+    needs: stage
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+    with:
+      source_ref: 0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+      platform: macos-arm64
+      onda_source_ref: ${{ inputs.onda_source_ref }}
+  gpu-ui:
+    runs-on: ubuntu-24.04
+    outputs:
+      onda-version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.version.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: onda-lang/onda-vscode
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install JavaScript workspace
-        run: npm ci
-
-      - name: Test LLVM and Binaryen parity
-        shell: bash
+      - run: npm ci
+      - name: Read pinned Onda version
+        id: version
         run: |
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          npm run test:onda --workspace @onda-lang/binaryen-web
-          npm run test:corpus --workspace @onda-lang/binaryen-web
-
-  portable-vector-math:
-    name: Native vector math (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+          echo "version=$(node ./scripts/onda-version.mjs)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(node ./scripts/compiler-bundle.mjs)" >> "$GITHUB_OUTPUT"
+      - name: Download unpublished shared GPU UI
+        if: inputs.onda_source_ref != ''
+        uses: actions/download-artifact@v7
+        with:
+          name: onda-gpu-ui
+          path: ${{ runner.temp }}/gpu-ui
+      - name: Verify and stage unpublished GPU UI
+        if: inputs.onda_source_ref != ''
+        env:
+          ONDA_SOURCE_REF: ${{ inputs.onda_source_ref }}
+        run: |
+          test "$(cat "$RUNNER_TEMP/gpu-ui/onda-source.txt")" = "$ONDA_SOURCE_REF"
+          node ./scripts/stage-gpu-ui.mjs "$RUNNER_TEMP/gpu-ui"
+      - name: Check out matching Onda UI source
+        if: inputs.onda_source_ref == ''
+        uses: actions/checkout@v5
+        with:
+          repository: onda-lang/onda
+          ref: refs/tags/${{ steps.version.outputs.version }}
+          path: .onda-source
+      - name: Verify Onda source tag
+        if: inputs.onda_source_ref == ''
+        env:
+          ONDA_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          test "$(git -C .onda-source rev-parse HEAD)" = \
+            "$(git -C .onda-source rev-parse "refs/tags/$ONDA_VERSION^{commit}")"
+          if [[ ! -f .onda-source/scripts/build-gpu-ui.mjs ]]; then
+            echo "Onda $ONDA_VERSION has no GPU UI build. Update onda-version to the GPU release." >&2
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@1.98.0
+        if: inputs.onda_source_ref == ''
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build shared GPU UI
+        if: inputs.onda_source_ref == ''
+        working-directory: .onda-source
+        run: |
+          npm ci
+          cargo install wasm-pack --version 0.15.0 --locked
+          npm run build:gpu-ui
+      - name: Stage matching GPU UI
+        if: inputs.onda_source_ref == ''
+        run: node ./scripts/stage-gpu-ui.mjs .onda-source/ui/gpu
+      - run: npm test
+      - uses: actions/upload-artifact@v6
+        with:
+          name: onda-gpu-ui-${{ steps.version.outputs.version }}
+          path: ui/gpu/
+          if-no-files-found: error
+          retention-days: 14
+    needs: stage
+  package:
+    needs: gpu-ui
+    runs-on: ${{ matrix.runner }}
+    env:
+      ONDA_VERSION: ${{ needs.gpu-ui.outputs.onda-version }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - target: linux-x64
+            release: linux-x64
+            runner: ubuntu-24.04
+            extension: tar.xz
+          - target: darwin-arm64
+            release: macos-arm64
+            runner: macos-latest
+            extension: tar.xz
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - name: Test macOS JIT, AOT linking, and target ABIs
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
-          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --no-fail-fast
-      - name: Test Windows JIT, AOT linking, and target ABIs
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          ./scripts/bootstrap-llvm.ps1 -Version "$env:LLVM_VERSION"
-          . ./scripts/use-msvc-env.ps1
-          . ./scripts/use-llvm-env.ps1 -Flavor prebuilt -Version "$env:LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --no-fail-fast
-          if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
-
-  browser:
-    name: Browser and npm packages
-    runs-on: ubuntu-24.04
-    env:
-      CHROME_BIN: /usr/bin/google-chrome
-      # Hosted runners exercise software WebGL; WebGPU tests require a GPU host.
-      ONDA_UI_TEST_WEBGPU: "0"
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@v5
         with:
-          targets: wasm32-unknown-unknown
-
+          repository: onda-lang/onda-vscode
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install browser build tools
+      - name: Install Linux compiler runtime libraries
+        if: matrix.target == 'linux-x64'
         run: |
-          npm ci
-          cargo install wasm-pack --locked
-          cargo install cargo-about --version 0.9.2 --locked --features cli
-
-      - name: Test browser and npm packages
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libpipewire-0.3-dev
+      - run: npm ci
+      - name: Download matching shared GPU UI
+        uses: actions/download-artifact@v7
+        with:
+          name: onda-gpu-ui-${{ env.ONDA_VERSION }}
+          path: ui/gpu
+      - name: Download unpublished Onda compiler
+        if: inputs.onda_source_ref != ''
+        uses: actions/download-artifact@v7
+        with:
+          name: onda-${{ matrix.release }}
+          path: ${{ runner.temp }}/onda-sdk
+      - name: Select and verify Onda compiler archive
+        id: compiler
+        shell: bash
+        env:
+          ONDA_SOURCE_REF: ${{ inputs.onda_source_ref }}
+          RELEASE_TARGET: ${{ matrix.release }}
+          ARCHIVE_EXTENSION: ${{ matrix.extension }}
         run: |
-          npm run check:versions
-          npm run check:stdlib-docs
-          npm run check:api-docs
-          npm run build --workspace @onda-lang/wasm-compiler
-          npm run build:gpu-ui
-          bash examples/web/onda_wasm_playground/build-demo.sh --skip-build
-          node scripts/build-website-playground.mjs
-          npm run test:playground
-          npm test --workspace @onda-lang/processor-abi
-          npm test --workspace @onda-lang/binaryen-web
-          npm test --workspace @onda-lang/webaudio
-          npm run test:gpu-ui
-          npm run test:gpu-web-editor
-          npm run check:examples
-          npm run test:built --workspace @onda-lang/wasm-compiler
-          npm run test:pack:built --workspace @onda-lang/wasm-compiler
+          version="$(node ./scripts/onda-version.mjs)"
+          name="onda-$version-$RELEASE_TARGET"
+          if [[ -n "$ONDA_SOURCE_REF" ]]; then
+            test "$(cat "$RUNNER_TEMP/onda-sdk/onda-source.txt")" = "$ONDA_SOURCE_REF"
+            archive="$RUNNER_TEMP/onda-sdk/$name.$ARCHIVE_EXTENSION"
+            checksums="$RUNNER_TEMP/onda-sdk/SHA256SUMS.txt"
+          else
+            archive="$RUNNER_TEMP/$name.$ARCHIVE_EXTENSION"
+            checksums="$RUNNER_TEMP/SHA256SUMS.txt"
+            curl --fail --location --retry 3 \
+              "https://github.com/onda-lang/onda/releases/download/$version/$name.$ARCHIVE_EXTENSION" \
+              --output "$archive"
+            curl --fail --location --retry 3 \
+              "https://github.com/onda-lang/onda/releases/download/$version/SHA256SUMS.txt" \
+              --output "$checksums"
+          fi
+          node ./scripts/verify-onda-archive.mjs "$archive" "$checksums"
+          if [[ "$ARCHIVE_EXTENSION" == "zip" ]]; then
+            unzip -q "$archive" -d "$RUNNER_TEMP"
+          else
+            tar -xf "$archive" -C "$RUNNER_TEMP"
+          fi
+          echo "directory=$RUNNER_TEMP/$name" >> "$GITHUB_OUTPUT"
+      - name: Package platform extension
+        env:
+          COMPILER_DIRECTORY: ${{ steps.compiler.outputs.directory }}
+          VSIX_TARGET: ${{ matrix.target }}
+        run: npm run package:embedded -- "$COMPILER_DIRECTORY" "$VSIX_TARGET"
+      - name: Test the packaged compiler without Onda on PATH
+        env:
+          VSIX_TARGET: ${{ matrix.target }}
+        run: |
+          unpacked="$RUNNER_TEMP/onda-packaged"
+          unzip -q "onda-embedded-$VSIX_TARGET.vsix" -d "$unpacked"
+          npm run test:compiler -- "$unpacked/extension"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: onda-embedded-${{ matrix.target }}
+          path: onda-embedded-${{ matrix.target }}.vsix
+          if-no-files-found: error
+          retention-days: 14
