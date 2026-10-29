@@ -25,7 +25,7 @@ on:
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
-        default: 9acd6e2dd532a3ce1fd0681a3360e82ca4d7eebc
+        default: 1d85823ddfcdf082556df17362a6857087bf1d39
   push:
     tags:
       - "v*"
@@ -648,7 +648,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@9acd6e2dd532a3ce1fd0681a3360e82ca4d7eebc
+    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@1d85823ddfcdf082556df17362a6857087bf1d39
     with:
       source_ref: ${{ inputs.vscode_ref }}
       onda_source_ref: ${{ github.sha }}
