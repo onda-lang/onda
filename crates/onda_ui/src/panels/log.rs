@@ -59,7 +59,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             s.clip = message_clip;
             if !context.is_empty() {
                 let bounds = [x + w - 6.0 - context_width, y, context_width, 18.0];
-                s.tooltip(bounds, context.clone());
+                s.text_tooltip(bounds, context.clone());
                 s.styled(
                     context,
                     bounds,

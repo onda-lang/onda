@@ -9,6 +9,11 @@ block:
 
   sample:
     out1 = sin(phase)
+
     phase = phase + incr
     if phase > TWO_PI:
       phase = phase - TWO_PI
+
+    out2 = 0
+    out4 = 0
+    out5 = 0

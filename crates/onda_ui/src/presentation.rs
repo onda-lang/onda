@@ -403,6 +403,7 @@ impl Section {
 }
 pub(crate) struct Presentation {
     pub sections: [bool; 7],
+    pub scope_pinned: bool,
     pub scroll: f32,
     pub folded: BTreeSet<String>,
     pub log_follow: bool,
@@ -415,6 +416,7 @@ impl Default for Presentation {
     fn default() -> Self {
         Self {
             sections: [true; 7],
+            scope_pinned: false,
             scroll: 0.0,
             folded: BTreeSet::new(),
             log_follow: true,
@@ -451,6 +453,7 @@ impl Presentation {
         if value["reset"] == true {
             *self = Self::default();
         }
+        self.scope_pinned = value["scopePinned"].as_bool().unwrap_or(false);
         for section in Section::ALL {
             if let Some(open) = value["sections"][section.name()].as_bool() {
                 self.sections[section.index()] = open;
@@ -482,7 +485,7 @@ impl Presentation {
             .into_iter()
             .map(|s| (s.name().to_owned(), json!(self.open(s))))
             .collect();
-        json!({"sections":sections,"scrollTop":self.scroll,"folded":self.folded,
+        json!({"scopePinned":self.scope_pinned,"sections":sections,"scrollTop":self.scroll,"folded":self.folded,
             "logFollow":self.log_follow,"logScrollTop":self.log_scroll,"logScrollX":self.log_x})
     }
 }

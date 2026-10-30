@@ -11,6 +11,7 @@ const HOVER_DELAY: Duration = Duration::from_millis(500);
 pub(crate) struct Tooltip {
     rect: Rect,
     text: String,
+    centered: bool,
 }
 
 pub(crate) struct Hover {
@@ -65,9 +66,21 @@ impl RunUi {
 
 impl Scene {
     pub fn tooltip(&mut self, rect: [f32; 4], text: String) {
+        self.add_tooltip(rect, text, true);
+    }
+
+    pub fn text_tooltip(&mut self, rect: [f32; 4], text: String) {
+        self.add_tooltip(rect, text, false);
+    }
+
+    fn add_tooltip(&mut self, rect: [f32; 4], text: String, centered: bool) {
         let rect = Rect(rect).intersect(Rect(self.clip));
         if rect.0[2] > 0.0 && rect.0[3] > 0.0 {
-            self.tooltips.push(Tooltip { rect, text });
+            self.tooltips.push(Tooltip {
+                rect,
+                text,
+                centered,
+            });
         }
     }
 
@@ -86,6 +99,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette) {
     let Tooltip {
         rect: Rect(anchor),
         text,
+        centered,
     } = &s.tooltips[index];
     if s.tooltips[index] != hover.tooltip {
         return;
@@ -94,9 +108,14 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette) {
     let [w, h] = ui.size;
     let width = (ui.tooltip_size[0] + 20.0).min((w - 24.0).max(1.0));
     let height = ui.tooltip_size[1] + 16.0;
-    let x = (anchor[0] + (anchor[2] - width) * 0.5)
-        .max(12.0)
-        .min((w - width - 12.0).max(0.0));
+    let x = (anchor[0]
+        + if *centered {
+            (anchor[2] - width) * 0.5
+        } else {
+            -10.0
+        })
+    .max(12.0)
+    .min((w - width - 12.0).max(0.0));
     let y = if anchor[1] >= height + 6.0 {
         anchor[1] - height - 6.0
     } else {
@@ -122,6 +141,45 @@ mod tests {
     use super::*;
     use crate::Input;
     use serde_json::json;
+
+    #[test]
+    fn buffer_tooltips_align_with_the_label_instead_of_the_row_center() {
+        for width in [360.0, 840.0] {
+            let mut ui = RunUi::default();
+            ui.resize(width, 600.0, 1.0);
+            ui.message(json!({"type":"state","state":{
+                "path":"sample_player.onda","supportsScope":false,
+                "buffers":[{"name":"clip","type":"buffer<f32[]>"}]
+            }}));
+            ui.tooltip_size = [160.0, 16.8];
+            ui.prepare_scene();
+            for text in ["clip (buffer<f32[]>)", "Drop an audio file here"] {
+                let r = ui
+                    .scene
+                    .tooltips
+                    .iter()
+                    .find(|t| t.text == text)
+                    .unwrap()
+                    .rect
+                    .0;
+                ui.input(Input::PointerMove {
+                    x: r[0] + 1.0,
+                    y: r[1] + 1.0,
+                    fine: false,
+                });
+                ui.prepare_scene();
+                ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+                let label = &ui.scene.labels[ui.scene.tooltip_label.unwrap()];
+                assert_eq!(
+                    label.x, r[0],
+                    "tooltip text should align with the hovered label"
+                );
+                assert!(label.y < r[1]);
+                ui.input(Input::PointerLeave);
+                ui.prepare_scene();
+            }
+        }
+    }
 
     #[test]
     fn centered_heading_tooltips_do_not_extend_past_their_control_card() {
@@ -200,7 +258,7 @@ mod tests {
     #[test]
     fn header_and_log_disclose_full_text_without_changing_the_layout() {
         let mut ui = RunUi::default();
-        ui.resize(360.0, 840.0, 1.0);
+        ui.resize(720.0, 840.0, 1.0);
         let path = "/home/user/projects/synth/voices/main.onda";
         let context = format!("{path}:123 · Synth.Voice.oscillator");
         ui.message(json!({"type":"state","state":{

@@ -347,7 +347,9 @@ pub struct RunController {
     scope_columns: Option<usize>,
     scope_envelope: onda_scope::Envelope,
     scope_visible: bool,
-    scope_capture_enabled: bool,
+    scope_capture_mode: &'static str,
+    meter_visible: bool,
+    meter_levels: onda_scope::Levels,
     next_maintenance: Instant,
     source_compilation: SourceCompilationState,
 }
@@ -428,7 +430,9 @@ impl RunController {
             scope_columns: None,
             scope_envelope: Default::default(),
             scope_visible: true,
-            scope_capture_enabled: false,
+            scope_capture_mode: "off",
+            meter_visible: false,
+            meter_levels: Default::default(),
             next_maintenance: std::time::Instant::now(),
             source_compilation: SourceCompilationState::Compiling(pending_sources),
         };
@@ -456,6 +460,22 @@ impl RunController {
     pub fn scope_envelope(&self) -> Option<&onda_scope::Envelope> {
         self.scope_columns.map(|_| &self.scope_envelope)
     }
+    pub fn meter_levels(&self) -> onda_scope::Levels {
+        self.meter_levels
+    }
+    pub fn set_meter_visible(&mut self, visible: bool) {
+        if self.meter_visible != visible {
+            self.meter_visible = visible;
+            self.sync_scope_capture();
+        }
+    }
+    fn visualization_interval(&self) -> Duration {
+        if self.scope_visible {
+            self.scope_poll_interval
+        } else {
+            Duration::from_millis(50)
+        }
+    }
     pub fn set_scope_visible(&mut self, visible: bool) {
         if self.scope_visible != visible {
             self.scope_visible = visible;
@@ -472,20 +492,29 @@ impl RunController {
 
     /// Scope cadence and infrequent child/source maintenance are the only timers.
     pub fn next_poll_deadline(&self) -> Instant {
-        if self.scope_capture_enabled && self.scope_request.is_none() {
+        if self.scope_capture_mode != "off" && self.scope_request.is_none() {
             self.next_maintenance
-                .min(self.last_scope_poll + self.scope_poll_interval)
+                .min(self.last_scope_poll + self.visualization_interval())
         } else {
             self.next_maintenance
         }
     }
 
     fn sync_scope_capture(&mut self) {
-        let enabled = self.scope_polling_active && self.scope_visible && self.bridge.is_connected();
-        if self.scope_capture_enabled != enabled {
+        let active = self.scope_polling_active && self.bridge.is_connected();
+        let mode = if !active {
+            "off"
+        } else if self.scope_visible {
+            "waveform"
+        } else if self.meter_visible {
+            "meter"
+        } else {
+            "off"
+        };
+        if self.scope_capture_mode != mode {
             self.bridge
-                .send_command_notification("setScopeCaptureEnabled", &json!({"value":enabled}));
-            self.scope_capture_enabled = enabled;
+                .send_command_notification("setScopeCaptureMode", &json!({"value":mode}));
+            self.scope_capture_mode = mode;
             self.scope_request = None;
             self.last_scope_poll = Instant::now();
         }
@@ -632,9 +661,9 @@ impl RunController {
         }
 
         self.sync_scope_capture();
-        if self.scope_capture_enabled
+        if self.scope_capture_mode != "off"
             && self.scope_request.is_none()
-            && self.last_scope_poll.elapsed() >= self.scope_poll_interval
+            && self.last_scope_poll.elapsed() >= self.visualization_interval()
         {
             self.scope_request = self.bridge.send_command(
                 "getScopeData",
@@ -665,6 +694,7 @@ impl RunController {
             self.state.scope_channels = 0;
             self.state.scope_samples.clear();
             self.scope_envelope.clear();
+            self.meter_levels = Default::default();
             return Ok(());
         }
         self.restart_with_status("Starting...")
@@ -679,7 +709,8 @@ impl RunController {
             self.advance_child_generation();
             self.child.kill();
             self.bridge.disconnect();
-            self.scope_capture_enabled = false;
+            self.scope_capture_mode = "off";
+            self.meter_levels = Default::default();
             self.source_compilation = SourceCompilationState::None;
             self.compiled_watch_revision = None;
         }
@@ -693,6 +724,7 @@ impl RunController {
         self.state.scope_channels = 0;
         self.state.scope_samples.clear();
         self.scope_envelope.clear();
+        self.meter_levels = Default::default();
     }
 
     pub fn refresh_devices(&mut self) {
@@ -888,7 +920,8 @@ impl RunController {
         self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
-        self.scope_capture_enabled = false;
+        self.scope_capture_mode = "off";
+        self.meter_levels = onda_scope::Levels::default();
         self.source_compilation = SourceCompilationState::None;
         self.compiled_watch_revision = None;
         self.pending_commands.clear();
@@ -998,7 +1031,8 @@ impl RunController {
         self.advance_child_generation();
         self.child.kill();
         self.bridge.disconnect();
-        self.scope_capture_enabled = false;
+        self.scope_capture_mode = "off";
+        self.meter_levels = onda_scope::Levels::default();
         self.pending_commands.clear();
         self.source_compilation = SourceCompilationState::None;
         self.compiled_watch_revision = None;
@@ -1242,7 +1276,8 @@ impl RunController {
         self.sync_scope_capture();
         self.scope_request = None;
         self.bridge.disconnect();
-        self.scope_capture_enabled = false;
+        self.scope_capture_mode = "off";
+        self.meter_levels = onda_scope::Levels::default();
         self.pending_commands.clear();
         self.source_compilation.mark_failed();
         self.compiled_watch_revision = None;
@@ -1417,6 +1452,20 @@ impl RunController {
                     poll.state_changed = true;
                     poll.schema_changed = true;
                 }
+                if scope_reply
+                    && self.scope_polling_active
+                    && (self.meter_visible || self.scope_visible)
+                {
+                    if let Some(peaks) = result.get("peaks").and_then(Value::as_array) {
+                        self.meter_levels = onda_scope::Levels {
+                            channels: result["channels"].as_u64().unwrap_or(0) as usize,
+                            peaks: std::array::from_fn(|i| {
+                                peaks.get(i).and_then(Value::as_f64).unwrap_or(0.0) as f32
+                            }),
+                        };
+                        poll.scope_changed = true;
+                    }
+                }
                 if let Some(packet) = result.get("packet").and_then(Value::as_str) {
                     if !scope_reply || !self.scope_polling_active || !self.scope_visible {
                         return poll;
@@ -1585,7 +1634,8 @@ impl Drop for RunController {
     fn drop(&mut self) {
         self.child.kill();
         self.bridge.disconnect();
-        self.scope_capture_enabled = false;
+        self.scope_capture_mode = "off";
+        self.meter_levels = onda_scope::Levels::default();
     }
 }
 
@@ -2775,7 +2825,9 @@ mod tests {
             scope_columns: None,
             scope_envelope: Default::default(),
             scope_visible: true,
-            scope_capture_enabled: false,
+            scope_capture_mode: "off",
+            meter_visible: false,
+            meter_levels: Default::default(),
             next_maintenance: std::time::Instant::now(),
             source_compilation: SourceCompilationState::None,
         }
@@ -2834,7 +2886,7 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        controller.scope_capture_enabled = true;
+        controller.scope_capture_mode = "waveform";
         controller.last_scope_poll = std::time::Instant::now() - super::CONTROLLER_POLL_INTERVAL;
         controller
             .events_tx
@@ -2963,11 +3015,11 @@ mod tests {
             serde_json::from_str::<Value>(&line).unwrap()
         };
         controller.poll();
-        assert!(!controller.scope_capture_enabled);
+        assert_eq!(controller.scope_capture_mode, "off");
         controller.set_scope_visible(true);
         assert_eq!(
             read(),
-            json!({"command":"setScopeCaptureEnabled","value":true})
+            json!({"command":"setScopeCaptureMode","value":"waveform"})
         );
         assert!(
             controller.next_poll_deadline()
@@ -2983,9 +3035,33 @@ mod tests {
         controller.set_scope_visible(false);
         assert_eq!(
             read(),
-            json!({"command":"setScopeCaptureEnabled","value":false})
+            json!({"command":"setScopeCaptureMode","value":"off"})
         );
         assert!(controller.scope_request.is_none());
+        controller.set_meter_visible(true);
+        assert_eq!(
+            read(),
+            json!({"command":"setScopeCaptureMode","value":"meter"})
+        );
+        assert_eq!(
+            controller.visualization_interval(),
+            Duration::from_millis(50)
+        );
+        controller.last_scope_poll -= Duration::from_millis(50);
+        controller.poll();
+        let request = read();
+        let response = json!({"id":request["id"],"ok":true,"result":{"channels":8,"peaks":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]}});
+        assert!(
+            controller
+                .handle_tcp_response(&response.to_string())
+                .scope_changed
+        );
+        assert_eq!(controller.meter_levels().values(), &[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]);
+        controller.set_meter_visible(false);
+        assert_eq!(
+            read(),
+            json!({"command":"setScopeCaptureMode","value":"off"})
+        );
     }
 
     #[test]

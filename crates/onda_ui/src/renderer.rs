@@ -133,6 +133,8 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     instances: UploadBuffer,
     samples: UploadBuffer,
+    meters: UploadBuffer,
+    meter_shapes: Vec<Shape>,
     font_system: FontSystem,
     loaded_fonts: std::collections::HashSet<String>,
     font_check: Option<(usize, u64)>,
@@ -297,6 +299,7 @@ impl Renderer {
         let menu_renderer = TextRenderer::new(&mut atlas, &device, Default::default(), None);
         let instances = UploadBuffer::new(&device);
         let samples = UploadBuffer::new(&device);
+        let meters = UploadBuffer::new(&device);
         let decoration_buffer = UploadBuffer::new(&device);
         Ok(Self {
             device,
@@ -307,6 +310,8 @@ impl Renderer {
             bind_group,
             instances,
             samples,
+            meters,
+            meter_shapes: Vec::with_capacity(8),
             font_system,
             loaded_fonts: Default::default(),
             font_check: None,
@@ -379,6 +384,48 @@ impl Renderer {
                 .upload(&self.device, &self.queue, bytemuck::cast_slice(&ui.trace));
             self.scope_revision = Some((ui.id, ui.scope_revision));
         }
+        self.meter_shapes.clear();
+        let palette = Palette::new(ui.light);
+        for (i, r) in ui.scene.meter_rects.iter().enumerate() {
+            let peak = if ui.state["running"] == true {
+                if ui.scene.meter_rects.len() == 1 {
+                    ui.meter_peaks[..ui.meter_channels]
+                        .iter()
+                        .copied()
+                        .fold(0.0_f32, f32::max)
+                } else {
+                    ui.meter_peaks[i]
+                }
+            } else {
+                0.0
+            };
+            let level = if peak > 0.0 {
+                ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            if level > 0.0 {
+                self.meter_shapes.push(Shape {
+                    rect: [r[0], r[1] + r[3] * (1.0 - level), r[2], r[3] * level],
+                    color: palette.meter_active,
+                    params: [0.5, 0.0, 0.0, 0.0],
+                    clip: ui.scene.meter_clip,
+                });
+            }
+            if peak >= 1.0 {
+                self.meter_shapes.push(Shape {
+                    rect: [r[0], r[1], r[2], 2.0],
+                    color: palette.danger,
+                    params: [0.0; 4],
+                    clip: ui.scene.meter_clip,
+                });
+            }
+        }
+        self.meters.upload(
+            &self.device,
+            &self.queue,
+            bytemuck::cast_slice(&self.meter_shapes),
+        );
         let scope = ui.scene.scope_rect;
         let palette = Palette::new(ui.light);
         let globals = Globals {
@@ -416,27 +463,35 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
+            let split = if ui.scene.scope_overlay {
+                ui.scene.overlay_shapes
+            } else {
+                ui.scene.scope_shape_end
+            };
             self.draw_shapes(
                 &mut pass,
                 &ui.scene.shapes,
                 &self.instances.buffer,
-                0..ui.scene.scope_shape_end,
+                0..split,
                 [width, height],
                 scale,
             );
-            if ui.scope_enabled() && ui.state["running"] == true && !ui.trace.is_empty() {
-                if let Some([x, y, w, h]) = scissor(ui.scene.scope_clip, width, height, scale) {
-                    pass.set_scissor_rect(x, y, w, h);
-                    pass.set_pipeline(&self.traces);
-                    pass.set_vertex_buffer(0, self.samples.buffer.slice(..));
-                    pass.draw(0..6, 0..ui.trace.len() as u32);
-                }
+            if !ui.scene.scope_overlay {
+                self.draw_scope(&mut pass, ui, width, height, scale);
             }
             self.draw_shapes(
                 &mut pass,
                 &ui.scene.shapes,
                 &self.instances.buffer,
-                ui.scene.scope_shape_end..ui.scene.overlay_shapes,
+                split..ui.scene.overlay_shapes,
+                [width, height],
+                scale,
+            );
+            self.draw_shapes(
+                &mut pass,
+                &self.meter_shapes,
+                &self.meters.buffer,
+                0..self.meter_shapes.len(),
                 [width, height],
                 scale,
             );
@@ -456,10 +511,25 @@ impl Renderer {
                 &mut pass,
                 &ui.scene.shapes,
                 &self.instances.buffer,
-                ui.scene.overlay_shapes..ui.scene.menu_shapes,
+                ui.scene.overlay_shapes..if ui.scene.scope_overlay {
+                    ui.scene.scope_shape_end
+                } else {
+                    ui.scene.menu_shapes
+                },
                 [width, height],
                 scale,
             );
+            if ui.scene.scope_overlay {
+                self.draw_scope(&mut pass, ui, width, height, scale);
+                self.draw_shapes(
+                    &mut pass,
+                    &ui.scene.shapes,
+                    &self.instances.buffer,
+                    ui.scene.scope_shape_end..ui.scene.menu_shapes,
+                    [width, height],
+                    scale,
+                );
+            }
             self.draw_shapes(
                 &mut pass,
                 &self.decorations,
@@ -494,6 +564,23 @@ impl Renderer {
                 .map_err(|e| e.to_string())?;
         }
         Ok(self.queue.submit([encoder.finish()]))
+    }
+    fn draw_scope(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        ui: &RunUi,
+        width: u32,
+        height: u32,
+        scale: f32,
+    ) {
+        if ui.scope_enabled() && ui.state["running"] == true && !ui.trace.is_empty() {
+            if let Some([x, y, w, h]) = scissor(ui.scene.scope_clip, width, height, scale) {
+                pass.set_scissor_rect(x, y, w, h);
+                pass.set_pipeline(&self.traces);
+                pass.set_vertex_buffer(0, self.samples.buffer.slice(..));
+                pass.draw(0..6, 0..ui.trace.len() as u32);
+            }
+        }
     }
     pub(crate) fn missing_fonts(&mut self, ui: &RunUi) -> Vec<&'static str> {
         let key = (ui.id, ui.revision);
@@ -863,7 +950,7 @@ mod tests {
                     .scene
                     .labels
                     .iter()
-                    .filter(|l| l.text.starts_with("Smooth "))
+                    .filter(|l| l.text.ends_with(" ms"))
                     .collect();
                 assert_eq!(labels.len(), 2);
                 for label in labels {

@@ -652,6 +652,7 @@ fn integer_arrow_steps_and_settings_validation_keep_exact_values() {
 #[test]
 fn sections_collapse_independently_and_scope_updates_retain_the_scene() {
     let mut ui = fixture();
+    ui.presentation.scope_pinned = true;
     ui.message(json!({"type":"state","state":{"buffers":[],"events":[],"inputControls":[]}}));
     ui.set_scope_interleaved(2, &[0.0; 4]);
     for size in [[720.0, 840.0], [360.0, 400.0]] {

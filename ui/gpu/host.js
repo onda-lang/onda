@@ -201,6 +201,7 @@ function receive(message) {
       "state",
       "parameterValues",
       "scopeData",
+      "meterData",
       "midiActivity",
       "bufferFileDrag",
       "sourceFileDrag",
@@ -413,6 +414,7 @@ function scopeConfig() {
     type: "scopeConfig",
     columns: ui.scope_columns(),
     visible: !suspended && !document.hidden && ui.scope_enabled(),
+    meter: !suspended && !document.hidden && ui.meter_enabled(),
   };
   const signature = JSON.stringify(configuration);
   if (signature !== scopeConfiguration) {

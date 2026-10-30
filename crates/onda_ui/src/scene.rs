@@ -38,6 +38,11 @@ pub(crate) struct Shape {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Target {
     Transport,
+    Scope,
+    PinScope,
+    HeaderMenu,
+    BankMenu(bool),
+    Overlay,
     Command(Value),
     Layout {
         input: bool,
@@ -113,6 +118,14 @@ pub(crate) struct Scene {
     pub scrollbar: Option<crate::scrollbar::Scrollbar>,
     pub clip: [f32; 4],
     pub scope_rect: [f32; 4],
+    pub scope_overlay: bool,
+    pub scope_scroll_max: f32,
+    pub scope_panel: [f32; 4],
+    pub header_rect: [f32; 4],
+    pub toolbar_menu_rect: [f32; 4],
+    pub toolbar_scroll_max: f32,
+    pub meter_rects: Vec<[f32; 4]>,
+    pub meter_clip: [f32; 4],
     pub scope_clip: [f32; 4],
     pub log_rect: [f32; 4],
     pub log_width: f32,

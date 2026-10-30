@@ -36,7 +36,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
                         [rect[0] + 7.0, y + 12.0],
                         p.ink_color(),
                     );
-                    s.tooltip(heading, name.clone());
+                    s.text_tooltip(heading, name.clone());
                     s.styled(
                         name,
                         heading,
@@ -84,7 +84,8 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
         let name_width = (name.chars().count() as f32 * heading_size * 0.6)
             .min((head_width - ty.len() as f32 * 7.2 - 6.0).max(12.0));
         let value_width = 104.0_f32.min(card_width - 18.0);
-        let title_width = if centered_heading {
+        let stacked = !knobs && !c.boolean() && card_width < 180.0;
+        let title_width = if centered_heading || stacked {
             head_width
         } else {
             (head_width - value_width - 8.0).max(20.0)
@@ -94,15 +95,18 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
         } else {
             x + 10.0
         };
-        s.tooltip(
-            [
-                if centered_heading { x + 9.0 } else { start },
-                heading_y,
-                title_width,
-                20.0,
-            ],
-            format!("{name} ({ty})"),
-        );
+        let heading = [
+            if centered_heading { x + 9.0 } else { start },
+            heading_y,
+            title_width,
+            20.0,
+        ];
+        let description = format!("{name} ({ty})");
+        if centered_heading {
+            s.tooltip(heading, description);
+        } else {
+            s.text_tooltip(heading, description);
+        }
         s.styled(
             name,
             [start, heading_y, name_width.min(title_width), 20.0],
@@ -141,7 +145,13 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
                 "External input",
                 [
                     x + 9.0,
-                    y + if knobs { 58.0 } else { 43.0 },
+                    y + if knobs {
+                        58.0
+                    } else if stacked {
+                        68.0
+                    } else {
+                        43.0
+                    },
                     card_width - 18.0,
                     24.0,
                 ],
@@ -203,7 +213,12 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
             if c.domain.is_none() || !c.enabled() {
                 continue;
             }
-            let slider = [x + 10.0, y + 44.0, card_width - 20.0, 22.0];
+            let slider = [
+                x + 10.0,
+                y + if stacked { 68.0 } else { 44.0 },
+                card_width - 20.0,
+                22.0,
+            ];
             let hot = s.hovered(ui, slider) || ui.interaction.dragging_control(index);
             s.panel(slider, p.field, if hot { p.accent } else { p.border }, 11.0);
             let track = [
@@ -249,6 +264,45 @@ mod tests {
     use crate::{Input, Key};
     use serde_json::json;
     use std::sync::Arc;
+
+    #[test]
+    fn narrow_sliders_keep_labels_values_and_tracks_separate() {
+        for width in [128.0, 144.0, 195.0, 240.0, 390.0] {
+            let mut ui = RunUi::default();
+            ui.resize(width, 600.0, 1.0);
+            ui.message(json!({"type":"state","state":{
+                "path":"narrow.onda","supportsScope":false,"paramLayout":"sliders",
+                "params":[{"name":"gain","type":"f64","value":0.5,"rangeMin":0,"rangeMax":1}]
+            }}));
+            ui.prepare_scene();
+            let name = ui.scene.labels.iter().find(|l| l.text == "gain").unwrap();
+            let field = ui
+                .scene
+                .hits
+                .iter()
+                .find(|h| h.target == Target::Field(Field::Control(0)))
+                .unwrap()
+                .rect;
+            let label = crate::scene::Rect([name.x, name.y, name.width, name.size * 1.4]);
+            let overlap = label.intersect(field).0;
+            assert!(
+                overlap[2] == 0.0 || overlap[3] == 0.0,
+                "name overlaps value at {width}"
+            );
+            let slider = ui
+                .scene
+                .hits
+                .iter()
+                .find(|h| h.target == Target::Control(0))
+                .unwrap()
+                .rect
+                .0;
+            assert!(
+                slider[1] >= field.0[1] + field.0[3],
+                "value overlaps slider at {width}"
+            );
+        }
+    }
 
     fn cached_focus(ui: &RunUi, input: bool) -> Arc<[crate::interaction::FocusTarget]> {
         ui.control_layouts[input as usize]

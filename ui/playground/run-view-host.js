@@ -439,6 +439,10 @@ export class BrowserRunViewHost {
     });
   }
 
+  postMeter(channels, peaks) {
+    this.post({ type: "meterData", channels, peaks });
+  }
+
   postScope(channels, samples) {
     this.post({ type: "scopeData", channels, samples });
   }

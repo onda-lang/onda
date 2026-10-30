@@ -25,6 +25,9 @@ void onda_ui_scope(OndaUi *ui, uint32_t channels, const float *samples, size_t c
 int onda_ui_render(OndaUi *ui);
 /* Whether the visible scope panel needs fresh snapshots. */
 int onda_ui_scope_visible(const OndaUi *ui);
+/* Peak maxima: one per channel, up to 64 channels. */
+void onda_ui_meter(OndaUi *ui, uint32_t channels, const float *peaks, size_t count);
+int onda_ui_meter_visible(const OndaUi *ui);
 /* JSON command array, borrowed until the next call to commands or destroy.
  * Drain after input/state updates and on UI timer ticks for deferred scroll saves.
  * Send focusLost and drain commands before hiding or destroying the view. */

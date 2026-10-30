@@ -811,7 +811,7 @@ async function startAudio() {
 
     if (outputChannels) {
       audioProcessor.node.connect(context.destination);
-      scopeSource.start(context, audioProcessor.node, outputChannels);
+      await scopeSource.start(context, audioProcessor.node, outputChannels);
     }
     resumeAudio();
     updateAudioStatus();

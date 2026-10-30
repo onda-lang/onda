@@ -231,6 +231,13 @@ impl RunUi {
             Input::PointerDown { x, y, clicks } => {
                 self.interaction.pointer = [x, y];
                 let target = self.target(x, y);
+                if self.interaction.toolbar_menu.is_some()
+                    && !matches!(target, Some(Target::HeaderMenu | Target::BankMenu(_)))
+                    && !Rect(self.scene.toolbar_menu_rect).contains(x, y)
+                {
+                    self.interaction.toolbar_menu = None;
+                    self.invalidate();
+                }
                 if clicks < 2
                     && matches!(&target, Some(Target::Field(field)) if self.editor.begin_selection(field))
                 {
@@ -336,7 +343,44 @@ impl RunUi {
         true
     }
     fn activate(&mut self, target: Target, x: f32, y: f32, clicks: u8) {
+        if self.interaction.toolbar_menu == Some(super::ToolbarMenu::Header)
+            && !matches!(
+                target,
+                Target::HeaderMenu | Target::BankMenu(_) | Target::Overlay
+            )
+        {
+            self.interaction.toolbar_menu = None;
+            self.invalidate();
+        }
         match target {
+            Target::Overlay => {}
+            Target::Scope => {
+                if self.presentation.scope_pinned {
+                    self.presentation.toggle(Section::Scope);
+                } else {
+                    self.interaction.scope_open = !self.interaction.scope_open;
+                }
+                self.interaction.toolbar_menu = None;
+            }
+            Target::PinScope => {
+                self.presentation.scope_pinned = !self.presentation.scope_pinned;
+                self.presentation.sections[Section::Scope.index()] = self.presentation.scope_pinned;
+                self.interaction.scope_open = false;
+                self.presentation.changed();
+            }
+            Target::HeaderMenu | Target::BankMenu(_) => {
+                let menu = match target {
+                    Target::BankMenu(input) => super::ToolbarMenu::Bank(input),
+                    _ => super::ToolbarMenu::Header,
+                };
+                self.interaction.toolbar_menu = if self.interaction.toolbar_menu == Some(menu) {
+                    None
+                } else {
+                    Some(menu)
+                };
+                self.interaction.toolbar_scroll = 0.0;
+                self.interaction.devices_open = false;
+            }
             Target::Transport => {
                 if self.state["supportsTransport"] != false {
                     self.commands
@@ -618,6 +662,19 @@ impl RunUi {
         }
         match key {
             Key::Escape => {
+                if !self.editor.editing()
+                    && !self.pointer_captured()
+                    && !self.interaction.devices_open
+                    && (self.interaction.scope_open || self.interaction.toolbar_menu.is_some())
+                {
+                    if self.interaction.toolbar_menu.is_some() {
+                        self.interaction.toolbar_menu = None;
+                    } else {
+                        self.interaction.scope_open = false;
+                    }
+                    self.invalidate();
+                    return true;
+                }
                 if !self.editor.editing()
                     && !self.pointer_captured()
                     && self.interaction.focus.is_none()

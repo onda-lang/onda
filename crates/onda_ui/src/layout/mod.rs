@@ -1,5 +1,7 @@
 //! The run screen scrolls as one document; the MIDI keyboard stays docked.
+mod bank;
 mod header;
+mod scope;
 mod sections;
 
 use crate::{
@@ -75,6 +77,7 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
     s.overlay_shapes = s.shapes.len();
     s.overlay_labels = s.labels.len();
     s.overlay_hits = s.hits.len();
+    scope::overlay(ui, &mut s, p);
     if ui.interaction.settings_open() {
         s.focus_layer = crate::interaction::FocusLayer::Popup;
         // Keep popup painting and hit testing above the entire document and dock.
@@ -111,6 +114,7 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
     s.menu_shapes = s.shapes.len();
     s.menu_labels = s.labels.len();
     s.menu_hits = s.hits.len();
+    header::menu(ui, &mut s, p);
     crate::interaction::build_menu(ui, &mut s, p);
     crate::interaction::build_tooltip(ui, &mut s, p);
     s

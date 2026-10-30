@@ -176,6 +176,9 @@ pub struct RunUi {
     pub(crate) scene_dirty: bool,
     pub(crate) revision: u64,
     pub(crate) scope_revision: u64,
+    pub(crate) meter_revision: u64,
+    pub(crate) meter_channels: usize,
+    pub(crate) meter_peaks: [f32; onda_scope::MAX_CHANNELS],
     pub(crate) trace: Vec<[i16; 4]>,
     trace_shape: [usize; 2],
     pub(crate) scope: onda_scope::Envelope,
@@ -213,6 +216,9 @@ impl Default for RunUi {
             scene_dirty: true,
             revision: 1,
             scope_revision: 0,
+            meter_revision: 0,
+            meter_channels: 0,
+            meter_peaks: [0.0; onda_scope::MAX_CHANNELS],
             trace: Vec::new(),
             trace_shape: [0, 0],
             scope: Default::default(),
@@ -244,6 +250,13 @@ impl RunUi {
     /// the metadata explicitly declares the plugin's normalized host domain.
     pub fn message(&mut self, message: Value) {
         match message["type"].as_str() {
+            Some("meterData") => {
+                let channels = message["channels"].as_u64().unwrap_or(0) as usize;
+                let peaks = std::array::from_fn::<_, { onda_scope::MAX_CHANNELS }, _>(|i| {
+                    message["peaks"][i].as_f64().unwrap_or(0.0) as f32
+                });
+                self.set_meter(channels, &peaks);
+            }
             Some("scopeData") => {
                 let channels = message["channels"]
                     .as_u64()
@@ -333,6 +346,11 @@ impl RunUi {
                     self.view_restore_id = None;
                     self.state.as_object_mut().unwrap().remove("viewState");
                     self.presentation = Presentation::default();
+                    self.interaction.scope_open = false;
+                    self.interaction.scope_scroll = 0.0;
+                    self.interaction.toolbar_menu = None;
+                    self.interaction.toolbar_scroll = 0.0;
+                    self.set_meter(0, &[]);
                     if source_changed {
                         self.events.clear();
                     } else {
@@ -566,7 +584,15 @@ impl RunUi {
         }
     }
     pub fn scope_columns(&self) -> usize {
-        onda_scope::columns_for_width((self.size[0] - 44.0).max(1.0) * self.scale)
+        onda_scope::columns_for_width(
+            (if self.presentation.scope_pinned {
+                self.size[0] - 46.0
+            } else {
+                (self.size[0] - 28.0).min(320.0) - 16.0
+            })
+            .max(1.0)
+                * self.scale,
+        )
     }
     pub fn set_scope_interleaved(&mut self, channels: usize, samples: &[f32]) {
         self.scope
@@ -617,7 +643,10 @@ impl RunUi {
         }
     }
     pub fn revisions(&self) -> (u64, u64) {
-        (self.revision, self.scope_revision)
+        (
+            self.revision,
+            self.scope_revision.wrapping_add(self.meter_revision),
+        )
     }
     pub fn take_commands(&mut self) -> Vec<Value> {
         self.publish_view_state(false);
@@ -638,8 +667,46 @@ impl RunUi {
     fn file_drop_obscured(&self, x: f32, y: f32) -> bool {
         self.interaction.obscures(&self.scene, x, y)
     }
+    pub fn meter_enabled(&self) -> bool {
+        self.loaded() && self.state["supportsScope"] != false
+    }
+    pub(crate) fn output_channels(&self) -> usize {
+        self.state["outputChannels"]
+            .as_u64()
+            .map(|n| n as usize)
+            .unwrap_or(self.meter_channels.max(self.scope.channels()))
+            .clamp(1, 64)
+    }
+    pub fn set_meter(&mut self, channels: usize, peaks: &[f32]) {
+        let channels = channels.min(64);
+        let next = std::array::from_fn(|i| {
+            let v = if i < channels {
+                peaks.get(i).copied().unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            if v.is_finite() {
+                v.max(0.0)
+            } else {
+                0.0
+            }
+        });
+        if self.meter_channels != channels {
+            self.meter_channels = channels;
+            self.invalidate();
+        }
+        if self.meter_peaks != next {
+            self.meter_peaks = next;
+            self.meter_revision = self.meter_revision.wrapping_add(1);
+        }
+    }
     pub fn scope_enabled(&self) -> bool {
-        self.presentation.open(Section::Scope) && self.state["supportsScope"] != false
+        self.meter_enabled()
+            && if self.presentation.scope_pinned {
+                self.presentation.open(Section::Scope)
+            } else {
+                self.interaction.scope_open
+            }
     }
     pub(crate) fn log_present(&self) -> bool {
         self.state["logRevealed"] == true
@@ -685,6 +752,14 @@ impl RunUi {
             if self.interaction.clamp_popup_scroll(max) {
                 self.scene = crate::scene::build(self);
             }
+            self.interaction.scope_scroll = self
+                .interaction
+                .scope_scroll
+                .min(self.scene.scope_scroll_max);
+            self.interaction.toolbar_scroll = self
+                .interaction
+                .toolbar_scroll
+                .min(self.scene.toolbar_scroll_max);
             self.scene_dirty = false;
         }
         if self.update_hover(now) {

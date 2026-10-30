@@ -2,6 +2,9 @@
 //! A bucket retains both extrema. Samples are clamped to the displayed [-1, 1]
 //! range and quantized to signed 16-bit values (error <= 1/32767).
 
+mod meter;
+pub use meter::{Levels, MeterCapture};
+
 pub const MAX_CHANNELS: usize = 64;
 pub const MAX_COLUMNS: usize = 512;
 pub const MAX_FRAMES: usize = 16384;

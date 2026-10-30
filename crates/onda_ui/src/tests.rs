@@ -317,7 +317,7 @@ fn compact_scope_preserves_layout_and_rejects_invalid_packets_without_losing_the
     assert_eq!(ui.revisions(), revisions);
     assert_eq!(ui.scope, frame);
     ui.resize(400.0, 600.0, 2.0);
-    assert_eq!(ui.scope_columns(), 356);
+    assert_eq!(ui.scope_columns(), 304);
 }
 
 #[test]

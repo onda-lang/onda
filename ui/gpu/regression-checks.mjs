@@ -82,7 +82,7 @@ export async function checkRegressions(page, evaluate) {
   await evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
   assert.equal(await screenshot(),restingTrigger,"clicking Trigger must not leave it highlighted after the pointer leaves");
   for (const type of ["mousePressed","mouseReleased"])
-    await page("Input.dispatchMouseEvent",{type,x:629,y:188,button:"left",clickCount:1});
+    await page("Input.dispatchMouseEvent",{type,x:629,y:172,button:"left",clickCount:1});
   const field = await evaluate(`(()=>{
     const e=document.activeElement,s=getComputedStyle(e);
     return {tag:e.tagName,value:e.value,height:e.getBoundingClientRect().height,

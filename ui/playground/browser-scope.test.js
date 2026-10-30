@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
+import { meterWorklet } from "./meter-worklet.js";
 import { BrowserScopeSource, scopePacket } from "./browser-scope.js";
 
 test("scope packets preserve channel peaks, signed extrema, and non-finite sanitation", () => {
@@ -28,11 +30,12 @@ test("scope packets preserve channel peaks, signed extrema, and non-finite sanit
   assert.equal(scopePacket([], 512).length, 8);
 });
 
-test("scope capture suspends hidden/collapsed views", (t) => {
+test("scope capture disconnects waveform processing in meter-only and hidden views", async (t) => {
   const saved = {
     document: globalThis.document,
     setInterval: globalThis.setInterval,
     clearInterval: globalThis.clearInterval,
+    AudioWorkletNode: globalThis.AudioWorkletNode,
   };
   t.after(() => Object.assign(globalThis, saved));
   const frames = new Map();
@@ -49,14 +52,22 @@ test("scope capture suspends hidden/collapsed views", (t) => {
     return next;
   };
   globalThis.clearInterval = (id) => frames.delete(id);
+  const enabled = [];
+  globalThis.AudioWorkletNode = class {
+    port = { postMessage: (value) => enabled.push(value), close() {} };
+    connect() {}
+    disconnect() {}
+  };
   const packets = [];
   const source = new BrowserScopeSource({
     postScope() {},
+    postMeter() {},
     postScopePacket: (packet) => packets.push(packet.slice()),
   });
   const disconnect = t.mock.fn();
   const context = {
     destination: {},
+    audioWorklet: { async addModule() {} },
     createChannelSplitter: () => ({ connect() {}, disconnect }),
     createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect }),
     createAnalyser: () => ({
@@ -70,7 +81,7 @@ test("scope capture suspends hidden/collapsed views", (t) => {
     }),
   };
   source.configure({ columns: 64, visible: true });
-  source.start(context, { connect() {} }, 2);
+  await source.start(context, { connect() {}, disconnect() {} }, 2);
   const tick = () => {
     const [id, fn] = frames.entries().next().value;
     fn();
@@ -78,7 +89,9 @@ test("scope capture suspends hidden/collapsed views", (t) => {
   tick();
   assert.equal(reads, 2);
   assert.equal(packets[0].length, 8 + 2 * 64 * 4);
-  source.configure({ columns: 64, visible: false });
+  source.configure({ columns: 64, visible: false, meter: true });
+  assert.equal(source.analysers.length, 0);
+  assert.equal(enabled.at(-1), true);
   assert.equal(frames.size, 0);
   source.capture();
   assert.equal(reads, 2);
@@ -96,7 +109,8 @@ test("scope capture suspends hidden/collapsed views", (t) => {
   source.dispose();
   assert.equal(frames.size, 0);
   assert.equal(listeners.size, 0);
-  assert.equal(disconnect.mock.callCount(), 4);
+  assert.equal(enabled.at(-1), "stop");
+  assert.equal(disconnect.mock.callCount(), 12);
 });
 
 test("scope captures target 30 Hz independently of display rate and resizing", (t) => {
@@ -121,6 +135,7 @@ test("scope captures target 30 Hz independently of display rate and resizing", (
   let captures = 0;
   const source = new BrowserScopeSource({
     postScope() {},
+    postMeter() {},
     postScopePacket() { captures++; },
   });
   t.after(() => {
@@ -129,7 +144,7 @@ test("scope captures target 30 Hz independently of display rate and resizing", (
   });
   source.analysers = [{ getFloatTimeDomainData() {}, disconnect() {} }];
   source.samples = [new Float32Array(1024)];
-  source.schedule();
+  source.configure({ columns: 128, visible: true });
   for (let time = 0; time < 1000; time += 16) {
     source.configure({ columns: 128 + time % 128, visible: true });
     for (const [id, fn] of [...frames]) {
@@ -139,4 +154,33 @@ test("scope captures target 30 Hz independently of display rate and resizing", (
     t.mock.timers.tick(16);
   }
   assert.equal(captures, 30, "scope capture must be independent of UI frame rate");
+});
+
+
+test("audio-thread metering retains per-channel transients and stops when disabled", () => {
+  let Processor;
+  const messages = [];
+  vm.runInNewContext(meterWorklet, {
+    AudioWorkletProcessor: class { port = { postMessage: (value) => messages.push(JSON.parse(JSON.stringify(value))) }; },
+    sampleRate: 2560,
+    registerProcessor: (_, type) => { Processor = type; },
+  });
+  const meter = new Processor();
+  const inputs = Array.from({ length: 8 }, () => new Float32Array(64));
+  inputs[7][3] = -1.5;
+  meter.process([inputs]);
+  assert.equal(messages.length, 0);
+  meter.port.onmessage({ data: true });
+  meter.process([inputs]);
+  inputs[7].fill(0);
+  meter.process([inputs]);
+  assert.deepEqual(messages.pop(), { channels: 8, peaks: [0, 0, 0, 0, 0, 0, 0, 1.5] });
+  meter.process([inputs.slice(0, 4)]);
+  meter.process([inputs.slice(0, 4)]);
+  assert.deepEqual(messages.pop(), { channels: 4, peaks: [0, 0, 0, 0] });
+  meter.port.onmessage({ data: false });
+  for (let i = 0; i < 8; i++) meter.process([inputs]);
+  assert.equal(messages.length, 0);
+  meter.port.onmessage({ data: "stop" });
+  assert.equal(meter.process([inputs]), false);
 });

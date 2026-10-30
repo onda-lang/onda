@@ -269,7 +269,7 @@ for (const clipboard of ["denied", "unavailable"])
     })()`);
     await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===1)"), "log view");
     for (const type of ["mousePressed", "mouseReleased"])
-      await page.call("Input.dispatchMouseEvent", { type, x: 610, y: 116, button: "left", clickCount: 1 });
+      await page.call("Input.dispatchMouseEvent", { type, x: 610, y: 100, button: "left", clickCount: 1 });
     await eventually(() => page.evaluate("clipboardErrors.length || commands.some(c=>c.type==='runViewError')"), "clipboard error feedback");
     assert.equal(await page.evaluate("document.getElementById('status').hidden"), true,
       "a clipboard error must not mark the working renderer as failed");
@@ -406,6 +406,7 @@ for (const backend of ["webgpu", "webgl"])
       type: "state",
       state: {
         path: "test.onda",
+        viewState: {scopePinned:true},
         running: true,
         paramLayout: "sliders",
         params: [
@@ -446,7 +447,7 @@ for (const backend of ["webgpu", "webgl"])
         clickCount,
       });
     }
-    await click(180, 375);
+    await click(180, 393);
     for (const key of "880")
       await page("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
     await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
@@ -454,7 +455,7 @@ for (const backend of ["webgpu", "webgl"])
       await evaluate(`commands.findLast(c=>c.type==='setParam').value`),
       880,
     );
-    await click(405, 375);
+    await click(405, 393);
     for (const key of "-9223372036854775808")
       await page("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
     await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
@@ -487,29 +488,29 @@ for (const backend of ["webgpu", "webgl"])
     );
     await evaluate(`appliedScopes=0;
     _onHostMessage({type:'scopeData',packet:'${packet.toString("base64")}'});
-    _onHostMessage({type:'state',state:{viewState:{reset:true}}});
+    _onHostMessage({type:'state',state:{viewState:{reset:true,scopePinned:true}}});
     new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
     assert.equal(
       await evaluate("appliedScopes"),
       0,
       "a reset must discard scope data queued before it",
     );
-    await click(665, 336);
+    await click(665, 354);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='setParamLayout').layout`),
       "knobs",
     );
-    await click(103, 420);
-    await click(103, 420, 2);
+    await click(103, 438);
+    await click(103, 438, 2);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='setParam'&&c.name==='frequency').value`),
       220,
       "real mouse double-click must reset the knob",
     );
     await evaluate(`_onHostMessage({type:'parameterValues',state:{params:[{name:'frequency',value:440}]}})`);
-    await click(103, 468);
+    await click(103, 486);
     assert.equal(await evaluate("document.activeElement.tagName"), "TEXTAREA");
-    await click(103, 468, 2);
+    await click(103, 486, 2);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='setParam'&&c.name==='frequency').value`),
       220,
@@ -522,7 +523,7 @@ for (const backend of ["webgpu", "webgl"])
         ["s", "KeyS", 83, "start"],
         [".", "Period", 190, "stop"],
       ]) {
-        if (editing) await click(103, 468);
+        if (editing) await click(103, 486);
         else await evaluate("document.getElementById('onda-ui').focus()");
         assert.equal(await evaluate("document.activeElement.tagName"), editing ? "TEXTAREA" : "CANVAS");
         const count = () => evaluate(`commands.filter(c=>c.type==='${command}').length`);
@@ -545,6 +546,7 @@ for (const backend of ["webgpu", "webgl"])
       ),
     );
     fullState.paramLayout = "sliders";
+    fullState.viewState = {scopePinned:true};
     await evaluate(
       `_onHostMessage({type:'state',state:${JSON.stringify(fullState)}});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`,
     );
@@ -560,13 +562,13 @@ for (const backend of ["webgpu", "webgl"])
       const state = structuredClone(fullState);
       for (const bank of ["params","inputControls","buffers","events"]) if(bank!==name) state[bank]=[];
       if(name!=="log"){state.logText="";state.logRevealed=false;}
-      state.viewState = {reset:true,sections:Object.fromEntries(
+      state.viewState = {reset:true,scopePinned:true,sections:Object.fromEntries(
         ["scope","params","inputControls","buffers","events","log","midi"].map(key=>[key,key==="scope"||key==="midi"||key===name]))};
       // Reset establishes a new fixture; subsequent edits use trusted browser input.
       await evaluate(`_onHostMessage({type:"state",state:${JSON.stringify(state)}});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
     };
     await section("inputControls");
-    await click(180, 375);
+    await click(180, 393);
     for (const key of "0.75")
       await page("Input.dispatchKeyEvent", { type: "keyDown", key, text: key });
     await page("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
@@ -583,13 +585,13 @@ for (const backend of ["webgpu", "webgl"])
       ),
     );
     await section("buffers");
-    await click(586, 373);
+    await click(586, 391);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='chooseBufferFile').name`),
       "Piano",
     );
     await section("events");
-    await click(647, 372);
+    await click(647, 390);
     assert.deepEqual(
       await evaluate(`commands.findLast(c=>c.type==='triggerEvent').values`),
       [0.8],
@@ -602,10 +604,10 @@ for (const backend of ["webgpu", "webgl"])
     );
     await section("log");
     await chrome.call("Browser.grantPermissions",{origin,permissions:["clipboardReadWrite","clipboardSanitizedWrite"]});
-    await click(610,336);
+    await click(610,354);
     await eventually(async()=>await evaluate("navigator.clipboard.readText()")===fullState.logText,
       "Copy exports the full log through the host clipboard adapter");
-    await click(668, 336);
+    await click(668, 354);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='clearLog').type`),
       "clearLog",
@@ -641,10 +643,10 @@ for (const backend of ["webgpu", "webgl"])
     assert.deepEqual(await evaluate("errors"),[],"opening settings must not produce GPU validation errors");
     // Escape closes the settings popup; section folds use the common view-state protocol.
     await page("Input.dispatchKeyEvent", {type:"keyDown",key:"Escape"});
-    await click(80,116);
+    await click(80,100);
     assert.equal(await evaluate(`commands.findLast(c=>c.type==='scopeConfig').visible`),false);
     assert.equal(await evaluate(`commands.findLast(c=>c.type==='viewState').state.sections.scope`),false);
-    await click(80,116);
+    await click(80,100);
     assert.equal(await evaluate(`commands.findLast(c=>c.type==='scopeConfig').visible`),true);
     for (const themeMode of ["light","dark"]) {
       await evaluate(`_onHostMessage({type:'state',state:{themeMode:'${themeMode}'}});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
@@ -652,28 +654,28 @@ for (const backend of ["webgpu", "webgl"])
     }
     // Real pointer input must scrub numbers and update hover without a held button.
     await section("params");
-    await page("Input.dispatchMouseEvent",{type:"mousePressed",x:180,y:375,button:"left",clickCount:1});
-    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:255,y:375,button:"left",buttons:1});
-    await page("Input.dispatchMouseEvent",{type:"mouseReleased",x:255,y:375,button:"left",clickCount:1});
+    await page("Input.dispatchMouseEvent",{type:"mousePressed",x:180,y:393,button:"left",clickCount:1});
+    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:255,y:393,button:"left",buttons:1});
+    await page("Input.dispatchMouseEvent",{type:"mouseReleased",x:255,y:393,button:"left",clickCount:1});
     assert.ok(await evaluate(`commands.findLast(c=>c.type==='setParam').value>0`));
     assert.equal(await evaluate(`commands.findLast(c=>c.type==='setParam').commit`),true);
-    await click(180,375);
+    await click(180,393);
     await page("Input.dispatchKeyEvent",{type:"keyDown",key:"-",text:"-"});
     await page("Input.dispatchKeyEvent",{type:"keyDown",key:"Enter"});
-    await click(519,48);
+    await click(562,40);
     assert.equal(await evaluate(`commands.findLast(c=>c.type==='stop')?.type`),"stop");
-    await click(665,336);
-    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:102,y:415,buttons:0});
+    await click(665,354);
+    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:102,y:433,buttons:0});
     assert.equal(await evaluate(`document.querySelector('canvas').style.cursor`),"ns-resize");
-    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:102,y:473,buttons:0});
+    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:102,y:491,buttons:0});
     assert.equal(await evaluate(`document.querySelector('canvas').style.cursor`),"ew-resize");
-    await click(102,473);
+    await click(102,491);
     assert.equal(await evaluate(`getComputedStyle(document.activeElement).cursor`),"text");
     await page("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape"});
     await section("log");
     await click(180,40);
-    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:100,y:420,buttons:0});
-    await page("Input.dispatchMouseEvent",{type:"mouseWheel",x:100,y:420,deltaX:0,deltaY:-120});
+    await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:100,y:438,buttons:0});
+    await page("Input.dispatchMouseEvent",{type:"mouseWheel",x:100,y:438,deltaX:0,deltaY:-120});
     await evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
     await eventually(() => evaluate(`commands.findLast(c=>c.type==='viewState')?.state.logFollow===false`), "settled log scroll is saved");
     // The empty screen exposes the same keyboard-operated sample/block dropdowns.
@@ -699,7 +701,7 @@ for (const backend of ["webgpu", "webgl"])
     assert.equal(await evaluate(`document.querySelector('canvas').width`), 800);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='scopeConfig').columns`),
-      356,
+      354,
     );
     if (process.env.ONDA_GPU_SCREENSHOT) {
       const screenshot = await page("Page.captureScreenshot", {
@@ -873,7 +875,7 @@ test("VS Code retains folds, scroll, and typed event values across webview reloa
   await session.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
   assert.equal(await session.evaluate("saved?.eventValues[0].values[0]"), "9223372036854775807");
   for (const type of ["mousePressed", "mouseReleased"])
-    await session.call("Input.dispatchMouseEvent", { type, x: 60, y: 116, button: "left", clickCount: 1 });
+    await session.call("Input.dispatchMouseEvent", { type, x: 60, y: 100, button: "left", clickCount: 1 });
   assert.equal(await session.evaluate("saved.sections.events"), false);
   await wheel(260);
   await eventually(() => session.evaluate("saved.scrollTop > 0"), "saved VS Code scroll");
@@ -893,4 +895,124 @@ test("VS Code retains folds, scroll, and typed event values across webview reloa
   assert.deepEqual(restored.sections, saved.sections);
   assert.deepEqual(restored.eventValues, saved.eventValues);
   assert.equal(await session.evaluate("document.getElementById('status').hidden"), true);
+});
+
+// Real touch input exercises the compact header, internal overlay, and overflow.
+test("compact audio header on mobile portrait, landscape, and zoomed views", {timeout:60000}, async t => {
+  const origin=await serveGpuUi(t);
+  const chrome=await openChrome(t,["--use-angle=swiftshader"]);
+  const page=await chrome.page({width:390,height:844,source:`
+    window.commands=[];window.errors=[];
+    addEventListener('ondaCommand',e=>commands.push(e.detail));
+    addEventListener('error',e=>errors.push(e.message));
+  `});
+  await page.navigate(origin+"/index.html?backend=webgl");
+  await eventually(()=>page.evaluate("commands.some(c=>c.type==='uiReady')"),"mobile UI");
+  const {mkdir}=await import("node:fs/promises");
+  const directory=new URL("../../target/scope-mobile/",import.meta.url);
+  await mkdir(directory,{recursive:true});
+  const tap=async(x,y)=>{
+    await page.call("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[{id:1,x,y}]});
+    await page.call("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
+    await page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  };
+  for(const [width,height,zoom,channels] of [[320,568,1,4],[360,800,1,2],[390,844,1,4],[430,932,1,8],[844,390,1,8],[390,844,2,4],[360,800,2.5,8],[1280,800,1,64],[360,800,1,64]]) {
+    await page.call("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape"});
+    const w=Math.round(width/zoom),h=Math.round(height/zoom);
+    await page.call("Emulation.setDeviceMetricsOverride",{width:w,height:h,deviceScaleFactor:zoom,mobile:true});
+    await page.call("Emulation.setTouchEmulationEnabled",{enabled:true,maxTouchPoints:1});
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'resonance.onda',running:true,status:'Running',
+      outputChannels:${channels},supportsViewState:true,supportsSourceSelection:true,
+      supportsDeviceSelection:true,supportsProjectExport:true,canExportProject:true,
+      paramLayout:'knobs',params:[{name:'gain',type:'f64',value:0.65,rangeMin:0,rangeMax:1},
+      {name:'frequency',type:'f64',value:440,rangeMin:20,rangeMax:20000}],viewState:{reset:true}}});
+      _onHostMessage({type:'meterData',channels:${channels},peaks:[0.8,0.6,0.4,1.1]});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').visible"),false);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').meter"),true);
+    const filename=`${width}x${height}-${zoom}x-${channels}ch`;
+    const shot=async suffix=>writeFile(new URL(filename+suffix+".png",directory),Buffer.from((await page.call("Page.captureScreenshot",{format:"png"})).data,"base64"));
+    await shot("-header");
+    const header=w-28,minimal=header<182,dense=header<452,padding=minimal?4:10;
+    const utility=dense?28:92,transport=dense?28:56,gap=dense?6:12;
+    const sourceWidth=minimal?padding:header>=252?132:90;
+    const available=header-padding-sourceWidth-8-gap-utility-transport-4;
+    const fullMeterWidth=Math.max(32,(minimal?12:26)+channels*6);
+    const meterWidth=channels>1&&fullMeterWidth>available?(minimal?32:46):fullMeterWidth;
+    const mx=w-16-padding-utility-gap-transport-4-meterWidth/2;
+    const cy=minimal?34:40;
+    await tap(mx,cy);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').visible"),true,filename);
+    await page.evaluate(`_onHostMessage({type:'scopeData',channels:${channels},samples:Array.from({length:${channels}*128},(_,i)=>Math.sin(Math.floor(i/${channels})*.15)*.7)});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    await shot("-overlay");
+    if(channels>4) {
+      await page.call("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[{id:1,x:w-60,y:210}]});
+      await page.call("Input.dispatchTouchEvent",{type:"touchMove",touchPoints:[{id:1,x:w-60,y:130}]});
+      await page.call("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
+    }
+    await tap(w-36,(minimal?62:74)+17);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='viewState').state.scopePinned"),true);
+    await shot("-pinned");
+    // Unpinning closes the scope and keeps the meter active.
+    await tap(w-42,(minimal?68:80)+20);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='viewState').state.scopePinned"),false);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').visible"),false);
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').meter"),true);
+    if(dense) {
+      await tap(w-16-padding-14,cy);
+      await shot("-options");
+      await tap(w-60,(minimal?62:74)+60);
+      assert.deepEqual(await page.evaluate("errors"),[]);
+    }
+    assert.equal(await page.evaluate("document.getElementById('status').hidden"),true);
+  }
+});
+
+test("bank toolbars stay compact and their menu keeps smoothing editable", {timeout:60000}, async t => {
+  const origin=await serveGpuUi(t);
+  const chrome=await openChrome(t,["--use-angle=swiftshader"]);
+  const page=await chrome.page({width:840,height:800,source:`
+    window.commands=[];window.errors=[];
+    addEventListener('ondaCommand',e=>commands.push(e.detail));
+    addEventListener('error',e=>errors.push(e.message));
+  `});
+  await page.navigate(origin+"/index.html?backend=webgl");
+  await eventually(()=>page.evaluate("commands.some(c=>c.type==='uiReady')"),"bank UI");
+  const {mkdir}=await import("node:fs/promises");
+  const directory=new URL("../../target/bank-responsive/",import.meta.url);
+  await mkdir(directory,{recursive:true});
+  const frame=()=>page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  const tap=async(x,y)=>{
+    await page.call("Input.dispatchTouchEvent",{type:"touchStart",touchPoints:[{id:1,x,y}]});
+    await page.call("Input.dispatchTouchEvent",{type:"touchEnd",touchPoints:[]});
+    await frame();
+  };
+  for(const [width,zoom] of [[840,1],[390,1],[320,1],[390,2],[320,2.5]]) {
+    const w=Math.round(width/zoom),h=Math.round(800/zoom);
+    await page.call("Emulation.setDeviceMetricsOverride",{width:w,height:h,deviceScaleFactor:zoom,mobile:true});
+    await page.call("Emulation.setTouchEmulationEnabled",{enabled:true,maxTouchPoints:1});
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'banks.onda',running:false,supportsScope:false,
+      supportsViewState:true,supportsParamSmoothing:true,paramSmoothingMs:30,
+      paramLayout:'sliders',params:[{name:'gain',type:'f64',value:0.5,rangeMin:0,rangeMax:1}],viewState:{reset:true}}});`);
+    await frame();
+    const shot=async suffix=>writeFile(new URL(`${width}-${zoom}x-${suffix}.png`,directory),Buffer.from((await page.call("Page.captureScreenshot",{format:"png"})).data,"base64"));
+    await shot("header");
+    if(zoom>1) {
+      const sectionY=w<210?68:80;
+      await tap(w-39,sectionY+20);
+      await shot("menu");
+      // Smoothing is still a native text field inside the compact menu.
+      await tap(w-60,sectionY+60);
+      await page.call("Input.dispatchKeyEvent",{type:"keyDown",key:"a",code:"KeyA",modifiers:2});
+      await page.call("Input.insertText",{text:"75"});
+      await page.call("Input.dispatchKeyEvent",{type:"keyDown",key:"Enter",code:"Enter"});
+      await eventually(()=>page.evaluate("commands.some(c=>c.type==='setParamSmoothing'&&c.milliseconds===75)"),"menu smoothing edit");
+      await tap(w-50,sectionY+96);
+      assert.equal(await page.evaluate("commands.findLast(c=>c.type==='setParamLayout')?.layout"),"knobs");
+      await page.call("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape",code:"Escape"});
+      await frame();
+    }
+    assert.deepEqual(await page.evaluate("errors"),[]);
+  }
 });

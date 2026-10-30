@@ -3,8 +3,13 @@ use crate::scene::Scene;
 #[derive(Clone, Copy)]
 pub(crate) enum Icon {
     Play,
+    Scope,
+    Pin(bool),
+    More,
     Stop,
     Settings,
+    Sliders,
+    Knob,
     Save,
     Unload,
     Reset,
@@ -45,6 +50,56 @@ impl Scene {
         let [x, y] = center;
         let p = |a, b| [x + a, y + b];
         match icon {
+            Icon::Sliders => {
+                for (dx, dy) in [(-5.0, -2.0), (0.0, 3.0), (5.0, -3.0)] {
+                    self.line(p(dx, -6.0), p(dx, 6.0), 1.0, color);
+                    self.shape([x + dx - 1.5, y + dy - 1.5, 3.0, 3.0], color, 0.7);
+                }
+            }
+            Icon::Knob => {
+                self.ring([x, y], 6.0, 1.2, color);
+                self.line(p(0.0, -2.0), p(0.0, -5.0), 1.2, color);
+            }
+            Icon::More => {
+                for dx in [-5.0, 0.0, 5.0] {
+                    self.shape([x + dx - 1.2, y - 1.2, 2.4, 2.4], color, 1.2);
+                }
+            }
+            Icon::Scope => {
+                let points = [
+                    p(-7.0, 0.0),
+                    p(-4.0, 0.0),
+                    p(-2.0, -4.0),
+                    p(1.0, 4.0),
+                    p(4.0, -2.0),
+                    p(6.0, 0.0),
+                ];
+                for pair in points.windows(2) {
+                    self.line(pair[0], pair[1], 1.2, color);
+                }
+            }
+            Icon::Pin(pinned) => {
+                let q = |a: f32, b: f32| {
+                    if pinned {
+                        p(a, b)
+                    } else {
+                        p(a * 0.82 - b * 0.57, a * 0.57 + b * 0.82)
+                    }
+                };
+                let points = [
+                    q(-3.0, -6.0),
+                    q(3.0, -6.0),
+                    q(2.0, -1.0),
+                    q(5.0, 3.0),
+                    q(-5.0, 3.0),
+                    q(-2.0, -1.0),
+                    q(-3.0, -6.0),
+                ];
+                for pair in points.windows(2) {
+                    self.line(pair[0], pair[1], 1.2, color);
+                }
+                self.line(q(0.0, 3.0), q(0.0, 8.0), 1.2, color);
+            }
             Icon::Play => self.triangle(p(-4.0, -6.0), p(6.0, 0.0), p(-4.0, 6.0), color),
             Icon::Stop => self.shape([x - 6.0, y - 6.0, 12.0, 12.0], color, 1.0),
             Icon::Chevron(open) => {

@@ -8,6 +8,8 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(crate) enum ScrollRegion {
     Document,
+    Scope,
+    Toolbar,
     Log,
     Popup,
     Menu,
@@ -35,6 +37,12 @@ impl RunUi {
             ScrollRegion::Menu
         } else if self.interaction.devices_open && Rect(self.scene.popup_rect).contains(x, y) {
             ScrollRegion::Popup
+        } else if self.interaction.toolbar_menu.is_some()
+            && Rect(self.scene.toolbar_menu_rect).contains(x, y)
+        {
+            ScrollRegion::Toolbar
+        } else if Rect(self.scene.scope_clip).contains(x, y) {
+            ScrollRegion::Scope
         } else if Rect(self.scene.log_rect).contains(x, y) {
             ScrollRegion::Log
         } else {
@@ -47,6 +55,20 @@ impl RunUi {
             return 0.0;
         }
         let moved = match region {
+            ScrollRegion::Toolbar => {
+                let next = (self.interaction.toolbar_scroll + delta)
+                    .clamp(0.0, self.scene.toolbar_scroll_max);
+                let moved = next - self.interaction.toolbar_scroll;
+                self.interaction.toolbar_scroll = next;
+                moved
+            }
+            ScrollRegion::Scope => {
+                let next =
+                    (self.interaction.scope_scroll + delta).clamp(0.0, self.scene.scope_scroll_max);
+                let moved = next - self.interaction.scope_scroll;
+                self.interaction.scope_scroll = next;
+                moved
+            }
             ScrollRegion::Menu => {
                 let Some(menu) = &self.interaction.chooser else {
                     return 0.0;

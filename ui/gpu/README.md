@@ -5,7 +5,7 @@ the JUCE plugin, and both browser editors. It provides
 a compact source and transport header, collapsible scope, log, buffers, events,
 input controls and parameters, plus a docked MIDI keyboard
 only for patches with `note_on` support. Parameters and input controls default to
-knobs; the segmented Sliders/Knobs selector highlights selection and pointer hover.
+knobs; the segmented fader/knob icon selector highlights selection and pointer hover.
 Device settings open from the header. Empty sections are hidden and the document scrolls above the keyboard. All hosts use this renderer.
 
 Scalar event fields stay compact, float labels omit binary rounding artifacts,

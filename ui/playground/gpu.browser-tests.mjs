@@ -52,6 +52,9 @@ const initScript = `
   if(window===top) {
     if(!localStorage.getItem("onda.browser-ide.project.v1"))
       localStorage.setItem("onda.browser-ide.project.v1",${JSON.stringify(JSON.stringify(project))});
+    window.testWaveformReads=0;
+    const readWaveform=AnalyserNode.prototype.getFloatTimeDomainData;
+    AnalyserNode.prototype.getFloatTimeDomainData=function(...args){testWaveformReads++;return readWaveform.apply(this,args);};
     window.testAudioContexts=[];window.testResumeCalls=0;window.testCommands=[];window.testErrors=[];window.testIncoming=[];window.testAdapters=[];
     const NativeContext=AudioContext;
     window.AudioContext=class extends NativeContext {
@@ -101,7 +104,7 @@ async function serve(t, isolated = true, beforeRead) {
       '"/__result"',
     );
   assert.ok(!page.includes("{{"), "Website asset URLs must all resolve");
-  const website = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8">
+  const website = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <link rel="stylesheet" href="/assets/site/styles.css">
     <link rel="stylesheet" href="${assetRoot}/playground.css"></head>
     <body class="play-page">${page}</body></html>`;
@@ -190,7 +193,10 @@ async function openEditor(t, url, autoplay = true) {
   const page = await chrome.page({
     width: 1600,
     height: 1100,
-    source: initScript,
+    source: initScript + `
+      if(window===top && !localStorage.getItem("onda.browser-ide.run-view.v1"))
+        localStorage.setItem("onda.browser-ide.run-view.v1",JSON.stringify({path:"main.onda",scopePinned:true}));
+    `,
   });
   if (new URL(url).searchParams.get("backend") === "webgpu") {
     await page.navigate(new URL("/gpu-ready", url).href);
@@ -287,10 +293,10 @@ async function openEditor(t, url, autoplay = true) {
     const state=Object.assign({},...testIncoming.filter(m=>m.type==="state").map(m=>m.state));
     const view=testCommands.findLast(c=>c.type==="viewState")?.state||state.viewState||{};
     const sections={},width=r.width-46;
-    let y=96-(view.scrollTop||0);
+    let y=80-(view.scrollTop||0);
     // section() folds each preceding section before using these header positions.
     for(const name of ["scope","log","buffers","events","inputControls","params"]){
-      const present=name==="scope"?state.supportsScope!==false:name==="log"?Boolean(state.logRevealed||state.logText):Boolean(state[name]?.length);
+      const present=name==="scope"?view.scopePinned===true&&state.supportsScope!==false:name==="log"?Boolean(state.logRevealed||state.logText):Boolean(state[name]?.length);
       if(!present)continue;
       const toolbar=40;
       sections[name]={y,open:view.sections?.[name]!==false,toolbar};y+=toolbar+12;
@@ -302,8 +308,8 @@ async function openEditor(t, url, autoplay = true) {
     const selected=sections[${JSON.stringify(selectedSection)}];
     return {x:r.x,y:r.y,width:r.width,height:r.height,sections,scopeTop:sections.scope?.y,
       top:(selected?.y||0)+20,paramX:21+(knobs?card/2:card-61),paramY:(sections.params?.y||0)+(sections.params?.toolbar||40)+(knobs?114:21),
-      settingsX:r.width-4-actions*40,settingsY:48,
-      stopX:r.width-81-actions*40,stopY:48,midiKeyY:r.height-20};
+      compact:r.width<480,settingsX:r.width<480?r.width-40:r.width-8-actions*32,settingsY:40,
+      stopX:r.width<480?r.width-74:r.width-62-actions*32,stopY:40,midiKeyY:r.height-20};
   })()`);
   const click = async (x, y) => {
     const g = await geometry();
@@ -327,7 +333,7 @@ async function openEditor(t, url, autoplay = true) {
     let g=await geometry();
     await page.call("Input.dispatchMouseEvent",{type:"mouseWheel",x:g.x+g.width-4,y:g.y+20,deltaX:0,deltaY:-100000});
     await frame("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
-    if(name==="settings") {g=await geometry();await click(g.settingsX,g.settingsY);return;}
+    if(name==="settings") {g=await geometry();await click(g.settingsX,g.settingsY);if(g.compact)await click(g.width-100,134);return;}
     if(name==="midi") return;
     for(const key of ["scope","log","buffers","events","inputControls","params"]){
       g=await geometry();const entry=g.sections[key];
@@ -658,6 +664,7 @@ for (const [host, backend] of [
       "scope transport is bounded",
     );
     const scopePacketBytes = await frame("probe.bytes");
+    await eventually(() => frame("probe.state.logText?.includes('440')"), "initial processor print");
     await section("params");
     let g = await geometry();
     await click(g.paramX,g.paramY);
@@ -924,7 +931,12 @@ for (const [host, backend] of [
     );
     await new Promise((resolve) => setTimeout(resolve, 100));
     const paused = await frame("probe.packets");
+    const reads = await page.evaluate("testWaveformReads");
+    const meters = await page.evaluate("testIncoming.filter(m=>m.type==='meterData').length");
     await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(await page.evaluate("testWaveformReads"), reads, "collapsed scope performs no waveform reads");
+    assert.ok(await page.evaluate(`testIncoming.filter(m=>m.type==='meterData').length>${meters}`), "compact meters continue while the scope is collapsed");
+    assert.ok(await page.evaluate("testIncoming.findLast(m=>m.type==='meterData').peaks.length===testIncoming.findLast(m=>m.type==='meterData').channels"));
     assert.equal(
       await frame("probe.packets"),
       paused,
@@ -1014,6 +1026,16 @@ for (const [host, backend] of [
       resolve(artifacts, `${host}-${backend}.json`),
       JSON.stringify(report, null, 2) + "\n",
     );
+    if (backend === "webgl") {
+      for (const [width,height] of [[390,844],[844,390]]) {
+        await page.call("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:true});
+        await page.evaluate("document.querySelector('[data-run-view]').scrollIntoView({block:'start'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+        const shot=await page.call("Page.captureScreenshot",{format:"png"});
+        await writeFile(resolve(artifacts,`${host}-mobile-${width}x${height}.png`),Buffer.from(shot.data,"base64"));
+        assert.equal(await frame("document.getElementById('status').hidden"),true);
+      }
+    }
+
   });
 }
 
@@ -1095,6 +1117,7 @@ test(
 
     // Focus Stop without activating it, then suspend audio while it retains focus.
     await frame(`probe.ui.input(JSON.stringify({type:"focusLost"}));document.querySelector("canvas").focus()`);
+    await key("Tab", "Tab"); // Scope precedes transport in the audio group.
     await key("Tab", "Tab");
     await page.evaluate("testAudioContexts.at(-1).suspend()");
     const beforeKeyboardStop = await page.evaluate("testResumeCalls");

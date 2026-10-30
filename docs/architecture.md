@@ -445,10 +445,13 @@ capture to channel-major min/max buckets at two physical pixels per bucket,
 capped at 512 columns. Signed 16-bit extrema preserve peaks without sending
 invisible sample detail. The playback ring produces this envelope directly;
 `getScopeData { columns, maxFrames }` returns its OSQ1 packet in a base64 JSON
-field. Playback capture defaults to off: viewers subscribe with
-`setScopeCaptureEnabled { value: true }` and disable it while hidden or collapsed.
-Disconnect also disables capture. Disabled producers skip the ring lock and copy;
-enabled ring writes and raw reads copy at most two contiguous spans. The standalone
+field. Viewers select `setScopeCaptureMode { value: "off" | "meter" | "waveform" }`.
+Meter-only capture accumulates per-channel block peaks in preallocated atomics and returns
+only `{ channels, peaks }` at 20 Hz, without locking or writing the waveform ring.
+All supported outputs (up to 64) retain individual peaks; the header combines them into
+one maximum-peak meter with a channel count only when individual meters do not fit.
+Waveform mode adds bounded history at 30 Hz. Hidden
+views and disconnects disable capture. Ring writes and raw reads copy at most two contiguous spans. The standalone
 controller and Wasm canvas share the codec. Plugin floats
 cross the native interface directly and use the same reducer before upload.
 Identical envelopes retain their revision and skip uploads and redraws.
@@ -462,19 +465,26 @@ current request; visibility, resolution, transport, and session changes invalida
 older requests without allowing late replies to release newer ones.
 
 Both browser editors embed the same Wasm canvas through a same-origin iframe
-bridge. `browser-scope.js` reads per-channel analysers at 30 Hz and
-reduces directly into reusable OSQ1 bytes; no interleaved JavaScript array,
-base64, or JSON sample payload is created. Capture stops for hidden pages and
-collapsed scopes. Browser files cross the bridge as `File` objects. The host
+bridge. A small AudioWorklet publishes meter peaks at 20 Hz.
+`browser-scope.js` connects per-channel analysers only while a waveform is visible,
+reads them at 30 Hz, and reduces directly into reusable OSQ1 bytes; no interleaved
+JavaScript array, base64, or JSON sample payload is created. Hidden pages disable
+metering and disconnect the waveform analysers. Browser files cross the bridge as `File` objects. The host
 persists presentation and schema-checked event values in local storage and
 coalesces bounded print-log publications into animation frames. An explicit
 readiness request/response handles either iframe load ordering.
 
 `onda_gpu` supplies the standalone window/event loop and `RunController` adapter.
 The Wasm canvas and optional `include/onda_ui.h` interface let VS Code and JUCE
-use the same UI without owning another event loop. The shared screen presents one scrolling document of collapsible scope, log, buffers,
-typed events, input controls and parameters, a docked MIDI keyboard, and header
-settings. Empty sections are hidden. Control banks and event panels cache structural layout
+use the same UI without owning another event loop. The single-row header groups
+compact meters with Play/Stop and folds utility actions into an overflow menu at
+narrow widths. Its meter button opens an internal scope overlay; the pin icon moves
+that scope into the scrolling document above controls. Unpinning closes it.
+`scopePinned` uses the same
+saved presentation as Sliders/Knobs (webview/local storage or plugin state); overlay
+visibility is transient. Meter updates use a separate small GPU buffer and retain
+layout and shaped text. The document contains collapsible log, buffers, typed events,
+input controls and parameters, with a docked MIDI keyboard. Empty sections are hidden. Control banks and event panels cache structural layout
 and share offscreen focus stops; scene rebuilds visit only visible rows. Control-bank caches
 refresh when schemas, width, layouts, or folds change. Sections cull invisible controls, clip text
 and geometry, and retain their scene across scope frames. Theme colors, vector

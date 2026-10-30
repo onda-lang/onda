@@ -2,16 +2,17 @@ use crate::{
     icons::Icon,
     model::{FileDropTarget, RunUi},
     scene::{Palette, Rect, Scene, Target, TextStyle},
-    theme::{blend, CONTROL_RADIUS, SECTION_RADIUS},
+    theme::{blend, CONTROL_RADIUS},
 };
 use serde_json::json;
 
-fn icon_button(
+pub(super) fn icon_button(
     ui: &RunUi,
     s: &mut Scene,
     p: Palette,
     rect: [f32; 4],
-    (icon, description): (Icon, &'static str),
+    icon: Icon,
+    description: &str,
     target: Target,
     active: bool,
 ) {
@@ -26,83 +27,32 @@ fn icon_button(
     s.tooltip(rect, description.into());
     s.hit(rect, target);
 }
-pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32 {
-    let [x, y, w, _] = rect;
+fn actions(ui: &RunUi) -> Vec<(Icon, &'static str, Target)> {
     let mut actions = Vec::new();
     if ui.state["supportsDeviceSelection"] == true
         || ui.state["supportsMidiInputSelection"] == true
         || ui.state["supportsRunSettings"] == true
     {
-        actions.push(((Icon::Settings, "Settings"), Target::Devices));
+        actions.push((Icon::Settings, "Settings", Target::Devices));
     }
     if ui.state["supportsProjectExport"] == true && ui.state["canExportProject"] == true {
         actions.push((
-            (Icon::Save, "Save as Project"),
+            Icon::Save,
+            "Save as Project",
             Target::Command(json!({"type":"saveProjectAs"})),
         ));
     }
     if ui.state["supportsSourceSelection"] == true {
         actions.push((
-            (Icon::Unload, "Unload"),
+            Icon::Unload,
+            "Unload",
             Target::Command(json!({"type":"unload"})),
         ));
     }
-    let transport = ui.state["supportsTransport"] != false;
-    let action_width = (actions.len() as f32 * 40.0 - 8.0).max(0.0);
-    let controls_width = if transport { 72.0 } else { 0.0 }
-        + action_width
-        + if transport && !actions.is_empty() {
-            25.0
-        } else {
-            0.0
-        };
-    let compact = w - 100.0 - controls_width < 120.0;
-    let height = if compact { 118.0 } else { 72.0 };
-    s.panel([x, y, w, height], p.panel, p.border, SECTION_RADIUS);
-    let separator_x = x + 62.0;
-    let brand_left = x + 1.0;
-    let brand_width = separator_x - brand_left;
-    let brand_center = brand_left + brand_width * 0.5;
-    let brand_top = y + 12.0;
-    s.logo([brand_center - 16.0, brand_top, 32.0, 32.0], p.accent);
-    s.styled(
-        ui.state["ondaVersion"]
-            .as_str()
-            .unwrap_or(env!("CARGO_PKG_VERSION")),
-        [brand_left, brand_top + 36.0, brand_width, 14.0],
-        10.0,
-        p.muted,
-        TextStyle {
-            mono: true,
-            centered: true,
-            ..Default::default()
-        },
-    );
-    if !compact {
-        s.shape([separator_x, y + 20.0, 1.0, 32.0], p.border, 0.0);
-    }
-    let text_width = if compact {
-        w - 28.0 - if transport { 84.0 } else { 0.0 }
-    } else {
-        w - 100.0 - controls_width
-    }
-    .max(1.0);
+    actions
+}
+fn source(ui: &RunUi) -> (&str, String) {
     let path = ui.state["path"].as_str().unwrap_or("Onda");
-    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    let source_x = x + if compact { 14.0 } else { 80.0 };
-    let source_y = y + if compact { 64.0 } else { 13.0 };
-    s.tooltip([source_x, source_y, text_width, 24.0], path.into());
-    s.styled(
-        name,
-        [source_x, source_y, text_width, 24.0],
-        15.0,
-        p.ink,
-        TextStyle {
-            mono: true,
-            bold: true,
-            ..Default::default()
-        },
-    );
     let status = ui.state["status"]
         .as_str()
         .unwrap_or(if ui.state["running"] == true {
@@ -110,13 +60,10 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         } else {
             "Stopped"
         });
-    // Hosts own the status line; native states supply rate/block metadata separately.
-    let details = if status.contains('·') || status.contains('—') {
-        status.to_owned()
-    } else {
-        let mut details = status.to_owned();
+    let mut details = status.to_owned();
+    if !status.contains('·') && !status.contains('—') {
         if let Some(rate) = ui.state["sampleRateHz"].as_f64() {
-            details.push_str(&format!(" — {} kHz", rate / 1000.0));
+            details.push_str(&format!(" · {} kHz", rate / 1000.0));
         }
         if let Some(block) = ui.state["blockSamples"].as_u64() {
             details.push_str(&format!(" · {block} samples"));
@@ -124,84 +71,294 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         if ui.state["fastMath"] == true {
             details.push_str(" · Fast Math");
         }
-        details
+    }
+    (path, details)
+}
+pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32 {
+    let [x, y, w, _] = rect;
+    let dense = w < 452.0;
+    let minimal = w < 182.0;
+    let height = if minimal { 44.0 } else { 56.0 };
+    s.header_rect = [x, y, w, height];
+    s.panel(s.header_rect, p.panel, p.border, 10.0);
+    let actions = actions(ui);
+    let overflow = dense && (!actions.is_empty() || minimal);
+    let scope = ui.meter_enabled();
+    let channels = ui.output_channels();
+    let transport = ui.state["supportsTransport"] != false;
+    let transport_width = if dense { 28.0 } else { 56.0 };
+    let utility_width = if overflow {
+        28.0
+    } else {
+        (actions.len() as f32 * 32.0 - 4.0).max(0.0)
     };
-    s.tooltip(
-        [source_x, source_y + 26.0, text_width, 20.0],
-        details.clone(),
-    );
-    s.styled(
-        details,
-        [source_x, source_y + 26.0, text_width, 20.0],
-        12.0,
-        p.muted,
-        TextStyle::default(),
-    );
-    let mut bx = x + w - if compact { 72.0 } else { controls_width } - 12.0;
-    let by = y + if compact { 66.0 } else { 14.0 };
-    if transport {
-        let running = ui.state["running"] == true;
-        let (label, icon, color) = if running {
-            ("Stop", Icon::Stop, p.danger)
+    let gap = if (scope || transport) && utility_width > 0.0 {
+        if dense {
+            6.0
         } else {
-            ("Start", Icon::Play, p.success)
-        };
-        let button = [bx, by, 72.0, 44.0];
-        let hovered = s.hovered(ui, button);
-        let fill = if running {
-            blend(color, p.panel, if hovered { 0.2 } else { 0.1 })
-        } else if hovered {
-            blend(color, p.ink_color(), 0.85)
+            12.0
+        }
+    } else {
+        0.0
+    };
+    let padding = if minimal { 4.0 } else { 10.0 };
+    let brand = w >= 252.0;
+    // Preserve room for the source label before expanding the per-channel meters.
+    let source_width = if minimal {
+        padding
+    } else if brand {
+        132.0
+    } else {
+        90.0
+    };
+    let audio_gap = if scope && transport { 4.0 } else { 0.0 };
+    let available = w
+        - padding
+        - source_width
+        - 8.0
+        - gap
+        - utility_width
+        - if transport { transport_width } else { 0.0 }
+        - audio_gap;
+    let full_meter_width = ((if minimal { 12.0 } else { 26.0 }) + channels as f32 * 6.0).max(32.0);
+    let combined = channels > 1 && full_meter_width > available;
+    let meters = if combined { 1 } else { channels };
+    let meter_width = if combined {
+        if minimal {
+            32.0
         } else {
-            color
-        };
-        s.panel(
-            button,
-            fill,
-            if hovered || ui.focused(&Target::Transport) || !running {
-                color
-            } else {
-                blend(color, p.panel, 0.6)
-            },
-            CONTROL_RADIUS,
-        );
-        let ink = if running { color } else { p.background };
-        let icon_width = if running { 12.0 } else { 10.0 };
-        let label_width = crate::fonts::heading_width(label, 12.0);
-        let left = bx + (72.0 - icon_width - 6.0 - label_width) * 0.5;
-        s.icon(
-            icon,
-            [left + if running { 6.0 } else { 4.0 }, by + 22.0],
-            ink,
-        );
-        let text = std::array::from_fn(|i| (ink[i] * 255.0).round() as u8);
+            46.0
+        }
+    } else {
+        full_meter_width
+    };
+    let audio_width = if scope { meter_width } else { 0.0 }
+        + if transport { transport_width } else { 0.0 }
+        + audio_gap;
+    let controls_width = audio_width + gap + utility_width;
+    let mut bx = x + w - padding - controls_width;
+    let by = y + (height - 28.0) * 0.5;
+    if brand {
+        let brand_top = y + (height - 38.0) * 0.5;
+        s.shape([x + 46.0, y + 10.0, 1.0, height - 20.0], p.border, 0.0);
+        s.logo([x + 14.0, brand_top, 24.0, 24.0], p.accent);
         s.styled(
-            label,
-            [left + icon_width + 6.0, by, label_width + 2.0, 44.0],
-            12.0,
-            text,
+            ui.state["ondaVersion"]
+                .as_str()
+                .unwrap_or(env!("CARGO_PKG_VERSION")),
+            [x + 6.0, brand_top + 26.0, 40.0, 12.0],
+            8.0,
+            p.muted,
             TextStyle {
+                mono: true,
+                centered: true,
+                ..Default::default()
+            },
+        );
+    }
+    let (path, details) = source(ui);
+    let sx = x + if brand { 52.0 } else { 10.0 };
+    let sw = (bx - sx - 8.0).max(0.0);
+    if !minimal && sw > 0.0 {
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        s.styled(
+            name,
+            [sx, y + 9.0, sw, 21.0],
+            13.0,
+            p.ink,
+            TextStyle {
+                mono: true,
                 bold: true,
                 ..Default::default()
             },
         );
-        s.hit(button, Target::Transport);
-        bx += 72.0;
+        s.styled(
+            &details,
+            [sx, y + 30.0, sw, 16.0],
+            10.0,
+            p.muted,
+            TextStyle::default(),
+        );
+        s.text_tooltip([sx, y + 9.0, sw, 21.0], path.into());
+        s.text_tooltip([sx, y + 30.0, sw, 16.0], details);
     }
-    if !actions.is_empty() {
-        if compact {
-            bx = x + w - action_width - 12.0;
-        } else if transport {
-            s.shape([bx + 12.0, by + 6.0, 1.0, 32.0], p.border, 0.0);
-            bx += 25.0;
+    if scope {
+        let r = [bx, by, meter_width, 28.0];
+        s.panel(
+            r,
+            if ui.scope_enabled() {
+                p.accent_soft
+            } else {
+                p.field
+            },
+            if ui.scope_enabled() {
+                p.accent
+            } else {
+                p.border
+            },
+            5.0,
+        );
+        let mut mx = bx + 6.0;
+        if !minimal {
+            s.icon(Icon::Scope, [mx + 6.0, by + 14.0], p.ink_color());
+            mx += 17.0;
+        } else {
+            mx = bx
+                + if combined {
+                    6.0
+                } else {
+                    (meter_width - meters as f32 * 6.0 + 3.0) * 0.5
+                };
         }
-        for (action, target) in actions {
-            let active = matches!(target, Target::Devices) && ui.interaction.settings_open();
-            icon_button(ui, s, p, [bx, y + 20.0, 32.0, 32.0], action, target, active);
-            bx += 40.0;
+        s.meter_clip = s.clip;
+        for _ in 0..meters {
+            let r = [mx, by + 6.0, 3.0, 16.0];
+            s.shape(r, p.meter_track, 1.0);
+            s.meter_rects.push(r);
+            mx += 6.0;
+        }
+        if combined {
+            s.styled(
+                channels.to_string(),
+                [mx, by, 14.0, 28.0],
+                8.0,
+                p.muted,
+                TextStyle {
+                    mono: true,
+                    ..Default::default()
+                },
+            );
+        }
+        s.tooltip(
+            r,
+            if combined {
+                format!("Scope · peak across all {channels} channels")
+            } else {
+                "Scope".into()
+            },
+        );
+        s.hit(r, Target::Scope);
+        bx += meter_width + if transport { 4.0 } else { 0.0 };
+    }
+    if transport {
+        let running = ui.state["running"] == true;
+        let color = if running { p.danger } else { p.success };
+        let button = [bx, by, transport_width, 28.0];
+        s.panel(
+            button,
+            if running {
+                blend(color, p.panel, 0.1)
+            } else {
+                color
+            },
+            color,
+            5.0,
+        );
+        let ink = if running { color } else { p.background };
+        s.icon(
+            if running { Icon::Stop } else { Icon::Play },
+            [bx + 14.0, by + 14.0],
+            ink,
+        );
+        if !dense {
+            s.styled(
+                if running { "Stop" } else { "Play" },
+                [bx + 26.0, by, 28.0, 28.0],
+                11.0,
+                std::array::from_fn(|i| (ink[i] * 255.0).round() as u8),
+                TextStyle {
+                    bold: true,
+                    ..Default::default()
+                },
+            );
+        }
+        s.tooltip(button, if running { "Stop" } else { "Play" }.into());
+        s.hit(button, Target::Transport);
+        bx += transport_width;
+    }
+    if gap > 0.0 && !overflow {
+        // Center against the visible icon, including its 6px button inset.
+        s.shape(
+            [bx + gap * 0.5 + 3.0, y + 10.0, 1.0, height - 20.0],
+            p.border,
+            0.0,
+        );
+    }
+    bx += gap;
+    if overflow {
+        icon_button(
+            ui,
+            s,
+            p,
+            [bx, by, 28.0, 28.0],
+            Icon::More,
+            "Source and actions",
+            Target::HeaderMenu,
+            ui.interaction.toolbar_menu == Some(crate::interaction::ToolbarMenu::Header),
+        );
+    } else {
+        for (icon, label, target) in actions {
+            let active = target == Target::Devices && ui.interaction.settings_open();
+            icon_button(ui, s, p, [bx, by, 28.0, 28.0], icon, label, target, active);
+            bx += 32.0;
         }
     }
     height
+}
+pub(super) fn menu(ui: &RunUi, s: &mut Scene, p: Palette) {
+    match ui.interaction.toolbar_menu {
+        None => return,
+        Some(crate::interaction::ToolbarMenu::Bank(input)) => {
+            super::bank::menu(ui, s, p, input);
+            return;
+        }
+        Some(crate::interaction::ToolbarMenu::Header) => {}
+    }
+    let [hx, hy, hw, hh] = s.header_rect;
+    let w = hw.min(240.0);
+    let top = (hy + hh + 6.0).clamp(4.0, (ui.size[1] - 60.0).max(4.0));
+    let h = (50.0 + actions(ui).len() as f32 * 30.0).min((ui.size[1] - top - 8.0).max(40.0));
+    let r = [hx + hw - w, top, w, h];
+    s.toolbar_menu_rect = r;
+    s.toolbar_scroll_max = (50.0 + actions(ui).len() as f32 * 30.0 - h).max(0.0);
+    s.focus_layer = crate::interaction::FocusLayer::Toolbar;
+    s.panel(r, p.panel, p.border, 7.0);
+    s.hit(r, Target::Overlay);
+    let clip = s.clip;
+    s.clip = Rect(r).intersect(Rect(clip)).0;
+    let top = top - ui.interaction.toolbar_scroll.min(s.toolbar_scroll_max);
+    let (path, details) = source(ui);
+    s.styled(
+        path.rsplit(['/', '\\']).next().unwrap_or(path),
+        [r[0] + 8.0, top + 5.0, w - 16.0, 22.0],
+        11.0,
+        p.ink,
+        TextStyle {
+            mono: true,
+            ..Default::default()
+        },
+    );
+    s.text_tooltip([r[0], top, w, 28.0], path.into());
+    s.styled(
+        details,
+        [r[0] + 8.0, top + 27.0, w - 16.0, 16.0],
+        9.0,
+        p.muted,
+        TextStyle::default(),
+    );
+    for (i, (icon, label, target)) in actions(ui).into_iter().enumerate() {
+        let button = [r[0] + 4.0, top + 46.0 + i as f32 * 30.0, w - 8.0, 28.0];
+        s.button(ui, "", button, target, p);
+        s.icon(icon, [button[0] + 14.0, button[1] + 14.0], p.ink_color());
+        s.styled(
+            label,
+            [button[0] + 28.0, button[1], (w - 40.0).max(1.0), 28.0],
+            11.0,
+            p.ink,
+            TextStyle::default(),
+        );
+    }
+    s.clip = clip;
 }
 
 fn picker_settings_height(ui: &RunUi, width: f32) -> f32 {
@@ -377,7 +534,7 @@ mod tests {
                 }}));
                 ui.prepare_scene();
                 let header = ui.scene.shapes[0].rect;
-                assert_eq!(header[3], 72.0);
+                assert_eq!(header[3], 56.0);
                 let name = ui
                     .scene
                     .labels

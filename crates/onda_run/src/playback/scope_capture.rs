@@ -6,12 +6,14 @@ use std::sync::{
 
 pub(super) struct ScopeCapture {
     enabled: AtomicBool,
+    meter: onda_scope::MeterCapture,
     ring: Mutex<ScopeRing>,
 }
 impl Default for ScopeCapture {
     fn default() -> Self {
         Self {
             enabled: AtomicBool::new(false),
+            meter: Default::default(),
             ring: Mutex::new(ScopeRing::new(0, 0)),
         }
     }
@@ -21,6 +23,7 @@ impl ScopeCapture {
         Subscription(self)
     }
     pub(super) fn reconfigure(&self, frames: usize, channels: usize) {
+        self.meter.configure(channels);
         if let Ok(mut ring) = self.ring.lock() {
             *ring = ScopeRing::new(frames, channels);
         }
@@ -35,7 +38,22 @@ impl ScopeCapture {
         }
         Ok(())
     }
+    pub(super) fn set_mode(&self, mode: &str) -> Result<(), String> {
+        if !matches!(mode, "off" | "meter" | "waveform") {
+            return Err("invalid scope capture mode".into());
+        }
+        self.set_enabled(mode == "waveform")?;
+        self.meter.set_enabled(mode != "off");
+        Ok(())
+    }
+    pub(super) fn levels(&self) -> onda_scope::Levels {
+        self.meter.take()
+    }
+    pub(super) fn waveform_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
     pub(super) fn push_interleaved(&self, samples: &[f32]) {
+        self.meter.push_interleaved(samples);
         if self.enabled.load(Ordering::Acquire) {
             if let Ok(mut ring) = self.ring.try_lock() {
                 // The subscription may have changed while acquiring the ring.
@@ -66,7 +84,7 @@ impl ScopeCapture {
 struct Subscription<'a>(&'a ScopeCapture);
 impl Drop for Subscription<'_> {
     fn drop(&mut self) {
-        let _ = self.0.set_enabled(false);
+        let _ = self.0.set_mode("off");
     }
 }
 
@@ -184,6 +202,27 @@ mod tests {
         capture.set_enabled(true).unwrap();
         assert!(capture.snapshot(4).unwrap().samples.is_empty());
     }
+    #[test]
+    fn meter_mode_skips_waveform_history_and_ring_lock() {
+        let capture = ScopeCapture::default();
+        capture.reconfigure(8, 8);
+        capture.set_mode("meter").unwrap();
+        {
+            let _ring = capture.ring.lock().unwrap();
+            capture.push_interleaved(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.9, 0.9]);
+            assert_eq!(
+                capture.levels().values(),
+                &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.9, 0.9]
+            );
+        }
+        assert!(capture.snapshot(8).unwrap().samples.is_empty());
+        capture.set_mode("waveform").unwrap();
+        capture.push_interleaved(&[0.5; 8]);
+        assert_eq!(capture.snapshot(8).unwrap().samples, [0.5; 8]);
+        capture.set_mode("meter").unwrap();
+        assert!(capture.snapshot(8).unwrap().samples.is_empty());
+    }
+
     #[test]
     fn dropping_a_client_subscription_disables_and_clears_capture() {
         let capture = ScopeCapture::default();

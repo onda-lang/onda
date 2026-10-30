@@ -1,10 +1,12 @@
-// Capture only the display's min/max budget; no raw float arrays cross the iframe.
+import { registerMeter } from "./meter-worklet.js";
+
 const CAPTURE_INTERVAL_MS = 1000 / 30;
 
 export class BrowserScopeSource {
   constructor(runView) {
     this.runView = runView;
-    this.configuration = { columns: 512, visible: true };
+    this.configuration = { columns: 512, visible: false, meter: false };
+    this.generation = 0;
     this.timer = 0;
     this.analysers = [];
     this.samples = [];
@@ -13,21 +15,43 @@ export class BrowserScopeSource {
     document.addEventListener("visibilitychange", this.onVisibility);
   }
 
-  configure({ columns, visible }) {
+  configure({ columns, visible, meter }) {
     if (!Number.isInteger(columns) || columns < 1 || columns > 512) return;
-    this.configuration = { columns, visible: visible !== false };
+    this.configuration = { columns, visible: visible === true, meter: meter === true };
     this.schedule();
   }
 
-  start(context, node, channels) {
+  async start(context, node, channels) {
     this.stop();
     if (!channels) return;
-    this.splitter = context.createChannelSplitter(channels);
-    this.silentGain = context.createGain();
+    const generation = this.generation;
+    await registerMeter(context);
+    if (generation !== this.generation) return;
+    this.context = context;
+    this.source = node;
+    this.channels = channels;
+    this.meter = new AudioWorkletNode(context, "onda-output-meter", {
+      numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
+      channelCount: channels, channelCountMode: "explicit", channelInterpretation: "discrete",
+    });
+    this.meter.port.onmessage = ({ data }) => {
+      if (generation === this.generation && !document.hidden &&
+          (this.configuration.meter || this.configuration.visible))
+        this.runView.postMeter(data.channels, data.peaks);
+    };
+    // The worklet emits silence; connecting it keeps the audio graph pulling input.
+    node.connect(this.meter);
+    this.meter.connect(context.destination);
+    this.schedule();
+  }
+
+  connectWaveform() {
+    this.splitter = this.context.createChannelSplitter(this.channels);
+    this.silentGain = this.context.createGain();
     this.silentGain.gain.value = 0;
-    node.connect(this.splitter);
-    for (let channel = 0; channel < channels; channel++) {
-      const analyser = context.createAnalyser();
+    this.source.connect(this.splitter);
+    for (let channel = 0; channel < this.channels; channel++) {
+      const analyser = this.context.createAnalyser();
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0;
       this.splitter.connect(analyser, channel, 0);
@@ -35,45 +59,13 @@ export class BrowserScopeSource {
       this.analysers.push(analyser);
       this.samples.push(new Float32Array(analyser.fftSize));
     }
-    this.silentGain.connect(context.destination);
-    this.schedule();
+    this.silentGain.connect(this.context.destination);
   }
 
-  schedule() {
-    if (
-      !this.analysers.length ||
-      !this.configuration.visible ||
-      document.hidden
-    ) {
-      if (this.timer) clearInterval(this.timer);
-      this.timer = 0;
-      return;
-    }
-    if (!this.timer)
-      this.timer = setInterval(() => this.capture(), CAPTURE_INTERVAL_MS);
-  }
-
-  capture() {
-    if (
-      !this.analysers.length ||
-      !this.configuration.visible ||
-      document.hidden
-    )
-      return;
-    for (let i = 0; i < this.analysers.length; i++) {
-      this.analysers[i].getFloatTimeDomainData(this.samples[i]);
-    }
-    this.packet = scopePacket(
-      this.samples,
-      this.configuration.columns,
-      this.packet,
-    );
-    this.runView.postScopePacket(this.packet);
-  }
-
-  stop() {
+  disconnectWaveform() {
     if (this.timer) clearInterval(this.timer);
     this.timer = 0;
+    if (this.splitter) this.source.disconnect(this.splitter);
     this.splitter?.disconnect();
     this.silentGain?.disconnect();
     for (const analyser of this.analysers) analyser.disconnect();
@@ -81,7 +73,47 @@ export class BrowserScopeSource {
     this.silentGain = null;
     this.analysers = [];
     this.samples = [];
+  }
+
+  schedule() {
+    const waveform = this.configuration.visible && !document.hidden;
+    const metering = (waveform || this.configuration.meter) && !document.hidden;
+    if (this.meter && this.metering !== metering) {
+      this.meter.port.postMessage(metering);
+      this.metering = metering;
+    }
+    if (!waveform) this.disconnectWaveform();
+    else {
+      if (this.context && !this.analysers.length) this.connectWaveform();
+      if (this.analysers.length && !this.timer)
+        this.timer = setInterval(() => this.capture(), CAPTURE_INTERVAL_MS);
+    }
+  }
+
+  capture() {
+    if (!this.analysers.length || !this.configuration.visible || document.hidden) return;
+    for (let i = 0; i < this.analysers.length; i++)
+      this.analysers[i].getFloatTimeDomainData(this.samples[i]);
+    this.packet = scopePacket(this.samples, this.configuration.columns, this.packet);
+    this.runView.postScopePacket(this.packet);
+  }
+
+  stop() {
+    ++this.generation;
+    this.disconnectWaveform();
+    if (this.meter) {
+      this.source.disconnect(this.meter);
+      this.meter.disconnect();
+      this.meter.port.postMessage("stop");
+      this.meter.port.onmessage = null;
+      this.meter.port.close();
+    }
+    this.meter = null;
+    this.metering = undefined;
+    this.source = null;
+    this.context = null;
     this.runView.postScope(0, []);
+    this.runView.postMeter(0, []);
   }
 
   dispose() {

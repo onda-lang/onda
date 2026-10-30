@@ -138,14 +138,21 @@ impl App {
     }
     fn publish_scope(&mut self) {
         if let Some(controller) = &self.controller {
-            if let Some(envelope) = controller.scope_envelope() {
-                self.ui.set_scope_envelope(envelope);
-            } else {
-                let state = controller.state();
-                self.ui
-                    .set_scope_interleaved(state.scope_channels, &state.scope_samples);
+            let levels = controller.meter_levels();
+            self.ui.set_meter(levels.channels, levels.values());
+            if !controller.state().running {
+                self.ui.set_scope_interleaved(0, &[]);
+            } else if self.ui.scope_enabled() {
+                if let Some(envelope) = controller.scope_envelope() {
+                    self.ui.set_scope_envelope(envelope);
+                } else {
+                    let state = controller.state();
+                    self.ui
+                        .set_scope_interleaved(state.scope_channels, &state.scope_samples);
+                }
             }
         } else {
+            self.ui.set_meter(0, &[]);
             self.ui.set_scope_interleaved(0, &[]);
         }
     }
@@ -185,6 +192,7 @@ impl App {
                 controller.set_scope_poll_interval(SCOPE_INTERVAL);
                 controller.set_scope_columns(self.ui.scope_columns());
                 controller.set_scope_visible(self.surface_visible() && self.ui.scope_enabled());
+                controller.set_meter_visible(self.surface_visible() && self.ui.meter_enabled());
                 self.controller = Some(controller);
                 self.path = Some(path);
                 // A new controller must restore even when its source path is unchanged.
@@ -242,8 +250,11 @@ impl App {
     }
     fn sync_scope_visibility(&mut self) {
         let visible = self.surface_visible() && self.ui.scope_enabled();
+        let meter = self.surface_visible() && self.ui.meter_enabled();
         if let Some(c) = &mut self.controller {
             c.set_scope_visible(visible);
+            c.set_meter_visible(meter);
+            c.set_scope_columns(self.ui.scope_columns());
         }
     }
     fn resize_surface(&mut self, width: u32, height: u32, scale: f32) {

@@ -56,6 +56,9 @@ impl CanvasUi {
     pub fn scope_packet(&mut self, packet: &[u8]) -> Result<(), JsValue> {
         self.ui.set_scope_packet(packet).map_err(JsValue::from_str)
     }
+    pub fn meter_enabled(&self) -> bool {
+        self.ui.meter_enabled()
+    }
     pub fn scope_enabled(&self) -> bool {
         self.ui.scope_enabled()
     }

@@ -378,6 +378,7 @@ fn both_surface_formats_preserve_the_theme_and_use_one_scope_color() {
             for light in [false, true] {
                 let mut ui = RunUi::default();
                 ui.message(json!({"type":"state","state":{"path":"colors.onda","running":true,"themeMode":if light{"light"}else{"dark"}}}));
+                ui.interaction.scope_open = true;
                 ui.set_scope_interleaved(2, &[0.25, 0.25, 0.25, 0.25]);
                 renderer.render(&mut ui, &view, width, height, 1.0).unwrap();
                 let pixels = read_pixels(&renderer, &texture);

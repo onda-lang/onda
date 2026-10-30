@@ -289,6 +289,33 @@ pub unsafe extern "C" fn onda_ui_scope_visible(ui: *const OndaUi) -> i32 {
     unsafe { ui.as_ref() }.is_some_and(|ui| ui.ui.scope_enabled()) as i32
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_meter(
+    ui: *mut OndaUi,
+    channels: u32,
+    peaks: *const f32,
+    count: usize,
+) {
+    guard((), || {
+        let Some(ui) = (unsafe { ui.as_mut() }) else {
+            return;
+        };
+        if count > onda_scope::MAX_CHANNELS || (count > 0 && peaks.is_null()) {
+            return;
+        }
+        let peaks = if count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(peaks, count) }
+        };
+        ui.ui.set_meter(channels as usize, peaks);
+    });
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_meter_visible(ui: *const OndaUi) -> i32 {
+    unsafe { ui.as_ref() }.is_some_and(|ui| ui.ui.meter_enabled()) as i32
+}
+
 /// CSS cursor identifier, with static lifetime, for the host's native pointer.
 #[no_mangle]
 pub unsafe extern "C" fn onda_ui_cursor(ui: *mut OndaUi) -> *const c_char {

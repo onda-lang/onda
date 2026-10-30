@@ -11,6 +11,7 @@ pub(crate) enum FocusLayer {
     Dock,
     Popup,
     Menu,
+    Toolbar,
 }
 
 pub(crate) struct FocusTarget {
@@ -43,7 +44,11 @@ impl Scene {
     pub fn focus_target(&mut self, rect: [f32; 4], target: &Target) {
         if matches!(
             target,
-            Target::Control(_) | Target::Note(_) | Target::Option(_) | Target::Scrollbar
+            Target::Control(_)
+                | Target::Note(_)
+                | Target::Option(_)
+                | Target::Scrollbar
+                | Target::Overlay
         ) {
             return;
         }
@@ -86,7 +91,12 @@ impl RunUi {
             .iter()
             .flat_map(FocusEntry::targets)
             .filter(|(entry, _)| {
-                (entry.layer == FocusLayer::Popup) == self.interaction.devices_open
+                if self.interaction.toolbar_menu.is_some() && self.scene.toolbar_menu_rect[3] > 0.0
+                {
+                    entry.layer == FocusLayer::Toolbar
+                } else {
+                    (entry.layer == FocusLayer::Popup) == self.interaction.devices_open
+                }
             })
             .collect();
         if targets.is_empty() {
@@ -122,6 +132,15 @@ impl RunUi {
                     .popup_scroll
                     .min((top - bounds[1] - 10.0).max(0.0))
                     .max((top + height - bounds[1] - bounds[3] + 10.0).max(0.0));
+            }
+            FocusLayer::Toolbar => {
+                let bounds = self.scene.toolbar_menu_rect;
+                let top = top + self.interaction.toolbar_scroll;
+                self.interaction.toolbar_scroll = self
+                    .interaction
+                    .toolbar_scroll
+                    .min((top - bounds[1] - 4.0).max(0.0))
+                    .max((top + height - bounds[1] - bounds[3] + 4.0).max(0.0));
             }
             FocusLayer::Dock | FocusLayer::Menu => {}
         }

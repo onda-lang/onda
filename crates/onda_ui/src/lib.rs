@@ -41,3 +41,6 @@ mod parity_tests;
 
 #[cfg(test)]
 mod interaction_tests;
+
+#[cfg(test)]
+mod scope_tests;

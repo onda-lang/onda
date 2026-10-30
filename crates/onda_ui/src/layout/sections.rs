@@ -1,6 +1,5 @@
 use crate::{
     controls,
-    editing::{Field, Setting},
     icons::Icon,
     model::RunUi,
     panels,
@@ -22,7 +21,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         Section::Params,
     ] {
         let present = match section {
-            Section::Scope => ui.state["supportsScope"] != false,
+            Section::Scope => ui.presentation.scope_pinned && ui.state["supportsScope"] != false,
             Section::Log => ui.log_present(),
             Section::Buffers => ui.state["buffers"]
                 .as_array()
@@ -46,17 +45,25 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             _ => None,
         };
         let input = section == Section::InputControls;
-        let tools_width = if bank {
-            bank_tools_width(smoothing_supported(ui, input))
+        let bank_header = bank.then(|| super::bank::Header::new(ui, input, w));
+        let reset = reset.filter(|_| bank_header.as_ref().is_none_or(|h| h.reset_inline));
+        let title = bank_header.as_ref().map_or(section.label(), |h| h.title);
+        let font_size = bank_header.as_ref().map_or(14.0, |h| h.title_size);
+        let tools_width = if let Some(header) = &bank_header {
+            header.tools_width
         } else if section == Section::Log {
             192.0
         } else {
             0.0
         };
-        let title_inset = if reset.is_some() { 75.0 } else { 43.0 };
-        let title_size = crate::fonts::heading_width(section.label(), 14.0) + 2.0;
-        let wrap_tools = tools_width > 0.0 && w < title_size + title_inset + tools_width;
-        let split_tools = bank && wrap_tools && tools_width > w - 2.0 * SECTION_INSET;
+        let title_x = if bank && w < 128.0 { 20.0 } else { 26.0 };
+        let title_inset = if reset.is_some() {
+            75.0
+        } else {
+            title_x + if bank && w < 128.0 { 11.0 } else { 17.0 }
+        };
+        let title_size = crate::fonts::heading_width(title, font_size) + 2.0;
+        let wrap_tools = !bank && tools_width > 0.0 && w < title_size + title_inset + tools_width;
         let tools_y = y + if wrap_tools {
             SECTION_HEADER_HEIGHT
         } else {
@@ -64,11 +71,6 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         };
         let header_height = SECTION_HEADER_HEIGHT
             + if wrap_tools {
-                SECTION_HEADER_HEIGHT
-            } else {
-                0.0
-            }
-            + if split_tools {
                 SECTION_HEADER_HEIGHT
             } else {
                 0.0
@@ -81,7 +83,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         };
         s.icon(
             Icon::Chevron(open),
-            [x + 14.0, y + 20.0],
+            [x + title_x - 12.0, y + 20.0],
             if ui.focused(&Target::Section(section)) {
                 p.accent
             } else {
@@ -89,25 +91,25 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             },
         );
         s.styled(
-            section.label(),
-            [x + 26.0, y + 6.0, title_width, 28.0],
-            14.0,
+            title,
+            [x + title_x, y + 6.0, title_width, 28.0],
+            font_size,
             p.ink,
             TextStyle {
                 bold: true,
                 ..Default::default()
             },
         );
-        s.tooltip(
-            [x + 26.0, y + 6.0, title_width, 28.0],
+        s.text_tooltip(
+            [x + title_x, y + 6.0, title_width, 28.0],
             section.label().into(),
         );
         s.hit(
             [
                 x + 6.0,
                 y + 4.0,
-                if reset.is_some() {
-                    title_width + 20.0
+                if reset.is_some() || bank {
+                    title_width + title_x - 6.0
                 } else {
                     w - 12.0
                 },
@@ -125,14 +127,11 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             );
             s.tooltip(button, tooltip.into());
         }
-        if bank {
-            bank_toolbar(
-                ui,
-                s,
-                p,
-                [x, tools_y, w, header_height - (tools_y - y)],
-                section == Section::InputControls,
-            );
+        if section == Section::Scope {
+            super::scope::pin(ui, s, p, [x + w - 37.0, y + 6.0, 28.0, 28.0]);
+        }
+        if let Some(header) = &bank_header {
+            header.build(ui, s, p, [x, y, w, SECTION_HEADER_HEIGHT], input);
         }
         if section == Section::Log {
             s.button(
@@ -171,7 +170,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             0.0
         } else {
             match section {
-                Section::Scope => scope(ui, s, p, body),
+                Section::Scope => super::scope::plot(ui, s, p, [body[0], body[1], body[2], 194.0]),
                 Section::Log => panels::log(ui, s, p, body),
                 Section::Buffers => panels::buffers(ui, s, p, body),
                 Section::Events => panels::events(ui, s, p, body),
@@ -197,120 +196,19 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
     }
     y
 }
-fn scope(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32 {
-    let height = if ui.size[1] <= 720.0 { 96.0 } else { 160.0 };
-    let plot = [rect[0], rect[1], rect[2], height];
-    s.shape(plot, p.scope, 9.0);
-    s.scope_rect = plot;
-    s.scope_clip = crate::scene::Rect(plot)
-        .intersect(crate::scene::Rect(s.clip))
-        .0;
-    let channels = ui
-        .scope
-        .channels()
-        .max(ui.state["outputChannels"].as_u64().unwrap_or(1) as usize)
-        .clamp(1, 64);
-    let grid = crate::theme::blend(p.accent, p.scope, 0.14);
-    for channel in 0..channels {
-        let y = plot[1] + height / channels as f32 * (channel as f32 + 0.5);
-        s.shape([plot[0], y, plot[2], 1.0], grid, 0.0);
-    }
-    height
-}
-const SMOOTHING_WIDTH: f32 = 112.0;
-fn smoothing_supported(ui: &RunUi, input: bool) -> bool {
-    ui.state[if input {
-        "supportsInputControlSmoothing"
-    } else {
-        "supportsParamSmoothing"
-    }] == true
-}
-fn bank_tools_width(smoothing: bool) -> f32 {
-    if smoothing {
-        SMOOTHING_WIDTH + 6.0 + 110.0
-    } else {
-        110.0
-    }
-}
-fn bank_toolbar(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input: bool) {
-    let [x, y, w, h] = rect;
-    let mut by = y + 7.0;
-    let split = h > SECTION_HEADER_HEIGHT;
-    let supported = smoothing_supported(ui, input);
-    let setting = if input {
-        Setting::InputSmoothing
-    } else {
-        Setting::ParamSmoothing
-    };
-    let tools_width = bank_tools_width(supported);
-    let mut bx = x + w - if split { SMOOTHING_WIDTH } else { tools_width } - SECTION_INSET;
-    if supported {
-        s.field(
-            ui,
-            Field::Setting(setting),
-            [bx, by, SMOOTHING_WIDTH, 26.0],
-            format!(
-                "Smooth {:.0} ms",
-                ui.field_value(&Field::Setting(setting))
-                    .as_f64()
-                    .unwrap_or(0.0)
-            ),
-            p,
-        );
-        bx += SMOOTHING_WIDTH + 6.0;
-    }
-    if split {
-        bx = x + w - 110.0 - SECTION_INSET;
-        by += SECTION_HEADER_HEIGHT;
-    }
-    let knobs = ui.bank_knobs(input);
-    s.panel([bx, by, 110.0, 26.0], p.field, p.border, 5.0);
-    bx += 2.0;
-    for (label, selected) in [("Sliders", false), ("Knobs", true)] {
-        let b = [bx, by + 2.0, 52.0, 22.0];
-        let target = Target::Layout {
-            input,
-            knobs: selected,
-        };
-        let hover = s.hovered(ui, b) || ui.focused(&target);
-        let fill = if knobs == selected {
-            p.accent_soft
-        } else {
-            p.field
-        };
-        if hover {
-            s.panel(b, fill, p.accent, 3.0);
-        } else {
-            s.shape(b, fill, 3.0);
-        }
-        s.styled(
-            label,
-            b,
-            12.0,
-            if knobs == selected || hover {
-                p.ink
-            } else {
-                p.muted
-            },
-            TextStyle {
-                centered: true,
-                ..Default::default()
-            },
-        );
-        s.hit(b, target);
-        bx += 54.0;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::Rect;
+    use crate::{
+        editing::{Field, Setting},
+        scene::Rect,
+    };
 
     #[test]
     fn bank_headers_keep_headings_readable_and_actions_separate() {
         for width in [
-            240.0, 320.0, 360.0, 400.0, 420.0, 428.0, 440.0, 500.0, 720.0,
+            128.0, 144.0, 160.0, 195.0, 240.0, 320.0, 360.0, 400.0, 420.0, 428.0, 440.0, 500.0,
+            720.0,
         ] {
             for smoothing in [false, true] {
                 let mut ui = RunUi::default();
@@ -343,6 +241,7 @@ mod tests {
                         };
                         let targets = [
                             Target::Section(section),
+                            Target::BankMenu(input),
                             Target::Command(json!({"type":reset})),
                             Target::Layout {
                                 input,
@@ -357,18 +256,41 @@ mod tests {
                             .iter()
                             .filter(|hit| targets.contains(&hit.target))
                             .collect();
-                        assert_eq!(hits.len(), if smoothing { 5 } else { 4 });
+                        let compact_menu = hits.iter().any(|h| h.target == Target::BankMenu(input));
+                        let inline_reset = hits
+                            .iter()
+                            .any(|h| h.target == Target::Command(json!({"type":reset})));
+                        assert_eq!(
+                            hits.len(),
+                            if compact_menu {
+                                2 + usize::from(inline_reset)
+                            } else if smoothing {
+                                5
+                            } else {
+                                4
+                            }
+                        );
                         let label = ui
                             .scene
                             .labels
                             .iter()
-                            .find(|l| l.text == section.label())
+                            .find(|l| l.text == section.label() || (input && l.text == "Inputs"))
                             .unwrap();
                         assert!(
-                            label.width >= crate::fonts::heading_width(section.label(), 14.0),
+                            label.width >= crate::fonts::heading_width(&label.text, label.size),
                             "clipped heading at viewport {width}, smoothing {smoothing}"
                         );
+                        let section_y = hits
+                            .iter()
+                            .find(|h| h.target == Target::Section(section))
+                            .unwrap()
+                            .rect
+                            .0[1];
                         for hit in &hits {
+                            assert!(
+                                (hit.rect.0[1] - section_y).abs() <= 5.0,
+                                "bank toolbar wrapped at {width}"
+                            );
                             assert!(
                                 hit.rect.0[0] >= 12.0
                                     && hit.rect.0[0] + hit.rect.0[2] <= width - 16.0,

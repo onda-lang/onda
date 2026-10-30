@@ -20,8 +20,8 @@ impl Layout {
     pub(super) fn new(ui: &RunUi, width: f32, input: bool) -> Self {
         let knobs = ui.bank_knobs(input);
         let cols = columns(width, knobs);
-        let row = if knobs { 140.0 } else { 80.0 };
         let card_width = (width - (cols - 1) as f32 * 8.0) / cols as f32;
+        let row = row_height(card_width, knobs);
         let (items, height) = layout(ui, width, input);
         let focus = items
             .iter()
@@ -100,7 +100,22 @@ pub(super) fn field_rect(c: &Control, knobs: bool, [x, y, w, h]: [f32; 4]) -> [f
     if knobs {
         [x + (w - width) * 0.5, y + 101.0, width, 26.0]
     } else {
-        [x + w - 9.0 - width, y + 8.0, width, 26.0]
+        [
+            x + w - 9.0 - width,
+            y + if w < 180.0 { 32.0 } else { 8.0 },
+            width,
+            26.0,
+        ]
+    }
+}
+
+fn row_height(card_width: f32, knobs: bool) -> f32 {
+    if knobs {
+        140.0
+    } else if card_width < 180.0 {
+        104.0
+    } else {
+        80.0
     }
 }
 
@@ -126,7 +141,7 @@ pub(super) enum Item {
 fn layout(ui: &RunUi, width: f32, input: bool) -> (Vec<Item>, f32) {
     let knobs = ui.bank_knobs(input);
     let cols = columns(width, knobs);
-    let height = if knobs { 140.0 } else { 80.0 };
+    let height = row_height((width - (cols - 1) as f32 * 8.0) / cols as f32, knobs);
     let mut items = Vec::new();
     let mut y = 0.0;
     let mut slot = 0;

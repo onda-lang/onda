@@ -33,7 +33,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         }
         match &widget.kind {
             WidgetKind::Title(name) => {
-                s.tooltip(r, name.clone());
+                s.text_tooltip(r, name.clone());
                 s.styled(
                     name,
                     r,
@@ -58,7 +58,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                     p.ink_color(),
                 );
                 let heading = [r[0] + 18.0, r[1], r[2] - 18.0, r[3]];
-                s.tooltip(heading, label.clone());
+                s.text_tooltip(heading, label.clone());
                 s.styled(
                     label,
                     heading,
@@ -91,7 +91,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 let type_width = ty.len() as f32 * 6.6;
                 let name_width = (label.chars().count() as f32 * 7.2)
                     .min((available - type_width - 7.0).max(1.0));
-                s.tooltip([r[0], r[1], available, 28.0], format!("{label} ({ty})"));
+                s.text_tooltip([r[0], r[1], available, 28.0], format!("{label} ({ty})"));
                 s.styled(
                     label,
                     [r[0], r[1], name_width, 28.0],

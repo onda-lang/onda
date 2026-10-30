@@ -34,6 +34,8 @@ pub(crate) struct Palette {
     pub accent_strong: [f32; 4],
     pub accent_soft: [f32; 4],
     pub success: [f32; 4],
+    pub meter_active: [f32; 4],
+    pub meter_track: [f32; 4],
     pub danger: [f32; 4],
     pub scope: [f32; 4],
     pub piano_white: [f32; 4],
@@ -59,6 +61,8 @@ impl Palette {
                 accent_strong: rgb(0x0a213b),
                 accent_soft: rgb(0xdbe8f7),
                 success: rgb(0x136c4c),
+                meter_active: rgb(0x00a862),
+                meter_track: rgb(0xd5e0eb),
                 danger: rgb(0xb53333),
                 scope: background,
                 piano_white: rgb(0xf8fbff),
@@ -81,6 +85,8 @@ impl Palette {
                 accent_strong: rgb(0xe0ebfa),
                 accent_soft: rgb(0x233d5c),
                 success: rgb(0x7ad7ba),
+                meter_active: rgb(0x7ad7ba),
+                meter_track: rgb(0x92a8bf),
                 danger: rgb(0xff7e7e),
                 scope: background,
                 piano_white: rgb(0xafc2d9),
@@ -91,6 +97,14 @@ impl Palette {
                 scrollbar_hover: rgb(0x47739f),
             }
         }
+    }
+    pub fn muted_color(self) -> [f32; 4] {
+        [
+            self.muted[0] as f32 / 255.0,
+            self.muted[1] as f32 / 255.0,
+            self.muted[2] as f32 / 255.0,
+            1.0,
+        ]
     }
     pub fn ink_color(self) -> [f32; 4] {
         [

@@ -2392,6 +2392,9 @@ fn run_control_response(
                 .clone()
                 .map(|id| buffer_load_response(id, result)))
         })(),
+        "setScopeCaptureMode" => scope_ring
+            .set_mode(request.value.as_ref().and_then(Value::as_str).unwrap_or(""))
+            .map(|()| request_id.clone().map(|id| json!({"id":id,"ok":true}))),
         "setScopeCaptureEnabled" => {
             let enabled = request.value.as_ref().and_then(Value::as_bool);
             match enabled {
@@ -2402,13 +2405,19 @@ fn run_control_response(
             }
         }
         "getScopeData" => {
+            let levels = scope_ring.levels();
+            if !scope_ring.waveform_enabled() {
+                return Some(
+                    json!({"id":request_id,"ok":true,"result":{"channels":levels.channels,"peaks":levels.values()}}),
+                );
+            }
             // Release the producer's ring before allocating/serializing transport data.
             if let Some(columns) = request.columns {
                 let frame = scope_ring.envelope(request.max_frames.unwrap_or(2048), columns);
                 frame.map(|frame| {
                     Some(json!({
                         "id": request_id, "ok": true,
-                        "result": {"packet": base64::engine::general_purpose::STANDARD.encode(frame.packet())}
+                        "result": {"channels":levels.channels,"peaks":levels.values(),"packet": base64::engine::general_purpose::STANDARD.encode(frame.packet())}
                     }))
                 })
             } else {
@@ -2416,7 +2425,7 @@ fn run_control_response(
                 frame.map(|frame| {
                     Some(json!({
                         "id": request_id, "ok": true,
-                        "result": {"channels": frame.channels, "samples": frame.samples}
+                        "result": {"channels": frame.channels, "peaks":levels.values(), "samples": frame.samples}
                     }))
                 })
             }

@@ -51,7 +51,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             let type_width = ty.chars().count() as f32 * 6.6;
             let name_width =
                 (name.chars().count() as f32 * 8.4).min((available - type_width - 7.0).max(1.0));
-            s.tooltip(
+            s.text_tooltip(
                 [x + CARD_INSET, y + 8.0, available, 28.0],
                 format!("{name} ({ty})"),
             );
@@ -90,7 +90,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             } else {
                 w - 2.0 * CARD_INSET - 6.0 - summary_width
             };
-            s.tooltip(
+            s.text_tooltip(
                 [x + CARD_INSET, y + 40.0, file_width, 18.0],
                 path.unwrap_or(file).into(),
             );

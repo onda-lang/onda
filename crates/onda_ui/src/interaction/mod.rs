@@ -20,12 +20,22 @@ use crate::{
 use midi::Midi;
 use serde_json::Value;
 
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ToolbarMenu {
+    Header,
+    Bank(bool),
+}
+
 pub(crate) struct Interaction {
     gesture: Option<input::Gesture>,
     focus: Option<Target>,
     focus_visible: bool,
     pointer: [f32; 2],
     devices_open: bool,
+    pub(crate) scope_open: bool,
+    pub(crate) scope_scroll: f32,
+    pub(crate) toolbar_menu: Option<ToolbarMenu>,
+    pub(crate) toolbar_scroll: f32,
     popup_scroll: f32,
     scrollbar_drag: Option<f32>,
     chooser: Option<select::Menu>,
@@ -42,6 +52,10 @@ impl Default for Interaction {
             focus_visible: false,
             pointer: [-1.0, -1.0],
             devices_open: false,
+            scope_open: false,
+            scope_scroll: 0.0,
+            toolbar_menu: None,
+            toolbar_scroll: 0.0,
             popup_scroll: 0.0,
             scrollbar_drag: None,
             chooser: None,
@@ -116,6 +130,8 @@ impl Interaction {
     }
     pub(crate) fn obscures(&self, scene: &Scene, x: f32, y: f32) -> bool {
         (self.devices_open && Rect(scene.popup_rect).contains(x, y))
+            || (self.scope_open && Rect(scene.scope_panel).contains(x, y))
+            || (self.toolbar_menu.is_some() && Rect(scene.toolbar_menu_rect).contains(x, y))
             || (self.chooser.is_some() && Rect(scene.menu_rect).contains(x, y))
     }
     pub(crate) fn clamp_popup_scroll(&mut self, max: f32) -> bool {
