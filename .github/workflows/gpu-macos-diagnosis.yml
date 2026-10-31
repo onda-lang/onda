@@ -1,103 +1,41 @@
-name: Diagnose macOS VST3 editor
+name: Validate corrected macOS VST3
 
 on:
   push:
     branches: [ci/gpu-integration]
     paths: [.github/workflows/gpu-macos-diagnosis.yml]
   workflow_dispatch:
-    inputs:
-      plugin_ref:
-        description: Plugin source revision
-        required: true
-        default: ci/gpu-integration
-        type: string
 
 permissions:
   contents: read
   actions: read
 
-env:
-  MACOSX_DEPLOYMENT_TARGET: "14.0"
-  ONDA_SOURCE_REF: 198d4c2eb91fd808407c6967fec5f42e73697d9a
-
 jobs:
-  diagnose:
-    runs-on: macos-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        visibility: [default]
+  sdk:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
-        with:
-          repository: onda-lang/onda-plugin
-          ref: ${{ inputs.plugin_ref || 'ci/gpu-integration' }}
-      - uses: actions/checkout@v6
-        with:
-          repository: onda-lang/onda
-          ref: ${{ env.ONDA_SOURCE_REF }}
-          path: .onda-source
       - uses: actions/download-artifact@v7
         with:
           name: onda-macos-arm64
           run-id: 41228859300
           github-token: ${{ github.token }}
-          path: .onda-sdk
-      - uses: actions/cache@v4
-        with:
-          path: build
-          key: macos-vst3-diagnosis-sdk-198d4c2-${{ matrix.visibility }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: macos-vst3-diagnosis-sdk-198d4c2-41236452247-1
-      - name: Configure and build the native regression test
-        if: matrix.visibility == 'hidden'
+          path: ${{ runner.temp }}/onda-sdk
+      - name: Verify SDK source revision
         shell: bash
-        run: |
-          test "$(cat .onda-sdk/onda-source.txt)" = "$ONDA_SOURCE_REF"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
-            -DCMAKE_OBJCXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
-            -DCMAKE_OBJCXX_VISIBILITY_PRESET=hidden \
-            -DONDA_SDK_ARCHIVE="$PWD/.onda-sdk/onda-0.9.0-macos-arm64.tar.xz" \
-            -DONDA_SDK_CHECKSUMS="$PWD/.onda-sdk/SHA256SUMS.txt" \
-            -DONDA_RELEASE_SOURCE_DIR="$PWD/.onda-source" \
-            -DONDA_RELEASE_SOURCE_REVISION="$ONDA_SOURCE_REF" \
-            -DONDA_PLUGIN_BUILD_VST3_AUDIT=OFF
-          cmake --build build --target onda_processor_tests --parallel 2
-      - name: Inspect exported JUCE symbols
-        shell: bash
-        run: |
-          for product in OndaSynth OndaFX; do
-            module="build/${product}_artefacts/Release/VST3/$product.vst3/Contents/MacOS/$product"
-            echo "Exported JUCE symbols: $product"
-            nm -gUj "$module" | c++filt | awk '/juce::/ { count++; if (count <= 15) print } END { print "JUCE export count:", count + 0 }'
-          done
-      - name: Check the macOS module boundary regression
-        shell: bash
-        run: |
-          bash tests/MacPluginSymbols.sh \
-            build/OndaSynth_artefacts/Release/VST3/OndaSynth.vst3/Contents/MacOS/OndaSynth \
-            build/OndaFX_artefacts/Release/VST3/OndaFX.vst3/Contents/MacOS/OndaFX
-      - name: Run isolated and grouped native tests under LLDB
-        shell: bash
-        run: |
-          library="$(find build -name libonda_ui.dylib -print -quit)"
-          test -n "$library"
-          export ONDA_GPU_UI_LIBRARY="$PWD/$library"
-          mkdir -p build/test-artifacts
-          for scenario in isolated native; do
-            args=(Vst3EditorAttachment)
-            if [[ "$scenario" == native ]]; then args=(--group native); fi
-            lldb --batch -o 'settings set target.process.stop-on-sharedlibrary-events false' \
-              -o 'breakpoint set -n malloc_error_break' -k 'thread backtrace all' \
-              -o run -o 'thread backtrace all' \
-              -- build/onda_processor_tests "${args[@]}" \
-              > "build/test-artifacts/$scenario-lldb.log" 2>&1 || true
-            cat "build/test-artifacts/$scenario-lldb.log"
-          done
+        run: test "$(cat "$RUNNER_TEMP/onda-sdk/onda-source.txt")" = 198d4c2eb91fd808407c6967fec5f42e73697d9a
       - uses: actions/upload-artifact@v6
-        if: always()
         with:
-          name: macos-vst3-diagnosis-${{ matrix.visibility }}
-          path: build/test-artifacts/
-          retention-days: 7
+          name: onda-macos-arm64
+          path: ${{ runner.temp }}/onda-sdk/
+          compression-level: 0
+          retention-days: 1
+  plugin:
+    needs: sdk
+    permissions:
+      contents: read
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@4675ffd1df3668443935de467f85b75941c3f7e4
+    with:
+      source_ref: 4675ffd1df3668443935de467f85b75941c3f7e4
+      onda_source_ref: 198d4c2eb91fd808407c6967fec5f42e73697d9a
+      platform: macos-arm64
+      tests: package
