@@ -21,7 +21,7 @@ on:
       plugin_ref:
         description: Full onda-plugin source commit for integration builds
         type: string
-        default: 6ace950e685b5bbb4b83ac2b1523089859093a07
+        default: 4675ffd1df3668443935de467f85b75941c3f7e4
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
@@ -648,7 +648,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-plugin/.github/workflows/build.yml@6ace950e685b5bbb4b83ac2b1523089859093a07
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@4675ffd1df3668443935de467f85b75941c3f7e4
     with:
       source_ref: ${{ inputs.plugin_ref }}
       onda_source_ref: ${{ github.sha }}
