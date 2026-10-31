@@ -24,6 +24,10 @@ jobs:
   diagnose:
     runs-on: macos-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        visibility: [default, hidden]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -43,21 +47,31 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build
-          key: macos-vst3-diagnosis-sdk-198d4c2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: macos-vst3-diagnosis-sdk-198d4c2-${{ matrix.visibility }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: macos-vst3-diagnosis-sdk-198d4c2-
       - name: Configure and build the native regression test
+        if: matrix.visibility == 'hidden'
         shell: bash
         run: |
           test "$(cat .onda-sdk/onda-source.txt)" = "$ONDA_SOURCE_REF"
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
             -DCMAKE_OBJCXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
+            -DCMAKE_OBJCXX_VISIBILITY_PRESET=hidden \
             -DONDA_SDK_ARCHIVE="$PWD/.onda-sdk/onda-0.9.0-macos-arm64.tar.xz" \
             -DONDA_SDK_CHECKSUMS="$PWD/.onda-sdk/SHA256SUMS.txt" \
             -DONDA_RELEASE_SOURCE_DIR="$PWD/.onda-source" \
             -DONDA_RELEASE_SOURCE_REVISION="$ONDA_SOURCE_REF" \
             -DONDA_PLUGIN_BUILD_VST3_AUDIT=OFF
           cmake --build build --target onda_processor_tests --parallel 2
+      - name: Inspect exported JUCE symbols
+        shell: bash
+        run: |
+          for product in OndaSynth OndaFX; do
+            module="build/${product}_artefacts/Release/VST3/$product.vst3/Contents/MacOS/$product"
+            echo "Exported JUCE symbols: $product"
+            nm -gUj "$module" | c++filt | awk '/juce::/ { count++; if (count <= 15) print } END { print "JUCE export count:", count + 0 }'
+          done
       - name: Run isolated and grouped native tests under LLDB
         shell: bash
         run: |
@@ -78,6 +92,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: macos-vst3-diagnosis
+          name: macos-vst3-diagnosis-${{ matrix.visibility }}
           path: build/test-artifacts/
           retention-days: 7
