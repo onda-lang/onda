@@ -1,0 +1,73 @@
+name: Diagnose macOS VST3 editor
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugin_ref:
+        description: Plugin source revision
+        required: true
+        default: ci/gpu-integration
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
+  ONDA_SOURCE_REF: 198d4c2eb91fd808407c6967fec5f42e73697d9a
+
+jobs:
+  diagnose:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: onda-lang/onda-plugin
+          ref: ${{ inputs.plugin_ref }}
+      - uses: actions/checkout@v6
+        with:
+          repository: onda-lang/onda
+          ref: ${{ env.ONDA_SOURCE_REF }}
+          path: .onda-source
+      - uses: actions/download-artifact@v7
+        with:
+          name: onda-macos-arm64
+          run-id: 41228859300
+          github-token: ${{ github.token }}
+          path: .onda-sdk
+      - name: Configure and build the native regression test
+        shell: bash
+        run: |
+          test "$(cat .onda-sdk/onda-source.txt)" = "$ONDA_SOURCE_REF"
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DONDA_SDK_ARCHIVE="$PWD/.onda-sdk/onda-0.9.0-macos-arm64.tar.xz" \
+            -DONDA_SDK_CHECKSUMS="$PWD/.onda-sdk/SHA256SUMS.txt" \
+            -DONDA_RELEASE_SOURCE_DIR="$PWD/.onda-source" \
+            -DONDA_RELEASE_SOURCE_REVISION="$ONDA_SOURCE_REF" \
+            -DONDA_PLUGIN_BUILD_VST3_AUDIT=OFF
+          cmake --build build --target onda_processor_tests --parallel 2
+      - name: Run isolated and grouped native tests under LLDB
+        shell: bash
+        run: |
+          export ONDA_GPU_UI_LIBRARY="$PWD/build/_onda/onda-0.9.0-macos-arm64/lib/libonda_ui.dylib"
+          library="$(find build -name libonda_ui.dylib -print -quit)"
+          test -n "$library"
+          export ONDA_GPU_UI_LIBRARY="$PWD/$library"
+          mkdir -p build/test-artifacts
+          for scenario in isolated native; do
+            args=(Vst3EditorAttachment)
+            if [[ "$scenario" == native ]]; then args=(--group native); fi
+            lldb --batch -o 'settings set target.process.stop-on-sharedlibrary-events false' \
+              -o run -o 'thread backtrace all' \
+              -- build/onda_processor_tests "${args[@]}" \
+              > "build/test-artifacts/$scenario-lldb.log" 2>&1 || true
+            cat "build/test-artifacts/$scenario-lldb.log"
+          done
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: macos-vst3-diagnosis
+          path: build/test-artifacts/
+          retention-days: 7
