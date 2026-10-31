@@ -1,6 +1,9 @@
 name: Diagnose macOS VST3 editor
 
 on:
+  push:
+    branches: [ci/gpu-integration]
+    paths: [.github/workflows/gpu-macos-diagnosis.yml]
   workflow_dispatch:
     inputs:
       plugin_ref:
@@ -25,7 +28,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: onda-lang/onda-plugin
-          ref: ${{ inputs.plugin_ref }}
+          ref: ${{ inputs.plugin_ref || 'ci/gpu-integration' }}
       - uses: actions/checkout@v6
         with:
           repository: onda-lang/onda
