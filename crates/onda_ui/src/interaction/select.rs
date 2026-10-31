@@ -89,7 +89,10 @@ impl SelectId {
                     choices.insert(
                         0,
                         Choice {
-                            label: "Follow host".into(),
+                            label: host
+                                .and_then(Value::as_u64)
+                                .filter(|n| *n > 0)
+                                .map_or_else(|| "Follow host".into(), |n| format!("{n} (Host)")),
                             value: json!(0),
                         },
                     );
@@ -415,20 +418,14 @@ pub(crate) fn build_menu(ui: &RunUi, s: &mut Scene, p: Palette) {
         );
         s.hit(r, Target::Option(index));
     }
-    if max > 0.0 {
-        let thumb =
-            ((height - 8.0) * (height - 8.0) / (spec.choices.len() as f32 * 28.0)).max(16.0);
-        s.shape(
-            [
-                rect[0] + rect[2] - 6.0,
-                rect[1] + 4.0 + (height - 8.0 - thumb) * scroll / max,
-                3.0,
-                thumb,
-            ],
-            p.scrollbar,
-            1.5,
-        );
-    }
+    s.scrollbar(
+        ui,
+        p,
+        crate::scrollbar::ScrollRegion::Menu,
+        rect,
+        spec.choices.len() as f32 * 28.0 + 8.0,
+        scroll,
+    );
 }
 
 #[cfg(test)]

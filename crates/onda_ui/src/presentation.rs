@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use web_time::{Duration, Instant};
 
 impl crate::model::RunUi {
@@ -66,10 +66,13 @@ impl crate::model::RunUi {
         self.scroll = self.presentation.scroll;
         self.interaction.restore_midi(view);
         if let Some(saved) = view["eventValues"].as_array() {
+            let saved: HashMap<_, _> = saved
+                .iter()
+                .filter_map(|event| Some((event["name"].as_str()?, event)))
+                .collect();
             for event in &mut self.events {
                 if let Some(values) = saved
-                    .iter()
-                    .find(|e| e["name"] == event.name)
+                    .get(event.name.as_str())
                     .filter(|e| {
                         crate::events::Event::from_metadata(e)
                             .is_some_and(|saved| event.same_schema(&saved))
@@ -139,6 +142,35 @@ mod tests {
                 };
                 assert_eq!(&arg.value, expected, "{change}");
             }
+        }
+    }
+
+    #[test]
+    fn saved_event_values_follow_names_after_reordering() {
+        let mut ui = fixture();
+        let events: Vec<_> = ["first", "second", "third"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                json!({"name":name,"args":[{
+                    "name":"value","type":"i64","value":(i + 10).to_string()
+                }]})
+            })
+            .collect();
+        ui.message(json!({"type":"state","state":{"events":events}}));
+        ui.presentation.changed();
+        let saved = ui.take_commands().pop().unwrap()["state"].clone();
+        let mut events = events;
+        events.reverse();
+        for event in &mut events {
+            event["args"][0]["value"] = json!("0");
+        }
+        let mut restored = fixture();
+        restored.message(json!({"type":"state","state":{
+            "events":events,"viewState":saved
+        }}));
+        for (event, expected) in restored.events.iter().zip(["12", "11", "10"]) {
+            assert_eq!(event.args[0].value, expected, "{}", event.name);
         }
     }
 
@@ -416,7 +448,7 @@ impl Default for Presentation {
     fn default() -> Self {
         Self {
             sections: [true; 7],
-            scope_pinned: false,
+            scope_pinned: true,
             scroll: 0.0,
             folded: BTreeSet::new(),
             log_follow: true,
@@ -453,7 +485,9 @@ impl Presentation {
         if value["reset"] == true {
             *self = Self::default();
         }
-        self.scope_pinned = value["scopePinned"].as_bool().unwrap_or(false);
+        if let Some(pinned) = value["scopePinned"].as_bool() {
+            self.scope_pinned = pinned;
+        }
         for section in Section::ALL {
             if let Some(open) = value["sections"][section.name()].as_bool() {
                 self.sections[section.index()] = open;

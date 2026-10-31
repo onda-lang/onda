@@ -7,41 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.9.0]
 
-Onda's run interfaces now share one GPU-accelerated UI across the standalone app,
-VS Code, the VST3 plugin, and both browser editors.
-
 ### Added
 
-- `onda_ui`, a shared Rust/wgpu renderer and interaction layer for parameters, input
-  controls, buffer waveforms, typed events, logs, scopes, MIDI, and run settings.
-- `onda_gpu`, the native window and input adapter used by `onda` and `onda run` on
-  Linux, macOS, and Windows. Browser and VS Code panels run the same UI as WebAssembly,
-  using hardware WebGPU when available and WebGL2 otherwise.
-- Multilingual text rendering, clipboard and IME editing, mobile text input, and
-  multi-touch piano gestures in the shared UI.
-- Native `onda_ui` shared library, `onda_ui.h`, and font licenses in release SDKs
-  for embedding the renderer in the plugin and other native hosts.
-- Versioned GPU browser bundles with asset checksums; staging and packaging verify
-  that the renderer matches the selected Onda release.
+- One GPU-accelerated run UI for standalone Onda, VS Code, the VST3 plugin, and
+  both browser editors. It includes parameters, input controls, buffers, typed
+  events, logs, scope/meters, MIDI, and run settings.
+- Shared clipboard/IME editing, mobile text input, multi-touch piano gestures,
+  and bundled fonts with script fallbacks.
+- A native UI library and header in release SDKs for custom hosts; see the
+  [UI host API](docs/ui-api.md).
 
 ### Changed
 
-- Use the same layout, controls, themes, and interaction behavior across run hosts,
-  with collapsible sections and saved control layouts, folds, and scroll positions.
-- Cache text and layout, draw visible rows, and redraw on changes. Scope capture
-  runs independently at 30 Hz, skips unchanged uploads, and stops while hidden or
-  collapsed; hidden views suspend rendering.
+- Run views retain control layouts, section folds, scrolling, and schema-matched
+  event arguments. Hidden views suspend drawing and visualization capture.
 
 ### Fixed
 
-- Let touch swipes continue scrolling the surrounding page when the GPU panel fits
-  or reaches a scroll boundary. Preserve control and piano gestures, account for
-  scaled iframes, and respect nested scroll containers and overscroll containment.
+- Touch scrolling can continue into the surrounding browser page when a panel
+  reaches its scroll boundary.
 
 ### Removed
 
 - Previous egui, native webview, and DOM-rendered run interfaces and their backend
-  selection options. The shared GPU UI is now the run interface for every host.
+  selection options.
 - Run UI accessibility integration.
 
 ## [0.8.40]
@@ -175,7 +164,7 @@ VS Code, the VST3 plugin, and both browser editors.
 
 - Enlarge boolean checkboxes to 24 px and center them beneath parameter and input-control
   headings and within event fields in egui and the shared webview. Remove redundant On/Off
-  labels while preserving keyboard interaction, and read-only controls.
+  labels while preserving accessible names, keyboard interaction, and read-only controls.
 - Use Onda's light and dark theme colors for both checked and unchecked webview checkboxes.
 
 ### Fixed
@@ -268,7 +257,7 @@ VS Code, the VST3 plugin, and both browser editors.
 - Compact run headers across egui, webview, and the browser playground, with the version centered
   below the logo, the filename and status aligned to the left, and a single labeled Play/Stop
   button. Device selection and Refresh move into a Devices popover; Save as project and Unload
-  have direct icon buttons with tooltips.
+  have direct icon buttons with accessible names and tooltips.
 - Both native run hosts default to 720 × 840 logical units. Shared panel spacing, flat fills,
   and a 160-unit scope let eight knobs fit in two rows with the docked MIDI keyboard visible.
   Narrow views wrap header controls and parameter settings without overflowing.

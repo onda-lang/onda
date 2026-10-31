@@ -82,6 +82,61 @@ fn ime_composition_preserves_computer_key_releases() {
 }
 
 #[test]
+fn schema_publications_release_native_composition_and_keyboard_input() {
+    let mut app = App::new(None, RunHostOptions::default());
+    app.ui.message(json!({"type":"state","state":{
+        "path":"old.onda","supportsScope":false,"supportsTransport":false,
+        "params":[{"name":"gain","type":"f64","value":0.5}]
+    }}));
+    for _ in 0..16 {
+        app.input(Input::Key {
+            key: Key::Tab,
+            shift: false,
+        });
+        if app.ui.editing() {
+            break;
+        }
+    }
+    assert!(app.ui.editing());
+    app.composing = true;
+    app.ui.input(Input::Preedit {
+        text: "あ".into(),
+        anchor: 0,
+        cursor: 1,
+    });
+    // An asynchronous schema publication removes the composing field.
+    app.publish_changes(onda_run::PollResult {
+        schema_changed: true,
+        ..Default::default()
+    });
+    assert!(!app.ui.editing());
+    assert!(
+        !app.composing,
+        "schema cancellation must release native IME ownership"
+    );
+    app.ui.message(json!({"type":"state","state":{
+        "path":"new.onda","supportsScope":false,"supportsTransport":false,
+        "params":[{"name":"gain","type":"f64","value":0.75}]
+    }}));
+    for _ in 0..16 {
+        app.keyboard_input(winit::event::KeyEvent {
+            physical_key: PhysicalKey::Code(KeyCode::Tab),
+            logical_key: WinitKey::Named(NamedKey::Tab),
+            key_without_modifiers: WinitKey::Named(NamedKey::Tab),
+            text: None,
+            text_with_all_modifiers: None,
+            location: winit::keyboard::KeyLocation::Standard,
+            state: ElementState::Pressed,
+            repeat: false,
+        });
+        if app.ui.editing() {
+            break;
+        }
+    }
+    assert!(app.ui.editing(), "Tab must reach the replacement schema");
+}
+
+#[test]
 fn hovering_wakes_an_idle_host_once_at_the_tooltip_deadline() {
     let mut app = App::new(None, RunHostOptions::default());
     app.resize_surface(720, 840, 1.0);
@@ -260,7 +315,7 @@ fn unavailable_surface_retries_wake_an_idle_host_without_spinning() {
     let mut app = App::new(None, RunHostOptions::default());
     app.resize_surface(720, 840, 1.0);
     let now = Instant::now();
-    let deadline = now + SCOPE_INTERVAL;
+    let deadline = now + onda_run::VISUALIZATION_INTERVAL;
     app.redraw_retry = Some(deadline);
     assert!(!app.redraw_ready(now));
     assert_eq!(app.next_wake(), Some(deadline));
@@ -292,20 +347,20 @@ fn deferred_presentation_wakes_an_idle_host_and_flushes_on_focus_loss() {
 }
 
 #[test]
-fn reopening_a_source_restores_its_own_layout() {
+fn reopening_a_source_restores_its_layout_and_scope_pin() {
     let directory = tempfile::tempdir().unwrap();
     let mut app = App::new(None, RunHostOptions::default());
-    for (name, layout) in [
-        ("a.onda", "sliders"),
-        ("b.onda", "knobs"),
-        ("a.onda", "sliders"),
+    for (name, layout, pinned) in [
+        ("a.onda", "sliders", true),
+        ("b.onda", "knobs", false),
+        ("a.onda", "sliders", true),
     ] {
         let path = directory.path().canonicalize().unwrap().join(name);
         app.controller = Some(source_controller(&path));
         let view_path = app.controller.as_ref().unwrap().state().path.clone();
         app.views
             .entry(view_path)
-            .or_insert_with(|| json!({"paramLayout":layout}));
+            .or_insert_with(|| json!({"paramLayout":layout,"scopePinned":pinned}));
         app.publish();
         assert_eq!(app.panel_state()["schemaReady"], false);
         app.ui.input(Input::Scroll { delta: 0.0 });
@@ -323,6 +378,7 @@ fn reopening_a_source_restores_its_own_layout() {
             .find(|v| v["type"] == "viewState")
             .unwrap();
         assert_eq!(view["state"]["paramLayout"], layout);
+        assert_eq!(view["state"]["scopePinned"], pinned);
     }
 }
 

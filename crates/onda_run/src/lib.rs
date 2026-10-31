@@ -63,6 +63,7 @@ const SOURCE_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SOURCE_WATCH_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
 /// Periodic controller polling interval used while a native run frontend is loaded.
 pub const CONTROLLER_POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub const VISUALIZATION_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 30);
 pub const DEFAULT_REALTIME_BLOCK_SAMPLES: usize = 512;
 pub const COMPUTER_KEYBOARD_MIDI_INPUT: &str = "Computer Keyboard";
 
@@ -343,7 +344,7 @@ pub struct RunController {
     scope_polling_active: bool,
     scope_request: Option<u64>,
     last_scope_poll: Instant,
-    scope_poll_interval: Duration,
+    visualization_interval: Duration,
     scope_columns: Option<usize>,
     scope_envelope: onda_scope::Envelope,
     scope_visible: bool,
@@ -426,7 +427,7 @@ impl RunController {
             scope_polling_active: false,
             scope_request: None,
             last_scope_poll: Instant::now(),
-            scope_poll_interval: CONTROLLER_POLL_INTERVAL,
+            visualization_interval: VISUALIZATION_INTERVAL,
             scope_columns: None,
             scope_envelope: Default::default(),
             scope_visible: true,
@@ -446,8 +447,8 @@ impl RunController {
     }
 
     /// Visualization cadence is independent of source watching and audio processing.
-    pub fn set_scope_poll_interval(&mut self, interval: Duration) {
-        self.scope_poll_interval = interval.max(Duration::from_millis(8));
+    pub fn set_visualization_interval(&mut self, interval: Duration) {
+        self.visualization_interval = interval.max(Duration::from_millis(8));
     }
 
     pub fn set_scope_columns(&mut self, columns: usize) {
@@ -469,13 +470,6 @@ impl RunController {
             self.sync_scope_capture();
         }
     }
-    fn visualization_interval(&self) -> Duration {
-        if self.scope_visible {
-            self.scope_poll_interval
-        } else {
-            Duration::from_millis(50)
-        }
-    }
     pub fn set_scope_visible(&mut self, visible: bool) {
         if self.scope_visible != visible {
             self.scope_visible = visible;
@@ -494,7 +488,7 @@ impl RunController {
     pub fn next_poll_deadline(&self) -> Instant {
         if self.scope_capture_mode != "off" && self.scope_request.is_none() {
             self.next_maintenance
-                .min(self.last_scope_poll + self.visualization_interval())
+                .min(self.last_scope_poll + self.visualization_interval)
         } else {
             self.next_maintenance
         }
@@ -663,7 +657,7 @@ impl RunController {
         self.sync_scope_capture();
         if self.scope_capture_mode != "off"
             && self.scope_request.is_none()
-            && self.last_scope_poll.elapsed() >= self.visualization_interval()
+            && self.last_scope_poll.elapsed() >= self.visualization_interval
         {
             self.scope_request = self.bridge.send_command(
                 "getScopeData",
@@ -2821,7 +2815,7 @@ mod tests {
             scope_polling_active: true,
             scope_request: Some(99),
             last_scope_poll: std::time::Instant::now(),
-            scope_poll_interval: super::CONTROLLER_POLL_INTERVAL,
+            visualization_interval: super::VISUALIZATION_INTERVAL,
             scope_columns: None,
             scope_envelope: Default::default(),
             scope_visible: true,
@@ -3044,10 +3038,10 @@ mod tests {
             json!({"command":"setScopeCaptureMode","value":"meter"})
         );
         assert_eq!(
-            controller.visualization_interval(),
-            Duration::from_millis(50)
+            controller.visualization_interval,
+            super::VISUALIZATION_INTERVAL
         );
-        controller.last_scope_poll -= Duration::from_millis(50);
+        controller.last_scope_poll -= super::VISUALIZATION_INTERVAL;
         controller.poll();
         let request = read();
         let response = json!({"id":request["id"],"ok":true,"result":{"channels":8,"peaks":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]}});
@@ -3056,7 +3050,10 @@ mod tests {
                 .handle_tcp_response(&response.to_string())
                 .scope_changed
         );
-        assert_eq!(controller.meter_levels().values(), &[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8]);
+        assert_eq!(
+            controller.meter_levels().values(),
+            &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        );
         controller.set_meter_visible(false);
         assert_eq!(
             read(),

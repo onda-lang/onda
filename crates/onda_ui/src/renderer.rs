@@ -1,7 +1,9 @@
 use crate::{
+    fonts::READING_SIZE,
     model::RunUi,
     scene::{Label, Palette, Shape, TextStyle},
 };
+use cosmic_text::{Ellipsize, EllipsizeHeightLimit};
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -50,14 +52,25 @@ impl Text {
             || t.caret != l.caret
         {
             t.buffer.set_metrics(Metrics::new(l.size, l.size * 1.4));
-            t.buffer.set_size(
-                Some((l.width - if l.caret.is_some() { 1.0 } else { 0.0 }).max(1.0)),
-                l.height,
-            );
+            let ellipsize = l.style.ellipsis && !l.style.wrap && l.caret.is_none();
+            // Avoid false ellipses from roundoff in fractional glyph advances.
+            let width = if l.caret.is_some() {
+                l.width - 1.0
+            } else if ellipsize {
+                l.width + 0.01
+            } else {
+                l.width
+            };
+            t.buffer.set_size(Some(width.max(1.0)), l.height);
             t.buffer.set_wrap(if l.style.wrap {
                 glyphon::Wrap::WordOrGlyph
             } else {
                 glyphon::Wrap::None
+            });
+            t.buffer.set_ellipsize(if ellipsize {
+                Ellipsize::End(EllipsizeHeightLimit::Lines(1))
+            } else {
+                Ellipsize::None
             });
             t.buffer.set_text(
                 &l.text,
@@ -164,10 +177,11 @@ impl Renderer {
     /// Browser hosts use their overlaid text editor for caret and selection input.
     pub fn input(&mut self, ui: &mut RunUi, input: crate::Input) -> bool {
         let selection = match &input {
-            crate::Input::PointerDown { x, y, clicks } if *clicks < 2 => {
+            crate::Input::PointerDown { x, y, clicks } => {
                 ui.prepare_scene();
                 let same_field = ui.editor.draft().is_some_and(|d| {
-                    ui.target(*x, *y) == Some(crate::scene::Target::Field(d.target.clone()))
+                    *clicks < 2
+                        && ui.target(*x, *y) == Some(crate::scene::Target::Field(d.target.clone()))
                 });
                 if same_field {
                     self.text_hit(ui, *x, *y).map(|index| (index, false))
@@ -186,6 +200,8 @@ impl Renderer {
         }
         consumed
     }
+    /// Create a dedicated device for a surface or an offscreen renderer.
+    /// Use [`Self::from_device`] to share an existing host device and queue.
     pub async fn new(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> Result<Self, String> {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -196,6 +212,17 @@ impl Renderer {
             })
             .await
             .map_err(|e| e.to_string())?;
+        Ok(Self::from_device(device, queue, format))
+    }
+
+    /// Use a host-owned device and its queue. Clone the handles to retain them
+    /// in the host; all render targets must belong to this device and use `format`.
+    /// The device must support the standard wgpu downlevel WebGL2 limits.
+    pub fn from_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let globals = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("UI globals"),
             contents: bytemuck::bytes_of(&<Globals as bytemuck::Zeroable>::zeroed()),
@@ -279,7 +306,10 @@ impl Renderer {
             FontSystem::new_with_locale_and_db("en-US".into(), crate::fonts::database());
         let editor = Text::new(&mut font_system);
         let tooltip = Text::new(&mut font_system);
-        let diagnostic = Buffer::new(&mut font_system, Metrics::new(12.0, 16.8));
+        let diagnostic = Buffer::new(
+            &mut font_system,
+            Metrics::new(READING_SIZE, READING_SIZE * 1.4),
+        );
         let log = log::Metrics::new(&mut font_system);
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
@@ -301,7 +331,7 @@ impl Renderer {
         let samples = UploadBuffer::new(&device);
         let meters = UploadBuffer::new(&device);
         let decoration_buffer = UploadBuffer::new(&device);
-        Ok(Self {
+        Self {
             device,
             queue,
             shapes,
@@ -334,7 +364,7 @@ impl Renderer {
             decorations: Vec::new(),
             decoration_layers: [0; 4],
             decoration_buffer,
-        })
+        }
     }
     /// Encode into a caller-owned texture. Static geometry and text are prepared
     /// only when UI state, viewport, or scale changes; scope frames upload samples.
@@ -384,43 +414,7 @@ impl Renderer {
                 .upload(&self.device, &self.queue, bytemuck::cast_slice(&ui.trace));
             self.scope_revision = Some((ui.id, ui.scope_revision));
         }
-        self.meter_shapes.clear();
-        let palette = Palette::new(ui.light);
-        for (i, r) in ui.scene.meter_rects.iter().enumerate() {
-            let peak = if ui.state["running"] == true {
-                if ui.scene.meter_rects.len() == 1 {
-                    ui.meter_peaks[..ui.meter_channels]
-                        .iter()
-                        .copied()
-                        .fold(0.0_f32, f32::max)
-                } else {
-                    ui.meter_peaks[i]
-                }
-            } else {
-                0.0
-            };
-            let level = if peak > 0.0 {
-                ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            if level > 0.0 {
-                self.meter_shapes.push(Shape {
-                    rect: [r[0], r[1] + r[3] * (1.0 - level), r[2], r[3] * level],
-                    color: palette.meter_active,
-                    params: [0.5, 0.0, 0.0, 0.0],
-                    clip: ui.scene.meter_clip,
-                });
-            }
-            if peak >= 1.0 {
-                self.meter_shapes.push(Shape {
-                    rect: [r[0], r[1], r[2], 2.0],
-                    color: palette.danger,
-                    params: [0.0; 4],
-                    clip: ui.scene.meter_clip,
-                });
-            }
-        }
+        crate::meters::shapes(ui, &mut self.meter_shapes);
         self.meters.upload(
             &self.device,
             &self.queue,
@@ -573,7 +567,7 @@ impl Renderer {
         height: u32,
         scale: f32,
     ) {
-        if ui.scope_enabled() && ui.state["running"] == true && !ui.trace.is_empty() {
+        if ui.scope_open() && ui.state["running"] == true && !ui.trace.is_empty() {
             if let Some([x, y, w, h]) = scissor(ui.scene.scope_clip, width, height, scale) {
                 pass.set_scissor_rect(x, y, w, h);
                 pass.set_pipeline(&self.traces);
@@ -629,7 +623,10 @@ impl Renderer {
         self.editor = Text::new(&mut self.font_system);
         self.tooltip = Text::new(&mut self.font_system);
         self.tooltip_max_width = 0.0;
-        self.diagnostic = Buffer::new(&mut self.font_system, Metrics::new(12.0, 16.8));
+        self.diagnostic = Buffer::new(
+            &mut self.font_system,
+            Metrics::new(READING_SIZE, READING_SIZE * 1.4),
+        );
         self.prepared = None;
         self.diagnostic_key = None;
     }
@@ -671,7 +668,12 @@ impl Renderer {
             .editor
             .buffer
             .hit(x - text_left(&self.editor, label), y - label.y)?;
-        Some(label.text[..cursor.index].encode_utf16().count())
+        let index = cursor.index;
+        Some(
+            label.text[..index.min(label.text.len())]
+                .encode_utf16()
+                .count(),
+        )
     }
     fn prepare_tooltip(&mut self, ui: &mut RunUi) {
         let Some(index) = ui.scene.tooltip_label else {
@@ -710,7 +712,9 @@ impl Renderer {
     }
     fn prepare_diagnostic(&mut self, ui: &mut RunUi) {
         let error = ui.state["error"].as_str().unwrap_or("");
-        let width = (ui.size[0] - if ui.loaded() { 48.0 } else { 52.0 }).max(1.0);
+        let width =
+            (ui.size[0] - crate::theme::GUTTER * 2.0 - if ui.loaded() { 20.0 } else { 24.0 })
+                .max(1.0);
         if self
             .diagnostic_key
             .as_ref()
@@ -732,7 +736,7 @@ impl Renderer {
             .diagnostic
             .layout_runs()
             .map(|r| r.line_top + r.line_height)
-            .fold(16.8, f32::max);
+            .fold(READING_SIZE * 1.4, f32::max);
         if ui.diagnostic_height != height {
             ui.diagnostic_height = height;
             ui.invalidate();
@@ -926,8 +930,172 @@ fn scissor(rect: [f32; 4], width: u32, height: u32, scale: f32) -> Option<[u32; 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{editing::Field, events::EventField, Input, Key};
+    use crate::{editing::Field, Input, Key};
     use serde_json::json;
+
+    fn has_ellipsis(text: &Text, fonts: &FontSystem) -> bool {
+        text.buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs)
+            .any(|glyph| {
+                fonts
+                    .db()
+                    .with_face_data(glyph.font_id, |data, index| {
+                        ttf_parser::Face::parse(data, index)
+                            .ok()
+                            .and_then(|face| face.glyph_index('…'))
+                            .is_some_and(|id| id.0 == glyph.glyph_id)
+                    })
+                    .unwrap_or(false)
+            })
+    }
+
+    #[test]
+    fn labels_ellipsize_using_shaped_width_and_restore_their_full_text_after_resizing() {
+        let mut fonts =
+            FontSystem::new_with_locale_and_db("en-US".into(), crate::fonts::database());
+        if let Some(fallback) = crate::fonts::FALLBACKS.iter().find(|f| f.covers('م')) {
+            crate::fonts::load_fallback(&mut fonts, fallback.name);
+        }
+        let mut text = Text::new(&mut fonts);
+        for (value, mono) in [
+            ("polyphonic_instrument.onda", true),
+            ("réglage étendu de la fréquence", false),
+            ("معامل صوت طويل جدا للتحرير", false),
+        ] {
+            let mut scene = crate::scene::Scene {
+                clip: [0.0, 0.0, 500.0, 100.0],
+                ..Default::default()
+            };
+            scene.styled(
+                value,
+                [0.0, 0.0, 72.0, 24.0],
+                14.0,
+                [255; 3],
+                TextStyle {
+                    mono,
+                    ..Default::default()
+                },
+            );
+            let label = &mut scene.labels[0];
+            for width in [72.0, 400.0, 24.0, 72.0] {
+                label.width = width;
+                text.update(label, &mut fonts);
+                assert_eq!(
+                    has_ellipsis(&text, &fonts),
+                    width < 400.0,
+                    "{value} at {width}px"
+                );
+                assert!(text
+                    .buffer
+                    .layout_runs()
+                    .all(|run| run.line_w <= width + 0.01));
+                assert_eq!(text.text, value);
+                assert_eq!(
+                    text.buffer.lines[0].text(),
+                    value,
+                    "truncation must not replace the source text"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_editors_reveal_and_scroll_the_full_value_then_restore_ellipsis() {
+        let mut fonts =
+            FontSystem::new_with_locale_and_db("en-US".into(), crate::fonts::database());
+        let mut text = Text::new(&mut fonts);
+        let mut scene = crate::scene::Scene {
+            clip: [0.0, 0.0, 500.0, 100.0],
+            ..Default::default()
+        };
+        scene.styled(
+            "9223372036854775807",
+            [0.0, 0.0, 60.0, 26.0],
+            13.0,
+            [255; 3],
+            TextStyle {
+                mono: true,
+                centered: true,
+                ..Default::default()
+            },
+        );
+        let label = &mut scene.labels[0];
+        text.update(label, &mut fonts);
+        assert!(has_ellipsis(&text, &fonts));
+        label.caret = Some(label.text.len());
+        text.update(label, &mut fonts);
+        assert!(!has_ellipsis(&text, &fonts));
+        assert!(text.buffer.scroll().horizontal > 0.0);
+        assert_eq!(text.buffer.lines[0].text(), label.text);
+        label.caret = None;
+        text.update(label, &mut fonts);
+        assert!(has_ellipsis(&text, &fonts));
+        assert_eq!(text.buffer.scroll().horizontal, 0.0);
+    }
+
+    #[test]
+    fn exact_fit_monospace_labels_do_not_gain_false_ellipses() {
+        let mut fonts =
+            FontSystem::new_with_locale_and_db("en-US".into(), crate::fonts::database());
+        let mut text = Text::new(&mut fonts);
+        for (value, size, bold) in [
+            ("strength", 12.0, false),
+            ("id", 12.0, false),
+            ("f32", 11.0, false),
+            ("Piano", 14.0, true),
+            ("phase", 12.0, true),
+        ] {
+            let mut scene = crate::scene::Scene {
+                clip: [0.0, 0.0, 500.0, 100.0],
+                ..Default::default()
+            };
+            let width = value.len() as f32 * size * 0.6;
+            scene.styled(
+                value,
+                [0.0, 0.0, width, 24.0],
+                size,
+                [255; 3],
+                TextStyle {
+                    mono: true,
+                    bold,
+                    ..Default::default()
+                },
+            );
+            text.update(&scene.labels[0], &mut fonts);
+            assert!(!has_ellipsis(&text, &fonts), "{value} fits in {width}px");
+        }
+    }
+
+    #[test]
+    fn scrollable_log_lines_and_wrapped_paragraphs_keep_their_complete_text() {
+        let mut fonts =
+            FontSystem::new_with_locale_and_db("en-US".into(), crate::fonts::database());
+        let mut text = Text::new(&mut fonts);
+        let mut scene = crate::scene::Scene {
+            clip: [0.0, 0.0, 500.0, 200.0],
+            ..Default::default()
+        };
+        let message = "Long diagnostic and log output must remain completely readable.";
+        scene.styled(
+            message,
+            [0.0, 0.0, 72.0, 20.0],
+            13.0,
+            [255; 3],
+            TextStyle {
+                mono: true,
+                ellipsis: false,
+                ..Default::default()
+            },
+        );
+        scene.paragraph(message, [0.0, 30.0, 72.0, 170.0], 13.0, [255; 3]);
+        text.update(&scene.labels[0], &mut fonts);
+        assert!(!has_ellipsis(&text, &fonts));
+        assert!(text.buffer.layout_runs().any(|run| run.line_w > 72.0));
+        text.update(&scene.labels[1], &mut fonts);
+        assert!(!has_ellipsis(&text, &fonts));
+        assert!(text.buffer.layout_runs().count() > 1);
+    }
 
     #[test]
     fn smoothing_labels_keep_the_complete_value_and_units_inside_the_field() {
@@ -1231,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn long_integer_and_json_drafts_keep_the_caret_visible_at_both_ends() {
+    fn long_integer_drafts_keep_the_caret_visible_at_both_ends() {
         pollster::block_on(async {
             let instance = wgpu::Instance::new(
                 wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
@@ -1242,57 +1410,43 @@ mod tests {
             let mut renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8UnormSrgb)
                 .await
                 .unwrap();
-            for json_editor in [false, true] {
-                let mut ui = RunUi::default();
-                let field = if json_editor {
-                    ui.message(json!({"type":"state","state":{"path":"json.onda","supportsScope":false,
-                        "events":[{"name":"levels","args":[{"name":"values","type":"f64[]","value":vec![0.5;32]}]}]}}));
-                    Field::Event(EventField {
-                        event: 0,
-                        arg: 0,
-                        path: String::new(),
-                        scalar: "json".into(),
-                    })
+            let mut ui = RunUi::default();
+            ui.message(json!({"type":"state","state":{"path":"integer.onda","supportsScope":false,
+                "paramLayout":"knobs","params":[{"name":"exact","type":"i64","value":"9223372036854775807"}]}}));
+            ui.begin_field(Field::Control(0));
+            for key in [Key::End, Key::Home, Key::End] {
+                ui.input(Input::Key { key, shift: false });
+                ui.prepare_scene();
+                renderer
+                    .prepare_text(
+                        &ui.scene.labels,
+                        ui.scene.overlay_labels,
+                        ui.scene.menu_labels,
+                        720,
+                        840,
+                        1.0,
+                    )
+                    .unwrap();
+                let text = renderer
+                    .text
+                    .iter()
+                    .find(|text| text.caret.is_some())
+                    .unwrap();
+                let caret = text.caret.unwrap();
+                let (x, _) = text
+                    .buffer
+                    .cursor_position(&glyphon::Cursor::new(0, caret))
+                    .unwrap();
+                let scroll = text.buffer.scroll().horizontal;
+                assert!(
+                    x - scroll >= -0.1 && x - scroll < text.width,
+                    "caret at {x}, scroll {scroll}, width {}",
+                    text.width
+                );
+                if caret == 0 {
+                    assert_eq!(scroll, 0.0);
                 } else {
-                    ui.message(json!({"type":"state","state":{"path":"integer.onda","supportsScope":false,
-                        "paramLayout":"knobs","params":[{"name":"exact","type":"i64","value":"9223372036854775807"}]}}));
-                    Field::Control(0)
-                };
-                ui.begin_field(field);
-                for key in [Key::End, Key::Home, Key::End] {
-                    ui.input(Input::Key { key, shift: false });
-                    ui.prepare_scene();
-                    renderer
-                        .prepare_text(
-                            &ui.scene.labels,
-                            ui.scene.overlay_labels,
-                            ui.scene.menu_labels,
-                            720,
-                            840,
-                            1.0,
-                        )
-                        .unwrap();
-                    let text = renderer
-                        .text
-                        .iter()
-                        .find(|text| text.caret.is_some())
-                        .unwrap();
-                    let caret = text.caret.unwrap();
-                    let (x, _) = text
-                        .buffer
-                        .cursor_position(&glyphon::Cursor::new(0, caret))
-                        .unwrap();
-                    let scroll = text.buffer.scroll().horizontal;
-                    assert!(
-                        x - scroll >= -0.1 && x - scroll < text.width,
-                        "caret at {x}, scroll {scroll}, width {}",
-                        text.width
-                    );
-                    if caret == 0 {
-                        assert_eq!(scroll, 0.0);
-                    } else {
-                        assert!(scroll > 0.0);
-                    }
+                    assert!(scroll > 0.0);
                 }
             }
         });

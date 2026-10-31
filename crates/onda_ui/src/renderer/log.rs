@@ -1,5 +1,5 @@
 //! Measure complete log lines once; retain widths across appended output and scrolling.
-use crate::{panels::log, RunUi};
+use crate::{fonts::READING_SIZE, panels::log, RunUi};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics as TextMetrics, Shaping, Wrap};
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ pub(super) struct Metrics {
 
 impl Metrics {
     pub fn new(fonts: &mut FontSystem) -> Self {
-        let mut buffer = Buffer::new(fonts, TextMetrics::new(12.0, 16.8));
+        let mut buffer = Buffer::new(fonts, TextMetrics::new(READING_SIZE, READING_SIZE * 1.4));
         buffer.set_wrap(Wrap::None);
         Self {
             buffer,

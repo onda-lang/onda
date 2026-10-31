@@ -480,8 +480,8 @@ plus source graphs when `--report-sources` is requested. The localhost control s
 `print` notifications with `text`, structured `entries`,
 `overflowCount`, and `transportDropCount`.
 
-The GPU run hosts display prints and subscribed top-level delegate occurrences in a
-compact chronological Log immediately after the scope. It remains hidden until the first print or
+Run views display prints and subscribed top-level delegate occurrences in a
+chronological Log. It remains hidden until the first print or
 delegate occurrence of the run session, then stays present for that session even when cleared. It
 provides clear, bottom-aware automatic following, print source context, and separate print and
 delegate loss counts. New output follows the bottom only while the log is already fully scrolled

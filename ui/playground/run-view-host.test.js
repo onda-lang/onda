@@ -475,6 +475,37 @@ test("preserves event values only while the argument shape matches", () => {
   assert.equal(resetForDefault.args[0].value, 2);
 });
 
+test("recompilation preserves event values only for the complete ordered signature", () => {
+  const params = [
+    { name: "pitch", ty: { kind: "scalar", encoding: "f64" }, default: "69" },
+    { name: "velocity", ty: { kind: "scalar", encoding: "f64" }, default: "0.5" },
+  ];
+  const artifact = params => ({ metadata: { compile: {}, metadata: {
+    outputs: [], params: [], buffers: [],
+    events: [{ name: "note", schema: { params } }],
+  } } });
+  for (const change of ["none", "reorder", "rename", "type", "default", "add", "remove"]) {
+    const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
+      state: { events: [], params: [], buffers: [] }, handlers: {},
+      postState() {},
+    });
+    host.setArtifact(artifact(params), new Map());
+    host.state.events[0].args[0].value = 60;
+    host.state.events[0].args[1].value = 0.8;
+    const next = structuredClone(params);
+    if (change === "reorder") next.reverse();
+    if (change === "rename") next[0].name = "frequency";
+    if (change === "type") next[0].ty.encoding = "f32";
+    if (change === "default") next[0].default = "72";
+    if (change === "add") next.push({ name: "channel", ty: { kind: "scalar", encoding: "i32" }, default: "1" });
+    if (change === "remove") next.pop();
+    host.setArtifact(artifact(next), new Map());
+    const args = host.state.events[0].args;
+    assert.deepEqual(args.map(arg => arg.value),
+      change === "none" ? [60, 0.8] : args.map(arg => arg.default), change);
+  }
+});
+
 test("distinguishes IEEE-special event defaults when preserving values", () => {
   const scalarEvent = (defaultValue) => ({
     name: "scalar",

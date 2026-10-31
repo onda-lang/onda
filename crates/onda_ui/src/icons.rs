@@ -1,5 +1,15 @@
 //! Small vector paths keep the original run icons sharp at every scale.
 use crate::scene::Scene;
+
+const LOGO_RING_RADIUS: f32 = 156.0;
+const LOGO_RING_STROKE: f32 = 24.0;
+
+fn logo_scale(size: f32) -> f32 {
+    size / 512.0 * 1.3
+}
+pub(crate) fn logo_outer_radius(size: f32) -> f32 {
+    (LOGO_RING_RADIUS + LOGO_RING_STROKE * 0.5) * logo_scale(size)
+}
 #[derive(Clone, Copy)]
 pub(crate) enum Icon {
     Play,
@@ -14,6 +24,17 @@ pub(crate) enum Icon {
     Unload,
     Reset,
     Chevron(bool),
+}
+impl Icon {
+    /// Space before the drawn stroke inside a 28px header action button.
+    pub(crate) fn header_inset(self) -> f32 {
+        match self {
+            Self::Settings => 14.0 - 7.0 - 1.5 * 0.5,
+            Self::Save => 14.0 - 6.0 - 1.5 * 0.5,
+            Self::Unload => 14.0 - 6.0,
+            _ => unreachable!("only Settings, Save and Unload are header actions"),
+        }
+    }
 }
 impl Scene {
     pub fn line(&mut self, a: [f32; 2], b: [f32; 2], width: f32, color: [f32; 4]) {
@@ -66,16 +87,12 @@ impl Scene {
                 }
             }
             Icon::Scope => {
-                let points = [
-                    p(-7.0, 0.0),
-                    p(-4.0, 0.0),
-                    p(-2.0, -4.0),
-                    p(1.0, 4.0),
-                    p(4.0, -2.0),
-                    p(6.0, 0.0),
-                ];
-                for pair in points.windows(2) {
-                    self.line(pair[0], pair[1], 1.2, color);
+                let point = |t: f32| p((t - 0.5) * 14.0, -(t * std::f32::consts::TAU).sin() * 4.0);
+                let mut previous = point(0.0);
+                for i in 1..=32 {
+                    let next = point(i as f32 / 32.0);
+                    self.line(previous, next, 1.2, color);
+                    previous = next;
                 }
             }
             Icon::Pin(pinned) => {
@@ -152,14 +169,19 @@ impl Scene {
         }
     }
     pub fn logo(&mut self, rect: [f32; 4], color: [f32; 4]) {
-        let scale = rect[2] / 512.0 * 1.3;
+        let scale = logo_scale(rect[2]);
         let point = |p: [f32; 2]| {
             [
                 rect[0] + rect[2] * 0.5 + (p[0] - 256.0) * scale,
                 rect[1] + rect[3] * 0.5 + (p[1] - 256.0) * scale,
             ]
         };
-        self.ring(point([256.0, 256.0]), 156.0 * scale, 24.0 * scale, color);
+        self.ring(
+            point([256.0, 256.0]),
+            LOGO_RING_RADIUS * scale,
+            LOGO_RING_STROKE * scale,
+            color,
+        );
         // One distance field for the whole wave avoids dark seams and swollen
         // edges where independently antialiased line segments overlap.
         let origin = point([156.0, 203.0]);

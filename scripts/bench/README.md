@@ -38,10 +38,14 @@ Heavy convolution and FFT cases are included in `--all`; select narrow cases dur
 The shared GPU screen has measurement harnesses separate from DSP benchmarks:
 
 ```sh
+# Check the production renderer and write a representative screenshot.
+cargo run --release -p onda_ui --example benchmark -- target/ui-benchmark.png
+
 # Render each section of the shared fixture and measure warmed frames.
 cargo run --release -p onda_ui --example panels -- target/ui-panels
 
 # Real standalone playback/control transport, without a window.
+cargo build --release -p onda_cli --bin onda
 cargo run --release -p onda_run --example scope_cadence \
   > target/bench-ui-cadence.jsonl
 
@@ -50,6 +54,8 @@ ONDA_SCOPE_INTERVAL_MS=16 ONDA_SCOPE_COLUMNS=348 ONDA_SCOPE_MIN_HZ=45 \
   cargo run --release -p onda_run --example scope_cadence
 ```
 
+The `benchmark` example checks rendered pixels and reports warm median/p95
+CPU-plus-GPU completion for 64 controls and 1,024 stereo samples at 768×840.
 The panel harness uses `ui/gpu/fixtures/panels.json`, writes screenshots, and
 measures scope-only and section-specific updates after warmup. It measures CPU
 submission and GPU completion without window presentation or audio/control IPC.
@@ -57,9 +63,10 @@ Inspect adapter metadata to distinguish hardware from software rendering.
 Build first and collect measurements serially, with other test applications stopped.
 
 The cadence probe starts the real playback child and counts fresh scope responses.
-Build `onda_cli` in release mode first. `ONDA_SCOPE_COLUMNS` selects compact
+It requires an audio output device. `ONDA_SCOPE_COLUMNS` selects compact
 packets; unset it for raw floats. `ONDA_SCOPE_INTERVAL_MS` selects the polling
-interval, `ONDA_SCOPE_SECONDS` controls duration, and `ONDA_SCOPE_MIN_HZ` makes
+interval (the probe runs 50 ms and 16 ms cases when unset),
+`ONDA_SCOPE_SECONDS` controls duration, and `ONDA_SCOPE_MIN_HZ` makes
 the probe fail below the required cadence. These results measure transport
 delivery, not display presentation or end-to-end interaction latency.
 

@@ -309,7 +309,7 @@ const ondaEditorTheme = EditorView.theme({
     color: "var(--code-ink)",
     backgroundColor: "var(--code-bg)",
     fontFamily: "var(--mono)",
-    fontSize: "var(--onda-editor-font-size, .84rem)",
+    fontSize: "var(--onda-editor-font-size, 16px)",
     lineHeight: "1.4",
   },
   ".cm-scroller": {
@@ -336,7 +336,8 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-activeLine, .cm-activeLineGutter": { backgroundColor: "color-mix(in srgb, var(--line) 58%, transparent)" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--code-ink)" },
   ".cm-panels, .cm-tooltip": { color: "var(--text)", backgroundColor: "var(--surface)" },
-  ".cm-tooltip": { border: "1px solid var(--line)" },
+  ".cm-tooltip": { border: "1px solid var(--line)", fontSize: "13px", lineHeight: "1.4" },
+  ".cm-diagnosticSource": { fontSize: "11px" },
   ".cm-completionIcon": {
     width: "1em",
     height: "1em",

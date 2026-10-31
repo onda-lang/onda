@@ -2478,6 +2478,7 @@ dependencies = [
  "bytemuck",
  "cosmic-text",
  "glyphon",
+ "js-sys",
  "onda_mir",
  "onda_scope",
  "png",

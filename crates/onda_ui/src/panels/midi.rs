@@ -1,7 +1,7 @@
 use crate::{
     editing::{Field, Setting},
     icons::Icon,
-    interaction::KEYS,
+    interaction::{ToolbarMenu, KEYS},
     model::RunUi,
     presentation::Section,
     scene::{Palette, Scene, Target, TextStyle},
@@ -9,6 +9,9 @@ use crate::{
 
 const WHITE_NOTES: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
 const BLACK_NOTES: [(u8, usize); 5] = [(1, 1), (3, 2), (6, 4), (8, 5), (10, 6)];
+const TITLE_SIZE: f32 = 14.0;
+const LABEL_SIZE: f32 = 12.0;
+const LABEL_GAP: f32 = 4.0;
 
 struct KeyboardLayout {
     base: u8,
@@ -35,7 +38,7 @@ impl KeyboardLayout {
 }
 
 pub(crate) fn height(ui: &RunUi) -> f32 {
-    KeyboardLayout::new(ui).height + if ui.size[0] < 440.0 { 86.0 } else { 62.0 }
+    KeyboardLayout::new(ui).height + 62.0
 }
 
 pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
@@ -52,49 +55,67 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             p.ink_color()
         },
     );
+    let mut title = "MIDI Keyboard";
+    let full_width = settings_width(false);
+    let compact_width = settings_width(true);
+    let compact = w < 56.0 + crate::fonts::heading_width(title, TITLE_SIZE) + full_width;
+    let mut tools_width = if compact { compact_width } else { full_width };
+    if w < 56.0 + crate::fonts::heading_width(title, TITLE_SIZE) + tools_width {
+        title = "MIDI";
+    }
+    let menu = w < 56.0 + crate::fonts::heading_width(title, TITLE_SIZE) + tools_width;
+    if menu {
+        tools_width = 28.0;
+    }
+    let title_width = (w - 44.0 - if open { tools_width + 12.0 } else { 0.0 }).max(1.0);
+    let heading = [x + 32.0, y + 9.0, title_width, 28.0];
     s.styled(
-        "MIDI Keyboard",
-        [x + 32.0, y + 9.0, 130.0, 28.0],
-        14.0,
+        title,
+        heading,
+        TITLE_SIZE,
         p.ink,
         TextStyle {
             bold: true,
             ..Default::default()
         },
     );
+    s.text_tooltip(heading, "MIDI Keyboard".into());
     s.hit(
-        [x + 10.0, y + 6.0, 152.0, 32.0],
+        [x + 10.0, y + 6.0, title_width + 22.0, 32.0],
         Target::Section(Section::Midi),
     );
     if !open {
         return;
     }
-    let narrow = w < 440.0;
-    let by = if narrow { y + 40.0 } else { y + 10.0 };
-    let bx = if narrow { x + 12.0 } else { x + w - 270.0 };
-    for (offset, label, setting, width) in [
-        (0.0, "Octave", Setting::Octave, 50.0),
-        (124.0, "Velocity", Setting::Velocity, 70.0),
-    ] {
-        s.styled(
-            label,
-            [bx + offset, by, 54.0, 26.0],
-            11.0,
-            p.muted,
-            TextStyle::default(),
-        );
-        s.field(
+    let mut bx = x + w - 12.0 - tools_width;
+    if menu {
+        crate::layout::toolbar::button(
             ui,
-            Field::Setting(setting),
-            [bx + offset + 56.0, by, width, 26.0],
-            ui.field_value(&Field::Setting(setting)).to_string(),
+            s,
             p,
+            [bx, y + 9.0, 28.0, 28.0],
+            ToolbarMenu::Midi,
+            "MIDI settings",
         );
+    } else {
+        for (label, setting, field_width) in settings(compact) {
+            let label_width = label_width(label);
+            setting_control(
+                ui,
+                s,
+                p,
+                label,
+                setting,
+                [bx, y + 10.0, label_width + LABEL_GAP + field_width, 26.0],
+                label_width,
+            );
+            bx += label_width + LABEL_GAP + field_width + if compact { 8.0 } else { 14.0 };
+        }
     }
     let layout = KeyboardLayout::new(ui);
     let keys = [
         x + (w - layout.width) * 0.5,
-        y + if narrow { 76.0 } else { 52.0 },
+        y + 52.0,
         layout.width,
         layout.height,
     ];
@@ -166,7 +187,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             s.styled(
                 key.to_ascii_uppercase().to_string(),
                 [r[0], r[1] + r[3] - 20.0, r[2], 18.0],
-                10.0,
+                11.0,
                 crate::theme::text(0x143a63),
                 TextStyle {
                     centered: true,
@@ -198,7 +219,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             s.styled(
                 key.to_ascii_uppercase().to_string(),
                 [r[0], r[1] + r[3] - 18.0, r[2], 16.0],
-                9.0,
+                11.0,
                 crate::theme::text(0xd8e5f3),
                 TextStyle {
                     centered: true,
@@ -207,6 +228,98 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             );
         }
     }
+}
+
+fn settings(compact: bool) -> [(&'static str, Setting, f32); 2] {
+    if compact {
+        [
+            ("Oct", Setting::Octave, 36.0),
+            ("Vel", Setting::Velocity, 46.0),
+        ]
+    } else {
+        [
+            ("Octave", Setting::Octave, 50.0),
+            ("Velocity", Setting::Velocity, 70.0),
+        ]
+    }
+}
+
+fn label_width(label: &str) -> f32 {
+    crate::fonts::proportional_width(label, LABEL_SIZE, false).ceil()
+}
+
+fn settings_width(compact: bool) -> f32 {
+    settings(compact)
+        .iter()
+        .map(|(label, _, field)| label_width(label) + LABEL_GAP + field)
+        .sum::<f32>()
+        + if compact { 8.0 } else { 14.0 }
+}
+
+fn setting_control(
+    ui: &RunUi,
+    s: &mut Scene,
+    p: Palette,
+    label: &str,
+    setting: Setting,
+    rect: [f32; 4],
+    label_width: f32,
+) {
+    let [x, y, w, h] = rect;
+    let label_top = y + crate::fonts::proportional_baseline_offset(TITLE_SIZE)
+        - crate::fonts::proportional_baseline_offset(LABEL_SIZE);
+    s.styled(
+        label,
+        [x, label_top, label_width, h],
+        LABEL_SIZE,
+        p.muted,
+        TextStyle::default(),
+    );
+    let field = Field::Setting(setting);
+    let bounds = [
+        x + label_width + LABEL_GAP,
+        y,
+        (w - label_width - LABEL_GAP).max(1.0),
+        h,
+    ];
+    s.tooltip(
+        bounds,
+        if label == "Oct" {
+            "Octave"
+        } else if label == "Vel" {
+            "Velocity"
+        } else {
+            label
+        }
+        .into(),
+    );
+    s.field(
+        ui,
+        field.clone(),
+        bounds,
+        ui.field_value(&field).to_string(),
+        p,
+    );
+}
+
+pub(crate) fn menu(ui: &RunUi, s: &mut Scene, p: Palette) {
+    crate::layout::toolbar::menu(ui, s, p, ToolbarMenu::Midi, 80.0, |s, r| {
+        let width = settings(false)
+            .iter()
+            .map(|(label, _, _)| label_width(label))
+            .fold(0.0, f32::max);
+        for (i, (label, setting, _)) in settings(false).into_iter().enumerate() {
+            setting_control(
+                ui,
+                s,
+                p,
+                label,
+                setting,
+                [r[0] + 8.0, r[1] + 8.0 + i as f32 * 36.0, r[2] - 16.0, 28.0],
+                width,
+            );
+        }
+    });
 }
 
 #[cfg(test)]

@@ -132,6 +132,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette) {
             (width - 20.0).max(1.0),
             ui.tooltip_size[1],
         ],
+        12.0,
         p.ink,
     );
 }

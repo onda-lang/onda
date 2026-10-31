@@ -45,6 +45,15 @@ impl CanvasUi {
             rendered: None,
         })
     }
+    /// Device loss is asynchronous and can happen while the canvas is idle.
+    pub fn on_device_lost(&self, callback: js_sys::Function) {
+        self.gpu
+            .renderer
+            .device
+            .set_device_lost_callback(move |_, message| {
+                let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&message));
+            });
+    }
     pub fn message(&mut self, message: &str) -> Result<(), JsValue> {
         self.ui
             .message(serde_json::from_str(message).map_err(|e| JsValue::from_str(&e.to_string()))?);
@@ -56,10 +65,10 @@ impl CanvasUi {
     pub fn scope_packet(&mut self, packet: &[u8]) -> Result<(), JsValue> {
         self.ui.set_scope_packet(packet).map_err(JsValue::from_str)
     }
-    pub fn meter_enabled(&self) -> bool {
+    pub fn meter_enabled(&mut self) -> bool {
         self.ui.meter_enabled()
     }
-    pub fn scope_enabled(&self) -> bool {
+    pub fn scope_enabled(&mut self) -> bool {
         self.ui.scope_enabled()
     }
     pub fn scope_columns(&self) -> usize {

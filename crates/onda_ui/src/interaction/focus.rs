@@ -47,22 +47,9 @@ impl Scene {
             Target::Control(_)
                 | Target::Note(_)
                 | Target::Option(_)
-                | Target::Scrollbar
+                | Target::Scrollbar(_)
                 | Target::Overlay
         ) {
-            return;
-        }
-        // A JSON argument's button and expanded editor share one focus stop.
-        if let Some(previous) = self
-            .focus_targets
-            .last_mut()
-            .and_then(|entry| match entry {
-                FocusEntry::Target(target) => Some(target),
-                _ => None,
-            })
-            .filter(|previous| previous.layer == self.focus_layer && previous.target == *target)
-        {
-            previous.rect = rect;
             return;
         }
         self.focus_targets.push(FocusEntry::Target(FocusTarget {
@@ -78,12 +65,21 @@ impl RunUi {
         self.interaction.focus_visible && self.interaction.focus() == Some(target)
     }
 
+    pub(crate) fn finish_hidden_edit(&mut self) {
+        if self.editor.editing() && self.edited_field_rect().is_none() {
+            // A field leaving the visible scene loses focus just like a click outside.
+            self.commit_draft();
+            self.cancel_editing();
+            self.interaction.focus = None;
+            self.invalidate();
+        }
+    }
+
     pub(crate) fn tab(&mut self, backwards: bool) -> bool {
         let current = self.interaction.focus.clone();
         if !self.commit_draft() {
             return true;
         }
-        // Committing JSON can add or remove fields from the focus order.
         self.prepare_scene();
         let targets: Vec<_> = self
             .scene
@@ -286,58 +282,5 @@ mod tests {
         }
         assert!(ui.interaction.popup_scroll > 0.0);
         assert_eq!(ui.scroll, 0.0);
-    }
-
-    #[test]
-    fn tab_uses_the_committed_slice_structure_in_both_directions() {
-        for (text, backwards, expected) in [
-            (
-                "[]",
-                false,
-                Target::Slice {
-                    event: 0,
-                    arg: 0,
-                    path: String::new(),
-                    add: true,
-                },
-            ),
-            (
-                "[3.0]",
-                false,
-                Target::Field(Field::Event(EventField {
-                    event: 0,
-                    arg: 0,
-                    path: "/0".into(),
-                    scalar: "f64".into(),
-                })),
-            ),
-            ("[]", true, Target::Fold("event/0/0/".into())),
-        ] {
-            let mut ui = fixture();
-            ui.message(json!({"type":"state","state":{"events":[{
-                "name":"send","args":[{"name":"xs","type":"f64[]","value":[1.0,2.0]}]
-            }]}}));
-            ui.begin_field(Field::Event(EventField {
-                event: 0,
-                arg: 0,
-                path: String::new(),
-                scalar: "json".into(),
-            }));
-            ui.input(Input::Text { text: text.into() });
-            tab(&mut ui, backwards);
-            assert_eq!(ui.interaction.focus, Some(expected));
-            assert_eq!(
-                ui.events[0].args[0].value,
-                serde_json::from_str::<serde_json::Value>(text).unwrap()
-            );
-            assert_eq!(ui.editing(), ui.text_edit().is_some());
-            if !backwards && text == "[]" {
-                ui.input(Input::Key {
-                    key: Key::Enter,
-                    shift: false,
-                });
-                assert_eq!(ui.events[0].args[0].value, json!([0]));
-            }
-        }
     }
 }

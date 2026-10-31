@@ -1,4 +1,4 @@
-use crate::{editing::Field, scene::Target, Input, Key, RunUi};
+use crate::{editing::Field, presentation::Section, scene::Target, Input, Key, RunUi};
 use serde_json::{json, Value};
 
 fn fixture() -> RunUi {
@@ -34,6 +34,169 @@ fn position(ui: &mut RunUi, note: u8) -> (f32, f32) {
         .rect
         .0;
     (r[0] + r[2] * 0.5, r[1] + r[3] - 4.0)
+}
+fn toggle_keyboard(ui: &mut RunUi) {
+    ui.prepare_scene();
+    let r = ui
+        .scene
+        .hits
+        .iter()
+        .find(|hit| hit.target == Target::Section(Section::Midi))
+        .unwrap()
+        .rect
+        .0;
+    ui.input(Input::PointerDown {
+        x: r[0] + r[2] * 0.5,
+        y: r[1] + r[3] * 0.5,
+        clicks: 1,
+    });
+    ui.input(Input::PointerUp);
+    ui.prepare_scene();
+}
+
+#[test]
+fn scrolling_a_field_out_of_view_resolves_its_draft_and_releases_keyboard_focus() {
+    for touch in [false, true] {
+        for text in ["0.75", "invalid", "composing"] {
+            let mut ui = fixture();
+            ui.message(json!({"type":"state","state":{
+                "supportsTransport":false,
+                "params":(0..80).map(|i| json!({
+                    "name":format!("p{i}"),"type":"f64","value":0.5
+                })).collect::<Vec<_>>()
+            }}));
+            ui.begin_field(Field::Control(0));
+            ui.input(Input::Text {
+                text: if text == "composing" { "0.75" } else { text }.into(),
+            });
+            if text == "composing" {
+                ui.input(Input::Preedit {
+                    text: "1".into(),
+                    anchor: 0,
+                    cursor: 1,
+                });
+            }
+            assert!(ui.scroll(10.0, false));
+            assert!(ui.editing(), "visible drafts must survive scrolling");
+            assert!(ui.take_commands().is_empty());
+
+            if touch {
+                ui.input(Input::TouchStart {
+                    id: 1,
+                    x: 8.0,
+                    y: 300.0,
+                });
+                ui.input(Input::TouchMove {
+                    id: 1,
+                    x: 8.0,
+                    y: 200.0,
+                    delta_y: Some(1000.0),
+                });
+                ui.input(Input::TouchEnd { id: 1 });
+            } else {
+                assert!(ui.scroll(1000.0, false));
+            }
+            assert!(!ui.editing(), "hidden draft: {text}, touch={touch}");
+            assert!(ui.text_edit().is_none());
+            assert!(ui.interaction.focus().is_none());
+            let commands = ui.take_commands();
+            if text == "0.75" {
+                assert_eq!(
+                    commands,
+                    [json!({
+                        "type":"setParam","name":"p0","value":0.75,"commit":true
+                    })]
+                );
+            } else {
+                assert!(
+                    commands.is_empty(),
+                    "invalid or unfinished drafts must cancel"
+                );
+            }
+
+            ui.input(Input::Key {
+                key: Key::Enter,
+                shift: false,
+            });
+            keyboard(&mut ui, "a", true);
+            keyboard(&mut ui, "a", false);
+            assert_eq!(notes(&mut ui).len(), 2, "MIDI must receive the key again");
+            assert!(!ui.input(Input::Text { text: "a".into() }));
+            ui.scroll(-10_000.0, false);
+            assert!(!ui.editing(), "returning must not restore a hidden draft");
+            assert_eq!(
+                ui.controls[0].value,
+                if text == "0.75" { 0.75 } else { 0.5 }
+            );
+        }
+    }
+}
+
+#[test]
+fn collapsed_keyboard_keeps_receiving_computer_and_host_midi() {
+    let mut ui = fixture();
+    toggle_keyboard(&mut ui);
+    assert!(!ui.presentation.open(Section::Midi));
+    assert!(!ui
+        .scene
+        .hits
+        .iter()
+        .any(|hit| matches!(hit.target, Target::Note(_))));
+    ui.message(json!({"type":"midiActivity","activeNotes":[67]}));
+    assert!(ui.interaction.midi().monitored[67]);
+
+    for (shift, note) in [(false, 60), (true, 72)] {
+        if shift {
+            keyboard(&mut ui, "x", true);
+            keyboard(&mut ui, "x", false);
+        }
+        keyboard(&mut ui, "a", true);
+        keyboard(&mut ui, "a", false);
+        assert_eq!(
+            notes(&mut ui),
+            [
+                json!({"type":"midiNote","key":note,"velocity":1.0,"pressed":true}),
+                json!({"type":"midiNote","key":note,"velocity":0.0,"pressed":false}),
+            ]
+        );
+    }
+    toggle_keyboard(&mut ui);
+    assert!(ui.interaction.midi().monitored[67]);
+    ui.message(json!({"type":"midiActivity","activeNotes":[]}));
+    assert!(!ui.interaction.midi().monitored[67]);
+}
+
+#[test]
+fn collapsing_keyboard_preserves_keyboard_notes_and_releases_hidden_piano_gestures() {
+    let mut ui = fixture();
+    keyboard(&mut ui, "a", true);
+    for (id, note) in [(1, 60), (2, 64)] {
+        let (x, y) = position(&mut ui, note);
+        ui.input(Input::TouchStart { id, x, y });
+    }
+    let (x, y) = position(&mut ui, 67);
+    ui.input(Input::PointerDown { x, y, clicks: 1 });
+    notes(&mut ui);
+
+    toggle_keyboard(&mut ui);
+    assert_eq!(
+        notes(&mut ui),
+        [
+            json!({"type":"midiNote","key":64,"velocity":0.0,"pressed":false}),
+            json!({"type":"midiNote","key":67,"velocity":0.0,"pressed":false}),
+        ]
+    );
+    assert!(ui.interaction.midi().held(60));
+    for id in [1, 2] {
+        ui.input(Input::TouchEnd { id });
+    }
+    keyboard(&mut ui, "a", true);
+    assert!(notes(&mut ui).is_empty());
+    keyboard(&mut ui, "a", false);
+    assert_eq!(
+        notes(&mut ui),
+        [json!({"type":"midiNote","key":60,"velocity":0.0,"pressed":false})]
+    );
 }
 
 #[test]
@@ -291,6 +454,32 @@ fn ime_preedit_is_reversible_and_never_publishes_an_uncommitted_value() {
     assert_eq!(ui.controls[0].value, 12.0);
     assert!(ui.editor.draft().is_none());
     assert_eq!(ui.take_commands()[0]["value"], 12.0);
+}
+
+#[test]
+fn completed_host_snapshot_clears_preedit_even_when_text_and_selection_are_unchanged() {
+    let mut ui = fixture();
+    ui.begin_field(Field::Control(0));
+    ui.input(Input::EditText {
+        text: "0.75".into(),
+        anchor: 4,
+        cursor: 4,
+    });
+    ui.input(Input::Preedit {
+        text: "9".into(),
+        anchor: 1,
+        cursor: 1,
+    });
+    assert!(!ui.commit_draft());
+    // A cancelled candidate leaves the host editor at the same committed text/caret.
+    ui.input(Input::EditText {
+        text: "0.75".into(),
+        anchor: 4,
+        cursor: 4,
+    });
+    assert!(ui.commit_draft());
+    assert_eq!(ui.take_commands()[0]["value"], 0.75);
+    assert!(!ui.editing());
 }
 
 #[test]

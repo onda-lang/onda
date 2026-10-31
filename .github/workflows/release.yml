@@ -21,11 +21,11 @@ on:
       plugin_ref:
         description: Full onda-plugin source commit for integration builds
         type: string
-        default: 0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+        default: 6ace950e685b5bbb4b83ac2b1523089859093a07
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
-        default: 1d85823ddfcdf082556df17362a6857087bf1d39
+        default: 8c5d275bacbb1c36332cbfc67b1802c3b0737f58
   push:
     tags:
       - "v*"
@@ -312,12 +312,14 @@ jobs:
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $docsDir
           Copy-Item docs\api.md $docsDir
+          Copy-Item docs\ui-api.md $docsDir
           Copy-Item docs\processor-abi.md $docsDir
           Copy-Item docs\stdlib.md $docsDir
           Copy-Item examples $packageRoot -Recurse
 
           if (-not (Test-Path (Join-Path $docsDir "syntax.md")) -or
               -not (Test-Path (Join-Path $docsDir "api.md")) -or
+              -not (Test-Path (Join-Path $docsDir "ui-api.md")) -or
               -not (Test-Path (Join-Path $docsDir "processor-abi.md")) -or
               -not (Test-Path (Join-Path $docsDir "stdlib.md")) -or
               -not (Test-Path (Join-Path $licensesDir "SLEEF-LICENSE.txt")) -or
@@ -461,12 +463,14 @@ jobs:
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$docs_dir/"
           cp docs/api.md "$docs_dir/"
+          cp docs/ui-api.md "$docs_dir/"
           cp docs/processor-abi.md "$docs_dir/"
           cp docs/stdlib.md "$docs_dir/"
           cp -R examples "$package_root/"
 
           test -f "$docs_dir/syntax.md"
           test -f "$docs_dir/api.md"
+          test -f "$docs_dir/ui-api.md"
           test -f "$docs_dir/processor-abi.md"
           test -f "$docs_dir/stdlib.md"
           test -s "$licenses_dir/SLEEF-LICENSE.txt"
@@ -644,7 +648,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-plugin/.github/workflows/build.yml@0f4ebea4f6260f0f5089b47cad2b3585864dbf1b
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@6ace950e685b5bbb4b83ac2b1523089859093a07
     with:
       source_ref: ${{ inputs.plugin_ref }}
       onda_source_ref: ${{ github.sha }}
@@ -654,7 +658,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@1d85823ddfcdf082556df17362a6857087bf1d39
+    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@8c5d275bacbb1c36332cbfc67b1802c3b0737f58
     with:
       source_ref: ${{ inputs.vscode_ref }}
       onda_source_ref: ${{ github.sha }}

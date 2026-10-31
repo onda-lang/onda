@@ -6,6 +6,7 @@
 extern "C" {
 #endif
 typedef struct OndaUi OndaUi;
+/* Complete host protocol and lifecycle reference: docs/ui-api.md in the SDK. */
 /* Call all functions on the host UI thread. The native view and display must
  * outlive OndaUi. Coordinates use logical pixels; dimensions use physical pixels.
  * platform: 1 = Xlib (window XID, display Display*), 2 = Win32 HWND,
@@ -15,7 +16,7 @@ OndaUi *onda_ui_create(uint32_t platform, uintptr_t window, uintptr_t display,
                       char *error, size_t error_capacity);
 void onda_ui_destroy(OndaUi *ui);
 void onda_ui_resize(OndaUi *ui, uint32_t width, uint32_t height, float scale);
-/* Existing run-view JSON messages, or input events as documented in ui/gpu. */
+/* Host-message JSON defined in docs/ui-api.md. Returns 1 on success, 0 on error. */
 int onda_ui_message(OndaUi *ui, const char *json);
 /* 1 = consumed, 0 = unused (forward keyboard input to the host), -1 = error. */
 int onda_ui_input(OndaUi *ui, const char *json);
@@ -23,13 +24,14 @@ int onda_ui_input(OndaUi *ui, const char *json);
 void onda_ui_scope(OndaUi *ui, uint32_t channels, const float *samples, size_t count);
 /* 1 = presented/clean, 0 = retry later, -1 = error. */
 int onda_ui_render(OndaUi *ui);
-/* Whether the visible scope panel needs fresh snapshots. */
-int onda_ui_scope_visible(const OndaUi *ui);
+/* Whether the clipped scope viewport needs fresh snapshots. Resolves pending layout. */
+int onda_ui_scope_visible(OndaUi *ui);
 /* Peak maxima: one per channel, up to 64 channels. */
 void onda_ui_meter(OndaUi *ui, uint32_t channels, const float *peaks, size_t count);
-int onda_ui_meter_visible(const OndaUi *ui);
+/* Whether any clipped header meter needs fresh peaks. Resolves pending layout. */
+int onda_ui_meter_visible(OndaUi *ui);
 /* JSON command array, borrowed until the next call to commands or destroy.
- * Drain after input/state updates and on UI timer ticks for deferred scroll saves.
+ * Drain after input/state updates, rendering, and UI timer ticks for scroll saves.
  * Send focusLost and drain commands before hiding or destroying the view. */
 const char *onda_ui_commands(OndaUi *ui);
 const char *onda_ui_error(const OndaUi *ui);

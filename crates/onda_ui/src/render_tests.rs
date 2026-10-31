@@ -3,6 +3,152 @@ use crate::{scene::Palette, Renderer, RunUi};
 use serde_json::json;
 
 #[test]
+fn measured_layout_changes_resolve_hidden_drafts() {
+    use crate::{editing::Field, Input, Key};
+
+    pollster::block_on(async {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let mut renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8UnormSrgb)
+            .await
+            .unwrap();
+        let render = |renderer: &mut Renderer, ui: &mut RunUi, width| {
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("diagnostic layout regression"),
+                size: wgpu::Extent3d {
+                    width,
+                    height: 400,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            renderer
+                .render(
+                    ui,
+                    &texture.create_view(&Default::default()),
+                    width,
+                    400,
+                    1.0,
+                )
+                .unwrap();
+        };
+        let error = "compile error word ".repeat(18);
+        for resize in [true, false] {
+            for draft in ["valid", "invalid", "preedit", "marked"] {
+                let mut ui = RunUi::default();
+                ui.message(json!({"type":"state","state":{
+                    "path":"diagnostic.onda","supportsScope":false,"supportsTransport":false,
+                    "error":if resize {error.as_str()} else {""},
+                    "params":[{"name":"gain","type":"f64","value":0.0}]
+                }}));
+                render(&mut renderer, &mut ui, if resize { 720 } else { 360 });
+                ui.begin_field(Field::Control(0));
+                ui.input(Input::Text {
+                    text: if draft == "invalid" {
+                        "invalid"
+                    } else {
+                        "0.75"
+                    }
+                    .into(),
+                });
+                if draft == "preedit" {
+                    ui.input(Input::Preedit {
+                        text: "1".into(),
+                        anchor: 0,
+                        cursor: 1,
+                    });
+                } else if draft == "marked" {
+                    ui.input(Input::TextMark { start: 0, end: 1 });
+                }
+                assert!(ui.text_edit().is_some(), "draft must start visible");
+                if resize {
+                    ui.resize(360.0, 400.0, 1.0);
+                } else {
+                    ui.message(json!({"type":"state","state":{"error":error}}));
+                }
+                render(&mut renderer, &mut ui, 360);
+
+                assert!(!ui.editing(), "resize={resize}, draft={draft}");
+                assert!(ui.text_edit().is_none());
+                assert!(ui.interaction.focus().is_none());
+                assert_eq!(
+                    ui.take_commands(),
+                    if draft == "valid" {
+                        vec![json!({"type":"setParam","name":"gain","value":0.75,"commit":true})]
+                    } else {
+                        vec![]
+                    }
+                );
+                ui.input(Input::Key {
+                    key: Key::Enter,
+                    shift: false,
+                });
+                assert!(
+                    ui.take_commands().is_empty(),
+                    "hidden draft must not commit twice"
+                );
+                assert!(!ui.input(Input::Text { text: "1".into() }));
+            }
+        }
+    });
+}
+
+#[test]
+fn host_device_renders_into_a_preexisting_host_texture() {
+    pollster::block_on(async {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("host-owned UI target"),
+            size: wgpu::Extent3d {
+                width: 768,
+                height: 840,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut renderer = Renderer::from_device(device.clone(), queue.clone(), format);
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{
+            "path":"host.onda","params":[{"name":"gain","type":"f64","value":0.5}]
+        }}));
+        let submission = renderer
+            .render(
+                &mut ui,
+                &texture.create_view(&Default::default()),
+                768,
+                840,
+                1.0,
+            )
+            .unwrap();
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(10)),
+            })
+            .unwrap();
+        assert!(scope.pop().await.is_none(), "host device validation failed");
+        let pixels = read_pixels(&renderer, &texture);
+        assert!(pixels.as_chunks::<4>().0.iter().any(|p| *p != pixels[..4]));
+    });
+}
+
+#[test]
 fn horizontal_log_scrolling_keeps_output_reachable() {
     pollster::block_on(async {
         let instance =
@@ -378,6 +524,7 @@ fn both_surface_formats_preserve_the_theme_and_use_one_scope_color() {
             for light in [false, true] {
                 let mut ui = RunUi::default();
                 ui.message(json!({"type":"state","state":{"path":"colors.onda","running":true,"themeMode":if light{"light"}else{"dark"}}}));
+                ui.presentation.scope_pinned = false;
                 ui.interaction.scope_open = true;
                 ui.set_scope_interleaved(2, &[0.25, 0.25, 0.25, 0.25]);
                 renderer.render(&mut ui, &view, width, height, 1.0).unwrap();

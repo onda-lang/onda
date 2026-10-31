@@ -1,216 +1,114 @@
 # Onda embedded-compiler playground
 
-This example is a thin standalone host for the shared browser IDE in [`ui/playground`](../../../ui/playground/README.md).
-It demonstrates embedding the Onda compiler in a browser application:
+This example hosts the shared [browser IDE](../../../ui/playground/README.md):
+a CodeMirror source editor, the Onda compiler/LSP in a worker, GPU run controls,
+and an AudioWorklet processor. It runs entirely in the browser after staging;
+there is no native CLI or compiler service at runtime.
 
-```text
-editable Onda source
-  -> onda lsp in @onda-lang/wasm-compiler Wasm + embedded stdlib
-  -> live diagnostics, completion, hover, definitions, symbols, semantic tokens
-  -> validated MIR MessagePack
-  -> packaged Binaryen backend + Binaryen.js
-  -> DSP Wasm + metadata
-  -> @onda-lang/webaudio AudioWorklet
-```
-
-The shared UI consumes the public `@onda-lang/wasm-compiler`, `@onda-lang/processor-abi`, and
-`@onda-lang/webaudio` APIs. It contains a CodeMirror project editor with line numbers and multiple
-in-memory files, backed by the same Onda LSP implementation as `onda-vscode`. The existing shared
-Rust/wgpu canvas in `ui/gpu` provides all seven run panels, scope, and transport controls.
-It selects hardware WebGPU when available and falls back to WebGL2; append `?backend=webgl`
-to select WebGL2 explicitly. The CodeMirror source editor remains separate.
-Rust analysis, semantic compilation, and Binaryen O4 optimization run through the compiler package's
-module worker, so neither LSP requests nor compilation block editor interaction.
-The source is compiled in the browser; there is no compiler service, native Onda CLI, LLVM, or
-`wasm-ld` in the runtime path.
-
-For an application that ships only an ahead-of-time compiled processor, see the separate
-[`onda_wasm_aot_sample_player`](../onda_wasm_aot_sample_player/README.md) example. That page contains
-neither the Onda compiler nor Binaryen.
+For a page that ships only a precompiled processor, use the
+[AOT sample-player example](../onda_wasm_aot_sample_player/README.md).
+For embedding APIs, see the [Web API](../../../docs/web-api.md) and
+[UI host API](../../../docs/ui-api.md).
 
 ## Prerequisites
 
-- Node.js and npm
-- `wasm-pack`
-- a browser with WebAssembly, JavaScript modules, and AudioWorklet support
+- Rust, `wasm-pack`, and the `wasm32-unknown-unknown` target.
+- Node.js/npm and `cargo-about` 0.9.2 with the `cli` feature for license generation.
+- A browser with WebAssembly, JavaScript modules, AudioWorklet, and WebGPU or WebGL2.
 
-`wasm-pack` is a build-time requirement because the Rust browser compiler must be packaged as Wasm.
-After the build, the demo consists of static files. Local development can use HTTP on localhost;
-non-local AudioWorklet hosting normally requires HTTPS because it must run in a secure context.
+The result is a static site. Serve it over localhost or HTTPS; non-local audio
+requires a secure context. The included server supplies COOP/COEP headers for
+printed output. Without cross-origin isolation, audio, controls, and scope still
+work, but authored prints are unavailable.
 
 ## Build and run
 
-Windows PowerShell:
+Run from the repository root on macOS/Linux:
+
+```sh
+bash examples/web/onda_wasm_playground/build-demo.sh --serve
+```
+
+Or in Windows PowerShell:
 
 ```powershell
 .\examples\web\onda_wasm_playground\build-demo.ps1 -Serve
 ```
 
-macOS/Linux:
+Open `http://127.0.0.1:8787/`. The scripts install missing npm dependencies, build
+the compiler and GPU Wasm, and stage the shared editor, worker, and audio modules.
+Omit `--serve`/`-Serve` to stage without starting the server.
 
-```bash
-bash ./examples/web/onda_wasm_playground/build-demo.sh --serve
+For JavaScript/CSS changes after the initial build, the Bash script can restage
+without rebuilding Wasm:
+
+```sh
+bash examples/web/onda_wasm_playground/build-demo.sh --skip-build --serve
 ```
 
-Open `http://127.0.0.1:8787/`. The loaded patch starts as soon as the compiler is ready. After
-stopping, select **Play** in the shared run view (or press Cmd/Ctrl+S or Cmd/Ctrl+Enter) to start it
-again. This compiles changed project files and starts a fresh AudioWorklet; unchanged projects reuse
-their compiled artifact. Ctrl+Period stops execution. All shortcuts work anywhere on the page, including
-inside the run view. Cmd/Ctrl+click navigates to project definitions and opens standard-library
-definitions
-in read-only tabs. Each compact tab has a close control: project tabs delete the browser-project file,
-while standard-library tabs are merely dismissed. Definition navigation continues to work inside open
-standard-library tabs. If the browser blocks autoplay, click, tap, or press a key anywhere in the
-playground, including the embedded run view, to enable audio. The prompt clears when audio starts.
-Stop cancels pending playback without enabling sound; subsequent interactions leave it stopped.
+Rebuild after changes to Rust, the product version, or packaged backend assets.
+For Rust UI changes alone, run `npm run build:gpu-ui` before restaging with
+`--skip-build`. If the server is already running, omit `--serve` and reload.
 
-After the initial build, UI-only changes can be previewed quickly on macOS/Linux:
+## Use the playground
 
-```bash
-bash ./examples/web/onda_wasm_playground/build-demo.sh --skip-build --serve
-```
+The loaded project starts when compilation finishes. If autoplay is blocked,
+click, tap, or press a key in the playground to enable audio. **Stop** cancels
+pending playback and keeps it stopped until the next **Play** action.
 
-This refreshes all staged UI and JavaScript assets using the existing compiler build.
-Omit `--serve` if the server is already running, then reload the page.
-Omit `--skip-build` when changing the Rust compiler, GPU renderer, or packaged backend.
-Alternatively, rebuild just the GPU renderer with `npm run build:gpu-ui` before staging.
+- **Play:** Ctrl/Command+S or Ctrl/Command+Enter. Changed sources compile first;
+  unchanged sources reuse their artifact. Each play starts fresh DSP state.
+- **Stop:** Ctrl/Command+Period. Transport shortcuts also work inside the run view.
+- **Navigate:** Ctrl/Command+click a definition. Standard-library definitions open
+  in read-only tabs. Closing a project tab deletes that file; closing a library
+  tab only dismisses it. The **+** beside the tabs creates a file.
+- **Settings:** Sample Rate and Block Size recompile and restart the project.
+  Preferences persist locally; the browser's actual sample rate is used for DSP.
+- **Parameters and events:** The run view provides typed editors. Params Reset
+  restores parameter defaults; Events Reset restores argument values. Neither
+  reruns processor initialization. Play recreates the processor.
+- **Buffers:** Bind/Replace or drop a WAV/`.ondabuffer` onto its buffer card. Changing
+  a binding recreates the processor. Clearing a binding leaves neutral storage.
 
-Use **Share** to copy a URL-fragment snapshot containing every project source file and the main and
-active files. The fragment stays in the browser and is compressed when supported. Compile settings
-and selected buffer files remain local and are not embedded in the URL.
+The GPU controls select WebGPU when a non-fallback adapter is available and
+WebGL2 otherwise. Append `?backend=webgl` to force WebGL2. Presentation and typed
+event arguments persist across reloads when their schemas still match.
 
-Use **Open project** to replace the editor contents with a single `.onda` or `.on` file, or a project
-ZIP. The browser picker intentionally excludes bare `.ondaproject` files because selecting a manifest
-does not also give the page access to its referenced source and asset files. Package the manifest,
-sources, and assets together in the ZIP instead. An archive may contain more than one
-`.ondaproject`; the playground asks which one to open. Use **Download project** to package the current
-in-memory sources and bound buffers into the same portable ZIP. After extraction, its `.ondaproject`
-file can be passed directly to `onda compile`, `onda run`, or either native run GUI.
+## Projects and sharing
 
-Without `-Serve`/`--serve`, the scripts only prepare the static assets:
+**Share** copies a URL-fragment snapshot of the project sources and main/active
+files. Compile settings and selected buffer data stay local.
 
-```powershell
-.\examples\web\onda_wasm_playground\build-demo.ps1
-```
+**Open project** accepts `.onda`, `.on`, or a project ZIP. A bare `.ondaproject`
+manifest does not grant browser access to sibling sources/assets, so ZIP the
+manifest with its dependencies. Archives with multiple manifests offer a choice.
+**Download project** exports the current sources and bound buffers to the same
+portable ZIP format. After extraction, pass its `.ondaproject` to native Onda.
 
-```bash
-bash ./examples/web/onda_wasm_playground/build-demo.sh
-```
+Sources and preferences persist in local storage. Selected buffer files do not;
+export a project ZIP to retain them. Omitted buffers do not prevent playback.
 
-The scripts:
+## Limits
 
-- install the root npm workspace and its pinned `binaryen` dependency when it is missing
-- build the Rust frontend with `wasm-pack --release`, then optimize it with the workspace-pinned
-  Binaryen `wasm-opt -O4`
-- build the shared GPU renderer as Wasm and stage it with the compiler, LSP, ABI, and Web Audio modules
-- bundle the canonical `ui/playground` runtime and compiler worker, including Binaryen dependencies,
-  into this example's static host
-- optionally start `server.mjs` on `127.0.0.1:8787`
-
-The editor defaults to 48000 Hz and 512 frames, with 44100/48000 Hz sample rates and
-128/256/512/1024/2048-frame compile blocks available. Changing a compile setting recompiles
-and restarts the current project. Settings persist locally across
-page reloads; these are editor controls, not build-script flags.
-
-If PowerShell script execution is blocked:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\examples\web\onda_wasm_playground\build-demo.ps1 -Serve
-```
+- Recompilation and buffer changes recreate the processor; DSP state is not migrated.
+- WAV input supports little-endian PCM/IEEE-float samples for `f32` buffers;
+  `.ondabuffer` preserves all supported primitive element types.
+- Programs with audio inputs request microphone permission and reuse one stream.
+  The playground supports at most 32 flattened input or output channels.
+- Control-output and mutable-buffer inspection are available in the underlying
+  APIs but are not exposed by the playground.
 
 ## Verification
 
-All browser packages can be tested from the root workspace:
+After building/staging, run from the repository root:
 
-```bash
-npm ci
-npm run test:web
-npm run test:onda --workspace @onda-lang/binaryen-web
+```sh
+npm run test:playground
 CHROME_BIN=/path/to/chromium npm run test:gpu-web-editor
 ```
 
-The packaged-layout smoke test is also available separately:
-
-```bash
-npm run test:pack --workspace @onda-lang/wasm-compiler
-```
-
-`npm test` in the compiler package builds the source-to-Wasm product API and tests source, project,
-diagnostic, and worker behavior. The backend's `npm test` covers current-schema lowering, the internal Wasm
-math kernel, and AudioWorklet behavior. Its `npm run test:onda` compiles real Onda source, compares
-Binaryen renders with the native LLVM/MIR path, and runs the FMA oracle. `npm run test:parity` runs
-only the LLVM/Binaryen differential render suite. The source-driven/parity commands require a
-working native Rust/LLVM Onda build; the demo asset build and ordinary JavaScript tests do not.
-
-```bash
-cd packages/onda_binaryen_web
-npm run bench
-```
-
-This runs the reproducible development comparison documented in
-[the benchmark guide](../../../scripts/bench/README.md#compare-backend-compilation-and-runtime) and requires the native
-Rust/LLVM Onda build.
-
-For a manual browser smoke test, edit the default program and confirm LSP diagnostics/completion,
-add an included project file, run it, inspect the shared output scope, move a generated parameter
-control, load a PCM/float WAV or `.ondabuffer` for a declared buffer, trigger an event, export and
-reopen the project ZIP, and reset the DSP.
-
-## Host behavior
-
-The worklet's persistent compile-block cursor decouples Web Audio render-quantum size from the MIR
-compile-time block size. Each callback is split into legal `(start_frame, frames, flags)` segments;
-a compile block may span callbacks, and one callback may cross several compile-block boundaries
-without resetting DSP state.
-
-The `@onda-lang/webaudio` adapter registers the worklet module before constructing the node, derives
-channel options from metadata, and provides request-correlated helpers. Parameters are
-initialized from generated metadata and updated with
-`{ type: "set-param", param: "name", value }`. Scalar and fixed-array parameter types are written
-according to their metadata rather than by a name-specific convention. The Params reset restores
-parameter defaults through the same update path, while the Events reset restores only the event
-argument editors. Neither action clears physical processor state or reruns processor initialization.
-
-The generic event/control-output ABI accepts
-`{ type: "event", event: "event_name", values: { param: value } }`. Values follow the event's
-recursive schema: nominal structs are objects containing exactly their declared fields, while
-tuples, fixed arrays, and runtime slices are sequences. Scalar and nested structured payloads are
-packed into the canonical little-endian wire layout and dispatched through the generated
-`onda_event_N` export. `{ type: "read-control-outputs" }` produces a
-`{ type: "control-outputs", values }` reply. ABI errors are returned as `onda-error` messages rather
-than terminating the processor. Portable packed state can be requested and restored through
-`snapshot` and `restore-snapshot`; restore starts from a fresh post-init physical image.
-
-Declared external buffers are supplied in `processorOptions.buffers`, keyed by Onda name. Each
-binding has `{ data, frames, channels, sampleRate }`; `data` uses the native interleaved frame
-layout. Mono/static channel constraints are checked against compiler metadata. A fixed array can be
-supplied under its logical name as an array of bindings, with `null` or omitted entries leaving
-individual slots unbound. Missing bindings use the neutral one-frame descriptor and do not prevent
-the processor from starting.
-`{ type: "read-buffer", buffer: "name" }` returns current contents, including writes from Onda.
-
-## Current limitations
-
-- Recompiling while audio is active stops and recreates the AudioContext/processor, so DSP state is
-  initialized rather than migrated or crossfaded.
-- Browser projects persist in local storage, but selected buffer files do not. Playback may start
-  with any scalar buffer or fixed-array slot unbound; the run view labels those slots as unbound and
-  the processor uses neutral storage. Loading or clearing a file while audio is active recreates the
-  processor with the new binding set.
-- The playground loads little-endian PCM or IEEE-float WAV files into `f32` buffers and canonical
-  `.ondabuffer` files into `bool`, `i32`, `i64`, `f32`, or `f64` buffers.
-- The worklet can return control-output values, but the page does not yet render them.
-- Top-level audio inputs connect to one shared microphone stream. The page requests permission only
-  when the compiled processor exposes those inputs and reuses the stream across recompiles.
-- The page rejects more than 32 flattened input or output channels because of Web Audio node limits.
-- The page requests the selected sample rate from `AudioContext` and recompiles against the actual
-  browser-selected rate before constructing the processor when they differ.
-- Exact f32/f64 FMA is linked into the DSP module from the pure-Wasm math kernel. It preserves
-  one-rounding behavior without JavaScript work on the audio thread, but can remain slower than
-  native hardware FMA in dense sample loops.
-- The standalone example stages development assets without compression or immutable URLs. The
-  website build emits versioned assets; broader Chromium/Firefox/Safari audio coverage remains.
-- Printed output requires cross-origin isolation (COOP/COEP headers), which the included server enables.
-  Without isolation, audio, controls, and scope still work, but authored prints are unavailable.
-- The Chrome integration suite verifies real, muted AudioWorklet processing for both browser hosts;
-  broader browser coverage and audible output checks remain manual.
+The Chrome suite checks both browser hosts with real compilation and muted
+AudioWorklet processing. It covers controls, files, MIDI, saved presentation,
+autoplay, and non-isolated hosting. See [GPU UI verification](../../../ui/gpu/README.md#verification)
+for website staging and hardware-WebGPU requirements. Other package tests are
+listed in the [Web API development guide](../../../docs/architecture.md#browser-build-and-verification).

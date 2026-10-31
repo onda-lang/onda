@@ -12,7 +12,9 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         ("Sample rate", SelectId::SampleRate, "sampleRateHz"),
         ("Block size", SelectId::BlockSize, "blockSamples"),
     ] {
-        if ui.state.get(key).is_none() {
+        if ui.state.get(key).is_none()
+            || (id == SelectId::SampleRate && ui.state.get("hostBlockSamples").is_some())
+        {
             continue;
         }
         s.text_row(label, [x, y, w, 20.0], p);

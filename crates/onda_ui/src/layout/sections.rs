@@ -21,7 +21,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         Section::Params,
     ] {
         let present = match section {
-            Section::Scope => ui.presentation.scope_pinned && ui.state["supportsScope"] != false,
+            Section::Scope => ui.presentation.scope_pinned && ui.scope_available(),
             Section::Log => ui.log_present(),
             Section::Buffers => ui.state["buffers"]
                 .as_array()
@@ -52,30 +52,21 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         let tools_width = if let Some(header) = &bank_header {
             header.tools_width
         } else if section == Section::Log {
-            192.0
+            panels::log::header_width(w)
+        } else if section == Section::Scope {
+            28.0
         } else {
             0.0
         };
-        let title_x = if bank && w < 128.0 { 20.0 } else { 26.0 };
+        let title_x: f32 = if bank && w < 128.0 { 14.0 } else { 26.0 };
         let title_inset = if reset.is_some() {
             75.0
         } else {
-            title_x + if bank && w < 128.0 { 11.0 } else { 17.0 }
+            title_x + if bank && w < 128.0 { 9.0 } else { 17.0 }
         };
         let title_size = crate::fonts::heading_width(title, font_size) + 2.0;
-        let wrap_tools = !bank && tools_width > 0.0 && w < title_size + title_inset + tools_width;
-        let tools_y = y + if wrap_tools {
-            SECTION_HEADER_HEIGHT
-        } else {
-            0.0
-        };
-        let header_height = SECTION_HEADER_HEIGHT
-            + if wrap_tools {
-                SECTION_HEADER_HEIGHT
-            } else {
-                0.0
-            };
-        let title_space = (w - if wrap_tools { 0.0 } else { tools_width } - title_inset).max(1.0);
+        let header_height = SECTION_HEADER_HEIGHT;
+        let title_space = (w - tools_width - title_inset).max(1.0);
         let title_width = if reset.is_some() {
             title_size.min(title_space)
         } else {
@@ -83,7 +74,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         };
         s.icon(
             Icon::Chevron(open),
-            [x + title_x - 12.0, y + 20.0],
+            [x + (title_x - 12.0).max(6.0), y + 20.0],
             if ui.focused(&Target::Section(section)) {
                 p.accent
             } else {
@@ -108,8 +99,8 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             [
                 x + 6.0,
                 y + 4.0,
-                if reset.is_some() || bank {
-                    title_width + title_x - 6.0
+                if tools_width > 0.0 {
+                    (w - tools_width - 15.0).max(0.0)
                 } else {
                     w - 12.0
                 },
@@ -134,31 +125,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             header.build(ui, s, p, [x, y, w, SECTION_HEADER_HEIGHT], input);
         }
         if section == Section::Log {
-            s.button(
-                ui,
-                if ui.presentation.log_follow {
-                    "Following"
-                } else {
-                    "Follow"
-                },
-                [x + w - SECTION_INSET - 192.0, tools_y + 7.0, 76.0, 26.0],
-                Target::Follow,
-                p,
-            );
-            s.button(
-                ui,
-                "Copy",
-                [x + w - SECTION_INSET - 110.0, tools_y + 7.0, 48.0, 26.0],
-                Target::CopyLog,
-                p,
-            );
-            s.button(
-                ui,
-                "Clear",
-                [x + w - SECTION_INSET - 56.0, tools_y + 7.0, 56.0, 26.0],
-                Target::Command(json!({"type":"clearLog"})),
-                p,
-            );
+            panels::log::header(ui, s, p, [x, y, w, header_height]);
         }
         let body = [
             x + SECTION_INSET,
@@ -189,7 +156,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             };
         s.shapes[start].rect[3] = height;
         s.shapes[start + 1].rect[3] = (height - 2.0).max(0.0);
-        if section == Section::Scope {
+        if section == Section::Scope && !open {
             s.scope_shape_end = s.shapes.len();
         }
         y += height + GAP;
@@ -241,7 +208,7 @@ mod tests {
                         };
                         let targets = [
                             Target::Section(section),
-                            Target::BankMenu(input),
+                            Target::ToolbarMenu(crate::interaction::ToolbarMenu::Bank(input)),
                             Target::Command(json!({"type":reset})),
                             Target::Layout {
                                 input,
@@ -256,7 +223,10 @@ mod tests {
                             .iter()
                             .filter(|hit| targets.contains(&hit.target))
                             .collect();
-                        let compact_menu = hits.iter().any(|h| h.target == Target::BankMenu(input));
+                        let compact_menu = hits.iter().any(|h| {
+                            h.target
+                                == Target::ToolbarMenu(crate::interaction::ToolbarMenu::Bank(input))
+                        });
                         let inline_reset = hits
                             .iter()
                             .any(|h| h.target == Target::Command(json!({"type":reset})));
@@ -278,7 +248,10 @@ mod tests {
                             .unwrap();
                         assert!(
                             label.width >= crate::fonts::heading_width(&label.text, label.size),
-                            "clipped heading at viewport {width}, smoothing {smoothing}"
+                            "clipped heading at viewport {width}, smoothing {smoothing}: {} needs {}, has {}",
+                            label.text,
+                            crate::fonts::heading_width(&label.text, label.size),
+                            label.width,
                         );
                         let section_y = hits
                             .iter()
@@ -298,8 +271,14 @@ mod tests {
                                 hit.target
                             );
                         }
-                        for (i, a) in hits.iter().enumerate() {
-                            for b in &hits[i + 1..] {
+                        let actions: Vec<_> = hits
+                            .iter()
+                            .filter(|hit| !matches!(hit.target, Target::Section(_)))
+                            .collect();
+                        for (i, a) in actions.iter().enumerate() {
+                            let [x, y, w, h] = a.rect.0;
+                            assert_eq!(ui.target(x + w * 0.5, y + h * 0.5), Some(a.target.clone()));
+                            for b in &actions[i + 1..] {
                                 let Rect(r) = a.rect.intersect(b.rect);
                                 assert!(
                                     r[2] == 0.0 || r[3] == 0.0,
@@ -312,6 +291,60 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn header_middle_collapses_sections_and_reset_keeps_its_own_action() {
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{
+            "path":"headers.onda","supportsScope":false,
+            "supportsParamSmoothing":true,"supportsInputControlSmoothing":true,
+            "params":[{"name":"gain","type":"f64","value":0.5}],
+            "inputControls":[{"name":"wet","type":"f64","value":0.5}],
+            "events":[{"name":"fire","args":[]}]
+        }}));
+        for (section, command) in [
+            (Section::Params, "resetParams"),
+            (Section::InputControls, "resetInputControls"),
+            (Section::Events, "resetEventArguments"),
+        ] {
+            ui.prepare_scene();
+            let reset = Target::Command(json!({"type":command}));
+            let r = ui
+                .scene
+                .hits
+                .iter()
+                .find(|hit| hit.target == reset)
+                .unwrap()
+                .rect
+                .0;
+            let (x, y) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+            assert_eq!(ui.target(x, y), Some(reset));
+            ui.input(crate::Input::PointerDown { x, y, clicks: 1 });
+            ui.input(crate::Input::PointerUp);
+            assert!(ui.presentation.open(section));
+            assert!(ui.take_commands().iter().any(|c| c["type"] == command));
+
+            ui.prepare_scene();
+            let r = ui
+                .scene
+                .hits
+                .iter()
+                .find(|hit| hit.target == Target::Section(section))
+                .unwrap()
+                .rect
+                .0;
+            let (x, y) = (r[0] + r[2] * 0.75, r[1] + r[3] * 0.5);
+            assert_eq!(ui.target(x, y), Some(Target::Section(section)));
+            ui.input(crate::Input::PointerMove { x, y, fine: false });
+            assert_eq!(ui.cursor(), "pointer");
+            ui.input(crate::Input::PointerDown { x, y, clicks: 1 });
+            ui.input(crate::Input::PointerUp);
+            assert!(!ui.presentation.open(section));
+            ui.input(crate::Input::PointerDown { x, y, clicks: 1 });
+            ui.input(crate::Input::PointerUp);
+            assert!(ui.presentation.open(section));
         }
     }
 }

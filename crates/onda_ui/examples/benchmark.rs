@@ -32,8 +32,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let view = texture.create_view(&Default::default());
     let mut ui = RunUi::default();
     ui.message(json!({"type":"state","state":{"path":"oscillators / electric.onda","status":"Playing · 48 kHz · 512 samples","running":true,
+        "outputChannels":2,"viewState":{"scopePinned":true},
         "paramLayout":"knobs","params":(0..64).map(|i|json!({"name":format!("Parameter {}",i+1),"type":"f64","value":i as f64/64.0,
             "default":0.5,"rangeMin":0.0,"rangeMax":1.0,"scale":"linear"})).collect::<Vec<_>>()}}));
+    assert!(ui.scope_enabled(), "Benchmark requires a visible scope");
     let mut samples = vec![0.0; 2048];
     let mut times = Vec::new();
     for frame in 0..150 {
@@ -42,6 +44,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             samples[i * 2 + 1] = ((i as f32 * 0.05 + frame as f32 * 0.01).sin()) * 0.5;
         }
         let start = Instant::now();
+        ui.set_meter(2, &[0.25, 1.1]);
         ui.set_scope_interleaved(2, &samples);
         let submission = renderer.render(&mut ui, &view, width, height, 1.0)?;
         renderer.device.poll(wgpu::PollType::Wait {

@@ -60,6 +60,9 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
         let c = &ui.controls[index];
         let x = rect[0] + col as f32 * (card_width + 8.0);
         let y = rect[1] + offset;
+        if s.visible(y, row) {
+            s.visible_controls.insert(index);
+        }
         let field = field_rect(c, knobs, [x, y, card_width, row]);
         s.panel(
             [x, y, card_width, row],
@@ -76,22 +79,26 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
         let head_width = card_width - 18.0;
         let centered_heading = knobs || c.boolean();
         let heading_size = if centered_heading && ui.size[0] <= 400.0 {
-            12.0
+            13.0
         } else {
             14.0
         };
         let heading_y = y + if centered_heading { 9.0 } else { 11.0 };
-        let name_width = (name.chars().count() as f32 * heading_size * 0.6)
-            .min((head_width - ty.len() as f32 * 7.2 - 6.0).max(12.0));
-        let value_width = 104.0_f32.min(card_width - 18.0);
-        let stacked = !knobs && !c.boolean() && card_width < 180.0;
-        let title_width = if centered_heading || stacked {
+        let title_width = if centered_heading {
             head_width
         } else {
-            (head_width - value_width - 8.0).max(20.0)
+            (head_width - field[2] - 8.0).max(1.0)
         };
+        let name_width = (name.chars().count() as f32 * heading_size * 0.6).min(title_width);
+        let show_type = !ty.is_empty() && name_width + 6.0 + ty.len() as f32 * 7.2 <= title_width;
+        let content_width = name_width
+            + if show_type {
+                6.0 + ty.len() as f32 * 7.2
+            } else {
+                0.0
+            };
         let start = if centered_heading {
-            x + (card_width - (name_width + 6.0 + ty.len() as f32 * 7.2).min(title_width)) * 0.5
+            x + (card_width - content_width) * 0.5
         } else {
             x + 10.0
         };
@@ -118,7 +125,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
                 ..Default::default()
             },
         );
-        if name_width + 6.0 + ty.len() as f32 * 7.2 <= title_width {
+        if show_type {
             s.styled(
                 ty,
                 [
@@ -145,13 +152,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
                 "External input",
                 [
                     x + 9.0,
-                    y + if knobs {
-                        58.0
-                    } else if stacked {
-                        68.0
-                    } else {
-                        43.0
-                    },
+                    y + if knobs { 58.0 } else { 43.0 },
                     card_width - 18.0,
                     24.0,
                 ],
@@ -213,12 +214,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
             if c.domain.is_none() || !c.enabled() {
                 continue;
             }
-            let slider = [
-                x + 10.0,
-                y + if stacked { 68.0 } else { 44.0 },
-                card_width - 20.0,
-                22.0,
-            ];
+            let slider = [x + 10.0, y + 44.0, card_width - 20.0, 22.0];
             let hot = s.hovered(ui, slider) || ui.interaction.dragging_control(index);
             s.panel(slider, p.field, if hot { p.accent } else { p.border }, 11.0);
             let track = [

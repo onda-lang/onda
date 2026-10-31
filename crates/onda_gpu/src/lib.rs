@@ -26,8 +26,6 @@ mod file_drop;
 mod tests;
 mod window_input;
 
-const SCOPE_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 30);
-
 pub fn run(path: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
     let mut event_loop = event_loop_builder().build().map_err(|e| e.to_string())?;
     let mut app = App::new(path, options);
@@ -135,6 +133,7 @@ impl App {
         let state = self.panel_state();
         self.ui.message(json!({"type":"state","state":state}));
         self.publish_scope();
+        self.sync_ime();
     }
     fn publish_scope(&mut self) {
         if let Some(controller) = &self.controller {
@@ -174,6 +173,7 @@ impl App {
         if changes.scope_changed || changes.state_changed {
             self.publish_scope();
         }
+        self.sync_ime();
     }
 
     fn open(&mut self, path: PathBuf) {
@@ -189,7 +189,6 @@ impl App {
                     });
                 }
                 self.controller_woken = true;
-                controller.set_scope_poll_interval(SCOPE_INTERVAL);
                 controller.set_scope_columns(self.ui.scope_columns());
                 controller.set_scope_visible(self.surface_visible() && self.ui.scope_enabled());
                 controller.set_meter_visible(self.surface_visible() && self.ui.meter_enabled());
@@ -265,6 +264,8 @@ impl App {
         }
         self.ui
             .resize(width as f32 / scale, height as f32 / scale, scale);
+        self.commands();
+        self.sync_ime();
         if let Some(c) = &mut self.controller {
             c.set_scope_columns(self.ui.scope_columns());
         }
@@ -370,13 +371,18 @@ impl ApplicationHandler for App {
                             self.rendered = Some(self.ui.revisions());
                             self.redraw_retry = None;
                         }
-                        Ok(false) => self.redraw_retry = Some(Instant::now() + SCOPE_INTERVAL),
+                        Ok(false) => {
+                            self.redraw_retry =
+                                Some(Instant::now() + onda_run::VISUALIZATION_INTERVAL)
+                        }
                         Err(error) => {
                             self.error = Some(error);
                             event_loop.exit();
                         }
                     }
                 }
+                self.commands();
+                self.sync_ime();
             }
             WindowEvent::PointerMoved {
                 position,
@@ -469,8 +475,9 @@ impl ApplicationHandler for App {
                 self.publish_changes(poll);
             }
         }
-        self.commands();
         self.ui.tick();
+        self.commands();
+        self.sync_ime();
         self.redraw_if_dirty();
         event_loop.set_control_flow(
             self.next_wake()

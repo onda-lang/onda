@@ -333,7 +333,7 @@ async function openEditor(t, url, autoplay = true) {
     let g=await geometry();
     await page.call("Input.dispatchMouseEvent",{type:"mouseWheel",x:g.x+g.width-4,y:g.y+20,deltaX:0,deltaY:-100000});
     await frame("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
-    if(name==="settings") {g=await geometry();await click(g.settingsX,g.settingsY);if(g.compact)await click(g.width-100,134);return;}
+    if(name==="settings") {g=await geometry();await click(g.settingsX,g.settingsY);if(g.compact)await click(g.width-100,(g.width-28<182?62:74)+18);return;}
     if(name==="midi") return;
     for(const key of ["scope","log","buffers","events","inputControls","params"]){
       g=await geometry();const entry=g.sections[key];
@@ -665,6 +665,13 @@ for (const [host, backend] of [
     );
     const scopePacketBytes = await frame("probe.bytes");
     await eventually(() => frame("probe.state.logText?.includes('440')"), "initial processor print");
+    const beforeClock = await frame("({renders:probe.renders,packets:probe.packets})");
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const afterClock = await frame("({renders:probe.renders,packets:probe.packets})");
+    const packets = afterClock.packets - beforeClock.packets;
+    assert.ok(packets > 10 && packets <= 33, "live visualization targets 30 Hz");
+    assert.ok(afterClock.renders - beforeClock.renders <= packets + 3,
+      "meter updates must not introduce a second visualization redraw stream");
     await section("params");
     let g = await geometry();
     await click(g.paramX,g.paramY);
@@ -686,7 +693,8 @@ for (const [host, backend] of [
       true,
       "real processor prints must retain file, line, and lexical-owner context",
     );
-    await click(g.width-55,g.sections.params.y+(g.sections.params.toolbar>40?47:20));
+    await click(g.width-38,g.sections.params.y+(g.sections.params.toolbar>40?47:20));
+    await eventually(()=>page.evaluate("testCommands.findLast(c=>c.type==='setParamLayout')?.layout==='knobs'"),"knob selector reached the host");
     await eventually(()=>page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.run-view.v1'))?.paramLayout==='knobs'"),"knob layout saved with presentation");
     const initialScreenshot = await page.call("Page.captureScreenshot", {
       format: "png",
@@ -720,13 +728,19 @@ for (const [host, backend] of [
     );
     await section("events");
     g = await geometry();
-    await click(g.width - 76, g.top + 72);
-    const payload = { id: "-9223372036854775808", gain: "Infinity" };
-    await frame(`(()=>{
-      const clipboard=new DataTransfer();clipboard.setData("text/plain",${JSON.stringify(JSON.stringify(payload))});
-      document.querySelector("canvas").dispatchEvent(new ClipboardEvent("paste",{clipboardData:clipboard,bubbles:true,cancelable:true}));
-    })()`);
-    await key("Enter", "Enter");
+    for (const [before, text] of [["9223372036854775807", "-9223372036854775808"], ["0.5", "Infinity"]]) {
+      let found = false;
+      for (let i=0;i<32;i++) {
+        await key("Tab", "Tab");
+        if (await frame(`(()=>{const e=document.querySelector('textarea');return !e.hidden && e.value===${JSON.stringify(before)}})()`)) {
+          found = true;
+          break;
+        }
+      }
+      assert.ok(found, `structured field ${before} must be keyboard accessible`);
+      await page.call("Input.insertText", { text });
+      await key("Enter", "Enter");
+    }
     await click(g.width - 74, g.top + 30);
     await eventually(
       () =>
@@ -932,11 +946,11 @@ for (const [host, backend] of [
     await new Promise((resolve) => setTimeout(resolve, 100));
     const paused = await frame("probe.packets");
     const reads = await page.evaluate("testWaveformReads");
-    const meters = await page.evaluate("testIncoming.filter(m=>m.type==='meterData').length");
+    const meters = await page.evaluate("testIncoming.filter(m=>m.type==='scopeData' && m.peaks).length");
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(await page.evaluate("testWaveformReads"), reads, "collapsed scope performs no waveform reads");
-    assert.ok(await page.evaluate(`testIncoming.filter(m=>m.type==='meterData').length>${meters}`), "compact meters continue while the scope is collapsed");
-    assert.ok(await page.evaluate("testIncoming.findLast(m=>m.type==='meterData').peaks.length===testIncoming.findLast(m=>m.type==='meterData').channels"));
+    assert.ok(await page.evaluate(`testIncoming.filter(m=>m.type==='scopeData' && m.peaks).length>${meters}`), "compact meters continue while the scope is collapsed");
+    assert.ok(await page.evaluate("testIncoming.findLast(m=>m.type==='scopeData').peaks.length===testIncoming.findLast(m=>m.type==='scopeData').channels"));
     assert.equal(
       await frame("probe.packets"),
       paused,
@@ -1117,8 +1131,7 @@ test(
 
     // Focus Stop without activating it, then suspend audio while it retains focus.
     await frame(`probe.ui.input(JSON.stringify({type:"focusLost"}));document.querySelector("canvas").focus()`);
-    await key("Tab", "Tab"); // Scope precedes transport in the audio group.
-    await key("Tab", "Tab");
+    await key("Tab", "Tab"); // Pinned meters are passive; transport is first.
     await page.evaluate("testAudioContexts.at(-1).suspend()");
     const beforeKeyboardStop = await page.evaluate("testResumeCalls");
     await key("Enter", "Enter");

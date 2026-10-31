@@ -1,13 +1,10 @@
 import { registerMeter } from "./meter-worklet.js";
 
-const CAPTURE_INTERVAL_MS = 1000 / 30;
-
 export class BrowserScopeSource {
   constructor(runView) {
     this.runView = runView;
     this.configuration = { columns: 512, visible: false, meter: false };
     this.generation = 0;
-    this.timer = 0;
     this.analysers = [];
     this.samples = [];
     this.packet = new Uint8Array(8);
@@ -37,7 +34,7 @@ export class BrowserScopeSource {
     this.meter.port.onmessage = ({ data }) => {
       if (generation === this.generation && !document.hidden &&
           (this.configuration.meter || this.configuration.visible))
-        this.runView.postMeter(data.channels, data.peaks);
+        this.capture(data);
     };
     // The worklet emits silence; connecting it keeps the audio graph pulling input.
     node.connect(this.meter);
@@ -63,8 +60,6 @@ export class BrowserScopeSource {
   }
 
   disconnectWaveform() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = 0;
     if (this.splitter) this.source.disconnect(this.splitter);
     this.splitter?.disconnect();
     this.silentGain?.disconnect();
@@ -83,19 +78,18 @@ export class BrowserScopeSource {
       this.metering = metering;
     }
     if (!waveform) this.disconnectWaveform();
-    else {
-      if (this.context && !this.analysers.length) this.connectWaveform();
-      if (this.analysers.length && !this.timer)
-        this.timer = setInterval(() => this.capture(), CAPTURE_INTERVAL_MS);
-    }
+    else if (this.context && !this.analysers.length) this.connectWaveform();
   }
 
-  capture() {
-    if (!this.analysers.length || !this.configuration.visible || document.hidden) return;
-    for (let i = 0; i < this.analysers.length; i++)
-      this.analysers[i].getFloatTimeDomainData(this.samples[i]);
-    this.packet = scopePacket(this.samples, this.configuration.columns, this.packet);
-    this.runView.postScopePacket(this.packet);
+  capture({ channels, peaks }) {
+    if (document.hidden || !(this.configuration.visible || this.configuration.meter)) return;
+    let packet;
+    if (this.configuration.visible && this.analysers.length) {
+      for (let i = 0; i < this.analysers.length; i++)
+        this.analysers[i].getFloatTimeDomainData(this.samples[i]);
+      packet = this.packet = scopePacket(this.samples, this.configuration.columns, this.packet);
+    }
+    this.runView.postVisualization({ channels, peaks, packet });
   }
 
   stop() {
@@ -112,8 +106,7 @@ export class BrowserScopeSource {
     this.metering = undefined;
     this.source = null;
     this.context = null;
-    this.runView.postScope(0, []);
-    this.runView.postMeter(0, []);
+    this.runView.postVisualization({ channels: 0, peaks: [], samples: [] });
   }
 
   dispose() {

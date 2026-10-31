@@ -23,6 +23,7 @@ const send = (message) => {
 };
 let ui;
 let frame = 0;
+let resizePending = true;
 let viewStateTimer = 0;
 let repaintTimer = 0;
 let fontRetryTimer = 0;
@@ -42,7 +43,7 @@ const browser = browserBridge(canvas, {
   onInput: (event) => input(event),
 });
 const editor = createTextInput(canvas, {
-  snapshot: () => ui ? JSON.parse(ui.text_edit()) : null,
+  snapshot: () => ui && !renderError ? JSON.parse(ui.text_edit()) : null,
   input,
   gesture: (event, stop = false) => browser?.gesture(event, stop),
 });
@@ -67,9 +68,34 @@ function report(error) {
   status.hidden = false;
   console.error(error);
   renderError = `Could not render Onda UI.\n${error?.message || error}`;
+  pendingState = [];
+  pendingScope = undefined;
+  pendingReady = undefined;
+  for (const values of Object.values(pendingValues)) values.clear();
+  clearTimeout(viewStateTimer);
+  clearTimeout(repaintTimer);
+  clearTimeout(fontRetryTimer);
+  if (frame) cancelAnimationFrame(frame);
+  frame = 0;
+  if (ui) {
+    try {
+      ui.input(JSON.stringify({ type: "focusLost" }));
+      for (const command of JSON.parse(ui.commands())) send(command);
+    } catch (cleanupError) {
+      console.warn(cleanupError);
+    }
+    const failed = ui;
+    ui = undefined;
+    try { failed.free(); } catch (cleanupError) { console.warn(cleanupError); }
+    send({ type: "scopeConfig", columns: 1, visible: false, meter: false });
+  }
+  editor.sync();
   status.textContent = renderError;
   send({ type: "runViewError", message: renderError });
 }
+canvas.addEventListener("webglcontextlost", () =>
+  report(new Error("GPU context was lost; reload the run view")),
+);
 async function copyText(text) {
   try {
     if (!navigator.clipboard) throw new Error("Clipboard access is unavailable");
@@ -94,34 +120,23 @@ function commands() {
   return result;
 }
 function schedule() {
-  if (frame || suspended || document.hidden || !ui) return;
+  if (frame || suspended || document.hidden || !ui || renderError) return;
   frame = requestAnimationFrame(() => {
     frame = 0;
     try {
       flushValues();
+      applyResize();
       if (pendingScope) {
         const scope = pendingScope;
         pendingScope = undefined;
-        if (scope.packet instanceof Uint8Array) {
-          ui.scope_packet(scope.packet);
-        } else if (typeof scope.packet === "string") {
-          const bytes =
-            typeof Uint8Array.fromBase64 === "function"
-              ? Uint8Array.fromBase64(scope.packet)
-              : Uint8Array.from(atob(scope.packet), (char) =>
-                  char.charCodeAt(0),
-                );
-          ui.scope_packet(bytes);
-        } else {
-          ui.scope_samples(
-            scope.channels || 0,
-            Float32Array.from(scope.samples || []),
-          );
-        }
+        applyScope(scope);
       }
       canvas.style.cursor = ui.cursor();
       loadFallbackFonts();
-      if (!ui.render()) schedule();
+      const presented = ui.render();
+      // Text measurement can resolve hidden drafts and move the scope viewport.
+      commands();
+      if (!presented) schedule();
       else if (pendingReady) {
         send(pendingReady);
         pendingReady = undefined;
@@ -129,11 +144,31 @@ function schedule() {
       clearTimeout(repaintTimer);
       const delay = ui.repaint_delay();
       repaintTimer = delay === undefined ? 0 : setTimeout(schedule, Math.ceil(delay));
-      editor.sync();
     } catch (error) {
       report(error);
     }
   });
+}
+function applyScope(scope) {
+  if (scope.peaks !== undefined)
+    ui.message(JSON.stringify({ type: "meterData", channels: scope.channels, peaks: scope.peaks }));
+  if (scope.packet === undefined) {
+    if (scope.samples !== undefined)
+      ui.scope_samples(scope.channels || 0, Float32Array.from(scope.samples));
+    return;
+  }
+  try {
+    const bytes = typeof scope.packet === "string"
+      ? typeof Uint8Array.fromBase64 === "function"
+        ? Uint8Array.fromBase64(scope.packet)
+        : Uint8Array.from(atob(scope.packet), char => char.charCodeAt(0))
+      : scope.packet;
+    if (!(bytes instanceof Uint8Array)) throw new Error("Invalid scope packet type");
+    ui.scope_packet(bytes);
+  } catch (error) {
+    if (error instanceof WebAssembly.RuntimeError) throw error;
+    console.warn("Ignoring invalid scope packet:", error);
+  }
 }
 function loadFallbackFonts() {
   clearTimeout(fontRetryTimer);
@@ -187,6 +222,7 @@ function receive(message) {
     else if (ui) send({ type: "uiReady" });
     return;
   }
+  if (renderError) return;
   if (message.type === "computerKey") {
     const key = computerKey(message);
     if (key) input({ type: "computerKey", key, pressed: message.pressed });
@@ -209,6 +245,10 @@ function receive(message) {
   )
     return;
   if (message.type === "scopeData") {
+    if (pendingScope && pendingScope.channels === message.channels &&
+        Array.isArray(pendingScope.peaks) && Array.isArray(message.peaks))
+      message = { ...message, peaks: message.peaks.map((peak, i) =>
+        Math.max(peak, pendingScope.peaks[i] || 0)) };
     pendingScope = message;
     schedule();
     return;
@@ -266,7 +306,7 @@ function input(event) {
   return updateInput(() => ui.input(JSON.stringify(event)))?.commands;
 }
 function updateInput(action) {
-  if (!ui) return;
+  if (!ui || renderError) return;
   try {
     flushValues();
     const value = action();
@@ -397,16 +437,23 @@ canvas.addEventListener("paste", (event) => {
   input({ type: "text", text: event.clipboardData.getData("text/plain") });
 });
 function resize() {
-  if (!ui) return;
+  resizePending = true;
+  scopeConfig();
+  schedule();
+}
+function applyResize() {
+  if (!resizePending) return;
+  resizePending = false;
   const scale = window.devicePixelRatio || 1;
   const width = Math.max(1, Math.round(canvas.clientWidth * scale));
   const height = Math.max(1, Math.round(canvas.clientHeight * scale));
+  // Backing-store changes discard the displayed image. Resize and draw in the
+  // same animation callback so layout keeps the previous frame until then.
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
+  // Also invalidate an unchanged size when a hidden/restored view is exposed.
   ui.resize(width, height, scale);
-  editor.sync();
-  scopeConfig();
-  schedule();
+  commands();
 }
 function scopeConfig() {
   if (!ui) return;
@@ -476,6 +523,15 @@ try {
     canvas,
     Boolean(adapter) && adapter.info?.isFallbackAdapter !== true,
   );
+  if (renderError) {
+    const failed = ui;
+    ui = undefined;
+    failed.free();
+    throw new Error(renderError);
+  }
+  ui.on_device_lost(message => {
+    if (!suspended && ui) report(new Error(`GPU device was lost; reload the run view. ${message}`));
+  });
   canvas.dataset.backend =
     adapter && adapter.info?.isFallbackAdapter !== true ? "webgpu" : "webgl";
   status.hidden = true;

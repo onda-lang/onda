@@ -4,23 +4,24 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-await verifyHostedC();
+await verifyDeclaredC("include/onda.h", "docs/api.md", "C API FUNCTION INDEX", "libonda");
+await verifyDeclaredC("include/onda_ui.h", "docs/ui-api.md", "UI C API FUNCTION INDEX", "UI");
 await verifyProcessorC();
 await verifyWebPackages();
 
-async function verifyHostedC() {
-  const header = await read("include/onda.h");
+async function verifyDeclaredC(headerPath, docsPath, marker, label) {
+  const header = await read(headerPath);
   const declarations = [...withoutComments(header).matchAll(
     /(?:^|\n)(?![ \t]*typedef\b)[^;{}#]*?\b(onda_[A-Za-z0-9_]+)\s*\([^;{}]*\)\s*;/g,
   )].map((match) => match[1]);
   const documented = await documentedIndex(
-    "docs/api.md",
-    "<!-- BEGIN C API FUNCTION INDEX -->",
-    "<!-- END C API FUNCTION INDEX -->",
+    docsPath,
+    `<!-- BEGIN ${marker} -->`,
+    `<!-- END ${marker} -->`,
     /^onda_[A-Za-z0-9_]+$/,
   );
-  verifySameSet("docs/api.md", "include/onda.h", declarations, documented);
-  process.stdout.write(`Verified ${declarations.length} documented libonda C functions\n`);
+  verifySameSet(docsPath, headerPath, declarations, documented);
+  process.stdout.write(`Verified ${declarations.length} documented ${label} C functions\n`);
 }
 
 async function verifyProcessorC() {

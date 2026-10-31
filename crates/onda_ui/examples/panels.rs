@@ -72,9 +72,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
             .collect();
-            state["viewState"] = json!({"sections":sections});
+            state["viewState"] = json!({"scopePinned":true,"sections":sections});
             ui.message(json!({"type":"state","state":state}));
             ui.resize(w as f32, h as f32, 1.0);
+            assert!(ui.scope_enabled(), "Benchmark requires a visible scope");
             if panel == "settings" {
                 ui.input(onda_ui::Input::PointerDown {
                     x: w as f32 - 112.0,

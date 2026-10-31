@@ -2,18 +2,9 @@
 use crate::{
     model::RunUi,
     scene::{Rect, Target},
+    scrollbar::ScrollRegion,
     Input,
 };
-
-#[derive(Clone, Copy)]
-pub(crate) enum ScrollRegion {
-    Document,
-    Scope,
-    Toolbar,
-    Log,
-    Popup,
-    Menu,
-}
 
 enum Mode {
     Pending,
@@ -95,12 +86,21 @@ impl RunUi {
                 self.interaction.popup_scroll = scroll;
                 moved
             }
+            ScrollRegion::LogHorizontal => {
+                let next = (self.presentation.log_x + delta).clamp(0.0, self.log_max_scroll_x);
+                let moved = next - self.presentation.log_x;
+                self.presentation.log_x = next;
+                if moved != 0.0 {
+                    self.presentation.scrolled();
+                }
+                moved
+            }
             ScrollRegion::Log => {
                 let max = self.scene.log_max_scroll;
                 let old = if self.presentation.log_follow {
                     max
                 } else {
-                    self.presentation.log_scroll
+                    self.presentation.log_scroll.min(max)
                 };
                 let scroll = (old + delta).clamp(0.0, max);
                 let follow = scroll >= max;
@@ -125,20 +125,13 @@ impl RunUi {
             }
         };
         self.invalidate();
+        if self.editor.editing() {
+            self.prepare_scene();
+        }
         moved
     }
     pub(crate) fn pan_log_by(&mut self, delta: f32) -> bool {
-        if !delta.is_finite() {
-            return false;
-        }
-        let scroll = (self.presentation.log_x + delta).clamp(0.0, self.log_max_scroll_x);
-        if self.presentation.log_x == scroll {
-            return false;
-        }
-        self.presentation.log_x = scroll;
-        self.presentation.scrolled();
-        self.invalidate();
-        true
+        self.scroll_region_by(ScrollRegion::LogHorizontal, delta) != 0.0
     }
     pub(crate) fn touch_start(&mut self, id: u64, x: f32, y: f32) {
         if !x.is_finite() || !y.is_finite() {
@@ -160,7 +153,7 @@ impl RunUi {
         }
         let control = matches!(
             target,
-            Some(Target::Control(_) | Target::Note(_) | Target::Scrollbar)
+            Some(Target::Control(_) | Target::Note(_) | Target::Scrollbar(_))
         );
         let numeric = matches!(&target, Some(Target::Field(field)) if self.field_numeric(field));
         let touch = Touch {
@@ -218,7 +211,7 @@ impl RunUi {
             } else {
                 touch.mode = Mode::Pan {
                     region: touch.region,
-                    horizontal: matches!(touch.region, ScrollRegion::Log) && dx.abs() > dy.abs(),
+                    horizontal: touch.region == ScrollRegion::Log && dx.abs() > dy.abs(),
                 };
             }
         }
@@ -243,7 +236,7 @@ impl RunUi {
             Mode::Pan {
                 horizontal: true, ..
             } => {
-                self.pan_log_by(touch.previous[0] - x);
+                self.scroll_region_by(ScrollRegion::LogHorizontal, touch.previous[0] - x);
             }
             Mode::Pending => {}
         }

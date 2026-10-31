@@ -11,14 +11,16 @@ pub(super) fn pin(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
         s,
         p,
         rect,
-        Icon::Pin(ui.presentation.scope_pinned),
-        if ui.presentation.scope_pinned {
-            "Unpin scope"
-        } else {
-            "Pin scope"
-        },
-        Target::PinScope,
-        ui.presentation.scope_pinned,
+        (
+            Icon::Pin(ui.presentation.scope_pinned),
+            if ui.presentation.scope_pinned {
+                "Unpin scope"
+            } else {
+                "Pin scope"
+            },
+            Target::PinScope,
+        ),
+        false,
     );
 }
 pub(super) fn plot(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32 {
@@ -53,8 +55,8 @@ pub(super) fn plot(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32
             } else {
                 format!("Ch {}", channel + 1)
             },
-            [x + 5.0, cy + 2.0, (w - 10.0).max(1.0), 13.0],
-            9.0,
+            [x + 5.0, cy + 2.0, (w - 10.0).max(1.0), 16.0],
+            11.0,
             p.muted,
             TextStyle {
                 mono: true,
@@ -62,24 +64,20 @@ pub(super) fn plot(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32
             },
         );
     }
-    if content_height > h {
-        let thumb = (h * h / content_height).max(12.0).min(h);
-        s.shape(
-            [
-                x + w - 5.0,
-                y + (h - thumb) * scroll / (content_height - h),
-                4.0,
-                thumb,
-            ],
-            p.scrollbar,
-            2.0,
-        );
-    }
+    s.scope_shape_end = s.shapes.len();
+    s.scrollbar(
+        ui,
+        p,
+        crate::scrollbar::ScrollRegion::Scope,
+        rect,
+        content_height,
+        scroll,
+    );
     s.clip = clip;
     h
 }
 pub(super) fn overlay(ui: &RunUi, s: &mut Scene, p: Palette) {
-    if ui.presentation.scope_pinned || !ui.scope_enabled() {
+    if ui.presentation.scope_pinned || !ui.scope_open() {
         return;
     }
     let [hx, hy, hw, hh] = s.header_rect;
@@ -94,7 +92,7 @@ pub(super) fn overlay(ui: &RunUi, s: &mut Scene, p: Palette) {
     s.styled(
         "Scope",
         [r[0] + 9.0, top + 3.0, (w - 70.0).max(1.0), 28.0],
-        12.0,
+        14.0,
         p.ink,
         TextStyle {
             bold: true,
@@ -103,5 +101,4 @@ pub(super) fn overlay(ui: &RunUi, s: &mut Scene, p: Palette) {
     );
     pin(ui, s, p, [r[0] + w - 34.0, top + 3.0, 28.0, 28.0]);
     plot(ui, s, p, [r[0] + 8.0, top + 34.0, w - 16.0, h - 42.0]);
-    s.scope_shape_end = s.shapes.len();
 }

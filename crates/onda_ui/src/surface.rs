@@ -1,5 +1,12 @@
 use crate::{Renderer, RunUi};
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = info)]
+    fn log_renderer(message: &str);
+}
+
 pub struct SurfaceRenderer {
     pub renderer: Renderer,
     surface: wgpu::Surface<'static>,
@@ -21,6 +28,15 @@ impl SurfaceRenderer {
             })
             .await
             .map_err(|e| e.to_string())?;
+        let info = adapter.get_info();
+        let description = format!(
+            "Onda UI renderer: backend={:?}; adapter={}; device={:?}; driver={} {}",
+            info.backend, info.name, info.device_type, info.driver, info.driver_info,
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        eprintln!("{description}");
+        #[cfg(target_arch = "wasm32")]
+        log_renderer(&description);
         let caps = surface.get_capabilities(&adapter);
         let mut config = surface
             .get_default_config(&adapter, width.max(1), height.max(1))

@@ -29,10 +29,10 @@ class OndaMeter extends AudioWorkletProcessor {
       this.peaks[channel] = peak;
     }
     this.frames += input[0].length;
-    if (this.frames >= sampleRate / 20) {
+    if (this.frames >= sampleRate / 30) {
       this.port.postMessage({ channels: input.length, peaks: Array.from(this.peaks.subarray(0, count)) });
       this.peaks.fill(0);
-      this.frames %= sampleRate / 20;
+      this.frames %= sampleRate / 30;
     }
     return true;
   }

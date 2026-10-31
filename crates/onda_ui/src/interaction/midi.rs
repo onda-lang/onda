@@ -77,6 +77,20 @@ impl Midi {
             .map(|key| self.command(key, false))
             .collect()
     }
+    pub fn release_pointers(&mut self) -> Vec<Value> {
+        let notes: BTreeSet<_> = self
+            .pointer
+            .take()
+            .into_iter()
+            .chain(std::mem::take(&mut self.touches).into_values().flatten())
+            .collect();
+        self.pointer_down = false;
+        notes
+            .into_iter()
+            .filter(|key| !self.held(*key))
+            .map(|key| self.command(key, false))
+            .collect()
+    }
     pub fn shift_octave(&mut self, delta: i32) -> Vec<Value> {
         let next = (self.octave + delta).clamp(-1, 7);
         if next == self.octave {

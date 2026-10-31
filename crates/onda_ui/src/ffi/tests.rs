@@ -102,5 +102,25 @@ fn initial_state_restores_scroll_before_first_resize_or_render() {
             1
         );
         assert_eq!(onda_ui_input(ui, c"invalid JSON".as_ptr()), -1);
+
+        let state = string(
+            json!({"type":"state","state":{
+                "supportsScope":true,"viewState":{"readyId":1,"scopePinned":true}
+            }})
+            .to_string(),
+        );
+        assert_eq!(onda_ui_message(ui, state.as_ptr()), 1);
+        assert_eq!(onda_ui_scope_visible(ui), 1);
+        assert_eq!(onda_ui_meter_visible(ui), 1);
+        assert_eq!(
+            onda_ui_input(ui, c"{\"type\":\"pointerMove\",\"x\":2,\"y\":290}".as_ptr()),
+            1
+        );
+        for (delta, visible) in [(1000, 0), (-1000, 1)] {
+            let input = string(json!({"type":"scroll","delta":delta}).to_string());
+            assert_eq!(onda_ui_input(ui, input.as_ptr()), 1);
+            assert_eq!(onda_ui_scope_visible(ui), visible);
+            assert_eq!(onda_ui_meter_visible(ui), visible);
+        }
     }
 }

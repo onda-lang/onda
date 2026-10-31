@@ -177,9 +177,7 @@ impl RunUi {
         }
     }
     pub(crate) fn field_numeric(&self, field: &Field) -> bool {
-        self.field_enabled(field)
-            && !matches!(field,Field::Event(f) if f.scalar=="json")
-            && !self.field_value(field).is_boolean()
+        self.field_enabled(field) && !self.field_value(field).is_boolean()
     }
     pub(crate) fn numeric_domain(&self, field: &Field) -> Option<ParamDomain<'static>> {
         match field {

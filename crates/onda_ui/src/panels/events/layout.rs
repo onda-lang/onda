@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 pub(super) enum WidgetKind {
     Title(String),
+    Trigger(usize),
     Group {
         label: String,
         key: String,
@@ -25,7 +26,6 @@ pub(super) enum WidgetKind {
         field: Field,
         editor: [f32; 4],
     },
-    Json(Field),
 }
 pub(super) struct Widget {
     pub rect: [f32; 4],
@@ -37,13 +37,6 @@ pub(crate) struct Layout {
     pub(super) height: f32,
     cards: Vec<[f32; 4]>,
     width: f32,
-    json: Option<(usize, usize)>,
-}
-fn json_editor(ui: &RunUi) -> Option<(usize, usize)> {
-    match &ui.editor.draft()?.target {
-        Field::Event(f) if f.scalar == "json" => Some((f.event, f.arg)),
-        _ => None,
-    }
 }
 impl Layout {
     pub(super) fn visible_widgets(&self, top: f32, bottom: f32) -> &[Widget] {
@@ -52,8 +45,8 @@ impl Layout {
     pub(super) fn visible_cards(&self, top: f32, bottom: f32) -> &[[f32; 4]] {
         visible(&self.cards, |r| *r, top, bottom)
     }
-    pub(super) fn matches(&self, ui: &RunUi, width: f32) -> bool {
-        self.width == width && self.json == json_editor(ui)
+    pub(super) fn matches(&self, width: f32) -> bool {
+        self.width == width
     }
     pub(super) fn new(ui: &RunUi, width: f32) -> Self {
         let mut builder = Builder {
@@ -69,15 +62,24 @@ impl Layout {
         for (i, event) in ui.events.iter().enumerate() {
             builder.event = i;
             let top = builder.y;
+            let trigger_width = if width < 180.0 { 28.0 } else { 80.0 };
             builder.push(
-                [CARD_INSET, top + 8.0, width - 110.0, 28.0],
+                [
+                    CARD_INSET,
+                    top + 8.0,
+                    (width - 2.0 * CARD_INSET - trigger_width - 8.0).max(1.0),
+                    28.0,
+                ],
                 WidgetKind::Title(event.name.clone()),
             );
-            builder.button(
-                "Trigger".into(),
-                [width - CARD_INSET - 80.0, top + 8.0, 80.0, 28.0],
-                Target::Trigger(i),
-            );
+            let trigger = [
+                width - CARD_INSET - trigger_width,
+                top + 8.0,
+                trigger_width,
+                28.0,
+            ];
+            builder.focus(trigger, Target::Trigger(i));
+            builder.push(trigger, WidgetKind::Trigger(i));
             builder.y += 40.0;
             for (j, arg) in event.args.iter().enumerate() {
                 builder.arg = j;
@@ -93,7 +95,6 @@ impl Layout {
             focus: builder.focus.into(),
             cards,
             width,
-            json: json_editor(ui),
         }
     }
 }
@@ -124,15 +125,11 @@ impl Builder<'_> {
         self.widgets.push(Widget { rect, kind });
     }
     fn focus(&mut self, rect: [f32; 4], target: Target) {
-        if let Some(previous) = self.focus.last_mut().filter(|p| p.target == target) {
-            previous.rect = rect;
-        } else {
-            self.focus.push(FocusTarget {
-                rect,
-                target,
-                layer: FocusLayer::Document,
-            });
-        }
+        self.focus.push(FocusTarget {
+            rect,
+            target,
+            layer: FocusLayer::Document,
+        });
     }
     fn button(&mut self, text: String, rect: [f32; 4], target: Target) {
         self.focus(rect, target.clone());
@@ -147,7 +144,9 @@ impl Builder<'_> {
         })
     }
     fn node(&mut self, label: &str, shape: &Value, value: &Value, path: &str, depth: usize) {
-        let x = CARD_INSET + depth.min(8) as f32 * 12.0;
+        let indent =
+            (depth.min(8) as f32 * 12.0).min((self.width - 2.0 * CARD_INSET - 80.0).max(0.0));
+        let x = CARD_INSET + indent;
         let width = (self.width - x - CARD_INSET).max(1.0);
         if shape["kind"] == "scalar" {
             let field = self.field(path, shape["encoding"].as_str().unwrap_or("f64"));
@@ -177,12 +176,7 @@ impl Builder<'_> {
         }
         let key = format!("event/{}/{}/{}", self.event, self.arg, path);
         let folded = self.ui.presentation.folded.contains(&key);
-        let heading = [
-            x,
-            self.y,
-            (width - if path.is_empty() { 90.0 } else { 0.0 }).max(40.0),
-            28.0,
-        ];
+        let heading = [x, self.y, width, 28.0];
         self.focus(heading, Target::Fold(key.clone()));
         self.push(
             heading,
@@ -192,23 +186,7 @@ impl Builder<'_> {
                 open: !folded,
             },
         );
-        if path.is_empty() {
-            let field = self.field("", "json");
-            self.button(
-                "JSON".into(),
-                [self.width - CARD_INSET - 74.0, self.y, 74.0, 28.0],
-                Target::Field(field.clone()),
-            );
-            self.y += 34.0;
-            if json_editor(self.ui) == Some((self.event, self.arg)) {
-                let rect = [x, self.y, width, 28.0];
-                self.focus(rect, Target::Field(field.clone()));
-                self.push(rect, WidgetKind::Json(field));
-                self.y += 36.0;
-            }
-        } else {
-            self.y += 34.0;
-        }
+        self.y += 34.0;
         if folded {
             return;
         }
@@ -254,10 +232,18 @@ impl Builder<'_> {
                     }
                 }
                 if shape["kind"] == "slice" {
-                    for (offset, text, add) in [(0.0, "Add", true), (78.0, "Remove", false)] {
+                    let button_width = ((width - 6.0) * 0.5).clamp(1.0, 72.0);
+                    for (i, (text, add)) in
+                        [("Add", true), ("Remove", false)].into_iter().enumerate()
+                    {
                         self.button(
                             text.into(),
-                            [x + offset, self.y, 72.0, 28.0],
+                            [
+                                x + i as f32 * (button_width + 6.0),
+                                self.y,
+                                button_width,
+                                28.0,
+                            ],
                             Target::Slice {
                                 event: self.event,
                                 arg: self.arg,

@@ -51,6 +51,7 @@ const MIDI_INPUT_CAPACITY: usize = 256;
 const MAX_PENDING_EVENTS: usize = 4096;
 const MAX_MIDI_MESSAGES_PER_RENDER_BLOCK: usize = 256;
 const RENDER_AHEAD_BLOCKS: usize = 4;
+const SAMPLE_QUEUE_BLOCKS: usize = 16;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -107,11 +108,15 @@ struct PlaybackStartupError {
     sources: Option<crate::RunSourceGraph>,
 }
 
+struct PlaybackStarted {
+    metadata: PlaybackStartup,
+    samples: SampleConsumer,
+    input: SampleProducer,
+}
+
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 
 struct RenderThreadContext {
-    sample_queue: SampleProducer,
-    input_queue: SampleConsumer,
     stream_errors: StreamErrorState,
     midi_rx: mpsc::Receiver<TimedMidiMessage>,
     midi_overflowed: Arc<AtomicBool>,
@@ -119,7 +124,7 @@ struct RenderThreadContext {
     scope_ring: Arc<ScopeCapture>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
-    startup_tx: mpsc::Sender<Result<PlaybackStartup, PlaybackStartupError>>,
+    startup_tx: mpsc::Sender<Result<PlaybackStarted, PlaybackStartupError>>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
     output_transport: Option<OutputTransport>,
     print_transport: PrintTransport,
@@ -304,13 +309,6 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         launch.sample_rate_hz,
         launch.block_samples,
     )?;
-    let output_device_channels = output_endpoint.channels();
-
-    let queue_capacity = (launch.block_samples * output_device_channels.max(2) * 16)
-        .next_power_of_two()
-        .max(1024);
-    let (sample_producer, sample_consumer) = sample_ring(queue_capacity);
-    let (input_producer, input_consumer) = sample_ring(queue_capacity);
     let (midi_tx, midi_rx) = mpsc::sync_channel(MIDI_INPUT_CAPACITY);
     let midi_overflowed = Arc::new(AtomicBool::new(false));
     let midi_reset_requested = Arc::new(AtomicBool::new(false));
@@ -368,8 +366,6 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
     let render_thread = spawn_run_render_thread(
         launch.clone(),
         RenderThreadContext {
-            sample_queue: sample_producer,
-            input_queue: input_consumer,
             stream_errors: error_state.clone(),
             midi_rx,
             midi_overflowed: Arc::clone(&midi_overflowed),
@@ -383,7 +379,11 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             print_transport,
         },
     );
-    let startup = startup_rx
+    let PlaybackStarted {
+        metadata: startup,
+        samples: sample_consumer,
+        input: input_producer,
+    } = startup_rx
         .recv()
         .map_err(|_| "run render thread exited before startup completed".to_owned())?
         .or_else(|error| {
@@ -577,6 +577,8 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         &error_state,
         midi_input.as_mut(),
     );
+    // Explicit-device backends can report disconnection during intentional teardown.
+    let stream_error = error_state.message();
 
     stop_flag.store(true, Ordering::Release);
     drop(input_stream);
@@ -592,7 +594,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
 
     playback_result?;
 
-    if let Some(err) = error_state.message() {
+    if let Some(err) = stream_error {
         return Err(err);
     }
     if let Some(err) = render_error
@@ -818,8 +820,6 @@ fn spawn_run_render_thread(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let RenderThreadContext {
-            sample_queue,
-            input_queue,
             stream_errors,
             midi_rx,
             midi_overflowed,
@@ -961,26 +961,43 @@ fn spawn_run_render_thread(
             })
         })();
 
-        let (render_input_channels, render_output_channels) = match startup {
-            Ok(startup) => {
-                scope_ring.reconfigure(SCOPE_CAPACITY_FRAMES, startup.output_channels);
-                let channel_counts = (startup.input_channels, startup.output_channels);
-                if startup_tx.send(Ok(startup)).is_err() {
+        let (render_input_channels, render_output_channels, sample_queue, input_queue) =
+            match startup {
+                Ok(startup) => {
+                    scope_ring.reconfigure(SCOPE_CAPACITY_FRAMES, startup.output_channels);
+                    let channel_counts = (startup.input_channels, startup.output_channels);
+                    let (sample_queue, samples) =
+                        playback_sample_ring(launch.block_samples, startup.output_channels);
+                    let (input, input_queue) =
+                        playback_sample_ring(launch.block_samples, startup.input_channels);
+                    if startup_tx
+                        .send(Ok(PlaybackStarted {
+                            metadata: startup,
+                            samples,
+                            input,
+                        }))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    (
+                        channel_counts.0,
+                        channel_counts.1,
+                        sample_queue,
+                        input_queue,
+                    )
+                }
+                Err(err) => {
+                    if let Some(sources) = &mut startup_sources {
+                        sources.complete = false;
+                    }
+                    let _ = startup_tx.send(Err(PlaybackStartupError {
+                        message: err,
+                        sources: startup_sources,
+                    }));
                     return;
                 }
-                channel_counts
-            }
-            Err(err) => {
-                if let Some(sources) = &mut startup_sources {
-                    sources.complete = false;
-                }
-                let _ = startup_tx.send(Err(PlaybackStartupError {
-                    message: err,
-                    sources: startup_sources,
-                }));
-                return;
-            }
-        };
+            };
 
         let output_worker = OutputWorker::new(
             session.run(&launch.input).expect("active run"),
@@ -1623,6 +1640,16 @@ fn wait_for_prefill(
     Ok(())
 }
 
+fn playback_sample_ring(block_samples: usize, channels: usize) -> (SampleProducer, SampleConsumer) {
+    // These queues carry program channels, before mapping to/from the device.
+    sample_ring(
+        block_samples
+            .saturating_mul(channels.max(1))
+            .saturating_mul(SAMPLE_QUEUE_BLOCKS)
+            .max(1024),
+    )
+}
+
 fn render_ahead_samples(block_samples: usize, channels: usize, capacity: usize) -> usize {
     if channels == 0 {
         return 0;
@@ -1746,6 +1773,12 @@ fn handle_run_control_client(
     context: &RunControlServerContext,
     subscription_id: u64,
 ) -> Result<(), String> {
+    // Accepted sockets may inherit the listener's nonblocking mode on BSD.
+    // Timeouts only bound blocking reads; EAGAIN on a nonblocking socket
+    // otherwise makes the control loop spin while the UI is idle or paused.
+    stream
+        .set_nonblocking(false)
+        .map_err(|err| format!("failed to set blocking control socket mode: {err}"))?;
     let _scope_subscription = context.scope_ring.subscription();
     let mut delegate_subscription = DelegateSubscriptionGuard {
         control_tx: context.control_tx.clone(),
@@ -2488,6 +2521,12 @@ fn run_device_lists_json(
 }
 
 #[cfg(test)]
+mod audio_queue_tests;
+
+#[cfg(all(test, unix))]
+mod control_server_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         render_ahead_samples, run_control_response, run_device_lists_json,
@@ -2495,7 +2534,7 @@ mod tests {
         DelegateSubscriptionGuard, MidiTimeline, PlaybackControlCommand, PlaybackControlRequest,
         PlaybackLaunch, PrintTransport, RenderThreadContext, RunOutputBatch, ScopeCapture,
     };
-    use onda_cpal::{sample_ring, StreamErrorState};
+    use onda_cpal::StreamErrorState;
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
         RunPrintEntry, RunPrintValue,
@@ -2544,8 +2583,6 @@ mod tests {
                 fs::write(&voice, "const voice_gain = 0.5\n").unwrap();
                 let mut expected = crate::run_source_graph(&main);
                 expected.complete = false;
-                let (sample_queue, _samples) = sample_ring(1024);
-                let (_input, input_queue) = sample_ring(1024);
                 let (_midi, midi_rx) = mpsc::sync_channel(1);
                 let (startup_tx, startup_rx) = mpsc::channel();
                 let (sender, _prints) = mpsc::sync_channel(1);
@@ -2570,8 +2607,6 @@ mod tests {
                         project_buffer_bindings: Vec::new(),
                     },
                     RenderThreadContext {
-                        sample_queue,
-                        input_queue,
                         stream_errors: StreamErrorState::default(),
                         midi_rx,
                         midi_overflowed: Arc::new(AtomicBool::new(false)),

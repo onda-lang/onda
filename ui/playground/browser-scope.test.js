@@ -33,25 +33,16 @@ test("scope packets preserve channel peaks, signed extrema, and non-finite sanit
 test("scope capture disconnects waveform processing in meter-only and hidden views", async (t) => {
   const saved = {
     document: globalThis.document,
-    setInterval: globalThis.setInterval,
-    clearInterval: globalThis.clearInterval,
     AudioWorkletNode: globalThis.AudioWorkletNode,
   };
   t.after(() => Object.assign(globalThis, saved));
-  const frames = new Map();
-  let next = 0,
-    reads = 0;
+  let reads = 0;
   const listeners = new Map();
   globalThis.document = {
     hidden: false,
     addEventListener: (type, fn) => listeners.set(type, fn),
     removeEventListener: (type) => listeners.delete(type),
   };
-  globalThis.setInterval = (fn) => {
-    frames.set(++next, fn);
-    return next;
-  };
-  globalThis.clearInterval = (id) => frames.delete(id);
   const enabled = [];
   globalThis.AudioWorkletNode = class {
     port = { postMessage: (value) => enabled.push(value), close() {} };
@@ -60,9 +51,7 @@ test("scope capture disconnects waveform processing in meter-only and hidden vie
   };
   const packets = [];
   const source = new BrowserScopeSource({
-    postScope() {},
-    postMeter() {},
-    postScopePacket: (packet) => packets.push(packet.slice()),
+    postVisualization: (frame) => packets.push({ ...frame, packet: frame.packet?.slice() }),
   });
   const disconnect = t.mock.fn();
   const context = {
@@ -83,60 +72,48 @@ test("scope capture disconnects waveform processing in meter-only and hidden vie
   source.configure({ columns: 64, visible: true });
   await source.start(context, { connect() {}, disconnect() {} }, 2);
   const tick = () => {
-    const [id, fn] = frames.entries().next().value;
-    fn();
+    source.meter.port.onmessage({ data: { channels: 2, peaks: [0.5, 1.2] } });
   };
+  packets.length = 0;
   tick();
   assert.equal(reads, 2);
-  assert.equal(packets[0].length, 8 + 2 * 64 * 4);
+  assert.equal(packets[0].packet.length, 8 + 2 * 64 * 4);
+  assert.deepEqual(packets[0].peaks, [0.5, 1.2]);
   source.configure({ columns: 64, visible: false, meter: true });
   assert.equal(source.analysers.length, 0);
   assert.equal(enabled.at(-1), true);
-  assert.equal(frames.size, 0);
-  source.capture();
+  tick();
+  assert.equal(packets[1].packet, undefined);
+  assert.deepEqual(packets[1].peaks, [0.5, 1.2]);
   assert.equal(reads, 2);
   source.configure({ columns: 128, visible: true });
   tick();
-  assert.equal(packets[1].length, 8 + 2 * 128 * 4);
+  assert.equal(packets[2].packet.length, 8 + 2 * 128 * 4);
   document.hidden = true;
   listeners.get("visibilitychange")();
-  assert.equal(frames.size, 0);
-  source.capture();
+  tick();
+  assert.equal(packets.length, 3);
   assert.equal(reads, 4);
   document.hidden = false;
   listeners.get("visibilitychange")();
-  assert.equal(frames.size, 1);
+  tick();
+  assert.equal(packets.length, 4);
   source.dispose();
-  assert.equal(frames.size, 0);
   assert.equal(listeners.size, 0);
   assert.equal(enabled.at(-1), "stop");
   assert.equal(disconnect.mock.callCount(), 12);
 });
 
-test("scope captures target 30 Hz independently of display rate and resizing", (t) => {
-  const saved = {
-    document: globalThis.document,
-    requestAnimationFrame: globalThis.requestAnimationFrame,
-    cancelAnimationFrame: globalThis.cancelAnimationFrame,
-  };
-  t.mock.timers.enable({ apis: ["setInterval"] });
-  const frames = new Map();
-  let next = 0;
+test("one audio clock publishes meters and waveform together at 30 Hz", (t) => {
+  const saved = { document: globalThis.document };
   globalThis.document = {
     hidden: false,
     addEventListener() {},
     removeEventListener() {},
   };
-  globalThis.requestAnimationFrame = (fn) => {
-    frames.set(++next, fn);
-    return next;
-  };
-  globalThis.cancelAnimationFrame = (id) => frames.delete(id);
-  let captures = 0;
+  const frames = [];
   const source = new BrowserScopeSource({
-    postScope() {},
-    postMeter() {},
-    postScopePacket() { captures++; },
+    postVisualization(frame) { frames.push(frame); },
   });
   t.after(() => {
     source.dispose();
@@ -144,16 +121,27 @@ test("scope captures target 30 Hz independently of display rate and resizing", (
   });
   source.analysers = [{ getFloatTimeDomainData() {}, disconnect() {} }];
   source.samples = [new Float32Array(1024)];
+  let Processor;
+  vm.runInNewContext(meterWorklet, {
+    AudioWorkletProcessor: class { port = { postMessage: frame => source.capture(frame) }; },
+    sampleRate: 48000,
+    registerProcessor: (_, type) => { Processor = type; },
+  });
+  const meter = new Processor();
+  meter.port.onmessage({ data: true });
+  const input = [new Float32Array(128).fill(0.5)];
   source.configure({ columns: 128, visible: true });
-  for (let time = 0; time < 1000; time += 16) {
-    source.configure({ columns: 128 + time % 128, visible: true });
-    for (const [id, fn] of [...frames]) {
-      frames.delete(id);
-      fn(time);
-    }
-    t.mock.timers.tick(16);
+  for (let block = 0; block < 375; block++) {
+    source.configure({ columns: 128 + block % 128, visible: true });
+    meter.process([input]);
   }
-  assert.equal(captures, 30, "scope capture must be independent of UI frame rate");
+  assert.equal(frames.length, 30);
+  assert.ok(frames.every(frame => frame.peaks[0] === 0.5 && frame.packet));
+  source.configure({ columns: 128, visible: false, meter: true });
+  frames.length = 0;
+  for (let block = 0; block < 375; block++) meter.process([input]);
+  assert.equal(frames.length, 30);
+  assert.ok(frames.every(frame => frame.peaks[0] === 0.5 && !frame.packet));
 });
 
 
@@ -162,7 +150,7 @@ test("audio-thread metering retains per-channel transients and stops when disabl
   const messages = [];
   vm.runInNewContext(meterWorklet, {
     AudioWorkletProcessor: class { port = { postMessage: (value) => messages.push(JSON.parse(JSON.stringify(value))) }; },
-    sampleRate: 2560,
+    sampleRate: 3840,
     registerProcessor: (_, type) => { Processor = type; },
   });
   const meter = new Processor();

@@ -285,8 +285,10 @@ pub unsafe extern "C" fn onda_ui_text_hit(ui: *mut OndaUi, x: f32, y: f32) -> us
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_ui_scope_visible(ui: *const OndaUi) -> i32 {
-    unsafe { ui.as_ref() }.is_some_and(|ui| ui.ui.scope_enabled()) as i32
+pub unsafe extern "C" fn onda_ui_scope_visible(ui: *mut OndaUi) -> i32 {
+    guard(0, || {
+        unsafe { ui.as_mut() }.is_some_and(|ui| ui.ui.scope_enabled()) as i32
+    })
 }
 
 #[no_mangle]
@@ -312,8 +314,10 @@ pub unsafe extern "C" fn onda_ui_meter(
     });
 }
 #[no_mangle]
-pub unsafe extern "C" fn onda_ui_meter_visible(ui: *const OndaUi) -> i32 {
-    unsafe { ui.as_ref() }.is_some_and(|ui| ui.ui.meter_enabled()) as i32
+pub unsafe extern "C" fn onda_ui_meter_visible(ui: *mut OndaUi) -> i32 {
+    guard(0, || {
+        unsafe { ui.as_mut() }.is_some_and(|ui| ui.ui.meter_enabled()) as i32
+    })
 }
 
 /// CSS cursor identifier, with static lifetime, for the host's native pointer.

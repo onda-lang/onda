@@ -1,21 +1,23 @@
 use crate::{
-    icons::Icon,
+    icons::{logo_outer_radius, Icon},
     model::{FileDropTarget, RunUi},
     scene::{Palette, Rect, Scene, Target, TextStyle},
     theme::{blend, CONTROL_RADIUS},
 };
 use serde_json::json;
 
+const SEPARATOR_GAP: f32 = 10.0;
+const SEPARATOR_WIDTH: f32 = 1.0;
+
 pub(super) fn icon_button(
     ui: &RunUi,
     s: &mut Scene,
     p: Palette,
     rect: [f32; 4],
-    icon: Icon,
-    description: &str,
-    target: Target,
+    button: (Icon, &str, Target),
     active: bool,
 ) {
+    let (icon, description, target) = button;
     if active || s.hovered(ui, rect) || ui.focused(&target) {
         s.panel(rect, p.accent_soft, p.accent, CONTROL_RADIUS);
     }
@@ -51,7 +53,7 @@ fn actions(ui: &RunUi) -> Vec<(Icon, &'static str, Target)> {
     }
     actions
 }
-fn source(ui: &RunUi) -> (&str, String) {
+fn source(ui: &RunUi, compact: bool) -> (&str, String) {
     let path = ui.state["path"].as_str().unwrap_or("Onda");
     let status = ui.state["status"]
         .as_str()
@@ -63,13 +65,15 @@ fn source(ui: &RunUi) -> (&str, String) {
     let mut details = status.to_owned();
     if !status.contains('·') && !status.contains('—') {
         if let Some(rate) = ui.state["sampleRateHz"].as_f64() {
-            details.push_str(&format!(" · {} kHz", rate / 1000.0));
+            let unit = if compact { "k" } else { " kHz" };
+            details.push_str(&format!(" · {}{unit}", rate / 1000.0));
         }
         if let Some(block) = ui.state["blockSamples"].as_u64() {
-            details.push_str(&format!(" · {block} samples"));
+            let unit = if compact { "" } else { " samples" };
+            details.push_str(&format!(" · {block}{unit}"));
         }
         if ui.state["fastMath"] == true {
-            details.push_str(" · Fast Math");
+            details.push_str(if compact { " · FM" } else { " · Fast Math" });
         }
     }
     (path, details)
@@ -82,8 +86,9 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
     s.header_rect = [x, y, w, height];
     s.panel(s.header_rect, p.panel, p.border, 10.0);
     let actions = actions(ui);
-    let overflow = dense && (!actions.is_empty() || minimal);
-    let scope = ui.meter_enabled();
+    let overflow = dense && !actions.is_empty();
+    let scope = ui.scope_available();
+    let scope_icon = !minimal && !ui.presentation.scope_pinned;
     let channels = ui.output_channels();
     let transport = ui.state["supportsTransport"] != false;
     let transport_width = if dense { 28.0 } else { 56.0 };
@@ -96,7 +101,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         if dense {
             6.0
         } else {
-            12.0
+            2.0 * SEPARATOR_GAP + SEPARATOR_WIDTH - actions[0].0.header_inset()
         }
     } else {
         0.0
@@ -120,14 +125,18 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         - utility_width
         - if transport { transport_width } else { 0.0 }
         - audio_gap;
-    let full_meter_width = ((if minimal { 12.0 } else { 26.0 }) + channels as f32 * 6.0).max(32.0);
+    let full_meter_width =
+        ((if scope_icon { 26.0 } else { 12.0 }) + channels as f32 * 6.0).max(32.0);
+    let horizontal = scope && channels <= 4 && available >= crate::meters::HORIZONTAL_WIDTH;
     let combined = channels > 1 && full_meter_width > available;
     let meters = if combined { 1 } else { channels };
-    let meter_width = if combined {
-        if minimal {
-            32.0
-        } else {
+    let meter_width = if horizontal {
+        crate::meters::HORIZONTAL_WIDTH
+    } else if combined {
+        if scope_icon {
             46.0
+        } else {
+            32.0
         }
     } else {
         full_meter_width
@@ -138,16 +147,29 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
     let controls_width = audio_width + gap + utility_width;
     let mut bx = x + w - padding - controls_width;
     let by = y + (height - 28.0) * 0.5;
+    let mut sx = x + 10.0;
     if brand {
-        let brand_top = y + (height - 38.0) * 0.5;
-        s.shape([x + 46.0, y + 10.0, 1.0, height - 20.0], p.border, 0.0);
+        let brand_top = y + (height - 42.0) * 0.5;
+        let version = ui.state["ondaVersion"]
+            .as_str()
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        let version_rect = [x + 6.0, brand_top + 26.0, 40.0, 16.0];
+        let brand_right = (x + 26.0 + logo_outer_radius(24.0)).max(
+            version_rect[0]
+                + crate::fonts::centered_monospace_right(version, 11.0, version_rect[2]),
+        );
+        let separator_x = brand_right + SEPARATOR_GAP;
+        s.shape(
+            [separator_x, y + 10.0, SEPARATOR_WIDTH, height - 20.0],
+            p.border,
+            0.0,
+        );
         s.logo([x + 14.0, brand_top, 24.0, 24.0], p.accent);
+        sx = separator_x + SEPARATOR_WIDTH + SEPARATOR_GAP;
         s.styled(
-            ui.state["ondaVersion"]
-                .as_str()
-                .unwrap_or(env!("CARGO_PKG_VERSION")),
-            [x + 6.0, brand_top + 26.0, 40.0, 12.0],
-            8.0,
+            version,
+            version_rect,
+            11.0,
             p.muted,
             TextStyle {
                 mono: true,
@@ -156,15 +178,19 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             },
         );
     }
-    let (path, details) = source(ui);
-    let sx = x + if brand { 52.0 } else { 10.0 };
     let sw = (bx - sx - 8.0).max(0.0);
     if !minimal && sw > 0.0 {
+        let (path, details) = source(ui, false);
+        let label = if crate::fonts::proportional_width(&details, 11.0, false) > sw {
+            source(ui, true).1
+        } else {
+            details.clone()
+        };
         let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
         s.styled(
             name,
             [sx, y + 9.0, sw, 21.0],
-            13.0,
+            14.0,
             p.ink,
             TextStyle {
                 mono: true,
@@ -173,9 +199,9 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             },
         );
         s.styled(
-            &details,
+            label,
             [sx, y + 30.0, sw, 16.0],
-            10.0,
+            11.0,
             p.muted,
             TextStyle::default(),
         );
@@ -183,15 +209,14 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         s.text_tooltip([sx, y + 30.0, sw, 16.0], details);
     }
     if scope {
+        let running = ui.state["running"] == true;
+        let pinned = ui.presentation.scope_pinned;
+        let active = !pinned && ui.scope_open();
         let r = [bx, by, meter_width, 28.0];
         s.panel(
             r,
-            if ui.scope_enabled() {
-                p.accent_soft
-            } else {
-                p.field
-            },
-            if ui.scope_enabled() {
+            if active { p.accent_soft } else { p.field },
+            if !pinned && (active || s.hovered(ui, r) || ui.focused(&Target::Scope)) {
                 p.accent
             } else {
                 p.border
@@ -199,8 +224,16 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             5.0,
         );
         let mut mx = bx + 6.0;
-        if !minimal {
-            s.icon(Icon::Scope, [mx + 6.0, by + 14.0], p.ink_color());
+        if scope_icon {
+            s.icon(
+                Icon::Scope,
+                [mx + 6.0, by + 14.0],
+                if running {
+                    p.ink_color()
+                } else {
+                    p.muted_color()
+                },
+            );
             mx += 17.0;
         } else {
             mx = bx
@@ -211,17 +244,36 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 };
         }
         s.meter_clip = s.clip;
-        for _ in 0..meters {
-            let r = [mx, by + 6.0, 3.0, 16.0];
-            s.shape(r, p.meter_track, 1.0);
-            s.meter_rects.push(r);
-            mx += 6.0;
+        if horizontal {
+            let inset = if scope_icon { 17.0 } else { 0.0 };
+            crate::meters::horizontal(
+                s,
+                p,
+                [bx + inset, by, meter_width - inset, 28.0],
+                channels,
+                running,
+            );
+        } else {
+            for _ in 0..meters {
+                let r = [mx, by + 6.0, 3.0, 16.0];
+                s.shape(
+                    r,
+                    if running {
+                        p.meter_track
+                    } else {
+                        p.meter_stopped
+                    },
+                    1.0,
+                );
+                s.meter_rects.push(r);
+                mx += 6.0;
+            }
         }
         if combined {
             s.styled(
                 channels.to_string(),
                 [mx, by, 14.0, 28.0],
-                8.0,
+                11.0,
                 p.muted,
                 TextStyle {
                     mono: true,
@@ -229,15 +281,17 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 },
             );
         }
-        s.tooltip(
-            r,
-            if combined {
-                format!("Scope · peak across all {channels} channels")
-            } else {
-                "Scope".into()
-            },
-        );
-        s.hit(r, Target::Scope);
+        if !pinned {
+            s.tooltip(
+                r,
+                if combined {
+                    format!("Scope · peak across all {channels} channels")
+                } else {
+                    "Scope".into()
+                },
+            );
+            s.hit(r, Target::Scope);
+        }
         bx += meter_width + if transport { 4.0 } else { 0.0 };
     }
     if transport {
@@ -255,16 +309,24 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             5.0,
         );
         let ink = if running { color } else { p.background };
+        let label = if running { "Stop" } else { "Play" };
+        let label_size = 12.0;
+        let label_width = crate::fonts::heading_width(label, label_size);
+        let content_x = if dense {
+            bx + 8.0
+        } else {
+            bx + (transport_width - 18.0 - label_width) * 0.5
+        };
         s.icon(
             if running { Icon::Stop } else { Icon::Play },
-            [bx + 14.0, by + 14.0],
+            [content_x + 6.0, by + 14.0],
             ink,
         );
         if !dense {
             s.styled(
-                if running { "Stop" } else { "Play" },
-                [bx + 26.0, by, 28.0, 28.0],
-                11.0,
+                label,
+                [content_x + 18.0, by, label_width + 1.0, 28.0],
+                label_size,
                 std::array::from_fn(|i| (ink[i] * 255.0).round() as u8),
                 TextStyle {
                     bold: true,
@@ -272,14 +334,13 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 },
             );
         }
-        s.tooltip(button, if running { "Stop" } else { "Play" }.into());
+        s.tooltip(button, label.into());
         s.hit(button, Target::Transport);
         bx += transport_width;
     }
     if gap > 0.0 && !overflow {
-        // Center against the visible icon, including its 6px button inset.
         s.shape(
-            [bx + gap * 0.5 + 3.0, y + 10.0, 1.0, height - 20.0],
+            [bx + SEPARATOR_GAP, y + 10.0, SEPARATOR_WIDTH, height - 20.0],
             p.border,
             0.0,
         );
@@ -291,89 +352,82 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             s,
             p,
             [bx, by, 28.0, 28.0],
-            Icon::More,
-            "Source and actions",
-            Target::HeaderMenu,
+            (
+                Icon::More,
+                "Actions",
+                Target::ToolbarMenu(crate::interaction::ToolbarMenu::Header),
+            ),
             ui.interaction.toolbar_menu == Some(crate::interaction::ToolbarMenu::Header),
         );
     } else {
         for (icon, label, target) in actions {
             let active = target == Target::Devices && ui.interaction.settings_open();
-            icon_button(ui, s, p, [bx, by, 28.0, 28.0], icon, label, target, active);
+            icon_button(
+                ui,
+                s,
+                p,
+                [bx, by, 28.0, 28.0],
+                (icon, label, target),
+                active,
+            );
             bx += 32.0;
         }
     }
     height
 }
 pub(super) fn menu(ui: &RunUi, s: &mut Scene, p: Palette) {
-    match ui.interaction.toolbar_menu {
-        None => return,
-        Some(crate::interaction::ToolbarMenu::Bank(input)) => {
-            super::bank::menu(ui, s, p, input);
-            return;
-        }
-        Some(crate::interaction::ToolbarMenu::Header) => {}
-    }
-    let [hx, hy, hw, hh] = s.header_rect;
-    let w = hw.min(240.0);
-    let top = (hy + hh + 6.0).clamp(4.0, (ui.size[1] - 60.0).max(4.0));
-    let h = (50.0 + actions(ui).len() as f32 * 30.0).min((ui.size[1] - top - 8.0).max(40.0));
-    let r = [hx + hw - w, top, w, h];
-    s.toolbar_menu_rect = r;
-    s.toolbar_scroll_max = (50.0 + actions(ui).len() as f32 * 30.0 - h).max(0.0);
-    s.focus_layer = crate::interaction::FocusLayer::Toolbar;
-    s.panel(r, p.panel, p.border, 7.0);
-    s.hit(r, Target::Overlay);
-    let clip = s.clip;
-    s.clip = Rect(r).intersect(Rect(clip)).0;
-    let top = top - ui.interaction.toolbar_scroll.min(s.toolbar_scroll_max);
-    let (path, details) = source(ui);
-    s.styled(
-        path.rsplit(['/', '\\']).next().unwrap_or(path),
-        [r[0] + 8.0, top + 5.0, w - 16.0, 22.0],
-        11.0,
-        p.ink,
-        TextStyle {
-            mono: true,
-            ..Default::default()
+    let actions = actions(ui);
+    let content_height = 8.0 + actions.len() as f32 * 30.0;
+    super::toolbar::menu(
+        ui,
+        s,
+        p,
+        crate::interaction::ToolbarMenu::Header,
+        content_height,
+        |s, r| {
+            let [_, top, w, _] = r;
+            for (i, (icon, label, target)) in actions.into_iter().enumerate() {
+                let button = [r[0] + 4.0, top + 4.0 + i as f32 * 30.0, w - 8.0, 28.0];
+                s.button(ui, "", button, target, p);
+                s.icon(icon, [button[0] + 14.0, button[1] + 14.0], p.ink_color());
+                s.styled(
+                    label,
+                    [button[0] + 28.0, button[1], (w - 40.0).max(1.0), 28.0],
+                    12.0,
+                    p.ink,
+                    TextStyle::default(),
+                );
+            }
         },
     );
-    s.text_tooltip([r[0], top, w, 28.0], path.into());
-    s.styled(
-        details,
-        [r[0] + 8.0, top + 27.0, w - 16.0, 16.0],
-        9.0,
-        p.muted,
-        TextStyle::default(),
-    );
-    for (i, (icon, label, target)) in actions(ui).into_iter().enumerate() {
-        let button = [r[0] + 4.0, top + 46.0 + i as f32 * 30.0, w - 8.0, 28.0];
-        s.button(ui, "", button, target, p);
-        s.icon(icon, [button[0] + 14.0, button[1] + 14.0], p.ink_color());
-        s.styled(
-            label,
-            [button[0] + 28.0, button[1], (w - 40.0).max(1.0), 28.0],
-            11.0,
-            p.ink,
-            TextStyle::default(),
-        );
-    }
-    s.clip = clip;
 }
 
-fn picker_settings_height(ui: &RunUi, width: f32) -> f32 {
+fn picker_settings_height(ui: &RunUi) -> f32 {
     match (
-        ui.state["supportsRunSettings"] == true,
+        !picker_selects(ui).is_empty(),
         ui.state["supportsFastMath"] == true,
     ) {
-        (true, true) if width < 420.0 => 318.0,
         (true, _) => 254.0,
         (false, true) => 248.0,
         (false, false) => 181.0,
     }
 }
-pub(super) fn picker_content_height(ui: &RunUi, width: f32) -> f32 {
-    picker_settings_height(ui, width)
+fn picker_selects(ui: &RunUi) -> Vec<(&'static str, crate::interaction::SelectId)> {
+    use crate::{
+        editing::{Field, Setting},
+        interaction::SelectId,
+    };
+    [
+        ("SAMPLE RATE", SelectId::SampleRate, Setting::SampleRate),
+        ("BLOCK SIZE", SelectId::BlockSize, Setting::BlockSize),
+    ]
+    .into_iter()
+    .filter(|(_, _, setting)| ui.field_enabled(&Field::Setting(*setting)))
+    .map(|(label, id, _)| (label, id))
+    .collect()
+}
+pub(super) fn picker_content_height(ui: &RunUi) -> f32 {
+    picker_settings_height(ui)
         + if ui.state["error"].as_str().is_some_and(|e| !e.is_empty()) {
             12.0 + ui.diagnostic_height
         } else {
@@ -381,13 +435,11 @@ pub(super) fn picker_content_height(ui: &RunUi, width: f32) -> f32 {
         }
 }
 pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
-    use crate::interaction::SelectId;
     let [x, y, w, h] = rect;
     let center = x + w * 0.5;
-    let settings = ui.state["supportsRunSettings"] == true;
+    let selects = picker_selects(ui);
     let fast_math = ui.state["supportsFastMath"] == true;
-    let narrow = w < 420.0;
-    let content_height = picker_content_height(ui, w);
+    let content_height = picker_content_height(ui);
     let top = y + (h - content_height).max(0.0) * 0.5;
     s.source_picker = Some(Rect(rect).intersect(Rect(s.clip)));
     let hover = ui.drop_target == Some(FileDropTarget::Source);
@@ -451,34 +503,31 @@ pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             error,
             [
                 x + 12.0,
-                top + picker_settings_height(ui, w) + 12.0,
+                top + picker_settings_height(ui) + 12.0,
                 w - 24.0,
                 ui.diagnostic_height,
             ],
+            crate::fonts::READING_SIZE,
             crate::theme::text(if ui.light { 0xb53333 } else { 0xff7e7e }),
         );
     }
-    if settings || fast_math {
-        let width = ((w - 42.0) * 0.5).clamp(1.0, 140.0);
-        let group_width = if settings { width * 2.0 + 10.0 } else { 0.0 }
-            + if fast_math && (!narrow || !settings) {
-                80.0
-            } else {
-                0.0
-            };
+    if !selects.is_empty() || fast_math {
+        let fast_width = if fast_math {
+            70.0_f32.min((w - 24.0) * 0.3)
+        } else {
+            0.0
+        };
+        let count = selects.len() as f32;
+        let gaps = (count + f32::from(fast_math) - 1.0).max(0.0) * 10.0;
+        let width = ((w - 24.0 - fast_width - gaps) / count.max(1.0)).clamp(1.0, 140.0);
+        let group_width = count * width + fast_width + gaps;
         let left = center - group_width * 0.5;
-        for (index, label, id) in [
-            (0, "SAMPLE RATE", SelectId::SampleRate),
-            (1, "BLOCK SIZE", SelectId::BlockSize),
-        ] {
-            if !settings {
-                continue;
-            }
+        for (index, (label, id)) in selects.into_iter().enumerate() {
             let x = left + index as f32 * (width + 10.0);
             s.styled(
                 label,
                 [x, top + 194.0, width, 16.0],
-                10.0,
+                11.0,
                 p.muted,
                 TextStyle {
                     centered: true,
@@ -488,16 +537,12 @@ pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             s.select(ui, id, [x, top + 218.0, width, 36.0], p);
         }
         if fast_math {
-            let x = if narrow || !settings {
-                center - 35.0
-            } else {
-                left + group_width - 70.0
-            };
-            let y = top + if narrow && settings { 264.0 } else { 194.0 };
+            let x = left + group_width - fast_width;
+            let y = top + 194.0;
             s.styled(
                 "FAST MATH",
-                [x, y, 70.0, 16.0],
-                10.0,
+                [x, y, fast_width, 16.0],
+                11.0,
                 p.muted,
                 TextStyle {
                     centered: true,
@@ -507,7 +552,7 @@ pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             s.toggle(
                 ui,
                 Target::FastMath,
-                [x + 23.0, y + 30.0, 24.0, 24.0],
+                [x + (fast_width - 24.0) * 0.5, y + 30.0, 24.0, 24.0],
                 ui.state["fastMath"] == true,
                 true,
                 p,

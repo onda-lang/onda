@@ -3,12 +3,16 @@ mod bank;
 mod header;
 mod scope;
 mod sections;
+pub(crate) mod toolbar;
+
+#[cfg(test)]
+mod responsive_tests;
 
 use crate::{
     model::RunUi,
     panels,
     presentation::Section,
-    scene::{Palette, Rect, Scene, Target},
+    scene::{Palette, Rect, Scene},
     theme::{GAP, GUTTER},
 };
 
@@ -31,7 +35,7 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
     let viewport = (h - dock_height(ui)).max(1.0);
     s.clip = [0.0, 0.0, w, viewport];
     s.viewport_height = viewport;
-    let width = (w - GUTTER * 2.0 - 4.0).max(1.0);
+    let width = (w - GUTTER * 2.0).max(1.0);
     let mut y = GUTTER - ui.scroll;
     let mut header_bottom = y;
     let loaded = ui.loaded();
@@ -45,6 +49,7 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
             s.paragraph(
                 error,
                 [GUTTER + 10.0, y + 10.0, width - 20.0, ui.diagnostic_height],
+                crate::fonts::READING_SIZE,
                 crate::theme::text(if ui.light { 0xb53333 } else { 0xff7e7e }),
             );
             y += height + GAP;
@@ -52,23 +57,21 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
         y = sections::build(ui, &mut s, p, [GUTTER, y, width, 0.0]);
     } else if ui.state["supportsSourceSelection"] == true {
         let height = (viewport - 24.0)
-            .max(header::picker_content_height(ui, width) + 24.0)
+            .max(header::picker_content_height(ui) + 24.0)
             .max(300.0);
         header::picker(ui, &mut s, p, [GUTTER, y, width, height]);
         y += height + GAP;
         s.scope_shape_end = s.shapes.len();
     }
     s.content_height = y + ui.scroll;
-    s.scrollbar = crate::scrollbar::Scrollbar::new(w, viewport, s.content_height, ui.scroll);
-    if let Some(bar) = s.scrollbar {
-        let color = if s.hovered(ui, bar.track.0) || ui.interaction.dragging_scrollbar() {
-            p.scrollbar_hover
-        } else {
-            p.scrollbar
-        };
-        s.shape(bar.thumb.0, color, 3.5);
-        s.hit(bar.track.0, Target::Scrollbar);
-    }
+    s.scrollbar(
+        ui,
+        p,
+        crate::scrollbar::ScrollRegion::Document,
+        [0.0, 0.0, w, viewport],
+        s.content_height,
+        ui.scroll,
+    );
     s.clip = [0.0, 0.0, w, h];
     s.focus_layer = crate::interaction::FocusLayer::Dock;
     if midi_visible(ui) {
@@ -110,11 +113,19 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
         s.popup_rect[3] = height;
         s.shapes[panel].rect[3] = height;
         s.shapes[panel + 1].rect[3] = (height - 2.0).max(0.0);
+        s.scrollbar(
+            ui,
+            p,
+            crate::scrollbar::ScrollRegion::Popup,
+            s.popup_rect,
+            s.popup_height,
+            ui.interaction.popup_scroll(),
+        );
     }
     s.menu_shapes = s.shapes.len();
     s.menu_labels = s.labels.len();
     s.menu_hits = s.hits.len();
-    header::menu(ui, &mut s, p);
+    toolbar::build(ui, &mut s, p);
     crate::interaction::build_menu(ui, &mut s, p);
     crate::interaction::build_tooltip(ui, &mut s, p);
     s

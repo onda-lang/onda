@@ -165,13 +165,15 @@ impl App {
     }
 
     pub(super) fn sync_ime(&mut self) {
+        let edit = self.ui.text_edit();
+        let editing = edit.is_some();
+        if !editing {
+            self.composing = false;
+        }
         let Some(window) = &self.window else {
             return;
         };
-        let editing = self.ui.editing();
-        let rect = self
-            .ui
-            .text_edit()
+        let rect = edit
             .and_then(|edit| {
                 edit["rect"]
                     .as_array()

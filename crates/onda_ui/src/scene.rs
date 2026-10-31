@@ -10,6 +10,9 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Rect(pub [f32; 4]);
 impl Rect {
+    pub fn is_empty(self) -> bool {
+        self.0[2] <= 0.0 || self.0[3] <= 0.0
+    }
     pub fn contains(self, x: f32, y: f32) -> bool {
         let [rx, ry, w, h] = self.0;
         w > 0.0 && h > 0.0 && x >= rx && y >= ry && x <= rx + w && y <= ry + h
@@ -40,8 +43,7 @@ pub(crate) enum Target {
     Transport,
     Scope,
     PinScope,
-    HeaderMenu,
-    BankMenu(bool),
+    ToolbarMenu(crate::interaction::ToolbarMenu),
     Overlay,
     Command(Value),
     Layout {
@@ -61,23 +63,34 @@ pub(crate) enum Target {
         path: String,
         add: bool,
     },
-    Follow,
     CopyLog,
     Note(u8),
     Choose(crate::interaction::SelectId),
     Option(usize),
-    Scrollbar,
+    Scrollbar(crate::scrollbar::ScrollRegion),
 }
 pub(crate) struct Hit {
     pub rect: Rect,
     pub target: Target,
 }
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct TextStyle {
     pub mono: bool,
     pub bold: bool,
     pub centered: bool,
     pub wrap: bool,
+    pub ellipsis: bool,
+}
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self {
+            mono: false,
+            bold: false,
+            centered: false,
+            wrap: false,
+            ellipsis: true,
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Label {
@@ -99,6 +112,7 @@ pub(crate) struct Label {
 }
 #[derive(Default)]
 pub(crate) struct Scene {
+    pub visible_controls: std::collections::HashSet<usize>,
     pub shapes: Vec<Shape>,
     pub labels: Vec<Label>,
     pub hits: Vec<Hit>,
@@ -115,7 +129,7 @@ pub(crate) struct Scene {
     pub selects: Vec<(crate::interaction::SelectId, Rect)>,
     pub content_height: f32,
     pub viewport_height: f32,
-    pub scrollbar: Option<crate::scrollbar::Scrollbar>,
+    pub scrollbars: Vec<(crate::scrollbar::ScrollRegion, crate::scrollbar::Scrollbar)>,
     pub clip: [f32; 4],
     pub scope_rect: [f32; 4],
     pub scope_overlay: bool,
@@ -210,11 +224,12 @@ impl Scene {
         );
         self.labels.last_mut().unwrap().style = style;
     }
-    pub fn paragraph(&mut self, text: &str, rect: [f32; 4], color: [u8; 3]) {
-        self.label(text, [rect[0], rect[1]], 12.0, rect[2], color);
+    pub fn paragraph(&mut self, text: &str, rect: [f32; 4], size: f32, color: [u8; 3]) {
+        self.label(text, [rect[0], rect[1]], size, rect[2], color);
         let label = self.labels.last_mut().unwrap();
         label.style.mono = true;
         label.style.wrap = true;
+        label.style.ellipsis = false;
         label.height = None;
         label.clip_top = label.clip_top.max(rect[1]);
         label.clip_bottom = label.clip_bottom.min(rect[1] + rect[3]);
@@ -362,6 +377,15 @@ impl Scene {
             &field,
             Field::Setting(Setting::ParamSmoothing | Setting::InputSmoothing)
         );
+        let old_clip = self.clip;
+        self.clip = Rect([
+            rect[0] + 1.0,
+            rect[1] + 1.0,
+            (rect[2] - 2.0).max(0.0),
+            (rect[3] - 2.0).max(0.0),
+        ])
+        .intersect(Rect(old_clip))
+        .0;
         self.styled(
             text,
             [rect[0] + 7.0, rect[1], (rect[2] - 14.0).max(1.0), rect[3]],
@@ -377,6 +401,7 @@ impl Scene {
         label.caret = display.as_ref().map(|d| d.1);
         label.selection = display.as_ref().map(|d| d.2);
         label.preedit = display.and_then(|d| d.3);
+        self.clip = old_clip;
         if ui.field_enabled(&field) {
             self.hit(rect, Target::Field(field));
         }

@@ -198,7 +198,7 @@ export class BrowserRunViewHost {
       { resetViewState: true },
     );
     this.handlers.midiEventsChanged?.(new Set());
-    this.postScope(0, []);
+    this.postVisualization({ channels: 0, peaks: [], samples: [] });
   }
 
   markSourceDirty(path = this.state.path) {
@@ -222,7 +222,7 @@ export class BrowserRunViewHost {
       schemaReady: true,
       status,
     });
-    this.postScope(0, []);
+    this.postVisualization({ channels: 0, peaks: [], samples: [] });
   }
 
   setError(error) {
@@ -439,16 +439,8 @@ export class BrowserRunViewHost {
     });
   }
 
-  postMeter(channels, peaks) {
-    this.post({ type: "meterData", channels, peaks });
-  }
-
-  postScope(channels, samples) {
-    this.post({ type: "scopeData", channels, samples });
-  }
-
-  postScopePacket(packet) {
-    this.post({ type: "scopeData", packet });
+  postVisualization(frame) {
+    this.post({ type: "scopeData", ...frame });
   }
 
   post(message) {
@@ -683,34 +675,25 @@ function mergeBuffers(buffers, existing, bufferFiles) {
 export function mergeEvents(events, existing) {
   return events.map((event, index) => {
     const previous = existing.find((item) => item.name === event.name);
-    return {
-      index,
-      name: event.name,
-      args: event.schema.params.map((param, argIndex) => {
-        const prior = previous?.args.find((arg) => arg.name === param.name);
-        const ty = param.ty;
-        const scalar =
-          ty.kind === "scalar" ? ty.encoding : (ty.element?.encoding ?? null);
-        const next = {
-          index: argIndex,
-          name: param.name,
-          type: payloadTypeName(ty),
-          scalar,
-          arrayLength:
-            ty.kind === "slice" ? null : ty.kind === "array" ? ty.len : 1,
-          isSlice: ty.kind === "slice",
-          default: payloadDefault(ty, param.default),
-          shape: structuredClone(ty),
-        };
-        return {
-          ...next,
-          value:
-            prior && eventArgShapeMatches(next, prior)
-              ? prior.value
-              : initialEventArgValue(next),
-        };
-      }),
-    };
+    const args = event.schema.params.map((param, argIndex) => {
+      const ty = param.ty;
+      const next = {
+        index: argIndex,
+        name: param.name,
+        type: payloadTypeName(ty),
+        scalar: ty.kind === "scalar" ? ty.encoding : (ty.element?.encoding ?? null),
+        arrayLength: ty.kind === "slice" ? null : ty.kind === "array" ? ty.len : 1,
+        isSlice: ty.kind === "slice",
+        default: payloadDefault(ty, param.default),
+        shape: structuredClone(ty),
+      };
+      return next;
+    });
+    const preserve = previous?.args.length === args.length && args.every((arg, i) =>
+      arg.name === previous.args[i].name && eventArgShapeMatches(arg, previous.args[i]));
+    for (let i = 0; i < args.length; i++)
+      args[i].value = preserve ? previous.args[i].value : initialEventArgValue(args[i]);
+    return { index, name: event.name, args };
   });
 }
 

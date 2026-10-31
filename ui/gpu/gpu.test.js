@@ -68,6 +68,203 @@ async function serveGpuUi(t, beforeRead) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+for (const backend of ["webgl", "webgpu"]) {
+  test(`resize retains the ${backend} frame until its replacement is drawn`, {
+    timeout:60000,
+    skip:backend === "webgpu" && process.env.ONDA_UI_TEST_WEBGPU === "0",
+  }, async t => {
+    const origin = await serveGpuUi(t);
+    const chrome = await openChrome(t, JSON.parse(process.env.ONDA_UI_CHROME_ARGS ||
+      (backend === "webgpu" && process.platform === "linux"
+        ? '["--use-angle=vulkan","--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan","--disable-vulkan-surface"]'
+        : '["--use-angle=swiftshader"]')));
+    const page = await chrome.page({width:720,height:840,
+      source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+    if (backend === "webgpu") {
+      await page.navigate(origin + "/away");
+      await eventually(() => page.evaluate(`(async()=>{
+        const adapter=await navigator.gpu?.requestAdapter();
+        return Boolean(adapter) && adapter.info?.isFallbackAdapter!==true;
+      })()`), "hardware GPU adapter");
+    }
+    await page.navigate(origin + "/index.html" + (backend === "webgl" ? "?backend=webgl" : ""));
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'resize.onda',supportsScope:false,
+      params:[{name:'gain',type:'f64',value:0.5}]}});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    assert.equal(await page.evaluate("document.querySelector('canvas').dataset.backend"), backend);
+    // Hold the host's next draw while the browser lays out and composites the resized page.
+    await page.evaluate(`window.originalRAF=requestAnimationFrame;window.delayedFrames=[];
+      window.requestAnimationFrame=cb=>(delayedFrames.push(cb),10000+delayedFrames.length)`);
+    for (const [width, height, scale] of [[900,700,1],[480,900,2],[800,600,1]]) {
+      await page.call("Emulation.setDeviceMetricsOverride", {width,height,deviceScaleFactor:scale,mobile:false});
+      await page.evaluate("dispatchEvent(new Event('resize'));new Promise(r=>setTimeout(r,30))");
+      assert.deepEqual(await page.evaluate("[document.querySelector('canvas').width,document.querySelector('canvas').height]"),
+        [720,840], "layout must retain the previous backing store while drawing is deferred");
+    }
+    assert.equal(await page.evaluate("delayedFrames.length"), 1, "resize bursts must coalesce");
+    await page.evaluate(`window.requestAnimationFrame=originalRAF;
+      for(const cb of delayedFrames)originalRAF(cb);
+      new Promise(r=>originalRAF(()=>originalRAF(r)))`);
+    assert.deepEqual(await page.evaluate("[document.querySelector('canvas').width,document.querySelector('canvas').height]"), [800,600]);
+    assert.equal(await page.evaluate("document.querySelector('#status').hidden"), true);
+  });
+}
+
+test("GPU rejects malformed scope packets without losing the frame or later updates", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  await page.evaluate(`_onHostMessage({type:'state',state:{path:'packets.onda',running:true,
+    viewState:{scopePinned:true,readyId:1}}});
+    _onHostMessage({type:'scopeData',packet:new Uint8Array([79,83,81,49,1,0,1,0,0,192,0,64])});
+    new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+  const frame = (await page.call("Page.captureScreenshot")).data;
+  for (const packet of ["new Uint8Array([0,1,2])", "'!!!'", "'T1NRMQEAAQA='"]) {
+    await page.evaluate(`_onHostMessage({type:'scopeData',packet:${packet}});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    assert.equal(await page.evaluate("document.querySelector('#status').hidden"), true,
+      "an invalid packet must not fail the renderer");
+    assert.equal((await page.call("Page.captureScreenshot")).data, frame,
+      "an invalid packet must retain the displayed frame");
+  }
+  await page.evaluate(`_onHostMessage({type:'state',state:{status:'Still working',viewState:{readyId:2}}})`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===2)"), "later state rendering");
+  assert.equal(await page.evaluate("commands.some(c=>c.type==='runViewError')"), false);
+});
+
+test("combined visualization frames render the latest waveform and retain coalesced meter peaks", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  const result = await page.evaluate(`(async()=>{
+    _onHostMessage({type:'state',state:{path:'combined.onda',running:true,outputChannels:2}});
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+    const {CanvasUi}=await import('./pkg/onda_ui.js');
+    const frames=[], meters=[];
+    const nativeScope=CanvasUi.prototype.scope_packet, nativeMessage=CanvasUi.prototype.message;
+    CanvasUi.prototype.scope_packet=function(bytes){frames.push(Array.from(bytes));return nativeScope.call(this,bytes)};
+    CanvasUi.prototype.message=function(value){const m=JSON.parse(value);if(m.type==='meterData')meters.push(m);return nativeMessage.call(this,value)};
+    const packet=new Uint8Array([79,83,81,49,2,0,1,0,0,0,0,0,0,0,0,0]);
+    _onHostMessage({type:'scopeData',channels:2,peaks:[1.2,0.2],packet:packet.slice()});
+    new DataView(packet.buffer).setInt16(10,1000,true);
+    _onHostMessage({type:'scopeData',channels:2,peaks:[0.1,0.7],packet});
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+    return {frames,meters};
+  })()`);
+  assert.equal(result.frames.length, 1);
+  assert.equal(new DataView(Uint8Array.from(result.frames[0]).buffer).getInt16(10,true), 1000);
+  assert.deepEqual(result.meters, [{type:"meterData",channels:2,peaks:[1.2,0.7]}]);
+});
+
+for (const backend of ["webgl", "webgpu"]) {
+  test(`GPU device loss stops capture and exposes an error (${backend})`, {
+    timeout:60000,
+    skip:backend === "webgpu" && process.env.ONDA_UI_TEST_WEBGPU === "0",
+  }, async t => {
+    const origin = await serveGpuUi(t);
+    const chrome = await openChrome(t, JSON.parse(process.env.ONDA_UI_CHROME_ARGS ||
+      (backend === "webgpu" && process.platform === "linux"
+        ? '["--use-angle=vulkan","--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan","--disable-vulkan-surface"]'
+        : '["--use-angle=swiftshader"]')));
+    const page = await chrome.page({width:720,height:840,source:`
+      window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail));
+      if (typeof GPUAdapter !== 'undefined') {
+        const requestDevice=GPUAdapter.prototype.requestDevice;
+        GPUAdapter.prototype.requestDevice=async function(...args) {
+          const device=await requestDevice.apply(this,args);
+          window.testDevice=device;return device;
+        };
+      }`});
+    if (backend === "webgpu") {
+      await page.navigate(origin + "/away");
+      await eventually(() => page.evaluate(`(async()=>{
+        const adapter=await navigator.gpu?.requestAdapter();
+        return Boolean(adapter) && adapter.info?.isFallbackAdapter!==true;
+      })()`), "hardware GPU adapter");
+    }
+    await page.navigate(origin + "/index.html" + (backend === "webgl" ? "?backend=webgl" : ""));
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+    assert.equal(await page.evaluate("document.querySelector('canvas').dataset.backend"), backend);
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'loss.onda',running:true,
+      midi:{noteOn:true,noteOff:true},viewState:{readyId:1}}})`);
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===1)"), "state rendering");
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').visible"), true,
+      "a fresh source starts with the scope pinned");
+    await page.evaluate("document.querySelector('canvas').focus()");
+    await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"a",code:"KeyA"});
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='midiNote'&&c.pressed)"), true);
+    await page.evaluate(backend === "webgpu" ? "testDevice.destroy()" :
+      "document.querySelector('canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewError')"), "GPU loss feedback", 3000);
+    assert.equal(await page.evaluate("document.querySelector('#status').hidden"), false);
+    assert.match(await page.evaluate("document.querySelector('#status').textContent"), /lost|destroyed/i);
+    assert.deepEqual(await page.evaluate(`(()=>{
+      const config=commands.findLast(c=>c.type==='scopeConfig');
+      return [config.visible,config.meter];
+    })()`), [false,false]);
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='midiNote'&&!c.pressed)"), true,
+      "GPU loss must release held notes without waiting for another input event");
+    await page.evaluate(`_onHostMessage({type:'state',state:{viewState:{readyId:2}}});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===2)"), false,
+      "a failed renderer must not acknowledge another frame");
+    await page.call("Page.reload", {ignoreCache:true});
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU recovery after reloading");
+    assert.equal(await page.evaluate("document.querySelector('#status').hidden"), true);
+  });
+}
+
+test("GPU capture pauses offscreen and resumes after scrolling or resizing", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:400});
+  await page.call("Page.addScriptToEvaluateOnNewDocument", {
+    source: "window.commands=[];addEventListener('ondaCommand',event=>commands.push(event.detail))",
+  });
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU renderer");
+  await page.evaluate(`_onHostMessage({type:"state",state:{
+    path:"capture.onda",running:true,supportsViewState:true,
+    params:Array.from({length:16},(_,i)=>({name:"p"+i,type:"f64",value:0.5})),
+    viewState:{scopePinned:true}
+  }})`);
+  const capture = (visible, meter) => eventually(() => page.evaluate(`(()=>{
+    const config=commands.findLast(c=>c.type==='scopeConfig');
+    return config?.visible===${visible} && config.meter===${meter};
+  })()`), `capture visibility: waveform=${visible}, meter=${meter}`);
+  const wheel = async deltaY => {
+    await page.call("Input.dispatchMouseEvent", {type:"mouseMoved",x:2,y:380});
+    await page.call("Input.dispatchMouseEvent", {type:"mouseWheel",x:2,y:380,deltaX:0,deltaY});
+  };
+  await capture(true, true);
+  // Rendering measures diagnostic text and can move the scope below the viewport.
+  await page.evaluate(`_onHostMessage({type:"state",state:{
+    error:Array(30).fill("A diagnostic line").join("\\n")
+  }})`);
+  await capture(false, true);
+  await page.evaluate('_onHostMessage({type:"state",state:{error:null}})');
+  await capture(true, true);
+  await wheel(80);
+  await capture(true, false);
+  await wheel(1000);
+  await capture(false, false);
+  await wheel(-10000);
+  await capture(true, true);
+  await wheel(1000);
+  await capture(false, false);
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width:720,height:2000,deviceScaleFactor:1,mobile:false,
+  });
+  await capture(true, true);
+});
+
 test("GPU wheel scrolling chains to the page when the canvas cannot scroll", { timeout:60000 }, async t => {
   const origin = await serveGpuUi(t);
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
@@ -110,7 +307,7 @@ test("GPU wheel scrolling chains to the page when the canvas cannot scroll", { t
   await wheel(200,await editPoint());
   await eventually(() => page.evaluate("commands.findLast(c=>c.type==='viewState')?.state.scrollTop>0"), "inner document scroll over a numeric editor",3000);
   assert.equal(await page.evaluate("scrollY"),0,"scrollable canvas consumes the wheel");
-  assert.equal(await page.evaluate("commands.some(c=>c.type==='setParam')"),false,"scrolling must preserve the numeric draft");
+  assert.equal(await page.evaluate("commands.some(c=>c.type==='setParam')"),false,"scrolling an unedited field must not publish a value");
   await wheel(100000);
   await eventually(() => page.evaluate("commands.findLast(c=>c.type==='viewState')?.state.scrollTop>1000"), "inner document bottom");
   assert.equal(await page.evaluate("scrollY"),0);
@@ -198,6 +395,39 @@ test("GPU touch pans chain unused distance to the page", { timeout:60000 }, asyn
   assert.equal(await page.evaluate("scrollY"), 0, "containment also applies when the ancestor's content fits");
 });
 
+test("diagnostic reflow resolves and publishes hidden drafts without further input", { timeout: 60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({ width: 720, height: 400,
+    source: "window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))" });
+  await page.navigate(`${origin}/index.html?backend=webgl`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  await page.evaluate(`_onHostMessage({type:'state',state:{
+    path:'diagnostic.onda',supportsScope:false,supportsTransport:false,
+    error:'compile error word '.repeat(18),
+    params:[{name:'gain',type:'f64',value:0}]
+  }})`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady')"), "diagnostic layout");
+  for (let i = 0; i < 12; i++) {
+    await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab" });
+    if (await page.evaluate("document.activeElement.tagName==='TEXTAREA'")) break;
+  }
+  assert.equal(await page.evaluate("document.activeElement.tagName"), "TEXTAREA");
+  await page.call("Input.insertText", { text: "0.75" });
+  assert.equal(await page.evaluate("document.activeElement.value"), "0.75");
+  assert.equal(await page.evaluate("commands.some(c=>c.type==='setParam')"), false);
+
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 360, height: 400, deviceScaleFactor: 1, mobile: false,
+  });
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='setParam')"), "hidden draft commit");
+  assert.deepEqual(await page.evaluate("commands.filter(c=>c.type==='setParam')"), [
+    { type: "setParam", name: "gain", value: 0.75, commit: true },
+  ]);
+  assert.equal(await page.evaluate("document.querySelector('.gpu-text-input').hidden"), true);
+  assert.equal(await page.evaluate("document.activeElement.tagName"), "CANVAS");
+});
+
 test("partial states during GPU initialization retain schemas and queued values", { timeout: 60000 }, async t => {
   const wasm = Promise.withResolvers();
   t.after(() => wasm.resolve());
@@ -240,6 +470,56 @@ test("partial states during GPU initialization retain schemas and queued values"
   assert.equal(await session.evaluate("document.activeElement.value"), "880");
   assert.equal(await session.evaluate("document.getElementById('status').hidden"), true,
     await session.evaluate("document.getElementById('status').textContent"));
+});
+
+test("failed GPU initialization releases queued messages and ignores updates until reload", { timeout: 30000 }, async t => {
+  const wasm = Promise.withResolvers();
+  t.after(() => wasm.resolve());
+  const origin = await serveGpuUi(t, path => path.endsWith(".wasm") ? wasm.promise : undefined);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({ source: `
+    window.commands = [];
+    window.addEventListener("ondaCommand", event => commands.push(event.detail));
+  ` });
+  await page.navigate(`${origin}/index.html?backend=webgl`);
+  await eventually(() => page.evaluate("typeof _onHostMessage === 'function'"), "initializing GPU receiver");
+  await page.evaluate(`(async () => {
+    const {CanvasUi} = await import('./pkg/onda_ui.js');
+    CanvasUi.create = async () => { throw new Error('Test renderer initialization failure'); };
+    window.messages = [];
+    window.publishUpdates = () => {
+      for (const message of [
+        {type:'state', state:{path:'failed.onda', logText:'x'.repeat(65536)}},
+        {type:'parameterValues', state:{params:[{name:'frequency', value:880}]}},
+        {type:'scopeData', channels:1, samples:[0.5]},
+        {type:'meterData', channels:1, peaks:[0.5]},
+        {type:'midiActivity', activeNotes:[60]},
+        {type:'bufferFileDrag', phase:'leave'},
+        {type:'sourceFileDrag', phase:'leave'},
+      ]) {
+        messages.push(new WeakRef(message));
+        _onHostMessage(message);
+      }
+    };
+    publishUpdates();
+  })()`);
+  wasm.resolve();
+  await eventually(() => page.evaluate("commands.some(c => c.type === 'runViewError')"), "renderer initialization failure");
+  await page.evaluate(`
+    for (let i = 0; i < 100; i++) publishUpdates();
+    _onHostMessage({type:'requestRunViewReady'});
+  `);
+  assert.equal(await page.evaluate("commands.filter(c => c.type === 'runViewError').length"), 2,
+    "readiness requests must replay the initialization error");
+  assert.equal(await page.evaluate("commands.some(c => c.type === 'uiReady')"), false);
+  await page.call("HeapProfiler.collectGarbage");
+  assert.equal(await page.evaluate("messages.filter(message => message.deref()).length"), 0,
+    "failed initialization must release existing publications and retain no new updates");
+  assert.match(await page.evaluate("document.getElementById('status').textContent"), /Test renderer initialization failure/);
+
+  await page.call("Page.reload", {ignoreCache:true});
+  await eventually(() => page.evaluate("commands.some(c => c.type === 'uiReady')"), "renderer recovery after reload");
+  assert.equal(await page.evaluate("document.getElementById('status').hidden"), true);
 });
 
 for (const clipboard of ["denied", "unavailable"])
@@ -495,7 +775,7 @@ for (const backend of ["webgpu", "webgl"])
       0,
       "a reset must discard scope data queued before it",
     );
-    await click(665, 354);
+    await click(682, 354);
     assert.equal(
       await evaluate(`commands.findLast(c=>c.type==='setParamLayout').layout`),
       "knobs",
@@ -664,7 +944,7 @@ for (const backend of ["webgpu", "webgl"])
     await page("Input.dispatchKeyEvent",{type:"keyDown",key:"Enter"});
     await click(562,40);
     assert.equal(await evaluate(`commands.findLast(c=>c.type==='stop')?.type`),"stop");
-    await click(665,354);
+    await click(682,354);
     await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:102,y:433,buttons:0});
     assert.equal(await evaluate(`document.querySelector('canvas').style.cursor`),"ns-resize");
     await page("Input.dispatchMouseEvent",{type:"mouseMoved",x:102,y:491,buttons:0});
@@ -832,7 +1112,7 @@ test("VS Code numeric editors stay aligned with the canvas", { timeout: 30000 },
   }
 });
 
-test("VS Code retains folds, scroll, and typed event values across webview reloads", { timeout: 60000 }, async t => {
+test("VS Code retains scope pinning, folds, scroll, and typed event values across webview reloads", { timeout: 60000 }, async t => {
   const origin = await serveGpuUi(t);
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
   const session = await chrome.page({ width: 720, height: 840, source: `
@@ -865,7 +1145,7 @@ test("VS Code retains folds, scroll, and typed event values across webview reloa
   };
   await session.navigate(`${origin}/index.html?backend=webgl`);
   await ready();
-  await publish(state);
+  await publish({...state,viewState:{scopePinned:true}});
   for (let i = 0; i < 12; i++) {
     await session.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab" });
     if (await session.evaluate("document.activeElement.tagName === 'TEXTAREA'")) break;
@@ -880,6 +1160,7 @@ test("VS Code retains folds, scroll, and typed event values across webview reloa
   await wheel(260);
   await eventually(() => session.evaluate("saved.scrollTop > 0"), "saved VS Code scroll");
   const saved = await session.evaluate("saved");
+  assert.equal(saved.scopePinned, true);
 
   const loaded = session.event("Page.loadEventFired");
   await session.call("Page.reload");
@@ -891,6 +1172,7 @@ test("VS Code retains folds, scroll, and typed event values across webview reloa
   await wheel(1);
   await eventually(() => session.evaluate("saves > 0"), "restored VS Code presentation");
   const restored = await session.evaluate("saved");
+  assert.equal(restored.scopePinned, true);
   assert.equal(restored.scrollTop, saved.scrollTop + 1);
   assert.deepEqual(restored.sections, saved.sections);
   assert.deepEqual(restored.eventValues, saved.eventValues);
@@ -925,7 +1207,7 @@ test("compact audio header on mobile portrait, landscape, and zoomed views", {ti
       outputChannels:${channels},supportsViewState:true,supportsSourceSelection:true,
       supportsDeviceSelection:true,supportsProjectExport:true,canExportProject:true,
       paramLayout:'knobs',params:[{name:'gain',type:'f64',value:0.65,rangeMin:0,rangeMax:1},
-      {name:'frequency',type:'f64',value:440,rangeMin:20,rangeMax:20000}],viewState:{reset:true}}});
+      {name:'frequency',type:'f64',value:440,rangeMin:20,rangeMax:20000}],viewState:{reset:true,scopePinned:false}}});
       _onHostMessage({type:'meterData',channels:${channels},peaks:[0.8,0.6,0.4,1.1]});
       new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
     assert.equal(await page.evaluate("commands.findLast(c=>c.type==='scopeConfig').visible"),false);
@@ -962,10 +1244,76 @@ test("compact audio header on mobile portrait, landscape, and zoomed views", {ti
     if(dense) {
       await tap(w-16-padding-14,cy);
       await shot("-options");
-      await tap(w-60,(minimal?62:74)+60);
+      await tap(w-60,(minimal?62:74)+18);
       assert.deepEqual(await page.evaluate("errors"),[]);
     }
     assert.equal(await page.evaluate("document.getElementById('status').hidden"),true);
+  }
+});
+
+test("MIDI settings stay on one header row and remain editable through resizing and zoom", {timeout:60000}, async t => {
+  const origin=await serveGpuUi(t);
+  const chrome=await openChrome(t,["--use-angle=swiftshader"]);
+  const page=await chrome.page({width:720,height:800,source:`
+    window.commands=[];window.errors=[];
+    addEventListener('ondaCommand',e=>commands.push(e.detail));
+    addEventListener('error',e=>errors.push(e.message));
+  `});
+  await page.navigate(origin+"/index.html?backend=webgl");
+  await eventually(()=>page.evaluate("commands.some(c=>c.type==='uiReady')"),"MIDI UI");
+  const {mkdir}=await import("node:fs/promises");
+  const directory=new URL("../../target/panel-responsive/",import.meta.url);
+  await mkdir(directory,{recursive:true});
+  const frame=()=>page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  const key=async(name,code=name,modifiers=0)=>{
+    await page.call("Input.dispatchKeyEvent",{type:"keyDown",key:name,code,modifiers});
+    await frame();
+  };
+  const click=async(x,y)=>{
+    for(const type of ["mousePressed","mouseReleased"])
+      await page.call("Input.dispatchMouseEvent",{type,x,y,button:"left",clickCount:1});
+    await frame();
+  };
+  for(const [width,scale] of [[720,1],[480,1],[440,1],[390,1],[360,1],[320,1],[240,1],[195,1],[128,2.5],[360,2]]) {
+    await page.call("Emulation.setDeviceMetricsOverride",{width,height:800,deviceScaleFactor:scale,mobile:false});
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'midi-resize.onda',supportsScope:false,
+      supportsViewState:true,midiKeyboardInteractive:true,midi:{noteOn:true},
+      viewState:{reset:true},params:[],inputControls:[],events:[],buffers:[]}})`);
+    await frame();
+    const menu=width<240;
+    const edit=()=>page.evaluate(`(()=>{const e=document.querySelector('.gpu-text-input');
+      return {visible:!e.hidden,value:e.value,rect:e.getBoundingClientRect().toJSON()}})()`);
+    if(menu) {
+      await click(width-26,657);
+      await key("Tab");
+    } else {
+      for(let stop=0;stop<8;stop++) {
+        await key("Tab");
+        const field=await edit();
+        if(field.visible && field.value==="4") break;
+      }
+    }
+    let field=await edit();
+    assert.equal(field.visible,true,`${width}: octave remains reachable`);
+    assert.equal(field.value,"4");
+    if(!menu) assert.equal(field.rect.y,644,`${width}: octave stays in the header row`);
+    await key("a","KeyA",2);
+    await page.call("Input.insertText",{text:"5"});
+    await key("Enter");
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='viewState').state.octave"),5);
+    await key("Tab");
+    const velocity=await edit();
+    assert.equal(velocity.visible,true);
+    assert.equal(Number(velocity.value),1);
+    if(!menu) assert.equal(velocity.rect.y,field.rect.y,`${width}: velocity stays beside octave`);
+    await key("a","KeyA",2);
+    await page.call("Input.insertText",{text:"0.6"});
+    await key("Enter");
+    assert.equal(await page.evaluate("commands.findLast(c=>c.type==='viewState').state.velocity"),0.6);
+    await key("Escape");
+    const {data}=await page.call("Page.captureScreenshot",{format:"png"});
+    await writeFile(new URL(`midi-${width}-${scale}x.png`,directory),Buffer.from(data,"base64"));
+    assert.deepEqual(await page.evaluate("errors"),[]);
   }
 });
 
@@ -1015,4 +1363,212 @@ test("bank toolbars stay compact and their menu keeps smoothing editable", {time
     }
     assert.deepEqual(await page.evaluate("errors"),[]);
   }
+});
+
+test("resizing a field into overflow finishes editing and releases keyboard MIDI", { timeout:30000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  for (const text of ["75", "invalid", "composing"]) {
+    const page = await chrome.page({width:720,height:840,
+      source:"window.commands=[];window.addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+    await page.navigate(origin + "/index.html?backend=webgl");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'resize.onda',running:true,
+      supportsScope:false,supportsTransport:false,supportsDeviceSelection:false,
+      supportsSourceSelection:false,supportsProjectExport:false,
+      supportsParamSmoothing:true,paramSmoothingMs:30,
+      midiKeyboardInteractive:true,midi:{noteOn:true},currentMidiInputDevice:'Computer Keyboard',
+      params:[{name:'gain',type:'f64',value:0.5}]}});
+      document.querySelector('canvas').focus();new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    const key = async (key, code=key, type="keyDown") => {
+      await page.call("Input.dispatchKeyEvent", {type,key,code});
+      await page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+    };
+    let found = false;
+    for (let i=0;i<12;i++) {
+      await key("Tab");
+      if (await page.evaluate("!document.querySelector('textarea').hidden && document.querySelector('textarea').value==='30'")) {
+        found = true;
+        break;
+      }
+    }
+    assert.ok(found, "inline smoothing must be keyboard accessible");
+    await page.call("Input.insertText", {text:text === "composing" ? "75" : text});
+    if (text === "composing")
+      await page.call("Input.imeSetComposition", {text:"9",selectionStart:1,selectionEnd:1});
+    await page.call("Emulation.setDeviceMetricsOverride",{width:280,height:840,deviceScaleFactor:1,mobile:false});
+    await eventually(() => page.evaluate("document.querySelector('textarea').hidden"), "editor entering overflow");
+    if (text === "75") await eventually(() => page.evaluate(
+      "commands.some(c=>c.type==='setParamSmoothing'&&c.milliseconds===75)"), "resize committing the visible draft",5000);
+    await key("Enter");
+    await key("a", "KeyA");
+    await key("a", "KeyA", "keyUp");
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='midiNote'&&c.pressed)"),true);
+    assert.deepEqual(await page.evaluate("commands.filter(c=>c.type==='setParamSmoothing').map(c=>c.milliseconds)"),
+      text === "75" ? [75] : []);
+    assert.equal(await page.evaluate("document.querySelector('textarea').hidden"),true);
+  }
+});
+
+test("scrolling an edited field out of view releases keyboard MIDI", { timeout:30000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  for (const text of ["0.75", "invalid", "composing"]) {
+    const page = await chrome.page({width:720,height:840,
+      source:"window.commands=[];window.addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+    await page.navigate(origin + "/index.html?backend=webgl");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'scroll-edit.onda',running:true,
+      supportsScope:false,supportsTransport:false,supportsDeviceSelection:false,
+      midiKeyboardInteractive:true,midi:{noteOn:true},currentMidiInputDevice:'Computer Keyboard',
+      params:Array.from({length:80},(_,i)=>({name:'p'+i,type:'f64',value:0.5}))}});
+      document.querySelector('canvas').focus();new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    const key = async (key, code=key, type="keyDown") => {
+      await page.call("Input.dispatchKeyEvent", {type,key,code});
+      await page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+    };
+    let found = false;
+    for (let i=0;i<12;i++) {
+      await key("Tab");
+      if (await page.evaluate("!document.querySelector('textarea').hidden && document.querySelector('textarea').value==='0.5'")) {
+        found = true;
+        break;
+      }
+    }
+    assert.ok(found, "first parameter must be keyboard accessible");
+    await page.call("Input.insertText", {text:text === "composing" ? "0.75" : text});
+    if (text === "composing")
+      await page.call("Input.imeSetComposition", {text:"9",selectionStart:1,selectionEnd:1});
+    const {x,y} = await page.evaluate(`(()=>{
+      const r=document.querySelector('textarea').getBoundingClientRect();
+      return {x:r.x+r.width/2,y:r.y+r.height/2};
+    })()`);
+    await page.call("Input.dispatchMouseEvent", {type:"mouseWheel",x,y,deltaX:0,deltaY:100000});
+    await eventually(() => page.evaluate("document.querySelector('textarea').hidden"), "scrolled-out editor");
+    assert.equal(await page.evaluate("document.activeElement.tagName"), "CANVAS");
+    await key("a", "KeyA");
+    await key("a", "KeyA", "keyUp");
+    assert.deepEqual(await page.evaluate("commands.filter(c=>c.type==='midiNote').map(c=>c.pressed)"), [true,false]);
+    assert.deepEqual(await page.evaluate("commands.filter(c=>c.type==='setParam').map(c=>[c.name,c.value,c.commit])"),
+      text === "0.75" ? [["p0",0.75,true]] : []);
+    await page.call("Input.dispatchMouseEvent", {type:"mouseWheel",x:8,y:300,deltaX:0,deltaY:-100000});
+    await page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+    assert.equal(await page.evaluate("document.querySelector('textarea').hidden"), true, "returning must not reopen the draft");
+    if (text === "composing") {
+      for (let i=0;i<12;i++) {
+        await key("Tab");
+        if (await page.evaluate("document.activeElement.tagName==='TEXTAREA'")) break;
+      }
+      assert.equal(await page.evaluate("document.activeElement.tagName"), "TEXTAREA");
+      await page.call("Input.insertText", {text:"0.25"});
+      await key("Enter");
+      assert.deepEqual(await page.evaluate("commands.filter(c=>c.type==='setParam').map(c=>[c.name,c.value,c.commit])"),
+        [["p0",0.25,true]], "cancelling composition must not block the next edit");
+    }
+  }
+});
+
+test("browser composition finishes before a numeric edit can commit", { timeout:30000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  for (const finish of ["commit", "cancel", "blur"]) {
+    const page = await chrome.page({width:720,height:840,
+      source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+    await page.navigate(origin + "/index.html?backend=webgl");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'composition.onda',supportsScope:false,
+      supportsTransport:false,supportsDeviceSelection:false,
+      params:[{name:'gain',type:'f64',value:0.5}]}});document.querySelector('canvas').focus()`);
+    for (let i=0;i<12;i++) {
+      await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Tab",code:"Tab"});
+      if (await page.evaluate("document.activeElement.tagName==='TEXTAREA'")) break;
+    }
+    assert.equal(await page.evaluate("document.activeElement.tagName"), "TEXTAREA");
+    await page.call("Input.insertText", {text:"0.75"});
+    await page.call("Input.imeSetComposition", {text:"9",selectionStart:1,selectionEnd:1});
+    assert.equal(await page.evaluate("document.activeElement.value"), "0.759");
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='setParam')"), false);
+    if (finish === "blur") {
+      await page.evaluate("dispatchEvent(new Event('blur'))");
+      assert.equal(await page.evaluate("commands.some(c=>c.type==='setParam')"), false);
+      assert.equal(await page.evaluate("document.querySelector('textarea').hidden"), true);
+      continue;
+    }
+    if (finish === "commit") await page.call("Input.insertText", {text:"9"});
+    else await page.call("Input.imeSetComposition", {text:"",selectionStart:0,selectionEnd:0});
+    await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Enter",code:"Enter"});
+    assert.deepEqual(await page.evaluate("commands.filter(c=>c.type==='setParam').map(c=>[c.name,c.value,c.commit])"),
+      [["gain",finish === "commit" ? 0.759 : 0.75,true]]);
+    assert.equal(await page.evaluate("document.querySelector('textarea').hidden"), true);
+  }
+});
+
+test("event float edits preserve changes between signed zeros", { timeout:30000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  for (const type of ["f32", "f64"]) {
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'zero-${type}.onda',supportsScope:false,
+      supportsTransport:false,supportsDeviceSelection:false,supportsSourceSelection:false,supportsProjectExport:false,
+      events:[{name:'probe',args:[{name:'value',type:'${type}',value:0,default:0}]}]}});
+      document.querySelector('canvas').focus()`);
+    for (const text of ["-0", "0", "-0"]) {
+      for (let i=0;i<15;i++) {
+        await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Tab",code:"Tab"});
+        if (await page.evaluate("document.activeElement.tagName==='TEXTAREA'")) break;
+      }
+      assert.equal(await page.evaluate("document.activeElement.tagName"), "TEXTAREA");
+      await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"a",code:"KeyA",modifiers:2});
+      await page.call("Input.insertText", {text});
+      await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Enter",code:"Enter"});
+      for (const event of ["mousePressed", "mouseReleased"])
+        await page.call("Input.dispatchMouseEvent", {type:event,x:650,y:140,button:"left",clickCount:1});
+      assert.equal(await page.evaluate("Object.is(commands.findLast(c=>c.type==='triggerEvent')?.values[0],-0)"),
+        text === "-0", `${type} edit ${text} must preserve the zero sign through dispatch`);
+    }
+  }
+});
+
+test("structured event controls edit and dispatch typed values", { timeout:30000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];window.addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  const value = {id:"9223372036854775807", levels:[0.25,0.5,0.75]};
+  await page.evaluate(`_onHostMessage({type:'state',state:{path:'structured.onda',supportsScope:false,
+    supportsTransport:false,supportsDeviceSelection:false,supportsSourceSelection:false,
+    supportsProjectExport:false,events:[{name:'configure',args:[{name:'voice',value:${JSON.stringify(value)},
+      shape:{kind:'struct',fields:[{name:'id',ty:{kind:'scalar',encoding:'i64'}},
+        {name:'levels',ty:{kind:'slice',element:{kind:'scalar',encoding:'f32'}}}]}}]}]}})`);
+  await page.evaluate("document.querySelector('canvas').focus();new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  const key = async key => {
+    await page.call("Input.dispatchKeyEvent", {type:"keyDown",key});
+    await page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  };
+  const editValue = async (before, after) => {
+    let found = false;
+    for (let i=0;i<20;i++) {
+      await key("Tab");
+      if (await page.evaluate(`(()=>{const e=document.querySelector('textarea');return !e.hidden && e.value===${JSON.stringify(before)}})()`)) {
+        found = true;
+        break;
+      }
+    }
+    assert.ok(found, `typed field ${before} must be keyboard accessible`);
+    await page.call("Input.insertText", {text:after});
+    await key("Enter");
+    assert.equal(await page.evaluate("document.querySelector('textarea').hidden"),true);
+  };
+  await editValue(value.id,"-9223372036854775808");
+  await page.evaluate("_onHostMessage({type:'state',state:{status:'Running'}})");
+  await editValue("0.25","Infinity");
+  await page.call("Input.dispatchMouseEvent",{type:"mousePressed",x:650,y:140,button:"left",clickCount:1});
+  await page.call("Input.dispatchMouseEvent",{type:"mouseReleased",x:650,y:140,button:"left",clickCount:1});
+  assert.deepEqual(await page.evaluate("commands.findLast(c=>c.type==='triggerEvent')?.values"),
+    [{id:"-9223372036854775808",levels:["Infinity",0.5,0.75]}]);
 });

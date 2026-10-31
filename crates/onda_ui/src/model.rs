@@ -2,12 +2,13 @@ use onda_mir::{ParamDomain, ParamScale, ScalarType};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::scene::Scene;
+use crate::scene::{Rect, Scene};
 use crate::{
     editing::Editor,
     events::Event,
     interaction::Interaction,
     presentation::{Presentation, Section},
+    value::identical,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,33 +81,37 @@ impl Control {
                         .and_then(|n| u32::try_from(n).ok()),
                 )
             });
-        let mut value = metadata
-            .as_object_mut()?
-            .remove("value")
-            .unwrap_or_else(|| {
-                if scalar == ScalarType::Bool {
-                    return Value::Bool(number(&metadata["normalizedValue"]).unwrap_or(0.0) >= 0.5);
-                }
-                domain
-                    .map(|d| {
-                        json!(d.normalized_to_plain(
-                            number(&metadata["normalizedValue"]).unwrap_or(0.0)
-                        ))
-                    })
-                    .unwrap_or(Value::Null)
-            });
+        let value = metadata.as_object_mut()?.remove("value");
+        let normalized = number(&metadata["normalizedValue"]).unwrap_or(0.0);
+        metadata.as_object_mut()?.remove("normalizedValue");
+        let mut control = Self {
+            metadata,
+            value: Value::Null,
+            input,
+            domain,
+        };
+        control.value = value
+            .or_else(|| control.value_from_normalized(normalized))
+            .unwrap_or(Value::Null);
         if scalar == ScalarType::Bool {
-            value = boolean_value(&value);
-            if let Some(default) = metadata.get_mut("default").filter(|v| !v.is_null()) {
+            control.value = boolean_value(&control.value);
+            if let Some(default) = control.metadata.get_mut("default").filter(|v| !v.is_null()) {
                 *default = boolean_value(default);
             }
         }
-        metadata.as_object_mut()?.remove("normalizedValue");
-        Some(Self {
-            metadata,
-            value,
-            input,
-            domain,
+        Some(control)
+    }
+    fn value_from_normalized(&self, normalized: f64) -> Option<Value> {
+        if self.boolean() {
+            return Some(Value::Bool(normalized >= 0.5));
+        }
+        let domain = self.domain?;
+        let value = domain.normalized_to_plain(normalized);
+        Some(match domain.scalar() {
+            ScalarType::I32 => json!(value as i32),
+            ScalarType::I64 => json!((value as i64).to_string()),
+            ScalarType::F32 => json!(f64::from(value as f32)),
+            _ => json!(value),
         })
     }
     pub fn wire_value(&self) -> Value {
@@ -177,8 +182,7 @@ pub struct RunUi {
     pub(crate) revision: u64,
     pub(crate) scope_revision: u64,
     pub(crate) meter_revision: u64,
-    pub(crate) meter_channels: usize,
-    pub(crate) meter_peaks: [f32; onda_scope::MAX_CHANNELS],
+    pub(crate) meters: crate::meters::Meters,
     pub(crate) trace: Vec<[i16; 4]>,
     trace_shape: [usize; 2],
     pub(crate) scope: onda_scope::Envelope,
@@ -217,8 +221,7 @@ impl Default for RunUi {
             revision: 1,
             scope_revision: 0,
             meter_revision: 0,
-            meter_channels: 0,
-            meter_peaks: [0.0; onda_scope::MAX_CHANNELS],
+            meters: Default::default(),
             trace: Vec::new(),
             trace_shape: [0, 0],
             scope: Default::default(),
@@ -237,7 +240,7 @@ impl Default for RunUi {
             editor: Editor::default(),
             commands: Vec::new(),
             light: false,
-            diagnostic_height: 16.8,
+            diagnostic_height: crate::fonts::READING_SIZE * 1.4,
             log_revision: 0,
             log_max_scroll_x: 0.0,
             tooltip_size: [0.0, 16.8],
@@ -250,29 +253,26 @@ impl RunUi {
     /// the metadata explicitly declares the plugin's normalized host domain.
     pub fn message(&mut self, message: Value) {
         match message["type"].as_str() {
-            Some("meterData") => {
-                let channels = message["channels"].as_u64().unwrap_or(0) as usize;
-                let peaks = std::array::from_fn::<_, { onda_scope::MAX_CHANNELS }, _>(|i| {
-                    message["peaks"][i].as_f64().unwrap_or(0.0) as f32
-                });
-                self.set_meter(channels, &peaks);
-            }
-            Some("scopeData") => {
+            Some("meterData" | "scopeData") => {
                 let channels = message["channels"]
                     .as_u64()
                     .and_then(|n| usize::try_from(n).ok())
                     .unwrap_or(0);
-                let samples = message["samples"].as_array();
-                let frames = samples
-                    .map(|s| s.len() / channels.max(1))
-                    .unwrap_or(0)
-                    .min(16384);
-                self.set_scope(channels, frames, |frame, channel| {
-                    samples
-                        .and_then(|s| s.get(frame * channels + channel))
-                        .and_then(Value::as_f64)
-                        .unwrap_or(0.0) as f32
-                });
+                if message["peaks"].is_array() {
+                    let peaks = std::array::from_fn::<_, { onda_scope::MAX_CHANNELS }, _>(|i| {
+                        message["peaks"][i].as_f64().unwrap_or(0.0) as f32
+                    });
+                    self.set_meter(channels, &peaks);
+                }
+                if let Some(samples) = message["samples"].as_array() {
+                    let frames = (samples.len() / channels.max(1)).min(onda_scope::MAX_FRAMES);
+                    self.set_scope(channels, frames, |frame, channel| {
+                        samples
+                            .get(frame * channels + channel)
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0) as f32
+                    });
+                }
             }
             Some("state") => {
                 let Some(incoming) = message["state"].as_object() else {
@@ -379,12 +379,12 @@ impl RunUi {
                             .iter()
                             .filter_map(|p| Control::from_metadata(p.clone(), input))
                             .collect();
-                        let schema_changed = !self
-                            .controls
-                            .iter()
-                            .filter(|c| c.input == input)
-                            .map(|c| &c.metadata)
-                            .eq(replacements.iter().map(|c| &c.metadata));
+                        let mut previous = self.controls.iter().filter(|c| c.input == input);
+                        let schema_changed = !replacements.iter().all(|next| {
+                            previous
+                                .next()
+                                .is_some_and(|old| identical(&old.metadata, &next.metadata))
+                        }) || previous.next().is_some();
                         if schema_changed {
                             self.cancel_interaction();
                             self.clear_control_layouts();
@@ -452,8 +452,16 @@ impl RunUi {
                         && !reset
                         && incoming.get("resetEventArguments") != Some(&Value::Bool(true))
                     {
+                        let previous: HashMap<_, _> = self
+                            .events
+                            .iter()
+                            .map(|event| (event.name.as_str(), event))
+                            .collect();
                         for event in &mut events {
-                            if let Some(old) = self.events.iter().find(|e| e.same_schema(event)) {
+                            if let Some(old) = previous
+                                .get(event.name.as_str())
+                                .filter(|old| old.same_schema(event))
+                            {
                                 for (arg, old) in event.args.iter_mut().zip(&old.args) {
                                     arg.value = old.value.clone();
                                 }
@@ -530,7 +538,7 @@ impl RunUi {
                 }
             }
             Some("parameterValues") => {
-                let mut changed = false;
+                let mut repaint = false;
                 for (bank, input) in [("params", false), ("inputControls", true)] {
                     if let Some(values) = message["state"][bank].as_array() {
                         for update in values {
@@ -546,13 +554,7 @@ impl RunUi {
                             }
                             let c = &mut self.controls[index];
                             let value = update.get("value").cloned().or_else(|| {
-                                if c.boolean() {
-                                    return number(&update["normalizedValue"])
-                                        .map(|n| Value::Bool(n >= 0.5));
-                                }
-                                c.domain
-                                    .zip(number(&update["normalizedValue"]))
-                                    .map(|(d, n)| json!(d.normalized_to_plain(n)))
+                                c.value_from_normalized(number(&update["normalizedValue"])?)
                             });
                             if let Some(value) = value {
                                 let value = if c.boolean() {
@@ -560,15 +562,15 @@ impl RunUi {
                                 } else {
                                     value
                                 };
-                                if value != c.value {
+                                if !identical(&value, &c.value) {
                                     c.value = value;
-                                    changed = true;
+                                    repaint |= self.scene.visible_controls.contains(&index);
                                 }
                             }
                         }
                     }
                 }
-                if changed {
+                if repaint {
                     self.invalidate();
                 }
             }
@@ -581,6 +583,9 @@ impl RunUi {
             self.size = size;
             self.scale = scale;
             self.invalidate();
+            if self.editor.editing() {
+                self.prepare_scene();
+            }
         }
     }
     pub fn scope_columns(&self) -> usize {
@@ -667,46 +672,48 @@ impl RunUi {
     fn file_drop_obscured(&self, x: f32, y: f32) -> bool {
         self.interaction.obscures(&self.scene, x, y)
     }
-    pub fn meter_enabled(&self) -> bool {
+    pub(crate) fn scope_available(&self) -> bool {
         self.loaded() && self.state["supportsScope"] != false
+    }
+    /// Whether any header meter is onscreen and needs fresh peaks.
+    pub fn meter_enabled(&mut self) -> bool {
+        self.prepare_scene();
+        self.scene
+            .meter_rects
+            .iter()
+            .any(|&rect| !Rect(rect).intersect(Rect(self.scene.meter_clip)).is_empty())
     }
     pub(crate) fn output_channels(&self) -> usize {
         self.state["outputChannels"]
             .as_u64()
             .map(|n| n as usize)
-            .unwrap_or(self.meter_channels.max(self.scope.channels()))
+            .unwrap_or(self.meters.channels.max(self.scope.channels()))
             .clamp(1, 64)
     }
     pub fn set_meter(&mut self, channels: usize, peaks: &[f32]) {
-        let channels = channels.min(64);
-        let next = std::array::from_fn(|i| {
-            let v = if i < channels {
-                peaks.get(i).copied().unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            if v.is_finite() {
-                v.max(0.0)
-            } else {
-                0.0
-            }
-        });
-        if self.meter_channels != channels {
-            self.meter_channels = channels;
-            self.invalidate();
-        }
-        if self.meter_peaks != next {
-            self.meter_peaks = next;
+        let previous_channels = self.meters.channels;
+        if self
+            .meters
+            .update(channels, peaks, web_time::Instant::now())
+        {
             self.meter_revision = self.meter_revision.wrapping_add(1);
         }
+        if self.meters.channels != previous_channels {
+            self.invalidate();
+        }
     }
-    pub fn scope_enabled(&self) -> bool {
-        self.meter_enabled()
+    pub(crate) fn scope_open(&self) -> bool {
+        self.scope_available()
             && if self.presentation.scope_pinned {
                 self.presentation.open(Section::Scope)
             } else {
                 self.interaction.scope_open
             }
+    }
+    /// Whether the clipped waveform viewport needs fresh snapshots.
+    pub fn scope_enabled(&mut self) -> bool {
+        self.prepare_scene();
+        !Rect(self.scene.scope_clip).is_empty()
     }
     pub(crate) fn log_present(&self) -> bool {
         self.state["logRevealed"] == true
@@ -740,8 +747,13 @@ impl RunUi {
         self.prepare_scene_at(web_time::Instant::now());
     }
     pub(crate) fn prepare_scene_at(&mut self, now: web_time::Instant) {
-        if self.scene_dirty {
+        while self.scene_dirty {
             self.scene = crate::scene::build(self);
+            if self.interaction.toolbar_menu.is_some() && self.scene.toolbar_menu_rect[3] == 0.0 {
+                self.interaction.toolbar_menu = None;
+                self.interaction.toolbar_scroll = 0.0;
+                self.scene = crate::scene::build(self);
+            }
             let max = (self.scene.content_height - self.scene.viewport_height).max(0.0);
             let scroll = self.scroll.clamp(0.0, max);
             if scroll != self.scroll {
@@ -760,7 +772,22 @@ impl RunUi {
                 .interaction
                 .toolbar_scroll
                 .min(self.scene.toolbar_scroll_max);
+            if self.scene.log_rect[3] > 0.0 {
+                let max = self.scene.log_max_scroll;
+                self.presentation.log_scroll = if self.presentation.log_follow {
+                    max
+                } else {
+                    self.presentation.log_scroll.min(max)
+                };
+                if !self.presentation.log_follow && self.presentation.log_scroll >= max {
+                    self.presentation.log_follow = true;
+                    self.presentation.scrolled();
+                }
+            }
             self.scene_dirty = false;
+            // Resolving a hidden draft can change values and focus. Rebuild once
+            // more before exposing the scene, with the draft already finished.
+            self.finish_hidden_edit();
         }
         if self.update_hover(now) {
             self.invalidate();

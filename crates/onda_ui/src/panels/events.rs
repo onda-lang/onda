@@ -14,7 +14,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
     let mut cached = ui.event_layout.borrow_mut();
     if cached
         .as_ref()
-        .is_none_or(|layout| !layout.matches(ui, rect[2]))
+        .is_none_or(|layout| !layout.matches(rect[2]))
     {
         *cached = Some(Layout::new(ui, rect[2]));
     }
@@ -32,6 +32,24 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             continue;
         }
         match &widget.kind {
+            WidgetKind::Trigger(event) => {
+                let compact = r[2] < 80.0;
+                s.button(
+                    ui,
+                    if compact { "" } else { "Trigger" },
+                    r,
+                    Target::Trigger(*event),
+                    p,
+                );
+                if compact {
+                    s.icon(
+                        Icon::Play,
+                        [r[0] + r[2] * 0.5, r[1] + r[3] * 0.5],
+                        p.ink_color(),
+                    );
+                    s.tooltip(r, "Trigger event".into());
+                }
+            }
             WidgetKind::Title(name) => {
                 s.text_tooltip(r, name.clone());
                 s.styled(
@@ -46,7 +64,30 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                     },
                 );
             }
-            WidgetKind::Button { text, target } => s.button(ui, text, r, target.clone(), p),
+            WidgetKind::Button { text, target } => {
+                let label = match target {
+                    Target::Slice { add, .. } if r[2] < 64.0 => {
+                        if *add {
+                            "+"
+                        } else {
+                            "−"
+                        }
+                    }
+                    _ => text,
+                };
+                s.button(ui, label, r, target.clone(), p);
+                if let Target::Slice { add, .. } = target {
+                    s.tooltip(
+                        r,
+                        if *add {
+                            "Add element"
+                        } else {
+                            "Remove element"
+                        }
+                        .into(),
+                    );
+                }
+            }
             WidgetKind::Group { label, key, open } => {
                 let target = Target::Fold(key.clone());
                 if s.hovered(ui, r) || ui.focused(&target) {
@@ -57,7 +98,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                     [r[0] + 6.0, r[1] + 14.0],
                     p.ink_color(),
                 );
-                let heading = [r[0] + 18.0, r[1], r[2] - 18.0, r[3]];
+                let heading = [r[0] + 18.0, r[1], (r[2] - 18.0).max(0.0), r[3]];
                 s.text_tooltip(heading, label.clone());
                 s.styled(
                     label,
@@ -89,8 +130,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 };
                 let available = (editor[0] - r[0] - 8.0).max(1.0);
                 let type_width = ty.len() as f32 * 6.6;
-                let name_width = (label.chars().count() as f32 * 7.2)
-                    .min((available - type_width - 7.0).max(1.0));
+                let name_width = (label.chars().count() as f32 * 7.2).min(available);
                 s.text_tooltip([r[0], r[1], available, 28.0], format!("{label} ({ty})"));
                 s.styled(
                     label,
@@ -117,7 +157,6 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 let text = ui.field_text(field);
                 s.field(ui, field.clone(), editor, text, p);
             }
-            WidgetKind::Json(field) => s.field(ui, field.clone(), r, String::new(), p),
         }
     }
     // Visible hit testing remains local to this scene. Offscreen keyboard targets

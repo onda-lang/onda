@@ -20,10 +20,13 @@ use crate::{
 use midi::Midi;
 use serde_json::Value;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ToolbarMenu {
     Header,
     Bank(bool),
+    Log,
+    Midi,
+    Buffer(String),
 }
 
 pub(crate) struct Interaction {
@@ -37,7 +40,7 @@ pub(crate) struct Interaction {
     pub(crate) toolbar_menu: Option<ToolbarMenu>,
     pub(crate) toolbar_scroll: f32,
     popup_scroll: f32,
-    scrollbar_drag: Option<f32>,
+    scrollbar_drag: Option<(crate::scrollbar::ScrollRegion, f32)>,
     chooser: Option<select::Menu>,
     hover: Option<tooltip::Hover>,
     touch: Option<touch::Touch>,
@@ -99,8 +102,8 @@ impl Interaction {
     pub(crate) fn dragging_control(&self, index: usize) -> bool {
         self.gesture.as_ref().is_some_and(|g| g.index == index)
     }
-    pub(crate) fn dragging_scrollbar(&self) -> bool {
-        self.scrollbar_drag.is_some()
+    pub(crate) fn dragging_scrollbar(&self, region: crate::scrollbar::ScrollRegion) -> bool {
+        self.scrollbar_drag.is_some_and(|(id, _)| id == region)
     }
     pub(crate) fn midi(&self) -> &Midi {
         &self.midi

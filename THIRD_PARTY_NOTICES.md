@@ -27,4 +27,4 @@ The complete applicable license texts accompany each distribution:
 Not every distribution contains every component. A distribution may therefore
 omit license files for components it does not contain.
 
-Browser GPU bundles carry the font notices beside the renderer Wasm in `gpu/pkg/`.
+Browser GPU bundles carry the font notices beside the renderer Wasm in their `pkg/` directory.

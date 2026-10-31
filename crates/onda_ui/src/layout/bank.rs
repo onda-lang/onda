@@ -2,9 +2,9 @@
 use crate::{
     editing::{Field, Setting},
     icons::Icon,
-    interaction::FocusLayer,
+    interaction::ToolbarMenu,
     model::RunUi,
-    scene::{Palette, Rect, Scene, Target},
+    scene::{Palette, Scene, Target},
 };
 use serde_json::json;
 
@@ -34,13 +34,7 @@ impl Header {
         let full_width = if smoothing { 172.0 } else { 54.0 };
         let compact_width = if smoothing { 132.0 } else { 54.0 };
         let mut title = if input { "Input Controls" } else { "Params" };
-        let title_size = if width < 128.0 {
-            11.0
-        } else if width < 160.0 {
-            12.0
-        } else {
-            14.0
-        };
+        let title_size = if width < 160.0 { 13.0 } else { 14.0 };
         let mode = if width >= crate::fonts::heading_width(title, title_size) + 77.0 + full_width {
             Mode::Full
         } else {
@@ -77,10 +71,12 @@ impl Header {
                 s,
                 p,
                 [bx, by - 1.0, 28.0, 28.0],
-                Icon::More,
-                "Smoothing, layout and reset",
-                Target::BankMenu(input),
-                ui.interaction.toolbar_menu == Some(crate::interaction::ToolbarMenu::Bank(input)),
+                (
+                    Icon::More,
+                    "Smoothing, layout and reset",
+                    Target::ToolbarMenu(ToolbarMenu::Bank(input)),
+                ),
+                ui.interaction.toolbar_menu == Some(ToolbarMenu::Bank(input)),
             );
             return;
         }
@@ -155,54 +151,35 @@ fn layout(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input: bool) {
     }
 }
 pub(super) fn menu(ui: &RunUi, s: &mut Scene, p: Palette, input: bool) {
-    let Some(anchor) = s
-        .hits
-        .iter()
-        .find(|h| h.target == Target::BankMenu(input))
-        .map(|h| h.rect.0)
-    else {
-        return;
-    };
     let supported = smoothing_supported(ui, input);
     let content_height = if supported { 116.0 } else { 80.0 };
-    let w = (ui.size[0] - 24.0).clamp(1.0, 240.0);
-    let below = ui.size[1] - anchor[1] - anchor[3] - 12.0;
-    let above = anchor[1] - 12.0;
-    let down = below >= content_height || below >= above;
-    let h = content_height.min(if down { below } else { above }.max(1.0));
-    let r = [
-        (anchor[0] + anchor[2] - w).max(12.0),
-        if down {
-            anchor[1] + anchor[3] + 4.0
-        } else {
-            anchor[1] - h - 4.0
-        },
-        w,
-        h,
-    ];
-    s.toolbar_menu_rect = r;
-    s.toolbar_scroll_max = (content_height - h).max(0.0);
-    s.focus_layer = FocusLayer::Toolbar;
-    s.panel(r, p.panel, p.border, 7.0);
-    s.hit(r, Target::Overlay);
-    let clip = s.clip;
-    s.clip = Rect(r).intersect(Rect(clip)).0;
-    let mut y = r[1] + 8.0 - ui.interaction.toolbar_scroll.min(s.toolbar_scroll_max);
-    let width = w - 16.0;
-    if supported {
-        smoothing(ui, s, p, [r[0] + 8.0, y, width, 28.0], input, width < 112.0);
-        y += 36.0;
-    }
-    layout(ui, s, p, [r[0] + 8.0, y, width, 28.0], input);
-    y += 36.0;
-    s.button(
+    super::toolbar::menu(
         ui,
-        "Reset",
-        [r[0] + 8.0, y, width, 28.0],
-        Target::Command(json!({"type":if input {"resetInputControls"} else {"resetParams"}})),
+        s,
         p,
+        ToolbarMenu::Bank(input),
+        content_height,
+        |s, r| {
+            let mut y = r[1] + 8.0;
+            let w = r[2];
+            let width = w - 16.0;
+            if supported {
+                smoothing(ui, s, p, [r[0] + 8.0, y, width, 28.0], input, width < 112.0);
+                y += 36.0;
+            }
+            layout(ui, s, p, [r[0] + 8.0, y, width, 28.0], input);
+            y += 36.0;
+            s.button(
+                ui,
+                "Reset",
+                [r[0] + 8.0, y, width, 28.0],
+                Target::Command(
+                    json!({"type":if input {"resetInputControls"} else {"resetParams"}}),
+                ),
+                p,
+            );
+        },
     );
-    s.clip = clip;
 }
 
 #[cfg(test)]
@@ -240,7 +217,7 @@ mod tests {
                 "params":[{"name":"gain","type":"f64","value":0.5}],
                 "inputControls":[{"name":"input","type":"f64","value":0.5}]
             }}));
-            click(&mut ui, Target::BankMenu(input));
+            click(&mut ui, Target::ToolbarMenu(ToolbarMenu::Bank(input)));
             let field = Field::Setting(if input {
                 Setting::InputSmoothing
             } else {
@@ -275,7 +252,7 @@ mod tests {
                 shift: false,
             });
             assert!(ui.interaction.toolbar_menu.is_none());
-            click(&mut ui, Target::BankMenu(input));
+            click(&mut ui, Target::ToolbarMenu(ToolbarMenu::Bank(input)));
             ui.input(Input::PointerDown {
                 x: 1.0,
                 y: 1.0,

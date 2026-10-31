@@ -195,7 +195,7 @@ impl RunUi {
                     self.invalidate();
                 }
                 if self.interaction.scrollbar_drag.is_some() {
-                    self.scroll_to_pointer(y);
+                    self.scroll_to_pointer(x, y);
                 }
                 if self.interaction.midi.pointer_down {
                     let note = match self.target(x, y) {
@@ -232,7 +232,7 @@ impl RunUi {
                 self.interaction.pointer = [x, y];
                 let target = self.target(x, y);
                 if self.interaction.toolbar_menu.is_some()
-                    && !matches!(target, Some(Target::HeaderMenu | Target::BankMenu(_)))
+                    && !matches!(target, Some(Target::ToolbarMenu(_)))
                     && !Rect(self.scene.toolbar_menu_rect).contains(x, y)
                 {
                     self.interaction.toolbar_menu = None;
@@ -261,7 +261,13 @@ impl RunUi {
                 }
                 if self.interaction.devices_open
                     && !Rect(self.scene.popup_rect).contains(x, y)
-                    && !matches!(target, Some(Target::Option(_)))
+                    && !matches!(
+                        target,
+                        Some(
+                            Target::Option(_)
+                                | Target::Scrollbar(crate::scrollbar::ScrollRegion::Menu)
+                        )
+                    )
                     && target != Some(Target::Devices)
                 {
                     self.interaction.devices_open = false;
@@ -346,7 +352,9 @@ impl RunUi {
         if self.interaction.toolbar_menu == Some(super::ToolbarMenu::Header)
             && !matches!(
                 target,
-                Target::HeaderMenu | Target::BankMenu(_) | Target::Overlay
+                Target::ToolbarMenu(_)
+                    | Target::Overlay
+                    | Target::Scrollbar(crate::scrollbar::ScrollRegion::Toolbar)
             )
         {
             self.interaction.toolbar_menu = None;
@@ -355,9 +363,7 @@ impl RunUi {
         match target {
             Target::Overlay => {}
             Target::Scope => {
-                if self.presentation.scope_pinned {
-                    self.presentation.toggle(Section::Scope);
-                } else {
+                if !self.presentation.scope_pinned {
                     self.interaction.scope_open = !self.interaction.scope_open;
                 }
                 self.interaction.toolbar_menu = None;
@@ -368,16 +374,13 @@ impl RunUi {
                 self.interaction.scope_open = false;
                 self.presentation.changed();
             }
-            Target::HeaderMenu | Target::BankMenu(_) => {
-                let menu = match target {
-                    Target::BankMenu(input) => super::ToolbarMenu::Bank(input),
-                    _ => super::ToolbarMenu::Header,
-                };
-                self.interaction.toolbar_menu = if self.interaction.toolbar_menu == Some(menu) {
-                    None
-                } else {
-                    Some(menu)
-                };
+            Target::ToolbarMenu(menu) => {
+                self.interaction.toolbar_menu =
+                    if self.interaction.toolbar_menu.as_ref() == Some(&menu) {
+                        None
+                    } else {
+                        Some(menu)
+                    };
                 self.interaction.toolbar_scroll = 0.0;
                 self.interaction.devices_open = false;
             }
@@ -434,16 +437,12 @@ impl RunUi {
                 self.commands
                     .push(json!({"type":"setFastMath","enabled":enabled}));
             }
-            Target::Scrollbar => {
-                if let Some(bar) = self.scene.scrollbar {
+            Target::Scrollbar(region) => {
+                if let Some(bar) = self.scene.scrollbar_for(region) {
                     let grabbed = bar.thumb.contains(x, y);
-                    self.interaction.scrollbar_drag = Some(if grabbed {
-                        y - bar.thumb.0[1]
-                    } else {
-                        bar.thumb.0[3] * 0.5
-                    });
+                    self.interaction.scrollbar_drag = Some((region, bar.grab(x, y)));
                     if !grabbed {
-                        self.scroll_to_pointer(y);
+                        self.scroll_to_pointer(x, y);
                     }
                 }
             }
@@ -510,7 +509,12 @@ impl RunUi {
             }
             Target::Section(section) => {
                 self.presentation.toggle(section);
-                self.cancel_interaction();
+                if section == Section::Midi {
+                    self.commands
+                        .extend(self.interaction.midi.release_pointers());
+                } else {
+                    self.cancel_interaction();
+                }
                 self.interaction.focus = Some(Target::Section(section));
             }
             Target::Fold(key) => {
@@ -561,10 +565,6 @@ impl RunUi {
                     }
                     self.presentation.changed();
                 }
-            }
-            Target::Follow => {
-                self.presentation.log_follow = !self.presentation.log_follow;
-                self.presentation.changed();
             }
             Target::CopyLog => self.commands.push(json!({
                 "type":"copyText","text":self.state["logText"].as_str().unwrap_or("")
@@ -618,7 +618,6 @@ impl RunUi {
         if self.editor.editing()
             || self.interaction.devices_open
             || self.interaction.chooser.is_some()
-            || !self.presentation.open(Section::Midi)
             || !crate::layout::midi_visible(self)
             || !self.midi_interactive()
             || !self.state["currentMidiInputDevice"]
@@ -736,20 +735,15 @@ impl RunUi {
         self.invalidate();
         true
     }
-    fn scroll_to_pointer(&mut self, y: f32) {
-        let Some(bar) = self.scene.scrollbar else {
+    fn scroll_to_pointer(&mut self, x: f32, y: f32) {
+        let Some((region, grab)) = self.interaction.scrollbar_drag else {
             return;
         };
-        let Some(grab) = self.interaction.scrollbar_drag else {
+        let Some(bar) = self.scene.scrollbar_for(region) else {
             return;
         };
-        let scroll = bar.scroll_at(y, grab);
-        if self.scroll == scroll {
-            return;
-        }
-        self.scroll = scroll;
-        self.presentation.scrolled();
-        self.invalidate();
+        let scroll = bar.scroll_at(x, y, grab);
+        self.scroll_region_by(region, scroll - bar.scroll);
     }
     pub(crate) fn cancel_gesture(&mut self) {
         if let Some(g) = self.interaction.gesture.take() {
@@ -797,7 +791,7 @@ impl RunUi {
                     "text"
                 }
             }
-            Some(Target::Scrollbar) => "default",
+            Some(Target::Scrollbar(_)) => "default",
             Some(_) => "pointer",
             None => "default",
         }

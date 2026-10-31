@@ -532,7 +532,9 @@ fn settings_hover_does_not_highlight_controls_beneath_the_popup() {
             "params":(0..3).map(|i|json!({"name":format!("gain_{i}"),"type":"f64","value":0.5})).collect::<Vec<_>>()
         }}));
         let covered = rect(&mut ui, |t| *t == Target::Field(Field::Control(1)));
-        click(&mut ui, |t| *t == Target::HeaderMenu);
+        click(&mut ui, |t| {
+            *t == Target::ToolbarMenu(crate::interaction::ToolbarMenu::Header)
+        });
         click(&mut ui, |t| *t == Target::Devices);
         ui.prepare_scene();
         let document = |ui: &RunUi| {
@@ -1101,7 +1103,9 @@ fn opening_a_dropdown_keeps_its_selected_item_visible_in_a_short_window() {
     let mut ui = fixture();
     ui.resize(360.0, 400.0, 1.0);
     ui.message(json!({"type":"state","state":{"inputDevices":(0..40).map(|i|format!("Input {i}")).collect::<Vec<_>>(),"currentInputDevice":"Input 35"}}));
-    click(&mut ui, |t| *t == Target::HeaderMenu);
+    click(&mut ui, |t| {
+        *t == Target::ToolbarMenu(crate::interaction::ToolbarMenu::Header)
+    });
     click(&mut ui, |t| matches!(t, Target::Devices));
     click(&mut ui, |t| *t == Target::Choose(SelectId::AudioInput));
     ui.prepare_scene();

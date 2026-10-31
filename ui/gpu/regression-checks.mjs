@@ -23,8 +23,9 @@ export async function checkRegressions(page, evaluate) {
   await evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
   assert.equal(await screenshot(),plain,"leaving the label must dismiss its tooltip");
   const midi = {path:"midi-regressions.onda",running:true,connected:true,supportsScope:false,supportsTransport:true,
+    supportsSourceSelection:false,supportsProjectExport:false,supportsDeviceSelection:false,supportsMidiInputSelection:false,supportsRunSettings:false,
     buffers:[],events:[],params:[],inputControls:[],error:null,logText:"",logRevealed:false,
-    midi:{noteOn:true,noteOff:true},midiKeyboardInteractive:true,currentMidiInputDevice:"Computer Keyboard",
+    midi:{noteOn:true,noteOff:true},midiKeyboardInteractive:true,currentMidiInputDevice:"Computer Keyboard",supportsViewState:true,
     viewState:{reset:true}};
   await state(midi);
   await evaluate("document.querySelector('canvas').focus();commands=[]");
@@ -41,6 +42,19 @@ export async function checkRegressions(page, evaluate) {
   await key("z","KeyZ");await key("z","KeyZ",false);
   await key("a","KeyA");await key("a","KeyA",false);
   assert.equal(await evaluate("commands.findLast(c=>c.type==='midiNote').key"),60);
+
+  await evaluate("commands=[]");
+  await key("a","KeyA");
+  for (let i=0;i<2;i++) {
+    await key("Tab","Tab");await key("Tab","Tab",false);
+  }
+  await key("Enter","Enter");await key("Enter","Enter",false);
+  assert.equal(await evaluate("commands.findLast(c=>c.type==='viewState').state.sections.midi"),false);
+  assert.deepEqual(await evaluate("commands.filter(c=>c.type==='midiNote').map(c=>[c.key,c.pressed])"),[[60,true]],"collapsing the piano must preserve held computer notes");
+  await key("a","KeyA",false);
+  await key("a","KeyA");await key("a","KeyA",false);
+  assert.deepEqual(await evaluate("commands.filter(c=>c.type==='midiNote').map(c=>[c.key,c.pressed])"),[[60,true],[60,false],[60,true],[60,false]],"computer MIDI stays active while the piano is hidden");
+  await key("Enter","Enter");await key("Enter","Enter",false);
 
   await state({...midi,path:"touch-chords.onda"});
   await evaluate("commands=[]");

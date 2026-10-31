@@ -28,8 +28,19 @@ export function createTextInput(canvas, { snapshot, input, gesture }) {
   document.addEventListener("selectionchange", () => {
     if (document.activeElement === editor) publish();
   });
-  editor.addEventListener("compositionstart", () => { composing = true; });
-  editor.addEventListener("compositionend", () => { composing = false; publish(); });
+  editor.addEventListener("compositionstart", () => {
+    publish();
+    composing = true;
+  });
+  editor.addEventListener("compositionupdate", event => {
+    if (composing) input({ type:"preedit", text:event.data,
+      anchor:event.data.length, cursor:event.data.length });
+  });
+  editor.addEventListener("compositionend", () => {
+    if (!composing) return; // The shared editor may already have cancelled this draft.
+    composing = false;
+    publish();
+  });
   for (const type of ["pointerdown", "pointerup"])
     editor.addEventListener(type, event => gesture?.(event));
   editor.addEventListener("mousedown", event => {
@@ -59,7 +70,6 @@ export function createTextInput(canvas, { snapshot, input, gesture }) {
     blurring = true;
     try {
       publish();
-      input({ type:"key", key:"Enter" });
       input({ type:"focusLost" });
     } finally { blurring = false; }
   });

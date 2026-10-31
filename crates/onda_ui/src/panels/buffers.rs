@@ -1,4 +1,5 @@
 use crate::{
+    interaction::ToolbarMenu,
     model::{FileDropTarget, RunUi},
     scene::{Palette, Rect, Scene, Target, TextStyle},
     theme::CARD_INSET,
@@ -16,26 +17,17 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         let path = b["loadedPath"].as_str().filter(|s| !s.is_empty());
         let loaded = path.is_some() || b["loadedFrames"].as_u64().is_some_and(|n| n > 0);
         let summary = loaded_summary(b);
-        let summary_width = summary
-            .as_ref()
-            .map_or(0.0, |s| s.chars().count() as f32 * 6.6);
-        let stacked = summary.is_some() && w - 2.0 * CARD_INSET < summary_width + 102.0;
+        let details_width = (w - 2.0 * CARD_INSET).max(1.0);
+        let summary_width = summary.as_ref().map_or(0.0, |s| {
+            (s.chars().count() as f32 * 6.6).min(details_width * 0.6)
+        });
         let preview = b["waveform"]["minimums"].is_array() && b["waveform"]["maximums"].is_array();
-        let details_height = if stacked { 36.0 } else { 18.0 };
+        let details_height = 18.0;
         let height = 40.0 + details_height + if preview { 74.0 } else { 8.0 };
-        let actions = [
-            (
-                if loaded { "Replace" } else { "Bind file" },
-                [x + w - CARD_INSET - 136.0, y + 8.0, 76.0, 28.0],
-                Target::Command(json!({"type":"chooseBufferFile","name":name})),
-            ),
-            (
-                "Clear",
-                [x + w - CARD_INSET - 54.0, y + 8.0, 54.0, 28.0],
-                Target::Command(json!({"type":"clearBuffer","name":name})),
-            ),
-        ];
-        if s.visible(y, height) {
+        let compact = w < 246.0;
+        let tools_width = if compact { 28.0 } else { 136.0 };
+        let visible = s.visible(y, height);
+        if visible {
             let hover =
                 matches!(&ui.drop_target, Some(FileDropTarget::Buffer(target)) if target == name);
             s.panel(
@@ -47,10 +39,9 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
             s.buffers
                 .push((Rect([x, y, w, height]).intersect(Rect(s.clip)), name.into()));
             let ty = b["type"].as_str().unwrap_or("audio");
-            let available = (w - 2.0 * CARD_INSET - 146.0).max(1.0);
+            let available = (w - 2.0 * CARD_INSET - tools_width - 10.0).max(1.0);
             let type_width = ty.chars().count() as f32 * 6.6;
-            let name_width =
-                (name.chars().count() as f32 * 8.4).min((available - type_width - 7.0).max(1.0));
+            let name_width = (name.chars().count() as f32 * 8.4).min(available);
             s.text_tooltip(
                 [x + CARD_INSET, y + 8.0, available, 28.0],
                 format!("{name} ({ty})"),
@@ -85,11 +76,9 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 } else {
                     "Drop an audio file here"
                 });
-            let file_width = if stacked || summary.is_none() {
-                w - 2.0 * CARD_INSET
-            } else {
-                w - 2.0 * CARD_INSET - 6.0 - summary_width
-            };
+            let file_width =
+                (details_width - summary_width - if summary.is_some() { 6.0 } else { 0.0 })
+                    .max(1.0);
             s.text_tooltip(
                 [x + CARD_INSET, y + 40.0, file_width, 18.0],
                 path.unwrap_or(file).into(),
@@ -105,18 +94,16 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                 },
             );
             if let Some(summary) = summary {
+                let bounds = [
+                    x + w - CARD_INSET - summary_width,
+                    y + 40.0,
+                    summary_width,
+                    18.0,
+                ];
+                s.text_tooltip(bounds, summary.clone());
                 s.styled(
                     summary,
-                    [
-                        if stacked {
-                            x + CARD_INSET
-                        } else {
-                            x + w - CARD_INSET - summary_width
-                        },
-                        y + 40.0 + if stacked { 18.0 } else { 0.0 },
-                        (w - 2.0 * CARD_INSET).min(summary_width),
-                        18.0,
-                    ],
+                    bounds,
                     11.0,
                     p.muted,
                     TextStyle {
@@ -139,17 +126,78 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                     ui.scale,
                 );
             }
-            for (label, rect, target) in actions {
-                s.button(ui, label, rect, target, p);
+        }
+        if compact {
+            let bounds = [x + w - CARD_INSET - 28.0, y + 8.0, 28.0, 28.0];
+            if visible {
+                crate::layout::toolbar::button(
+                    ui,
+                    s,
+                    p,
+                    bounds,
+                    ToolbarMenu::Buffer(name.into()),
+                    "Buffer actions",
+                );
+            } else {
+                s.focus_target(
+                    bounds,
+                    &Target::ToolbarMenu(ToolbarMenu::Buffer(name.into())),
+                );
             }
         } else {
-            for (_, rect, target) in actions {
-                s.focus_target(rect, &target);
+            for (i, (label, target)) in actions(b).into_iter().enumerate() {
+                let bounds = [
+                    x + w - CARD_INSET - 136.0 + i as f32 * 82.0,
+                    y + 8.0,
+                    if i == 0 { 76.0 } else { 54.0 },
+                    28.0,
+                ];
+                if visible {
+                    s.button(ui, label, bounds, target, p);
+                } else {
+                    s.focus_target(bounds, &target);
+                }
             }
         }
         y += height + 6.0;
     }
     (y - top - 6.0).max(0.0)
+}
+
+fn actions(buffer: &Value) -> [(&'static str, Target); 2] {
+    let name = buffer["name"].as_str().unwrap_or("");
+    let loaded = buffer["loadedPath"].as_str().is_some_and(|s| !s.is_empty())
+        || buffer["loadedFrames"].as_u64().is_some_and(|n| n > 0);
+    [
+        (
+            if loaded { "Replace" } else { "Bind file" },
+            Target::Command(json!({"type":"chooseBufferFile","name":name})),
+        ),
+        (
+            "Clear",
+            Target::Command(json!({"type":"clearBuffer","name":name})),
+        ),
+    ]
+}
+
+pub(crate) fn menu(ui: &RunUi, s: &mut Scene, p: Palette, name: &str) {
+    let Some(buffer) = ui.state["buffers"]
+        .as_array()
+        .and_then(|buffers| buffers.iter().find(|buffer| buffer["name"] == name))
+    else {
+        return;
+    };
+    crate::layout::toolbar::menu(ui, s, p, ToolbarMenu::Buffer(name.into()), 68.0, |s, r| {
+        for (i, (label, target)) in actions(buffer).into_iter().enumerate() {
+            s.button(
+                ui,
+                label,
+                [r[0] + 4.0, r[1] + 4.0 + i as f32 * 30.0, r[2] - 8.0, 28.0],
+                target,
+                p,
+            );
+        }
+    });
 }
 
 fn loaded_summary(buffer: &Value) -> Option<String> {
@@ -191,7 +239,7 @@ fn waveform(s: &mut Scene, p: Palette, b: &Value, wave: [f32; 4], scale: f32) {
         .max(b["waveform"]["maxValue"].as_f64().unwrap_or(1.0).abs())
         .max(1.0);
     let labels = [extent, 0.0, -extent].map(|v| crate::editing::number_text(&json!(v), 3));
-    let label_width = labels.iter().map(|s| s.chars().count()).max().unwrap_or(1) as f32 * 6.0;
+    let label_width = labels.iter().map(|s| s.chars().count()).max().unwrap_or(1) as f32 * 6.6;
     let plot = [
         wave[0] + 10.0 + label_width,
         wave[1] + 5.0,
@@ -216,12 +264,12 @@ fn waveform(s: &mut Scene, p: Palette, b: &Value, wave: [f32; 4], scale: f32) {
     }
     for (label, y) in labels
         .iter()
-        .zip([plot[1], zero - 7.0, plot[1] + plot[3] - 14.0])
+        .zip([plot[1], zero - 8.0, plot[1] + plot[3] - 16.0])
     {
         s.styled(
             label,
-            [wave[0] + 5.0, y, label_width, 14.0],
-            10.0,
+            [wave[0] + 5.0, y, label_width, 16.0],
+            11.0,
             p.muted,
             TextStyle {
                 mono: true,

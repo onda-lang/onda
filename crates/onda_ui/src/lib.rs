@@ -1,5 +1,8 @@
 //! Shared run screen. Hosts supply state and input, consume commands, and own scheduling.
 //! The UI never opens audio devices, starts threads, or owns a native event loop.
+//! Use [`Renderer::from_device`] to share a host's GPU resources. The complete
+//! host protocol is documented in `docs/ui-api.md`; `examples/host.rs` demonstrates
+//! an independent host with its own render target and command handling.
 
 mod controls;
 mod editing;
@@ -8,6 +11,7 @@ mod fonts;
 mod icons;
 mod interaction;
 mod layout;
+mod meters;
 mod model;
 mod panels;
 mod presentation;
@@ -16,6 +20,7 @@ mod scene;
 mod scrollbar;
 mod surface;
 mod theme;
+mod value;
 
 #[cfg(all(feature = "ffi", not(target_arch = "wasm32")))]
 mod ffi;

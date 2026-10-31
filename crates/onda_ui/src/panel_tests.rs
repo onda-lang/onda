@@ -22,6 +22,31 @@ fn fixture() -> RunUi {
     }}));
     ui
 }
+
+#[test]
+fn buffer_menus_keep_their_named_target_across_reload_and_close_on_removal() {
+    use crate::interaction::ToolbarMenu;
+    let mut ui = RunUi::default();
+    ui.resize(195.0, 840.0, 1.0);
+    ui.message(json!({"type":"state","state":{
+        "path":"buffers.onda","supportsScope":false,
+        "buffers":[{"name":"a"},{"name":"b"}]
+    }}));
+    let menu = Target::ToolbarMenu(ToolbarMenu::Buffer("a".into()));
+    click(&mut ui, |target| *target == menu);
+    ui.message(json!({"type":"state","state":{
+        "buffers":[{"name":"b"},{"name":"a"}]
+    }}));
+    let clear = json!({"type":"clearBuffer","name":"a"});
+    click(&mut ui, |target| *target == Target::Command(clear.clone()));
+    assert_eq!(ui.take_commands(), vec![clear]);
+    ui.message(json!({"type":"state","state":{"buffers":[{"name":"b"}]}}));
+    ui.prepare_scene();
+    assert!(ui.interaction.toolbar_menu.is_none());
+    assert!(!ui.scene.hits.iter().any(|hit| matches!(
+        &hit.target, Target::Command(command) if command["type"] == "clearBuffer"
+    )));
+}
 fn show_section(ui: &mut RunUi, section: Section) {
     for s in Section::ALL {
         ui.presentation.sections[s.index()] = s == section || s == Section::Midi;
@@ -59,6 +84,7 @@ fn edit(ui: &mut RunUi, target: Field, text: &str) {
 fn typed_event_edits_survive_status_updates_and_dispatch_generation_losslessly() {
     let mut ui = fixture();
     show_section(&mut ui, Section::Events);
+    assert!(!ui.scene.labels.iter().any(|label| label.text == "JSON"));
     edit(
         &mut ui,
         Field::Event(EventField {
@@ -80,28 +106,57 @@ fn typed_event_edits_survive_status_updates_and_dispatch_generation_losslessly()
     assert_eq!(event["engineGeneration"], "18446744073709551615");
 }
 #[test]
-fn json_event_editor_rejects_bad_shapes_and_preserves_the_last_valid_value() {
+fn event_edits_follow_names_across_catalog_reordering_and_replacement() {
+    let mut ui = RunUi::default();
+    let event = |name, default| json!({"name":name,"args":[{"name":"value","type":"i64","default":default}]});
+    ui.message(json!({"type":"state","state":{
+        "path":"events.onda","supportsScope":false,
+        "events":[event("kept", "0"), event("changed", "0"), event("removed", "0")]
+    }}));
+    for index in 0..3 {
+        edit(
+            &mut ui,
+            Field::Event(EventField {
+                event: index,
+                arg: 0,
+                path: String::new(),
+                scalar: "i64".into(),
+            }),
+            "9223372036854775807",
+        );
+    }
+    let events = json!([event("changed", "1"), event("new", "2"), event("kept", "0")]);
+    ui.message(json!({"type":"state","state":{"events":events}}));
+    assert_eq!(ui.events[0].args[0].value, "1");
+    assert_eq!(ui.events[1].args[0].value, "2");
+    assert_eq!(ui.events[2].args[0].value, "9223372036854775807");
+
+    ui.message(json!({"type":"state","state":{"events":events,"resetEventArguments":true}}));
+    assert_eq!(ui.events[2].args[0].value, "0");
+}
+
+#[test]
+fn event_scalar_editor_rejects_bad_values_and_preserves_the_last_valid_value() {
     let mut ui = fixture();
     let field = Field::Event(EventField {
         event: 0,
         arg: 0,
-        path: String::new(),
-        scalar: "json".into(),
+        path: "/id".into(),
+        scalar: "i64".into(),
     });
-    edit(&mut ui, field.clone(), r#"{"id":"invalid","levels":[]}"#);
+    edit(&mut ui, field.clone(), "invalid");
     assert!(ui.editor.draft().unwrap().invalid);
     assert_eq!(ui.events[0].args[0].value["id"], "9223372036854775807");
     ui.input(Input::Key {
         key: Key::Escape,
         shift: false,
     });
-    edit(
-        &mut ui,
-        field,
-        r#"{"id":"42","levels":["NaN","Infinity",0.25]}"#,
-    );
+    edit(&mut ui, field, "42");
     assert!(!ui.editing());
-    assert_eq!(ui.events[0].args[0].value["levels"][1], "Infinity");
+    assert_eq!(
+        ui.events[0].args[0].value,
+        json!({"id":"42","levels":[0.5]})
+    );
 }
 #[test]
 fn schema_replacement_cancels_event_draft_and_source_change_resets_arguments() {
@@ -166,29 +221,24 @@ fn resetting_presentation_retains_event_schema_and_restores_defaults() {
 #[test]
 fn host_text_selection_preserves_utf16_offsets_and_unicode_boundaries() {
     let mut ui = fixture();
-    ui.message(json!({"type":"state","state":{"events":[{
-        "name":"unicode","args":[{"name":"value",
-            "shape":{"kind":"struct","fields":[{"name":"😀a","ty":{"kind":"scalar","encoding":"i32"}}]},
-            "value":{"😀a":1}}]
-    }]}}));
-    show_section(&mut ui, Section::Events);
-    ui.begin_field(Field::Event(EventField {
-        event: 0,
-        arg: 0,
-        path: String::new(),
-        scalar: "json".into(),
-    }));
+    show_section(&mut ui, Section::Params);
+    let control = ui
+        .controls
+        .iter()
+        .position(|control| !control.input)
+        .unwrap();
+    ui.begin_field(Field::Control(control));
     ui.input(Input::EditText {
-        text: "{\"😀a\":1}".into(),
-        anchor: 3,
-        cursor: 4,
+        text: "😀a".into(),
+        anchor: 1,
+        cursor: 2,
     });
     let edit = ui.text_edit().unwrap();
     assert_eq!(
-        edit["anchor"], 2,
+        edit["anchor"], 0,
         "an offset inside a surrogate pair clamps to its start"
     );
-    assert_eq!(edit["cursor"], 4);
+    assert_eq!(edit["cursor"], 2);
     ui.input(Input::Key {
         key: Key::Copy,
         shift: false,
@@ -198,7 +248,7 @@ fn host_text_selection_preserves_utf16_offsets_and_unicode_boundaries() {
         .iter()
         .any(|c| c["type"] == "copyText" && c["text"] == "😀"));
     ui.input(Input::Text { text: "b".into() });
-    assert_eq!(ui.editor.draft().unwrap().text, "{\"ba\":1}");
+    assert_eq!(ui.editor.draft().unwrap().text, "ba");
 }
 #[test]
 fn slice_buttons_and_reset_preserve_the_typed_argument() {
@@ -643,6 +693,7 @@ fn integer_arrow_steps_and_settings_validation_keep_exact_values() {
         key: Key::Escape,
         shift: false,
     });
+    show_section(&mut ui, Section::Params);
     edit(&mut ui, Field::Setting(Setting::ParamSmoothing), "12.5");
     assert!(ui
         .take_commands()
@@ -695,23 +746,6 @@ fn stopping_transport_or_disabling_midi_releases_computer_notes() {
         );
         assert!(!ui.interaction.midi().held(60));
     }
-}
-
-#[test]
-fn pasted_json_normalizes_wide_integers_before_crossing_the_browser_bridge() {
-    let mut ui = fixture();
-    edit(
-        &mut ui,
-        Field::Event(EventField {
-            event: 0,
-            arg: 0,
-            path: String::new(),
-            scalar: "json".into(),
-        }),
-        "{\n \"id\": 9223372036854775807,\n \"levels\": [0.5]\n}",
-    );
-    assert!(!ui.editing());
-    assert_eq!(ui.events[0].args[0].value["id"], "9223372036854775807");
 }
 
 #[test]

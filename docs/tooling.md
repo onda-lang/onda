@@ -75,7 +75,12 @@ onda run examples/basic/sine.onda
 
 The native host uses the shared GPU interface. Common options select the sample rate, block size, audio devices, and color theme.
 
-Programs that declare the canonical `note_on` event get a piano at the bottom of either run UI.
+Click a numeric value to type, or drag it horizontally. Knobs drag vertically;
+sliders follow their tracks. Shift-drag adjusts finely, double-click restores a
+default, Enter commits text, and Escape cancels. Section headers collapse controls;
+layouts and scrolling are retained by the host.
+
+Programs that declare the canonical `note_on` event get a piano at the bottom of the run view.
 The MIDI selector defaults to **Computer Keyboard**, using
 `A W S E D F T G Y H U J K O L P`; the piano remains playable with a pointer or touch when another
 input is selected. Linux, macOS, and Windows builds also list physical MIDI inputs. The online
@@ -148,7 +153,10 @@ tokens. Incomplete `when` bodies retain their handler and owner scopes for seman
 
 ### VS Code
 
-The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run File** for launching the shared GPU run interface inside the editor.
+The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) bundles the native compiler,
+registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run**
+for opening the shared GPU run interface inside the editor. An external compiler
+can be selected in the extension settings.
 
 ### Neovim
 

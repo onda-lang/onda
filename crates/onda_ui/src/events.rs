@@ -1,5 +1,6 @@
 //! Typed event values and their editor paths. JSON transport remains lossless
 //! for i64 and non-finite floats; shape validation happens before dispatch.
+use crate::value::identical;
 use serde_json::{json, Value};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,11 +221,11 @@ impl Event {
     pub fn same_schema(&self, other: &Self) -> bool {
         self.name == other.name
             && self.args.len() == other.args.len()
-            && self
-                .args
-                .iter()
-                .zip(&other.args)
-                .all(|(a, b)| a.name == b.name && a.shape == b.shape && a.default == b.default)
+            && self.args.iter().zip(&other.args).all(|(a, b)| {
+                a.name == b.name
+                    && identical(&a.shape, &b.shape)
+                    && identical(&a.default, &b.default)
+            })
     }
     pub fn valid(&self) -> bool {
         self.args.iter().all(|a| valid(&a.shape, &a.value))
@@ -233,46 +234,4 @@ impl Event {
 
 pub(crate) fn child_path(parent: &str, field: &str) -> String {
     format!("{parent}/{}", field.replace('~', "~0").replace('/', "~1"))
-}
-
-// Canonical wire values keep wide integers out of JavaScript's number domain.
-pub(crate) fn canonical(shape: &Value, value: &Value) -> Option<Value> {
-    if !valid(shape, value) {
-        return None;
-    }
-    Some(match shape["kind"].as_str()? {
-        "scalar" => scalar_value(
-            shape["encoding"].as_str()?,
-            &value
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| value.to_string()),
-        )?,
-        "struct" => Value::Object(
-            shape["fields"]
-                .as_array()?
-                .iter()
-                .map(|f| {
-                    let name = f["name"].as_str()?;
-                    Some((name.to_owned(), canonical(&f["ty"], &value[name])?))
-                })
-                .collect::<Option<serde_json::Map<_, _>>>()?,
-        ),
-        "tuple" => Value::Array(
-            shape["elements"]
-                .as_array()?
-                .iter()
-                .zip(value.as_array()?)
-                .map(|(s, v)| canonical(s, v))
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        "array" | "slice" => Value::Array(
-            value
-                .as_array()?
-                .iter()
-                .map(|v| canonical(&shape["element"], v))
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        _ => return None,
-    })
 }

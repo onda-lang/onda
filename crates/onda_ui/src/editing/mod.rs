@@ -4,6 +4,7 @@ mod text;
 use crate::{
     events::{self, EventField},
     model::RunUi,
+    value::identical,
 };
 pub(crate) use numeric::number_text;
 use serde_json::{json, Value};
@@ -177,15 +178,7 @@ impl RunUi {
     pub(crate) fn parse_field(&self, field: &Field, text: &str) -> Option<Value> {
         match field {
             Field::Control(i) => self.controls[*i].parse(text),
-            Field::Event(f) => {
-                if f.scalar == "json" {
-                    let value = serde_json::from_str(text).ok()?;
-                    let arg = self.events.get(f.event)?.args.get(f.arg)?;
-                    events::canonical(&arg.shape, &value)
-                } else {
-                    events::scalar_value(&f.scalar, text)
-                }
-            }
+            Field::Event(f) => events::scalar_value(&f.scalar, text),
             Field::Setting(s) => {
                 let n = text.trim().parse::<f64>().ok().filter(|n| n.is_finite())?;
                 let (min, max, integer) = self.setting_bounds(*s);
@@ -207,7 +200,9 @@ impl RunUi {
         if !self.field_enabled(field) {
             return;
         }
-        if self.field_value(field) == value && (!commit || !matches!(field, Field::Control(_))) {
+        if identical(&self.field_value(field), &value)
+            && (!commit || !matches!(field, Field::Control(_)))
+        {
             return;
         }
         match field {
@@ -216,9 +211,6 @@ impl RunUi {
                 self.commands.push(self.controls[*i].command(commit));
             }
             Field::Event(f) => {
-                if f.scalar == "json" {
-                    self.event_layout.get_mut().take();
-                }
                 if let Some(target) = self
                     .events
                     .get_mut(f.event)
@@ -299,7 +291,7 @@ impl RunUi {
             return false;
         };
         let field = d.target.clone();
-        if self.field_value(&field) != value {
+        if !identical(&self.field_value(&field), &value) {
             self.set_field(&field, value, true);
         }
         self.editor.draft = None;

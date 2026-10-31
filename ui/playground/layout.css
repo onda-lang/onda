@@ -85,7 +85,7 @@
   padding: 4px 6px;
   border-radius: 5px;
   text-align: center;
-  font: 12px/1.45 var(--mono);
+  font: 13px/1.4 var(--mono);
 }
 
 .project-shortcuts { display: grid; gap: 9px; margin: 0; padding: 11px 9px 9px; border-top: 1px solid var(--line); color: var(--muted); font: 12px/1.45 var(--sans, system-ui, sans-serif); }
@@ -101,10 +101,10 @@ button.project-file-add:hover, button.project-file-add:focus-visible { backgroun
 .project-file {
   display: flex;
   align-items: center;
-  flex: 0 0 152px;
-  width: 152px;
-  min-width: 152px;
-  max-width: 152px;
+  flex: 0 0 176px;
+  width: 176px;
+  min-width: 176px;
+  max-width: 176px;
   min-height: 30px;
   margin-bottom: -1px;
   overflow: hidden;
@@ -113,7 +113,7 @@ button.project-file-add:hover, button.project-file-add:focus-visible { backgroun
   border-radius: 4px 4px 0 0;
   background: transparent;
   color: var(--muted);
-  font: 11px/1.2 var(--mono);
+  font: 12px/1.4 var(--mono);
   white-space: nowrap;
   cursor: grab;
 }
@@ -164,10 +164,10 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
   background: var(--surface);
   box-shadow: 0 10px 30px rgb(0 0 0 / 35%);
 }
-.project-file-menu button { display: block; width: 100%; padding: 6px 7px; border: 0; background: transparent; font-size: 11px; text-align: left; }
+.project-file-menu button { display: block; width: 100%; padding: 6px 7px; border: 0; background: transparent; color: var(--ink); font: 12px/1.45 var(--sans, system-ui, sans-serif); text-align: left; }
 .project-file-menu button:hover:not(:disabled), .project-file-menu button:focus-visible { background: var(--soft); outline: none; }
 .project-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.project-file-main, .project-file-library, .project-file-errors { flex: 0 0 auto; padding: 1px 4px; border-radius: 999px; font: 650 8px/1.25 var(--sans, system-ui, sans-serif); letter-spacing: .04em; text-transform: uppercase; }
+.project-file-main, .project-file-library, .project-file-errors { flex: 0 0 auto; padding: 1px 4px; border-radius: 999px; font: 650 11px/1.25 var(--sans, system-ui, sans-serif); letter-spacing: .04em; text-transform: uppercase; }
 .project-file-main { background: var(--line); color: var(--ink); }
 .project-file-library { border: 1px solid var(--line); color: var(--muted); }
 .project-file-errors { min-width: 16px; background: #8a3a45; color: #fff; text-align: center; }
@@ -242,7 +242,6 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
 
 @media (max-width: 720px) {
   .play-source-editor {
-    --onda-editor-font-size: 12px;
     height: min(62svh, 540px);
     min-height: 360px;
   }
@@ -250,14 +249,9 @@ button.project-file-menu-trigger:hover, button.project-file-menu-trigger:focus-v
   .project-menu-trigger, .project-menu-content button { min-height: 44px; }
   .project-menu .editor-font-size input { height: 44px; }
   button.project-file-add { flex-basis: 44px; width: 44px; min-height: 44px; font-size: 20px; }
-  .project-file-create { flex-basis: 176px; width: 176px; min-height: 44px; font-size: 12px; }
+  .project-file-create { flex-basis: 200px; width: 200px; min-height: 44px; }
   .project-file-create > input { min-height: 42px; }
-  .project-file { flex-basis: 176px; width: 176px; min-width: 176px; max-width: 176px; min-height: 44px; font-size: 12px; }
+  .project-file { flex-basis: 200px; width: 200px; min-width: 200px; max-width: 200px; min-height: 44px; }
   button.project-file-select { padding-left: 11px; }
   button.project-file-menu-trigger, button.project-file-close { flex-basis: 40px; width: 40px; font-size: 16px; }
-}
-
-/* Use a comfortable automatic editor font size on touch screens. */
-@media (pointer: coarse) {
-  .play-source-editor { --onda-editor-font-size: 16px; }
 }

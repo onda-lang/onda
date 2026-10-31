@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             controller.set_wakeup(move || {
                 let _ = wake_tx.try_send(());
             });
-            controller.set_scope_poll_interval(interval);
+            controller.set_visualization_interval(interval);
             if let Ok(columns) = std::env::var("ONDA_SCOPE_COLUMNS") {
                 controller.set_scope_columns(columns.parse::<usize>().map_err(|e| e.to_string())?);
             }

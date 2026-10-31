@@ -1,7 +1,6 @@
 //! Text selection and clipboard policy, independent of the host's text input system.
 use crate::{
     editing::{Editor, Field},
-    events::EventField,
     model::RunUi,
     scene::Target,
     Input, Key,
@@ -58,14 +57,8 @@ impl Draft {
             self.anchor = cursor;
         }
     }
-    fn accepts(&self, text: &str) -> Option<String> {
-        let text = if matches!(&self.target, Field::Event(EventField {scalar, ..}) if scalar == "json")
-        {
-            text.replace(['\r', '\n', '\t'], " ")
-        } else {
-            text.to_owned()
-        };
-        (!text.chars().any(char::is_control) && text.len() <= 65536).then_some(text)
+    fn accepts(text: &str) -> Option<String> {
+        (!text.chars().any(char::is_control) && text.len() <= 65536).then(|| text.to_owned())
     }
 }
 
@@ -115,7 +108,7 @@ impl Editor {
         let Some(d) = &mut self.draft else {
             return false;
         };
-        let Some(text) = d.accepts(&text) else {
+        let Some(text) = Draft::accepts(&text) else {
             return false;
         };
         if d.text.len() - d.selection().len() + text.len() > 65536 {
@@ -134,7 +127,7 @@ impl Editor {
         let Some(d) = &mut self.draft else {
             return false;
         };
-        let Some(text) = d.accepts(text) else {
+        let Some(text) = Draft::accepts(text) else {
             return false;
         };
         if d.text.len() - d.selection().len() + text.len() > 65536 {
@@ -148,12 +141,12 @@ impl Editor {
         let Some(d) = &mut self.draft else {
             return false;
         };
-        let Some(text) = d.accepts(text) else {
+        let Some(text) = Draft::accepts(text) else {
             return false;
         };
         let anchor = byte_offset(&text, anchor);
         let cursor = byte_offset(&text, cursor);
-        if d.text == text && d.anchor == anchor && d.cursor == cursor {
+        if d.text == text && d.anchor == anchor && d.cursor == cursor && d.preedit.is_none() {
             return false;
         }
         d.text = text;
@@ -220,19 +213,22 @@ impl Editor {
 }
 
 impl RunUi {
+    pub(crate) fn edited_field_rect(&self) -> Option<[f32; 4]> {
+        let draft = self.editor.draft.as_ref()?;
+        let target = Target::Field(draft.target.clone());
+        self.scene
+            .hits
+            .iter()
+            .rev()
+            .find(|h| h.target == target && h.rect.0[2] > 0.0 && h.rect.0[3] > 0.0)
+            .map(|hit| hit.rect.0)
+    }
+
     /// A host may overlay its native editor on this logical-pixel field rectangle.
     pub fn text_edit(&mut self) -> Option<Value> {
         self.prepare_scene();
         let d = self.editor.draft.as_ref()?;
-        let target = Target::Field(d.target.clone());
-        let rect = self
-            .scene
-            .hits
-            .iter()
-            .rev()
-            .find(|h| h.target == target && h.rect.0[2] > 0.0 && h.rect.0[3] > 0.0)?
-            .rect
-            .0;
+        let rect = self.edited_field_rect()?;
         let label = self.scene.labels.iter().find(|l| l.caret.is_some())?;
         Some(json!({"text":d.text,
             "anchor":d.text[..d.anchor].encode_utf16().count(),
