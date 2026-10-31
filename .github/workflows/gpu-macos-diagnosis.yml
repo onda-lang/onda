@@ -41,7 +41,9 @@ jobs:
         shell: bash
         run: |
           test "$(cat .onda-sdk/onda-source.txt)" = "$ONDA_SOURCE_REF"
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
+            -DCMAKE_OBJCXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
             -DONDA_SDK_ARCHIVE="$PWD/.onda-sdk/onda-0.9.0-macos-arm64.tar.xz" \
             -DONDA_SDK_CHECKSUMS="$PWD/.onda-sdk/SHA256SUMS.txt" \
             -DONDA_RELEASE_SOURCE_DIR="$PWD/.onda-source" \
@@ -51,7 +53,6 @@ jobs:
       - name: Run isolated and grouped native tests under LLDB
         shell: bash
         run: |
-          export ONDA_GPU_UI_LIBRARY="$PWD/build/_onda/onda-0.9.0-macos-arm64/lib/libonda_ui.dylib"
           library="$(find build -name libonda_ui.dylib -print -quit)"
           test -n "$library"
           export ONDA_GPU_UI_LIBRARY="$PWD/$library"
