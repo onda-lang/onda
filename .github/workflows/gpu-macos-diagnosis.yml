@@ -40,6 +40,11 @@ jobs:
           run-id: 41228859300
           github-token: ${{ github.token }}
           path: .onda-sdk
+      - uses: actions/cache@v4
+        with:
+          path: build
+          key: macos-vst3-diagnosis-sdk-198d4c2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: macos-vst3-diagnosis-sdk-198d4c2-
       - name: Configure and build the native regression test
         shell: bash
         run: |
@@ -64,6 +69,7 @@ jobs:
             args=(Vst3EditorAttachment)
             if [[ "$scenario" == native ]]; then args=(--group native); fi
             lldb --batch -o 'settings set target.process.stop-on-sharedlibrary-events false' \
+              -o 'breakpoint set -n malloc_error_break' -k 'thread backtrace all' \
               -o run -o 'thread backtrace all' \
               -- build/onda_processor_tests "${args[@]}" \
               > "build/test-artifacts/$scenario-lldb.log" 2>&1 || true
