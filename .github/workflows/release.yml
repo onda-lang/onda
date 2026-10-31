@@ -21,11 +21,11 @@ on:
       plugin_ref:
         description: Full onda-plugin source commit for integration builds
         type: string
-        default: 4675ffd1df3668443935de467f85b75941c3f7e4
+        default: 92c0a4041369fc1a2c7e0ec7c6185ff2136df6aa
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
-        default: 8c5d275bacbb1c36332cbfc67b1802c3b0737f58
+        default: c913da0c55b9dcde150ae9bfe7b6bf5a9da88d42
   push:
     tags:
       - "v*"
@@ -648,7 +648,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-plugin/.github/workflows/build.yml@4675ffd1df3668443935de467f85b75941c3f7e4
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@92c0a4041369fc1a2c7e0ec7c6185ff2136df6aa
     with:
       source_ref: ${{ inputs.plugin_ref }}
       onda_source_ref: ${{ github.sha }}
@@ -658,7 +658,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@8c5d275bacbb1c36332cbfc67b1802c3b0737f58
+    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@c913da0c55b9dcde150ae9bfe7b6bf5a9da88d42
     with:
       source_ref: ${{ inputs.vscode_ref }}
       onda_source_ref: ${{ github.sha }}

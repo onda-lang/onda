@@ -83,6 +83,7 @@ let sharedSessionError = null;
 let requestedExampleProject = null;
 let requestedExampleError = null;
 const bufferFiles = new Map();
+const pendingBufferBindings = new Map();
 const microphoneInput = new BrowserMicrophoneInput();
 let midiInputs = null;
 
@@ -903,13 +904,23 @@ async function bindBufferFile(name, file) {
   if (!(file instanceof File)) throw new Error("the selected buffer is not a browser File");
   const buffer = artifact?.metadata.metadata.buffers.find((item) => item.name === name);
   if (!buffer) throw new Error(`unknown buffer '${name}'`);
+  const sourceArtifact = artifact;
+  const generation = runGeneration;
+  const request = {};
+  pendingBufferBindings.set(name, request);
+  const current = () => artifact === sourceArtifact && runGeneration === generation &&
+    pendingBufferBindings.get(name) === request;
   let binding;
   try {
     binding = await prepareBufferBinding(buffer, file, compiler);
+    if (!current()) return;
   } catch (error) {
+    if (!current()) return;
     runView.showError(error);
     setErrorStatus();
     return;
+  } finally {
+    if (pendingBufferBindings.get(name) === request) pendingBufferBindings.delete(name);
   }
   bufferFiles.set(name, file);
   runView.updateBufferFile(name, file, binding);
@@ -921,6 +932,7 @@ async function bindBufferFile(name, file) {
 }
 
 async function clearBuffer(name) {
+  pendingBufferBindings.delete(name);
   bufferFiles.delete(name);
   runView.updateBufferFile(name, null);
   if (context) await restartAudioForBuffers();

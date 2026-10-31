@@ -9,6 +9,7 @@ export function browserBridge(canvas, { message, target, onInput }) {
   const touches = new Map();
   window.addEventListener("blur", () => touches.clear());
   let pointerStop = false;
+  let cancelFileSelection;
   const post = (value) =>
     window.parent.postMessage(
       { __ondaRunUi: true, message: value },
@@ -79,8 +80,12 @@ export function browserBridge(canvas, { message, target, onInput }) {
     send(value) {
       if (value.type === "chooseBufferFile") chooseFile(value.name);
       else if (value.type === "scrollParent") scrollParents(canvas, value.deltaY);
-      else post(value);
+      else {
+        if (value.type === "clearBuffer") cancelFileSelection?.();
+        post(value);
+      }
     },
+    cancelFileSelection: () => cancelFileSelection?.(),
     gesture,
     touchDelta(event) {
       const previous = touches.get(event.pointerId);
@@ -109,6 +114,7 @@ export function browserBridge(canvas, { message, target, onInput }) {
     );
   }
   function chooseFile(name) {
+    cancelFileSelection?.();
     const input = document.createElement("input");
     input.type = "file";
     input.accept =
@@ -117,7 +123,9 @@ export function browserBridge(canvas, { message, target, onInput }) {
     const cleanup = () => {
       window.removeEventListener("focus", cancel);
       input.remove();
+      if (cancelFileSelection === cleanup) cancelFileSelection = undefined;
     };
+    cancelFileSelection = cleanup;
     const cancel = () =>
       setTimeout(() => {
         if (!input.files?.length) cleanup();
@@ -125,7 +133,7 @@ export function browserBridge(canvas, { message, target, onInput }) {
     input.addEventListener(
       "change",
       () => {
-        if (input.files?.[0])
+        if (cancelFileSelection === cleanup && input.files?.[0])
           post({ type: "bindBufferFile", name, file: input.files[0] });
         cleanup();
       },

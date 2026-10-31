@@ -121,7 +121,7 @@ jobs:
           npm run test:corpus --workspace @onda-lang/binaryen-web
 
   portable-vector-math:
-    name: Native vector math (${{ matrix.os }})
+    name: Native vector math and GPU UI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -137,6 +137,7 @@ jobs:
           ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
           cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --test target_initialization --no-fail-fast
+          cargo test -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
       - name: Test Windows JIT, AOT linking, and target ABIs
         if: runner.os == 'Windows'
         shell: pwsh
@@ -146,6 +147,9 @@ jobs:
           . ./scripts/use-llvm-env.ps1 -Flavor prebuilt -Version "$env:LLVM_VERSION"
           cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --test target_initialization --no-fail-fast
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
+          # Hosted WARP faults when independent GPU tests run concurrently.
+          cargo test -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw "GPU UI validation failed" }
 
   browser:
     name: Browser and npm packages

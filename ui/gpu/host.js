@@ -68,6 +68,7 @@ function report(error) {
   status.hidden = false;
   console.error(error);
   renderError = `Could not render Onda UI.\n${error?.message || error}`;
+  browser?.cancelFileSelection();
   pendingState = [];
   pendingScope = undefined;
   pendingReady = undefined;
@@ -279,9 +280,12 @@ function receive(message) {
       }
       if (
         state?.viewState?.reset ||
+        state?.schemaReady === false ||
         (Object.hasOwn(state || {}, "path") && state.path !== sourcePath)
-      )
+      ) {
+        browser?.cancelFileSelection();
         pendingScope = undefined;
+      }
       if (Object.hasOwn(state || {}, "path")) sourcePath = state.path;
       for (const [bank, values] of Object.entries(pendingValues))
         if (Array.isArray(message.state?.[bank])) values.clear();
@@ -493,6 +497,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", (event) => {
   suspended = true;
+  browser?.cancelFileSelection();
   input({ type: "focusLost" });
   clearTimeout(viewStateTimer);
   clearTimeout(repaintTimer);
@@ -530,7 +535,7 @@ try {
     throw new Error(renderError);
   }
   ui.on_device_lost(message => {
-    if (!suspended && ui) report(new Error(`GPU device was lost; reload the run view. ${message}`));
+    if (ui) report(new Error(`GPU device was lost; reload the run view. ${message}`));
   });
   canvas.dataset.backend =
     adapter && adapter.info?.isFallbackAdapter !== true ? "webgpu" : "webgl";

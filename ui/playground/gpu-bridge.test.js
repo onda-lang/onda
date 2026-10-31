@@ -53,3 +53,52 @@ test("GPU buffer drops accept one supported file and reject other drags", (t) =>
     assert.equal(messages.at(-1).phase, "leave");
   }
 });
+
+test("buffer pickers discard cancelled and superseded selections", t => {
+  for (const name of ["window", "document"]) {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    t.after(() => {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    });
+  }
+  const sent = [], pickers = [];
+  globalThis.window = {
+    parent: { postMessage: value => sent.push(value.message) },
+    location: { origin: "http://localhost" },
+    addEventListener() {}, removeEventListener() {},
+  };
+  globalThis.document = {
+    addEventListener() {}, body: { append() {} },
+    createElement() {
+      const listeners = {};
+      const picker = { files: [{ name: "sample.wav" }], removed: false,
+        addEventListener: (type, listener) => { listeners[type] = listener; },
+        click() {}, remove() { this.removed = true; },
+        select: () => listeners.change(),
+      };
+      pickers.push(picker);
+      return picker;
+    },
+  };
+  const bridge = browserBridge({ addEventListener() {} }, { message() {} });
+  bridge.send({ type: "chooseBufferFile", name: "old-source" });
+  bridge.cancelFileSelection();
+  pickers[0].select();
+  assert.equal(sent.length, 0);
+  assert.equal(pickers[0].removed, true);
+
+  bridge.send({ type: "chooseBufferFile", name: "cleared" });
+  bridge.send({ type: "clearBuffer", name: "cleared" });
+  pickers[1].select();
+  assert.deepEqual(sent.pop(), { type: "clearBuffer", name: "cleared" });
+  assert.equal(sent.length, 0);
+
+  bridge.send({ type: "chooseBufferFile", name: "superseded" });
+  bridge.send({ type: "chooseBufferFile", name: "current" });
+  pickers[2].select();
+  assert.equal(sent.length, 0);
+  pickers[3].select();
+  assert.deepEqual(sent, [{ type: "bindBufferFile", name: "current", file: pickers[3].files[0] }]);
+  assert.ok(pickers.every(picker => picker.removed));
+});

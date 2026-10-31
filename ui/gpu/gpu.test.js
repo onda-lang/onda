@@ -218,6 +218,18 @@ for (const backend of ["webgl", "webgpu"]) {
     await page.call("Page.reload", {ignoreCache:true});
     await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU recovery after reloading");
     assert.equal(await page.evaluate("document.querySelector('#status').hidden"), true);
+    // A page in the back/forward cache still owns its renderer. Loss while
+    // suspended must survive restoration instead of silently disabling the UI.
+    await page.evaluate(`_onHostMessage({type:'state',state:{path:'cached-loss.onda',running:true}});
+      dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));`);
+    await page.evaluate(backend === "webgpu" ? "testDevice.destroy()" :
+      "document.querySelector('canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewError')"), "cached GPU loss feedback", 3000);
+    await page.evaluate(`dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+      _onHostMessage({type:'state',state:{viewState:{readyId:3}}});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    assert.equal(await page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===3)"), false);
+    assert.equal(await page.evaluate("document.querySelector('#status').hidden"), false);
   });
 }
 

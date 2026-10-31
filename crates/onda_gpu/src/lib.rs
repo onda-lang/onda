@@ -247,6 +247,21 @@ impl App {
     fn surface_visible(&self) -> bool {
         !self.occluded && !self.surface_size.contains(&0)
     }
+    fn suspend_input(&mut self) {
+        self.composing = false;
+        self.input(Input::FocusLost);
+    }
+    fn set_occluded(&mut self, occluded: bool) {
+        if occluded && !self.occluded {
+            self.suspend_input();
+        }
+        self.occluded = occluded;
+        self.sync_scope_visibility();
+        if !occluded {
+            self.rendered = None;
+            self.redraw_retry = None;
+        }
+    }
     fn sync_scope_visibility(&mut self) {
         let visible = self.surface_visible() && self.ui.scope_enabled();
         let meter = self.surface_visible() && self.ui.meter_enabled();
@@ -257,6 +272,9 @@ impl App {
         }
     }
     fn resize_surface(&mut self, width: u32, height: u32, scale: f32) {
+        if self.surface_visible() && (width == 0 || height == 0) {
+            self.suspend_input();
+        }
         self.surface_size = [width, height];
         self.redraw_retry = None;
         if let Some(gpu) = &mut self.gpu {
@@ -419,10 +437,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::Focused(false) => {
-                self.composing = false;
-                self.input(Input::FocusLost);
-            }
+            WindowEvent::Focused(false) => self.suspend_input(),
             WindowEvent::Ime(Ime::Preedit(text, selection)) => {
                 self.composing = !text.is_empty();
                 let (a, b) = selection.unwrap_or((text.len(), text.len()));
@@ -445,14 +460,7 @@ impl ApplicationHandler for App {
                     cursor: 0,
                 });
             }
-            WindowEvent::Occluded(occluded) => {
-                self.occluded = occluded;
-                self.sync_scope_visibility();
-                if !occluded {
-                    self.rendered = None;
-                    self.redraw_retry = None;
-                }
-            }
+            WindowEvent::Occluded(occluded) => self.set_occluded(occluded),
             WindowEvent::ThemeChanged(_) => self.publish(),
             WindowEvent::KeyboardInput { event, .. } => self.keyboard_input(event),
             _ => {}

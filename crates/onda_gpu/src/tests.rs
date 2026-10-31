@@ -289,6 +289,52 @@ fn transport_shortcuts_ignore_repeats_without_swallowing_other_keys() {
 }
 
 #[test]
+fn hidden_surfaces_release_owned_notes_and_native_composition() {
+    for occluded in [false, true] {
+        let mut app = App::new(None, RunHostOptions::default());
+        app.resize_surface(720, 840, 1.0);
+        app.ui.message(json!({"type":"state","state":{
+            "path":"midi.onda","supportsScope":false,"supportsTransport":false,
+            "currentMidiInputDevice":"Computer Keyboard","midi":{"noteOn":true},
+            "params":[{"name":"gain","type":"f64","value":0.5}]
+        }}));
+        app.ui.input(Input::ComputerKey {
+            key: "a".into(),
+            pressed: true,
+        });
+        assert_eq!(app.ui.take_commands()[0]["pressed"], true);
+        for _ in 0..16 {
+            app.ui.input(Input::Key {
+                key: Key::Tab,
+                shift: false,
+            });
+            if app.ui.editing() {
+                break;
+            }
+        }
+        assert!(app.ui.editing());
+        app.composing = true;
+        app.ui.input(Input::Preedit {
+            text: "あ".into(),
+            anchor: 0,
+            cursor: 1,
+        });
+        if occluded {
+            app.set_occluded(true);
+        } else {
+            app.resize_surface(0, 840, 1.0);
+        }
+        assert!(!app.composing);
+        assert!(!app.ui.editing());
+        app.ui.input(Input::ReleaseComputerKeys);
+        assert!(
+            app.ui.take_commands().is_empty(),
+            "hiding must already have delivered the held note's release"
+        );
+    }
+}
+
+#[test]
 fn zero_size_and_occlusion_suspend_redraws_until_the_surface_returns() {
     let mut app = App::new(None, RunHostOptions::default());
     let now = Instant::now();
