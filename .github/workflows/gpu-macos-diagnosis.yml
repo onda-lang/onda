@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        visibility: [default, hidden]
+        visibility: [default]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,7 +48,7 @@ jobs:
         with:
           path: build
           key: macos-vst3-diagnosis-sdk-198d4c2-${{ matrix.visibility }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: macos-vst3-diagnosis-sdk-198d4c2-
+          restore-keys: macos-vst3-diagnosis-sdk-198d4c2-41236452247-1
       - name: Configure and build the native regression test
         if: matrix.visibility == 'hidden'
         shell: bash
@@ -72,6 +72,12 @@ jobs:
             echo "Exported JUCE symbols: $product"
             nm -gUj "$module" | c++filt | awk '/juce::/ { count++; if (count <= 15) print } END { print "JUCE export count:", count + 0 }'
           done
+      - name: Check the macOS module boundary regression
+        shell: bash
+        run: |
+          bash tests/MacPluginSymbols.sh \
+            build/OndaSynth_artefacts/Release/VST3/OndaSynth.vst3/Contents/MacOS/OndaSynth \
+            build/OndaFX_artefacts/Release/VST3/OndaFX.vst3/Contents/MacOS/OndaFX
       - name: Run isolated and grouped native tests under LLDB
         shell: bash
         run: |
