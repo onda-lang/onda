@@ -746,6 +746,9 @@ impl RunUi {
     pub(crate) fn prepare_scene(&mut self) {
         self.prepare_scene_at(web_time::Instant::now());
     }
+    // Queries may resolve layout/candidates, but only update() advances timed
+    // feedback. Otherwise a getter could consume a deadline after a host checked
+    // redraw status, leaving changed pixels with neither a frame nor a wakeup.
     pub(crate) fn prepare_scene_at(&mut self, now: web_time::Instant) {
         while self.scene_dirty {
             self.scene = crate::scene::build(self);

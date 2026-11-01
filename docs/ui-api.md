@@ -69,6 +69,8 @@ cargo run -p onda_ui --example host
    state without changing pixels. Native exposure still requires presentation even
    with unchanged state. The host owns display pacing, visibility, data polling,
    and bounded presentation retries; the UI never starts a timer or event loop.
+   Layout, text, and capture queries do not advance elapsed feedback or consume
+   timed repaint deadlines; only an explicit update does so.
 6. Query `meter_enabled()` and `scope_enabled()` after layout/input changes.
    Capture peaks only while a meter or waveform is visible, and waveform history
    only while `scope_enabled()` is true. `scope_columns()` is the physical display

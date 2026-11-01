@@ -1166,7 +1166,7 @@ mod tests {
                     fine: false,
                 });
                 ui.prepare_scene();
-                ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+                ui.update_at(ui.repaint_deadline().unwrap());
                 renderer.prepare_tooltip(&mut ui);
                 ui.prepare_scene();
                 assert_eq!(
@@ -1205,7 +1205,7 @@ mod tests {
                         fine: false,
                     });
                     ui.prepare_scene();
-                    ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+                    ui.update_at(ui.repaint_deadline().unwrap());
                     renderer.prepare_tooltip(&mut ui);
                     ui.prepare_scene();
                     let label = &ui.scene.labels[ui.scene.tooltip_label.unwrap()];

@@ -6,7 +6,15 @@ impl RunUi {
     /// Advance timed feedback and resolve layout without drawing.
     /// Drain commands afterward, then compare revisions to decide whether to draw.
     pub fn update(&mut self) {
-        self.prepare_scene();
+        self.update_at(Instant::now());
+    }
+
+    pub(crate) fn update_at(&mut self, now: Instant) {
+        self.prepare_scene_at(now);
+        if self.advance_hover(now) {
+            self.invalidate();
+            self.prepare_scene_at(now);
+        }
     }
 
     /// Next timed update, or `None` when the host may sleep until external input.

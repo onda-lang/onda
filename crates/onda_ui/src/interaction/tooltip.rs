@@ -50,11 +50,18 @@ impl RunUi {
                 visible: false,
             });
         }
-        if let Some(hover) = &mut self.interaction.hover {
-            hover.visible |= now >= hover.deadline;
-        }
         self.scene.tooltip_label.is_some()
             != self.interaction.hover.as_ref().is_some_and(|h| h.visible)
+    }
+
+    pub(crate) fn advance_hover(&mut self, now: Instant) -> bool {
+        if let Some(hover) = &mut self.interaction.hover {
+            if !hover.visible && now >= hover.deadline {
+                hover.visible = true;
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -163,7 +170,7 @@ mod tests {
                     fine: false,
                 });
                 ui.prepare_scene();
-                ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+                ui.update_at(ui.repaint_deadline().unwrap());
                 let label = &ui.scene.labels[ui.scene.tooltip_label.unwrap()];
                 assert_eq!(
                     label.x, r[0],
@@ -239,7 +246,7 @@ mod tests {
             assert_ne!(ui.revisions(), revision);
             ui.prepare_scene();
             assert!(ui.scene.tooltip_label.is_none());
-            ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+            ui.update_at(ui.repaint_deadline().unwrap());
             let label = &ui.scene.labels[ui.scene.tooltip_label.expect("full-label tooltip")];
             assert_eq!(label.text, format!("{name} (f64)"));
             assert!(label.style.wrap);
@@ -285,7 +292,7 @@ mod tests {
             });
             ui.prepare_scene();
             assert!(ui.scene.tooltip_label.is_none());
-            ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+            ui.update_at(ui.repaint_deadline().unwrap());
             assert_eq!(ui.scene.labels[ui.scene.tooltip_label.unwrap()].text, text);
             assert_eq!(ui.scene.content_height, height);
         }
@@ -315,7 +322,7 @@ mod tests {
         ui.prepare_scene();
         let deadline = ui.repaint_deadline().unwrap();
         let revision = ui.revisions();
-        ui.prepare_scene_at(deadline - Duration::from_millis(1));
+        ui.update_at(deadline - Duration::from_millis(1));
         assert!(ui.scene.tooltip_label.is_none());
         assert_eq!(ui.revisions(), revision);
         ui.input(Input::PointerMove {
@@ -325,7 +332,7 @@ mod tests {
         });
         ui.prepare_scene();
         assert_eq!(ui.repaint_deadline(), Some(deadline));
-        ui.prepare_scene_at(deadline);
+        ui.update_at(deadline);
         assert!(ui.scene.tooltip_label.is_some());
         assert!(
             ui.repaint_deadline().is_none(),
@@ -354,5 +361,35 @@ mod tests {
             ui.repaint_deadline().is_none(),
             "unfocused views must not open tooltips"
         );
+    }
+
+    #[test]
+    fn layout_queries_cannot_consume_a_pending_timed_repaint() {
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{
+            "path":"hover.onda","supportsScope":false
+        }}));
+        ui.input(Input::PointerMove {
+            x: 100.0,
+            y: 35.0,
+            fine: false,
+        });
+        ui.update();
+        ui.interaction.hover.as_mut().unwrap().deadline = Instant::now() - Duration::from_millis(1);
+        let revision = ui.revisions();
+        // Hosts query these while draining commands after checking redraw status.
+        ui.meter_enabled();
+        ui.scope_enabled();
+        ui.cursor();
+        ui.text_edit();
+        assert_eq!(ui.revisions(), revision);
+        assert!(
+            ui.wake_deadline().is_some(),
+            "the timed update is still pending"
+        );
+        ui.update();
+        assert_ne!(ui.revisions(), revision);
+        assert!(ui.scene.tooltip_label.is_some());
+        assert!(ui.wake_deadline().is_none());
     }
 }

@@ -601,7 +601,7 @@ mod tests {
                     fine: false,
                 });
                 ui.prepare_scene();
-                ui.prepare_scene_at(ui.repaint_deadline().unwrap());
+                ui.update_at(ui.repaint_deadline().unwrap());
                 assert_eq!(ui.scene.labels[ui.scene.tooltip_label.unwrap()].text, path);
                 assert_eq!(ui.scene.shapes[0].rect, header);
             }
