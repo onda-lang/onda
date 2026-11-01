@@ -21,15 +21,15 @@ on:
       plugin_ref:
         description: Full onda-plugin source commit for integration builds
         type: string
-        default: 9eb74c4ae6b540c63261c0b35e4ab36fab109268
+        default: 90a9624cc125e5b267b3440b515f288c87d1e62e
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
         default: 9f1b0113c9374a781bb5e6126e89489ce82e9688
       sdk_run_id:
-        description: Rebuild only plugins using SDKs from this Onda run; zero builds everything
-        type: number
-        default: 0
+        description: Rebuild only plugins using SDKs from this Onda run; empty builds everything
+        type: string
+        default: ''
       sdk_source_ref:
         description: Exact Onda source commit of the reused SDK run
         type: string
@@ -54,12 +54,11 @@ jobs:
           PUBLISH: ${{ inputs.publish_release }}
           PLUGIN_REF: ${{ inputs.plugin_ref }}
           VSCODE_REF: ${{ inputs.vscode_ref }}
-          SDK_RUN_ID: ${{ inputs.sdk_run_id || 0 }}
+          SDK_RUN_ID: ${{ inputs.sdk_run_id }}
           SDK_SOURCE_REF: ${{ inputs.sdk_source_ref }}
         run: |
-          [[ "$SDK_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'SDK run must be a nonnegative integer' >&2; exit 1; }
-          if [[ "$SDK_RUN_ID" != 0 ]]; then
-            [[ "$INTEGRATIONS" == true && "$SDK_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'SDK reuse requires an integration build and its full source commit' >&2; exit 1; }
+          if [[ -n "$SDK_RUN_ID" ]]; then
+            [[ "$SDK_RUN_ID" =~ ^[1-9][0-9]*$ && "$INTEGRATIONS" == true && "$SDK_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'SDK reuse requires a run ID, integration build and full source commit' >&2; exit 1; }
           else
             test -z "$SDK_SOURCE_REF" || { echo 'An SDK source commit requires its build run' >&2; exit 1; }
           fi
@@ -71,7 +70,7 @@ jobs:
             {
               echo '## GPU integration dry run'
               echo "Onda SDK: ${SDK_SOURCE_REF:-$GITHUB_SHA}"
-              if [[ "$SDK_RUN_ID" != 0 ]]; then echo "Reusing SDK run: $SDK_RUN_ID"; fi
+              if [[ -n "$SDK_RUN_ID" ]]; then echo "Reusing SDK run: $SDK_RUN_ID"; fi
               echo "Plugin: $PLUGIN_REF"
               echo "VS Code: $VSCODE_REF"
               echo 'Publication disabled. Packages are retained as workflow artifacts for 14 days.'
@@ -663,16 +662,16 @@ jobs:
           retention-days: 14
 
   plugin:
-    if: ${{ !cancelled() && needs.validate.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.test_integrations && (inputs.sdk_run_id || (needs.build.result == 'success' && needs.web.result == 'success')) }}
+    if: ${{ !cancelled() && needs.validate.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.test_integrations && (inputs.sdk_run_id != '' || (needs.build.result == 'success' && needs.web.result == 'success')) }}
     needs: [validate, build, web]
     permissions:
       contents: read
       actions: read
-    uses: onda-lang/onda-plugin/.github/workflows/build.yml@9eb74c4ae6b540c63261c0b35e4ab36fab109268
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@90a9624cc125e5b267b3440b515f288c87d1e62e
     with:
       source_ref: ${{ inputs.plugin_ref }}
       onda_source_ref: ${{ inputs.sdk_source_ref || github.sha }}
-      onda_run_id: ${{ inputs.sdk_run_id || 0 }}
+      onda_run_id: ${{ inputs.sdk_run_id }}
 
   vscode:
     if: github.event_name == 'workflow_dispatch' && inputs.test_integrations && !inputs.sdk_run_id
