@@ -21,7 +21,7 @@ on:
       plugin_ref:
         description: Full onda-plugin source commit for integration builds
         type: string
-        default: 38334257da3a123c20dd28cd5affa820c63a6f7d
+        default: e8c2b27b758c81b8d22f5e54737d42e043d441f1
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
