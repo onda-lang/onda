@@ -22,6 +22,7 @@ export class BrowserRunViewHost {
       running: false,
       connected: false,
       schemaReady: false,
+      engineGeneration: "0",
       path: "",
       status: "Stopped",
       error: "",
@@ -127,9 +128,8 @@ export class BrowserRunViewHost {
 
   setCompiling(path, options = null) {
     this.setState({
+      ...this.disconnectedEngineState(),
       path,
-      running: false,
-      connected: false,
       schemaReady: false,
       status: "Compiling...",
       error: "",
@@ -140,6 +140,7 @@ export class BrowserRunViewHost {
   }
 
   setArtifact(artifact, bufferFiles) {
+    Object.assign(this.state, this.disconnectedEngineState());
     const metadata = artifact.metadata.metadata;
     this.sourceFiles = metadata.source_files ?? [];
     const hostEvents = partitionHostEvents(metadata.events ?? []);
@@ -176,9 +177,8 @@ export class BrowserRunViewHost {
     this.sourceFiles = [];
     this.setState(
       {
+        ...this.disconnectedEngineState(),
         path,
-        running: false,
-        connected: false,
         schemaReady: true,
         status: "Stopped",
         error: "",
@@ -217,12 +217,20 @@ export class BrowserRunViewHost {
 
   setStopped(status = "Stopped") {
     this.setState({
-      running: false,
-      connected: false,
+      ...this.disconnectedEngineState(),
       schemaReady: true,
       status,
     });
     this.postVisualization({ channels: 0, peaks: [], samples: [] });
+  }
+
+  disconnectedEngineState() {
+    this.engineGeneration = (this.engineGeneration ?? 0) + 1;
+    return {
+      engineGeneration: String(this.engineGeneration),
+      running: false,
+      connected: false,
+    };
   }
 
   setError(error) {
@@ -533,16 +541,23 @@ export class BrowserRunViewHost {
           await this.handlers.setParam?.(message.name, message.value);
           break;
         case "triggerEvent": {
+          const current = () => typeof message.engineGeneration === "string" &&
+            message.engineGeneration === this.state.engineGeneration &&
+            this.state.connected === true && this.state.schemaReady !== false;
+          if (!current()) break;
           const event = this.state.events.find(
             (item) => item.name === message.name,
           );
+          if (!event) break;
           const values = message.values ?? [];
-          await this.handlers.triggerEvent?.(
-            message.name,
-            event
-              ? event.args.map((arg, i) => eventValue(arg.shape, values[i]))
-              : values,
-          );
+          try {
+            await this.handlers.triggerEvent?.(
+              message.name,
+              event.args.map((arg, i) => eventValue(arg.shape, values[i])),
+            );
+          } catch (error) {
+            if (current()) throw error;
+          }
           break;
         }
         case "midiNote": {

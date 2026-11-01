@@ -1045,6 +1045,9 @@ test("GPU event dispatch converts nested float wire values without narrowing wid
     ],
   };
   host.state = {
+    connected: true,
+    schemaReady: true,
+    engineGeneration: "1",
     events: [{ name: "configure", args: [{ name: "patch", shape }] }],
   };
   host.handlers = {
@@ -1055,6 +1058,7 @@ test("GPU event dispatch converts nested float wire values without narrowing wid
   };
   await host.handleMessage({
     type: "triggerEvent",
+    engineGeneration: "1",
     name: "configure",
     values: [
       {
@@ -1067,6 +1071,93 @@ test("GPU event dispatch converts nested float wire values without narrowing wid
     "configure",
     [{ id: "9223372036854775807", samples: [NaN, Infinity, -Infinity, -0] }],
   ]);
+});
+
+test("GPU events belong to the rendered processor across replacements and buffer restarts", async () => {
+  const calls = [];
+  const states = [];
+  const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
+    state: { path: "main.onda", events: [], params: [], buffers: [] },
+    handlers: { triggerEvent: (...args) => calls.push(args) },
+    postState(extra = {}) { states.push(structuredClone({ ...this.state, ...extra })); },
+    postVisualization() {},
+    setLoading() {},
+    viewResetId: 0,
+  });
+  const artifact = { metadata: { compile: {}, metadata: {
+    outputs: [], params: [], buffers: [],
+    events: [{ name: "note", schema: { params: [
+      { name: "pitch", ty: { kind: "scalar", encoding: "f64" }, default: "69" },
+    ] } }],
+  } } };
+  const trigger = generation => host.handleMessage({
+    type: "triggerEvent", name: "note", values: [60], engineGeneration: generation,
+  });
+
+  host.setArtifact(artifact, new Map());
+  const first = host.state.engineGeneration;
+  assert.equal(states.at(-1).connected, false, "metadata does not make a processor ready");
+  await trigger(first);
+  assert.equal(calls.length, 0);
+  host.setRunning(48_000);
+  await trigger(first);
+  assert.deepEqual(calls, [["note", [60]]]);
+  host.setRunning(48_000, "Click to enable audio");
+  assert.equal(host.state.engineGeneration, first, "audio status updates keep processor ownership");
+
+  // runProject publishes the artifact even when it reuses a cached compilation.
+  host.setArtifact(artifact, new Map());
+  const second = host.state.engineGeneration;
+  assert.notEqual(second, first);
+  host.setRunning(48_000);
+  await trigger(first);
+  await trigger(null);
+  await trigger(undefined);
+  assert.equal(calls.length, 1, "queued commands cannot reach the replacement");
+  host.state.schemaReady = false;
+  await trigger(second);
+  assert.equal(calls.length, 1);
+  host.state.schemaReady = true;
+  await trigger(second);
+  assert.equal(calls.length, 2);
+
+  // A buffer rebind restarts audio without publishing another artifact.
+  host.setStopped();
+  const third = host.state.engineGeneration;
+  assert.notEqual(third, second);
+  assert.equal(states.at(-1).engineGeneration, third);
+  host.setRunning(48_000);
+  await trigger(second);
+  await trigger(third);
+  assert.equal(calls.length, 3);
+  host.clearArtifact();
+  await trigger(third);
+  assert.equal(calls.length, 3);
+});
+
+test("an old GPU event rejection cannot fault a replacement processor", async () => {
+  let reject;
+  const errors = [];
+  const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
+    engineGeneration: 1,
+    state: { connected: true, schemaReady: true, engineGeneration: "1",
+      events: [{ name: "note", args: [] }] },
+    handlers: {
+      triggerEvent: () => new Promise((resolve, fail) => { reject = fail; }),
+      error: error => errors.push(error),
+    },
+    postState() {},
+    postVisualization() {},
+  });
+  const pending = host.handleMessage({ type: "triggerEvent", name: "note", engineGeneration: "1" });
+  host.setStopped();
+  host.setRunning(48_000);
+  reject(new Error("old processor was closed"));
+  await pending;
+  assert.deepEqual(errors, []);
+  host.handlers.triggerEvent = () => { throw new Error("current handler failed"); };
+  await host.handleMessage({ type: "triggerEvent", name: "note", engineGeneration: host.state.engineGeneration });
+  assert.equal(errors[0].message, "current handler failed");
 });
 
 test("saved GPU event values survive recompilation and explicit project resets discard presentation", () => {
