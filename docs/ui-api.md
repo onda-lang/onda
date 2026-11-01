@@ -70,7 +70,8 @@ cargo run -p onda_ui --example host
    only while `scope_enabled()` is true. `scope_columns()` is the physical display
    budget. Hidden views stop capture and drawing. Stock hosts publish meters and
    the optional waveform together on one 30 Hz visualization stream, independently
-   of input and other redraws.
+   of input and other redraws. Retain the last meter reading when no new audio
+   block has arrived; an actual silent block, stop, or reset clears it.
 7. Before hiding, switching away, or destroying the view, send `focusLost` and
    drain its commands while host handlers still exist. This commits valid drafts,
    cancels unfinished composition, ends gestures, and releases owned MIDI notes.
