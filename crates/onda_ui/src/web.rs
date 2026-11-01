@@ -91,7 +91,7 @@ impl CanvasUi {
             .resize(width as f32 / scale, height as f32 / scale, scale);
     }
     pub fn render(&mut self) -> Result<bool, JsValue> {
-        self.ui.tick();
+        self.ui.update();
         if self.rendered == Some(self.ui.revisions()) {
             return Ok(true);
         }
@@ -107,16 +107,13 @@ impl CanvasUi {
     pub fn commands(&mut self) -> String {
         serde_json::to_string(&self.ui.take_commands()).unwrap_or_else(|_| "[]".into())
     }
-    pub fn view_state_delay(&self) -> Option<f64> {
-        self.ui.view_state_deadline().map(|deadline| {
-            deadline
-                .saturating_duration_since(web_time::Instant::now())
-                .as_secs_f64()
-                * 1000.0
-        })
+    /// Advance timed state/layout without drawing; commands must still be drained.
+    pub fn update(&mut self) -> bool {
+        self.ui.update();
+        self.rendered != Some(self.ui.revisions())
     }
-    pub fn repaint_delay(&self) -> Option<f64> {
-        self.ui.repaint_deadline().map(|deadline| {
+    pub fn wake_delay_ms(&self) -> Option<f64> {
+        self.ui.wake_deadline().map(|deadline| {
             deadline
                 .saturating_duration_since(web_time::Instant::now())
                 .as_secs_f64()

@@ -21,13 +21,7 @@ pub(crate) struct Hover {
 }
 
 impl RunUi {
-    /// Advance timed UI feedback before checking whether a frame is needed.
-    pub fn tick(&mut self) {
-        self.prepare_scene();
-    }
-
-    /// Next timed redraw. Hosts may sleep until this deadline while idle.
-    pub fn repaint_deadline(&self) -> Option<Instant> {
+    pub(crate) fn repaint_deadline(&self) -> Option<Instant> {
         self.interaction
             .hover
             .as_ref()

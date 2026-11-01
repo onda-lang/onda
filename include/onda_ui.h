@@ -22,6 +22,14 @@ int onda_ui_message(OndaUi *ui, const char *json);
 int onda_ui_input(OndaUi *ui, const char *json);
 /* Interleaved bounded visualization snapshot. The UI copies samples before return. */
 void onda_ui_scope(OndaUi *ui, uint32_t channels, const float *samples, size_t count);
+/* Advance timed UI state/layout without drawing. 1 = redraw needed, 0 = clean,
+ * -1 = error. Drain commands afterward, even when clean. */
+int onda_ui_update(OndaUi *ui);
+/* Delay until the next UI update in milliseconds; -1 = no timed work.
+ * Recompute after updates, command draining, or state/input changes. A wakeup
+ * need not draw. Use a host timer rounded UP, then update and drain commands.
+ * Host data polling and display pacing are independent of this deadline. */
+double onda_ui_wake_delay_ms(const OndaUi *ui);
 /* 1 = presented/clean, 0 = retry later, -1 = error. */
 int onda_ui_render(OndaUi *ui);
 /* Whether the clipped scope viewport needs fresh snapshots. Resolves pending layout. */
@@ -31,7 +39,7 @@ void onda_ui_meter(OndaUi *ui, uint32_t channels, const float *peaks, size_t cou
 /* Whether any clipped header meter needs fresh peaks. Resolves pending layout. */
 int onda_ui_meter_visible(OndaUi *ui);
 /* JSON command array, borrowed until the next call to commands or destroy.
- * Drain after input/state updates, rendering, and UI timer ticks for scroll saves.
+ * Drain after input/state updates, timed updates, and rendering.
  * Send focusLost and drain commands before hiding or destroying the view. */
 const char *onda_ui_commands(OndaUi *ui);
 const char *onda_ui_error(const OndaUi *ui);

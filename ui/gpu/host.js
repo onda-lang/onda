@@ -24,8 +24,7 @@ const send = (message) => {
 let ui;
 let frame = 0;
 let resizePending = true;
-let viewStateTimer = 0;
-let repaintTimer = 0;
+let wakeTimer = 0;
 let fontRetryTimer = 0;
 let suspended = false;
 let pendingState = [];
@@ -73,8 +72,7 @@ function report(error) {
   pendingScope = undefined;
   pendingReady = undefined;
   for (const values of Object.values(pendingValues)) values.clear();
-  clearTimeout(viewStateTimer);
-  clearTimeout(repaintTimer);
+  clearTimeout(wakeTimer);
   clearTimeout(fontRetryTimer);
   if (frame) cancelAnimationFrame(frame);
   frame = 0;
@@ -110,15 +108,28 @@ async function copyText(text) {
 function commands() {
   const result = JSON.parse(ui.commands());
   for (const command of result) send(command);
-  clearTimeout(viewStateTimer);
-  const delay = ui.view_state_delay();
-  viewStateTimer = delay === undefined ? 0 : setTimeout(() => {
-    viewStateTimer = 0;
-    if (ui) commands();
-  }, Math.ceil(delay));
   scopeConfig();
   editor.sync();
+  armWake();
   return result;
+}
+function armWake() {
+  clearTimeout(wakeTimer);
+  wakeTimer = 0;
+  if (suspended || document.hidden || !ui || renderError) return;
+  const delay = ui.wake_delay_ms();
+  if (delay === undefined) return;
+  wakeTimer = setTimeout(() => {
+    wakeTimer = 0;
+    if (suspended || document.hidden || !ui || renderError) return;
+    try {
+      const redraw = ui.update();
+      commands();
+      if (redraw) schedule();
+    } catch (error) {
+      report(error);
+    }
+  }, Math.ceil(delay));
 }
 function schedule() {
   if (frame || suspended || document.hidden || !ui || renderError) return;
@@ -134,7 +145,7 @@ function schedule() {
       }
       canvas.style.cursor = ui.cursor();
       loadFallbackFonts();
-      const presented = ui.render();
+      const presented = !ui.update() || ui.render();
       // Text measurement can resolve hidden drafts and move the scope viewport.
       commands();
       if (!presented) schedule();
@@ -142,9 +153,6 @@ function schedule() {
         send(pendingReady);
         pendingReady = undefined;
       }
-      clearTimeout(repaintTimer);
-      const delay = ui.repaint_delay();
-      repaintTimer = delay === undefined ? 0 : setTimeout(schedule, Math.ceil(delay));
     } catch (error) {
       report(error);
     }
@@ -489,9 +497,11 @@ function watchDisplayScale() {
 watchDisplayScale();
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    clearTimeout(repaintTimer);
+    clearTimeout(wakeTimer);
     clearTimeout(fontRetryTimer);
     input({ type: "focusLost" });
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
   }
   resize();
 });
@@ -499,8 +509,7 @@ window.addEventListener("pagehide", (event) => {
   suspended = true;
   browser?.cancelFileSelection();
   input({ type: "focusLost" });
-  clearTimeout(viewStateTimer);
-  clearTimeout(repaintTimer);
+  clearTimeout(wakeTimer);
   clearTimeout(fontRetryTimer);
   if (frame) cancelAnimationFrame(frame);
   frame = 0;

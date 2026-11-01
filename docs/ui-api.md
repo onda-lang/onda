@@ -61,10 +61,14 @@ cargo run -p onda_ui --example host
    Report rejected operations in `state.error` and republish the accepted value.
    Parse a C command array before invoking host callbacks, since callbacks can
    recursively publish state.
-5. Call `RunUi::tick()` before comparing `revisions()` with the last rendered pair.
-   Wake at `repaint_deadline()` for timed hover feedback and drain commands again
-   at `view_state_deadline()` for deferred scroll persistence. Both deadlines may
-   be absent. Native exposure still requires presentation even with unchanged state.
+5. Call `RunUi::update()` to advance timed state and resolve layout without drawing.
+   Drain commands, then compare `revisions()` with the last presented pair. Schedule
+   a coalesced redraw when changed. Recompute `wake_deadline()` after updates,
+   command draining, or state/input changes; it is absent when there is no timed
+   work. At that deadline, update and drain commands again. A wakeup can save view
+   state without changing pixels. Native exposure still requires presentation even
+   with unchanged state. The host owns display pacing, visibility, data polling,
+   and bounded presentation retries; the UI never starts a timer or event loop.
 6. Query `meter_enabled()` and `scope_enabled()` after layout/input changes.
    Capture peaks only while a meter or waveform is visible, and waveform history
    only while `scope_enabled()` is true. `scope_columns()` is the physical display
@@ -409,6 +413,8 @@ onda_ui_resize
 onda_ui_message
 onda_ui_input
 onda_ui_scope
+onda_ui_update
+onda_ui_wake_delay_ms
 onda_ui_render
 onda_ui_scope_visible
 onda_ui_meter
@@ -432,7 +438,9 @@ onda_ui_cursor
 | `onda_ui_scope` | Copy `count` interleaved floats, at most 64×16,384 samples; zero count clears the waveform. |
 | `onda_ui_meter` | Copy `count` peak floats, at most 64, with a channel count. |
 | `onda_ui_scope_visible`, `onda_ui_meter_visible` | Resolve layout and return 1 when that clipped viewport needs capture, otherwise 0. |
-| `onda_ui_render` | Tick and render if changed; 1 presented/clean, 0 retry later, −1 error. |
+| `onda_ui_update` | Advance timed state/layout without drawing; 1 redraw needed, 0 clean, −1 error. Drain commands afterward even when clean. |
+| `onda_ui_wake_delay_ms` | Milliseconds until the next timed update; −1 when absent. Relative to the library's monotonic clock; no clock epoch crosses the C interface. Recompute after updates, command draining, or state/input changes. |
+| `onda_ui_render` | Update and render if changed; 1 presented/clean, 0 retry later, −1 error. |
 | `onda_ui_commands` | Drain to a borrowed JSON command-array string, valid until the next commands call or destroy. |
 | `onda_ui_error` | Borrow the last error string until another error or destroy. |
 | `onda_ui_text_edit` | Borrow text-edit JSON until the next text-edit call or destroy; JSON null without an editor. |
@@ -440,9 +448,16 @@ onda_ui_cursor
 | `onda_ui_text_hit` | Logical point to UTF-16 offset; `SIZE_MAX` without a text hit. |
 | `onda_ui_cursor` | CSS cursor identifier with static lifetime. |
 
-Use a host UI timer to call render and drain commands while visible, including
-while there is no fresh audio data. Pointer moves, state updates, and text edits
-can change capture visibility. Send focus loss and drain before hiding/destroying.
+After input/state changes, call update and drain commands. Coalesce redraws through
+the host's display/event loop. Arm a one-shot timer for `onda_ui_wake_delay_ms`,
+rounding up to the host timer's resolution, then update and drain commands when it
+fires. Recompute the delay after draining; overdue work returns zero. Timed work
+does not necessarily need rendering. Stop scheduled drawing/timers while hidden,
+then update and force presentation when exposed again. If render returns zero,
+retry on a later display tick or bounded host timer, even without further input.
+Data polling for automation, meters, and scope is independent of UI wakeups and
+must not gate input redraws. Pointer moves, state updates, and text edits can
+change capture visibility. Send focus loss and drain before hiding/destroying.
 Nonzero sample counts require a valid pointer for that many floats. Message
 strings are borrowed only during the call.
 
@@ -479,8 +494,11 @@ It exposes `message(json)`, `input(json)`, `resize(width,height,scale)`, `render
 `text_edit()`, `buffer_target(x,y)`, and `pointer_stops(x,y)` for transport gestures.
 `message()`/`input()` return no consumption result; `scroll()` returns movement.
 `render()` returns true for presented/clean and false for retry. Both deadlines
-are exposed as millisecond delays through `view_state_delay()` and
-`repaint_delay()`, or undefined when absent. `fallback_fonts()` returns a JSON
+are exposed together through `wake_delay_ms()`, or undefined when absent.
+`update()` advances timed state/layout without drawing and returns whether a
+redraw is needed. Drain commands even when it returns false. The browser host
+uses one wakeup timer and coalesces drawing through `requestAnimationFrame`.
+`fallback_fonts()` returns a JSON
 array of missing bundled font names; fetch those assets and call
 `load_font(name, Uint8Array)`, then redraw. `free()` releases the canvas resources.
 Register `on_device_lost(callback)` to receive an asynchronous device-loss message,

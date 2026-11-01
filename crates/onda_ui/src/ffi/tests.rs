@@ -27,6 +27,7 @@ impl TestWindow {
                 0,
                 0,
             );
+            (xlib.XMapWindow)(display, window);
             (xlib.XSync)(display, 0);
             Self {
                 xlib,
@@ -34,6 +35,60 @@ impl TestWindow {
                 window,
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "requires an X11 display"]
+fn scheduling_updates_without_drawing_and_clears_deadlines_after_command_delivery() {
+    let window = TestWindow::new();
+    unsafe {
+        let mut error = [0; 2048];
+        let ui = onda_ui_create(
+            1,
+            window.window as usize,
+            window.display as usize,
+            1000,
+            600,
+            2.0,
+            error.as_mut_ptr(),
+            error.len(),
+        );
+        assert!(!ui.is_null(), "{:?}", CStr::from_ptr(error.as_ptr()));
+        let mut owned = Box::from_raw(ui);
+        let ui = &mut *owned as *mut OndaUi;
+        let state = string(json!({"type":"state","state":{
+            "path":"schedule.onda","supportsScope":false,"supportsViewState":true,
+            "params":(0..30).map(|i| json!({"name":format!("p{i}"),"type":"f64","value":0})).collect::<Vec<_>>()
+        }}).to_string());
+        assert_eq!(onda_ui_message(ui, state.as_ptr()), 1);
+        assert_eq!(onda_ui_update(ui), 1);
+        assert_eq!(onda_ui_render(ui), 1);
+        onda_ui_commands(ui);
+        assert_eq!(onda_ui_update(ui), 0);
+        assert_eq!(onda_ui_wake_delay_ms(ui), -1.0);
+
+        assert_eq!(
+            onda_ui_input(ui, c"{\"type\":\"scroll\",\"delta\":20}".as_ptr()),
+            1
+        );
+        assert_eq!(onda_ui_update(ui), 1);
+        assert_eq!(onda_ui_render(ui), 1);
+        onda_ui_commands(ui);
+        let delay = onda_ui_wake_delay_ms(ui);
+        assert!(delay > 0.0 && delay <= 200.0, "{delay}");
+        std::thread::sleep(std::time::Duration::from_millis(delay.ceil() as u64 + 1));
+        assert_eq!(onda_ui_update(ui), 0, "persistence needs no GPU frame");
+        let commands: Vec<Value> =
+            serde_json::from_slice(CStr::from_ptr(onda_ui_commands(ui)).to_bytes()).unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0]["state"]["scrollTop"], 20.0);
+        assert_eq!(onda_ui_wake_delay_ms(ui), -1.0);
+        assert_eq!(onda_ui_update(ui), 0);
+        onda_ui_resize(ui, 1000, 600, 2.0);
+        assert_eq!(onda_ui_update(ui), 1, "exposure invalidates clean pixels");
+        assert_eq!(onda_ui_update(std::ptr::null_mut()), -1);
+        assert_eq!(onda_ui_wake_delay_ms(std::ptr::null()), -1.0);
     }
 }
 

@@ -304,8 +304,7 @@ impl App {
         let retry = self.redraw_retry.filter(|_| self.surface_visible());
         poll.into_iter()
             .chain(retry)
-            .chain(self.ui.view_state_deadline())
-            .chain(self.ui.repaint_deadline())
+            .chain(self.ui.wake_deadline())
             .min()
     }
     fn redraw_if_dirty(&self) {
@@ -483,7 +482,7 @@ impl ApplicationHandler for App {
                 self.publish_changes(poll);
             }
         }
-        self.ui.tick();
+        self.ui.update();
         self.commands();
         self.sync_ime();
         self.redraw_if_dirty();

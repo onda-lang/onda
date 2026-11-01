@@ -148,7 +148,7 @@ fn hovering_wakes_an_idle_host_once_at_the_tooltip_deadline() {
         y: 35.0,
         fine: false,
     });
-    let deadline = app.ui.repaint_deadline().unwrap();
+    let deadline = app.ui.wake_deadline().unwrap();
     app.rendered = Some(app.ui.revisions());
     assert!(!app.needs_redraw(Instant::now()));
     assert_eq!(app.next_wake(), Some(deadline));
@@ -384,7 +384,7 @@ fn deferred_presentation_wakes_an_idle_host_and_flushes_on_focus_loss() {
     }}));
     app.ui.input(Input::Scroll { delta: 20.0 });
     app.commands();
-    let deadline = app.ui.view_state_deadline().unwrap();
+    let deadline = app.ui.wake_deadline().unwrap();
     assert_eq!(app.next_wake(), Some(deadline));
     assert!(!app.views.contains_key("scroll.onda"));
     app.input(Input::FocusLost);

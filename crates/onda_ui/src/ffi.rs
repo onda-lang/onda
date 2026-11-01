@@ -200,12 +200,35 @@ pub unsafe extern "C" fn onda_ui_scope(
     });
 }
 #[no_mangle]
+pub unsafe extern "C" fn onda_ui_update(ui: *mut OndaUi) -> i32 {
+    guard(-1, || {
+        let Some(ui) = (unsafe { ui.as_mut() }) else {
+            return -1;
+        };
+        ui.ui.update();
+        i32::from(ui.rendered != Some(ui.ui.revisions()))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_wake_delay_ms(ui: *const OndaUi) -> f64 {
+    guard(-1.0, || {
+        unsafe { ui.as_ref() }
+            .and_then(|ui| ui.ui.wake_deadline())
+            .map_or(-1.0, |deadline| {
+                deadline
+                    .saturating_duration_since(web_time::Instant::now())
+                    .as_secs_f64()
+                    * 1000.0
+            })
+    })
+}
+#[no_mangle]
 pub unsafe extern "C" fn onda_ui_render(ui: *mut OndaUi) -> i32 {
     guard(-1, || {
         let Some(ui) = (unsafe { ui.as_mut() }) else {
             return -1;
         };
-        ui.ui.tick();
+        ui.ui.update();
         if ui.rendered == Some(ui.ui.revisions()) {
             return 1;
         }

@@ -439,6 +439,7 @@ and validation instructions.
 | `onda_ui::RunUi` | Screen state, host messages/commands, and coordination of editing, interaction, and presentation. |
 | `onda_ui::{interaction, editing}` | Pointer/touch ownership, focus, menus, MIDI notes, drafts, selection, and composition. |
 | `onda_ui::{layout, panels, controls, scrollbar}` | Visible scene construction, cached structural layout, and viewport geometry. |
+| `onda_ui::scheduling` | Advance timed state without drawing and combine internal deadlines into one optional host wakeup. |
 | `onda_ui::Renderer` | Instanced WGSL shapes, cached glyphon text, scope traces, and meter buffers; accepts a host-owned wgpu device. |
 | `onda_ui::{surface, ffi, web}` | Surface presentation and optional C/Wasm adapters. |
 | `onda_gpu` | Standalone winit window/input and `onda_run::RunController` adapter. |
@@ -472,9 +473,14 @@ Browser editors use an AudioWorklet peak clock and attach per-channel analysers
 only while a waveform is visible; reusable OSQ1 bytes cross the iframe/Wasm
 boundary without JSON sample arrays.
 
+The UI's `update()` advances timed state/layout without drawing; hosts drain
+commands and draw changed revisions. `wake_deadline()` combines internal timed
+work, and C/Wasm expose it as a relative millisecond delay. A wakeup may publish
+commands without changing pixels. Hosts choose their own frame cadence and
+coalesce input/state redraws independently of audio/data polling.
 The native window sleeps until worker events, UI deadlines, capture deadlines,
 or source-watch maintenance require work. Browser frames coalesce pending values,
-visualization, and backing-store resize with `requestAnimationFrame`. Both suspend
+visualization, and backing-store resize with `requestAnimationFrame`. Hosts suspend
 drawing when hidden. Color conversion follows the render target's color space.
 
 Host-provided `inputControls` use the same scalar editors as `params`, with

@@ -17,6 +17,7 @@ mod panels;
 mod presentation;
 mod renderer;
 mod scene;
+mod scheduling;
 mod scrollbar;
 mod surface;
 mod theme;

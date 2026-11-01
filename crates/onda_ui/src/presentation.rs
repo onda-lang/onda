@@ -4,8 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use web_time::{Duration, Instant};
 
 impl crate::model::RunUi {
-    /// Hosts should drain commands again at this deadline, even while drawing is idle.
-    pub fn view_state_deadline(&self) -> Option<Instant> {
+    pub(crate) fn view_state_deadline(&self) -> Option<Instant> {
         if self.state["supportsViewState"] == true
             && self.pending_view.is_none()
             && !self.editor.has_number_drag()

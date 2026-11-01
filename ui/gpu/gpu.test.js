@@ -111,6 +111,42 @@ for (const backend of ["webgl", "webgpu"]) {
   });
 }
 
+test("UI wakeups save without drawing, show idle feedback once, and return to sleep", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  await page.evaluate(`(async()=>{
+    const {CanvasUi}=await import('./pkg/onda_ui.js');
+    const update=CanvasUi.prototype.update,render=CanvasUi.prototype.render;
+    window.draws=0;window.updates=[];
+    CanvasUi.prototype.update=function(){
+      window.testUi=this;const redraw=update.call(this);updates.push(redraw);return redraw;
+    };
+    CanvasUi.prototype.render=function(){draws++;return render.call(this)};
+    _onHostMessage({type:'state',state:{path:'schedule.onda',supportsScope:false,
+      supportsViewState:true,supportsTransport:false,viewState:{readyId:1},
+      params:Array.from({length:60},(_,i)=>({name:'p'+i,type:'f64',value:0}))}});
+  })()`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===1)"), "initial state");
+  await page.evaluate(`draws=0;updates=[];commands=[];
+    document.querySelector('canvas').dispatchEvent(new WheelEvent('wheel',{
+      deltaY:20,clientX:700,clientY:400,bubbles:true,cancelable:true}));`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='viewState'&&c.state.scrollTop===20)"), "idle scroll persistence");
+  assert.equal(await page.evaluate("draws"), 1, "the delayed save must not submit another frame");
+  assert.equal(await page.evaluate("updates.includes(false)"), true, "a clean timed update must still deliver commands");
+  assert.equal(await page.evaluate("testUi.wake_delay_ms()===undefined"), true);
+  await page.call("Input.dispatchMouseEvent", {type:"mouseMoved",x:100,y:35});
+  await eventually(() => page.evaluate("testUi.wake_delay_ms()>0"), "hover deadline");
+  const draws = await page.evaluate("draws");
+  await eventually(() => page.evaluate(`draws===${draws + 1}&&testUi.wake_delay_ms()===undefined`), "one idle tooltip frame");
+  const updates = await page.evaluate("updates.length");
+  await page.evaluate("new Promise(r=>setTimeout(r,150))");
+  assert.equal(await page.evaluate("updates.length"), updates, "idle UI must stop waking");
+});
+
 test("GPU rejects malformed scope packets without losing the frame or later updates", { timeout:60000 }, async t => {
   const origin = await serveGpuUi(t);
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
