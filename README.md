@@ -255,6 +255,11 @@ Already-compiled native processor objects do not require `libonda`: include
 entrypoints directly. The paired JSON descriptor supplies storage sizes, alignments, defaults, and
 interface layouts. See the native raw-object example for a complete link command.
 
+The `release.yml` workflow supports unpublished integration builds with
+`test_integrations=true`. To rebuild only plugins against an existing SDK, also
+set `sdk_run_id` to its Onda build run and `sdk_source_ref` to its full source
+commit. SDK provenance and checksums are verified; publication stays disabled.
+
 ## VST3 plugin
 
 The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides
