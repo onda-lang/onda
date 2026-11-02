@@ -1809,9 +1809,9 @@ fn range_of_rvalue(
             i64::from(program.config.block_size.saturating_sub(1)),
         ),
         Rvalue::NormalizeIndex { .. }
-        | Rvalue::BufferLen(_)
+        | Rvalue::BufferSamples(_)
         | Rvalue::BufferChannels(_)
-        | Rvalue::BufferParamLen(_)
+        | Rvalue::BufferParamSamples(_)
         | Rvalue::BufferParamChannels(_)
         | Rvalue::SliceLen(_) => IntegerRange::new(ScalarType::I32, 0, i64::from(i32::MAX)),
         _ => None,
@@ -2353,14 +2353,14 @@ fn scan_rvalue(
             scan_value(*index, effects);
             mark_checked_bounds(*bounds, effects);
         }
-        Rvalue::BufferLen(buffer)
+        Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => {
             effects.reads.insert(MemoryRegionSet::BUFFERS);
             scan_buffer_ref(*buffer, effects);
         }
-        Rvalue::BufferParamLen(parameter)
+        Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => {

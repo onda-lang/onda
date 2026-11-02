@@ -8,10 +8,10 @@ init:
   slot = 1
 
 block:
-  frames = mono[slot].len()
+  samples = mono[slot].samples()
 
   sample:
     out1 = mono[slot][index] + fixed[slot][1, index] + dynamic[slot][1, index]
     index = index + 1
-    if index >= frames:
+    if index >= samples:
       index = 0

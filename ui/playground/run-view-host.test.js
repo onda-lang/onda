@@ -666,7 +666,7 @@ test("publishes buffer previews together and preserves them through recompiles",
   assert.deepEqual(host.state.buffers[0].waveform, replacement);
   host.updateBufferFile("clip", null);
   assert.equal(host.state.buffers[0].waveform, null);
-  assert.equal(host.state.buffers[0].loadedFrames, null);
+  assert.equal(host.state.buffers[0].loadedSamples, null);
 
   host.setArtifact(artifact, new Map([["other", { name: "different.wav" }]]));
   assert.equal(host.state.buffers[1].waveform, null);
@@ -880,11 +880,11 @@ test("allows browser playback while buffers are unbound", async () => {
     );
     assert.deepEqual(
       {
-        loadedFrames: host.state.buffers[0].loadedFrames,
+        loadedSamples: host.state.buffers[0].loadedSamples,
         loadedChannels: host.state.buffers[0].loadedChannels,
         loadedSampleRate: host.state.buffers[0].loadedSampleRate,
       },
-      { loadedFrames: 96_000, loadedChannels: 2, loadedSampleRate: 48_000 },
+      { loadedSamples: 96_000, loadedChannels: 2, loadedSampleRate: 48_000 },
     );
     await host.handleMessage({ type: "start" });
     assert.equal(starts, 2);

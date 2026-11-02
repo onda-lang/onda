@@ -816,7 +816,7 @@ fn range_controls_change_visuals_on_hover() {
 #[test]
 fn embedded_buffers_are_loaded_and_keep_a_symmetric_amplitude_scale() {
     let mut ui = fixture();
-    ui.message(json!({"type":"state","state":{"params":[],"buffers":[{"name":"clip","type":"f32","loadedFrames":128,"loadedChannels":1,"loadedPath":null,"waveform":{"minimums":[-0.1],"maximums":[0.1],"minValue":-0.1,"maxValue":0.1}}]}}));
+    ui.message(json!({"type":"state","state":{"params":[],"buffers":[{"name":"clip","type":"f32","loadedSamples":128,"loadedChannels":1,"loadedPath":null,"waveform":{"minimums":[-0.1],"maximums":[0.1],"minValue":-0.1,"maxValue":0.1}}]}}));
     ui.prepare_scene();
     assert!(ui
         .scene

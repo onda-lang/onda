@@ -28,15 +28,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Buffer `.len()` returns the total element count across channels; `.samples()` returns the
+  per-channel length. `std::data::Data.samples()` replaces `.frames()`, and buffer UI metadata
+  and sample-player positions use sample terminology. Buffer collection `.len()` still counts buffers.
 - Standard-library filter modes, ramp shapes, envelope stages, and FFT window selections use
   enums. Examples use the new types, including dropdowns for Benjolin's filter and output selectors.
-- MIR schema version 8 and processor descriptor version 7 carry enum metadata. The executable
-  processor ABI remains version 7.
+- MIR schema version 9 includes enum metadata and explicit per-channel buffer sample queries.
+  Processor descriptor version 7 carries enum metadata; the executable processor ABI remains version 7.
 - Run views retain control layouts, section folds, scrolling, and schema-matched
   event arguments. Hidden views suspend drawing and visualization capture.
 
 ### Fixed
 
+- Direct buffer-reference aliases retain their buffer identity and metadata queries.
 - Touch scrolling can continue into the surrounding browser page when a panel
   reaches its scroll boundary.
 

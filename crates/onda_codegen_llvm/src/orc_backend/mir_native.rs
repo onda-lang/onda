@@ -2546,11 +2546,11 @@ fn inspect_rvalue(function_index: usize, value: &Rvalue, errors: &mut Vec<MirCod
         | Rvalue::ConstDataLoad { .. }
         | Rvalue::BufferLoad { .. }
         | Rvalue::BufferParamLoad { .. }
-        | Rvalue::BufferLen(_)
+        | Rvalue::BufferSamples(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
         | Rvalue::BufferIsBound(_)
-        | Rvalue::BufferParamLen(_)
+        | Rvalue::BufferParamSamples(_)
         | Rvalue::BufferParamChannels(_)
         | Rvalue::BufferParamSampleRate(_)
         | Rvalue::BufferParamIsBound(_)

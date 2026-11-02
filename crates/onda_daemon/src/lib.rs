@@ -698,7 +698,7 @@ mod tests {
         assert_eq!(buffer_info.len(), 2);
         assert_eq!(buffer_info[0].name, "src");
         assert!(buffer_info[0].loaded_path.is_none());
-        assert_eq!(buffer_info[0].loaded_frames, None);
+        assert_eq!(buffer_info[0].loaded_samples, None);
         assert_eq!(buffer_info[0].loaded_channels, None);
         assert_eq!(buffer_info[0].loaded_sample_rate_hz, None);
 
@@ -713,7 +713,7 @@ mod tests {
             .bind_buffer_wav_path("src", &wav)
             .expect("wav buffer bind should succeed");
         let loaded = &session.run(&main).expect("active run").buffer_info()[0];
-        assert_eq!(loaded.loaded_frames, Some(4));
+        assert_eq!(loaded.loaded_samples, Some(4));
         assert_eq!(loaded.loaded_channels, Some(1));
         assert_eq!(loaded.loaded_sample_rate_hz, Some(48_000.0));
         let waveform = loaded.waveform.as_ref().expect("loaded waveform preview");

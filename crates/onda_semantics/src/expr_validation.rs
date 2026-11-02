@@ -1320,6 +1320,20 @@ fn validate_expr_node<'a>(
                         return;
                     }
                 }
+                if let Some(base) = parse_buffer_samples_instance_base(name) {
+                    if is_builtin_buffer_receiver(base, env) {
+                        validate_buffer_metadata_builtin_call(
+                            name,
+                            base,
+                            args,
+                            "samples",
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
+                        return;
+                    }
+                }
                 if let Some(base) = parse_buffer_chans_instance_base(name) {
                     if is_builtin_buffer_receiver(base, env) {
                         validate_buffer_metadata_builtin_call(
@@ -1771,7 +1785,11 @@ fn validate_indexed_buffer_metadata_call(
     };
     if !matches!(
         method,
-        ARRAY_LEN_METHOD | BUFFER_BOUND_METHOD | BUFFER_CHANS_METHOD | BUFFER_SAMPLERATE_METHOD
+        ARRAY_LEN_METHOD
+            | BUFFER_SAMPLES_METHOD
+            | BUFFER_BOUND_METHOD
+            | BUFFER_CHANS_METHOD
+            | BUFFER_SAMPLERATE_METHOD
     ) {
         return false;
     }

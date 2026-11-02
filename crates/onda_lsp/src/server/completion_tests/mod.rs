@@ -770,6 +770,7 @@ sample:
 
     let selected_labels = labels(index.member_items("selected", ""));
     assert!(selected_labels.iter().any(|label| label == "bound"));
+    assert!(selected_labels.iter().any(|label| label == "samples"));
     assert!(selected_labels
         .iter()
         .any(|label| label == ARRAY_LEN_METHOD));

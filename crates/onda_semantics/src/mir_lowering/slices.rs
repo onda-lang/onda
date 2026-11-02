@@ -445,7 +445,7 @@ impl<'a> FunctionLowerer<'a> {
                     let length = self.emit_temp(
                         block,
                         PrimitiveType::I32,
-                        Rvalue::BufferParamLen(onda_mir::BufferParamRef::Direct(parameter)),
+                        Rvalue::BufferParamSamples(onda_mir::BufferParamRef::Direct(parameter)),
                         location,
                     );
                     return Ok((
@@ -480,7 +480,7 @@ impl<'a> FunctionLowerer<'a> {
                             let length = self.emit_temp(
                                 block,
                                 PrimitiveType::I32,
-                                Rvalue::BufferLen(buffer),
+                                Rvalue::BufferSamples(buffer),
                                 location,
                             );
                             Ok((
@@ -494,7 +494,7 @@ impl<'a> FunctionLowerer<'a> {
                             let length = self.emit_temp(
                                 block,
                                 PrimitiveType::I32,
-                                Rvalue::BufferParamLen(parameter),
+                                Rvalue::BufferParamSamples(parameter),
                                 location,
                             );
                             Ok((
@@ -535,7 +535,7 @@ impl<'a> FunctionLowerer<'a> {
                     let length = self.emit_temp(
                         block,
                         PrimitiveType::I32,
-                        Rvalue::BufferParamLen(parameter),
+                        Rvalue::BufferParamSamples(parameter),
                         location,
                     );
                     return Ok((
@@ -683,7 +683,7 @@ impl<'a> FunctionLowerer<'a> {
             let length = self.emit_temp(
                 block,
                 PrimitiveType::I32,
-                Rvalue::BufferLen(onda_mir::BufferRef::Direct(buffer)),
+                Rvalue::BufferSamples(onda_mir::BufferRef::Direct(buffer)),
                 location,
             );
             return Ok((
@@ -722,7 +722,7 @@ impl<'a> FunctionLowerer<'a> {
             let length = self.emit_temp(
                 block,
                 PrimitiveType::I32,
-                Rvalue::BufferLen(buffer),
+                Rvalue::BufferSamples(buffer),
                 location,
             );
             return Ok((

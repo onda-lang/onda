@@ -3826,7 +3826,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
     access: "read_write",
   });
   mir.functions[1].locals.push(
-    { name: "$buffer_len", ty: 2 },
+    { name: "$buffer_samples", ty: 2 },
     { name: "$buffer_channels", ty: 2 },
     { name: "$metadata_f32", ty: 0 },
     { name: "$buffer_bound", ty: 1 },
@@ -3844,7 +3844,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
         bounds: "clamp",
       },
     }),
-    assign(place("local", 6), { kind: "buffer_len", data: 0 }),
+    assign(place("local", 6), { kind: "buffer_samples", data: 0 }),
     assign(place("local", 3), {
       kind: "cast",
       data: { value: local(6), to: "f32" },

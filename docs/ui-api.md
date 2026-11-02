@@ -276,9 +276,9 @@ executing commands received asynchronously.
 ### Buffers and logs
 
 A buffer entry requires `name`; optional `type` is a display string. `loadedPath`
-is a path string. `loadedFrames`, `loadedChannels`, and `loadedSampleRate` describe
-a bound asset; a positive frame count without a path displays Embedded project
-asset. `waveform` is `{minimums:number[], maximums:number[], minValue?:number,
+is a path string. `loadedSamples`, `loadedChannels`, and `loadedSampleRate` describe
+a bound asset. `loadedSamples` is the per-channel length. A positive sample count
+without a path displays Embedded project asset. `waveform` is `{minimums:number[], maximums:number[], minValue?:number,
 maxValue?:number}`. Corresponding array entries are bucket extrema. Publish
 bounded previews; drawing reduces them to at most 512 columns. Omit `waveform`
 when no preview exists.

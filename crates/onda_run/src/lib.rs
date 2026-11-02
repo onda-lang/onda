@@ -589,7 +589,11 @@ impl RunController {
             let Some(name) = buffer.get("name").and_then(Value::as_str) else {
                 continue;
             };
-            if buffer.get("loadedFrames").and_then(Value::as_u64).is_none() {
+            if buffer
+                .get("loadedSamples")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
                 assets.remove(name);
                 asset_file_names.remove(name);
                 continue;
@@ -1847,7 +1851,7 @@ fn run_buffer_json(buffer: &onda_daemon::RunBufferInfo) -> Value {
         "channelsKind": channels_kind,
         "channelsStatic": channels_static,
         "loadedPath": buffer.loaded_path,
-        "loadedFrames": buffer.loaded_frames,
+        "loadedSamples": buffer.loaded_samples,
         "loadedChannels": buffer.loaded_channels,
         "loadedSampleRate": buffer.loaded_sample_rate_hz,
         "waveform": buffer.waveform.as_ref().map(|waveform| json!({

@@ -15,7 +15,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
     for b in buffers {
         let name = b["name"].as_str().unwrap_or("");
         let path = b["loadedPath"].as_str().filter(|s| !s.is_empty());
-        let loaded = path.is_some() || b["loadedFrames"].as_u64().is_some_and(|n| n > 0);
+        let loaded = path.is_some() || b["loadedSamples"].as_u64().is_some_and(|n| n > 0);
         let summary = loaded_summary(b);
         let details_width = (w - 2.0 * CARD_INSET).max(1.0);
         let summary_width = summary.as_ref().map_or(0.0, |s| {
@@ -167,7 +167,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
 fn actions(buffer: &Value) -> [(&'static str, Target); 2] {
     let name = buffer["name"].as_str().unwrap_or("");
     let loaded = buffer["loadedPath"].as_str().is_some_and(|s| !s.is_empty())
-        || buffer["loadedFrames"].as_u64().is_some_and(|n| n > 0);
+        || buffer["loadedSamples"].as_u64().is_some_and(|n| n > 0);
     [
         (
             if loaded { "Replace" } else { "Bind file" },
@@ -201,13 +201,13 @@ pub(crate) fn menu(ui: &RunUi, s: &mut Scene, p: Palette, name: &str) {
 }
 
 fn loaded_summary(buffer: &Value) -> Option<String> {
-    let digits = buffer["loadedFrames"].as_u64()?.to_string();
-    let mut frames = String::new();
+    let digits = buffer["loadedSamples"].as_u64()?.to_string();
+    let mut samples = String::new();
     for (i, c) in digits.char_indices() {
         if i > 0 && (digits.len() - i) % 3 == 0 {
-            frames.push(',');
+            samples.push(',');
         }
-        frames.push(c);
+        samples.push(c);
     }
     let channels = buffer["loadedChannels"].as_u64()?;
     let rate = buffer["loadedSampleRate"].as_f64()?;
@@ -219,7 +219,7 @@ fn loaded_summary(buffer: &Value) -> Option<String> {
     } else {
         format!("{rate:.0} Hz")
     };
-    Some(format!("{frames} frames · {channels} ch · {rate}"))
+    Some(format!("{samples} samples · {channels} ch · {rate}"))
 }
 
 fn waveform(s: &mut Scene, p: Palette, b: &Value, wave: [f32; 4], scale: f32) {

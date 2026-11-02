@@ -1374,11 +1374,11 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
             propagate_value(slice, facts, stats);
             propagate_value(index, facts, stats);
         }
-        Rvalue::BufferLen(buffer)
+        Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => propagate_buffer_ref(buffer, facts, stats),
-        Rvalue::BufferParamLen(parameter)
+        Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => {
@@ -1830,11 +1830,11 @@ fn collect_statement_read_references(statement: &Statement, referenced: &mut Has
                 value(*slice, referenced);
                 value(*index, referenced);
             }
-            Rvalue::BufferLen(buffer)
+            Rvalue::BufferSamples(buffer)
             | Rvalue::BufferChannels(buffer)
             | Rvalue::BufferSampleRate(buffer)
             | Rvalue::BufferIsBound(buffer) => buffer_ref(*buffer, referenced),
-            Rvalue::BufferParamLen(parameter)
+            Rvalue::BufferParamSamples(parameter)
             | Rvalue::BufferParamChannels(parameter)
             | Rvalue::BufferParamSampleRate(parameter)
             | Rvalue::BufferParamIsBound(parameter) => {
@@ -2143,11 +2143,11 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
             rewrite_value(slice, mapping);
             rewrite_value(index, mapping);
         }
-        Rvalue::BufferLen(buffer)
+        Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => rewrite_buffer_ref(buffer, mapping),
-        Rvalue::BufferParamLen(parameter)
+        Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => {
@@ -2359,7 +2359,7 @@ mod tests {
             bounds: BoundsMode::Clamp,
         };
         for value in [
-            Rvalue::BufferParamLen(parameter),
+            Rvalue::BufferParamSamples(parameter),
             Rvalue::BufferParamChannels(parameter),
             Rvalue::BufferParamSampleRate(parameter),
             Rvalue::BufferParamIsBound(parameter),

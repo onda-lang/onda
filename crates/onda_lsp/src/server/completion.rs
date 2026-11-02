@@ -86,6 +86,11 @@ const BUFFER_BUILTIN_METHODS: &[BufferBuiltinMethod] = &[
         snippet: "len()",
     },
     BufferBuiltinMethod {
+        name: "samples",
+        signature: "()",
+        snippet: "samples()",
+    },
+    BufferBuiltinMethod {
         name: "chans",
         signature: "()",
         snippet: "chans()",

@@ -144,7 +144,7 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
     match value {
         Rvalue::Load(place) => collect_place_parameters(place, used),
         Rvalue::BufferParamLoad { parameter, .. }
-        | Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => collect_buffer_parameter(*parameter, used),
@@ -161,7 +161,7 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::BufferLoad { .. }
-        | Rvalue::BufferLen(_)
+        | Rvalue::BufferSamples(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
         | Rvalue::BufferIsBound(_)
@@ -266,7 +266,7 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
     match value {
         Rvalue::Load(place) => rewrite_place_parameter(place, mapping),
         Rvalue::BufferParamLoad { parameter, .. }
-        | Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => rewrite_buffer_parameter(parameter, mapping),
@@ -283,7 +283,7 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::BufferLoad { .. }
-        | Rvalue::BufferLen(_)
+        | Rvalue::BufferSamples(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
         | Rvalue::BufferIsBound(_)

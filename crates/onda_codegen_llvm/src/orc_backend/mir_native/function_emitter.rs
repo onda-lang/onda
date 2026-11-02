@@ -1145,11 +1145,13 @@ impl FunctionEmitter<'_, '_> {
                 index,
                 bounds,
             } => self.lower_buffer_param_load(*parameter, *channel, *index, *bounds),
-            Rvalue::BufferLen(buffer) => self.lower_external_buffer_metadata(*buffer, 2),
+            Rvalue::BufferSamples(buffer) => self.lower_external_buffer_metadata(*buffer, 2),
             Rvalue::BufferChannels(buffer) => self.lower_external_buffer_channels(*buffer),
             Rvalue::BufferSampleRate(buffer) => self.lower_external_buffer_metadata(*buffer, 4),
             Rvalue::BufferIsBound(buffer) => self.lower_external_buffer_is_bound(*buffer),
-            Rvalue::BufferParamLen(parameter) => self.lower_buffer_param_metadata(*parameter, 2),
+            Rvalue::BufferParamSamples(parameter) => {
+                self.lower_buffer_param_metadata(*parameter, 2)
+            }
             Rvalue::BufferParamChannels(parameter) => {
                 self.lower_buffer_param_metadata(*parameter, 3)
             }

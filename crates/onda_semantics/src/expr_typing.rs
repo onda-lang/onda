@@ -8,6 +8,7 @@ use crate::builtins::{
     is_builtin_buffer_write_function_name, is_float_type, is_internal_buffer_2d_fn,
     parse_array_len_instance_base, parse_buffer_bound_instance_base,
     parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base,
+    parse_buffer_samples_instance_base,
 };
 use crate::decl_symbols::{
     declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
@@ -849,6 +850,18 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 base,
                                 declared_symbols,
                             )))
+                        {
+                            return Some(PrimitiveType::I32);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_samples_instance_base(name) {
+                        if !has_lexical_root_binding(
+                            base,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            struct_instances,
+                        ) && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                         {
                             return Some(PrimitiveType::I32);
                         }

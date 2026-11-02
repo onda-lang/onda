@@ -1,3 +1,4 @@
+use super::buffer_metadata::BufferMetadata;
 use super::*;
 
 impl<'a> FunctionLowerer<'a> {
@@ -2227,73 +2228,59 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<LoweredValue>, MirLoweringError> {
-        if let Some(method) = name
+        if let Some(metadata) = name
             .strip_prefix(PROC_INDEX_CALL_SENTINEL)
             .and_then(|suffix| suffix.strip_prefix('.'))
+            .and_then(BufferMetadata::from_method)
         {
-            let operation = match method {
-                crate::builtins::ARRAY_LEN_METHOD => Some(0_u8),
-                crate::builtins::BUFFER_CHANS_METHOD => Some(1_u8),
-                crate::builtins::BUFFER_SAMPLERATE_METHOD => Some(2_u8),
-                crate::builtins::BUFFER_BOUND_METHOD => Some(3_u8),
-                _ => None,
-            };
-            if let Some(operation) = operation {
-                let ty = crate::builtins::builtin_instance_method_return_type(method)
-                    .expect("buffer metadata operation has a scalar return type");
-                let base = args
-                    .iter()
-                    .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))
-                    .and_then(|arg| match &arg.expr {
-                        Expr::Var { name, .. } => Some(name.as_str()),
-                        _ => None,
-                    });
-                let selector = args
-                    .iter()
-                    .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG));
-                if let (Some(base), Some(selector)) = (base, selector) {
-                    if let Some(Binding::BufferParameterArray(span, _, _len)) =
-                        self.bindings.get(base).cloned()
-                    {
-                        let lowered = self.lower_expr(&selector.expr, block)?;
-                        let selector = self
-                            .coerce(lowered, PrimitiveType::I32, block, selector.expr.loc())?
-                            .value;
-                        let buffer = onda_mir::BufferParamRef::ArrayElement {
+            let base = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_BASE_ARG))
+                .and_then(|arg| match &arg.expr {
+                    Expr::Var { name, .. } => Some(name.as_str()),
+                    _ => None,
+                });
+            let selector = args
+                .iter()
+                .find(|arg| arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG));
+            if let (Some(base), Some(selector)) = (base, selector) {
+                let reference = if let Some(Binding::BufferParameterArray(span, _, _)) =
+                    self.bindings.get(base).cloned()
+                {
+                    let lowered = self.lower_expr(&selector.expr, block)?;
+                    let selector = self
+                        .coerce(lowered, PrimitiveType::I32, block, selector.expr.loc())?
+                        .value;
+                    Some(MaterializedBufferReference::Parameter(
+                        onda_mir::BufferParamRef::ArrayElement {
                             span,
                             selector,
                             bounds: BoundsMode::Clamp,
-                        };
-                        let rvalue = match operation {
-                            0 => Rvalue::BufferParamLen(buffer),
-                            1 => Rvalue::BufferParamChannels(buffer),
-                            2 => Rvalue::BufferParamSampleRate(buffer),
-                            _ => Rvalue::BufferParamIsBound(buffer),
-                        };
-                        return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
-                    }
-                    if let Some((first, _, len)) = self
-                        .runtime_globals
-                        .and_then(|globals| globals.buffer_arrays.get(base).copied())
-                    {
-                        let lowered = self.lower_expr(&selector.expr, block)?;
-                        let selector = self
-                            .coerce(lowered, PrimitiveType::I32, block, selector.expr.loc())?
-                            .value;
-                        let buffer = onda_mir::BufferRef::ArrayElement {
+                        },
+                    ))
+                } else if let Some((first, _, len)) = self
+                    .runtime_globals
+                    .and_then(|globals| globals.buffer_arrays.get(base).copied())
+                {
+                    let lowered = self.lower_expr(&selector.expr, block)?;
+                    let selector = self
+                        .coerce(lowered, PrimitiveType::I32, block, selector.expr.loc())?
+                        .value;
+                    Some(MaterializedBufferReference::Interface(
+                        onda_mir::BufferRef::ArrayElement {
                             first,
                             len,
                             selector,
                             bounds: BoundsMode::Clamp,
-                        };
-                        let rvalue = match operation {
-                            0 => Rvalue::BufferLen(buffer),
-                            1 => Rvalue::BufferChannels(buffer),
-                            2 => Rvalue::BufferSampleRate(buffer),
-                            _ => Rvalue::BufferIsBound(buffer),
-                        };
-                        return Ok(Some(self.emit_temp(block, ty, rvalue, location)));
-                    }
+                        },
+                    ))
+                } else {
+                    None
+                };
+                if let Some(reference) = reference {
+                    return Ok(Some(
+                        self.emit_buffer_metadata(reference, metadata, block, location),
+                    ));
                 }
             }
         }
@@ -2440,47 +2427,25 @@ impl<'a> FunctionLowerer<'a> {
                 }));
             }
         }
-        let metadata = if let Some(base) = parse_array_len_instance_base(name) {
-            Some((base, PrimitiveType::I32, 0_u8))
-        } else if let Some(base) = parse_buffer_chans_instance_base(name) {
-            Some((base, PrimitiveType::I32, 1_u8))
-        } else if let Some(base) = parse_buffer_samplerate_instance_base(name) {
-            Some((base, PrimitiveType::F32, 2_u8))
-        } else {
-            parse_buffer_bound_instance_base(name).map(|base| (base, PrimitiveType::Bool, 3_u8))
+        let Some((base, method)) = name.rsplit_once('.') else {
+            return Ok(None);
         };
-        let Some((base, ty, operation)) = metadata else {
+        let Some(metadata) = BufferMetadata::from_method(method) else {
             return Ok(None);
         };
         let Some((reference, _)) = self.direct_buffer_reference(base) else {
             return Ok(None);
         };
-        let reference = self.materialize_buffer_reference(reference, block, location.clone());
         if !args.is_empty() {
             return Err(self.error(
                 format!("buffer metadata call '{name}' unexpectedly has arguments"),
                 location,
             ));
         }
-        let rvalue = match (reference, operation) {
-            (MaterializedBufferReference::Interface(buffer), 0) => Rvalue::BufferLen(buffer),
-            (MaterializedBufferReference::Interface(buffer), 1) => Rvalue::BufferChannels(buffer),
-            (MaterializedBufferReference::Interface(buffer), 2) => Rvalue::BufferSampleRate(buffer),
-            (MaterializedBufferReference::Interface(buffer), _) => Rvalue::BufferIsBound(buffer),
-            (MaterializedBufferReference::Parameter(parameter), 0) => {
-                Rvalue::BufferParamLen(parameter)
-            }
-            (MaterializedBufferReference::Parameter(parameter), 1) => {
-                Rvalue::BufferParamChannels(parameter)
-            }
-            (MaterializedBufferReference::Parameter(parameter), 2) => {
-                Rvalue::BufferParamSampleRate(parameter)
-            }
-            (MaterializedBufferReference::Parameter(parameter), _) => {
-                Rvalue::BufferParamIsBound(parameter)
-            }
-        };
-        Ok(Some(self.emit_temp(block, ty, rvalue, location)))
+        let reference = self.materialize_buffer_reference(reference, block, location.clone());
+        Ok(Some(self.emit_buffer_metadata(
+            reference, metadata, block, location,
+        )))
     }
 
     pub(super) fn lower_buffer_read_call(

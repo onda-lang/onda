@@ -97,3 +97,6 @@ mod stdlib_reverb;
 mod stdlib_smoothing;
 #[path = "examples_suite/tuples.rs"]
 mod tuples;
+
+#[path = "examples_suite/buffer_metadata.rs"]
+mod buffer_metadata;

@@ -4,12 +4,12 @@ import std/lookup
 namespace std::sample<Channels = 2>:
   assert(Channels > 0)
 
-  def _normalize_frame(frame: f64, frames: i32, looping: bool):
-    if frames <= 1:
+  def _normalize_position(position: f64, samples: i32, looping: bool):
+    if samples <= 1:
       return f64(0.0)
     if looping:
-      return wrap(frame, f64(0.0), f64(frames))
-    return clamp(frame, f64(0.0), f64(frames - 1))
+      return wrap(position, f64(0.0), f64(samples))
+    return clamp(position, f64(0.0), f64(samples - 1))
 
   proc Player<T>:
     outs<T> Channels
@@ -29,15 +29,15 @@ namespace std::sample<Channels = 2>:
       playing = false
 
     events:
-      play(start_frame: f64 = 0.0):
-        playhead = _normalize_frame(start_frame, clip.len(), looping)
+      play(start_sample: f64 = 0.0):
+        playhead = _normalize_position(start_sample, clip.samples(), looping)
         playing = true
 
       stop():
         playing = false
 
-      seek(frame: f64):
-        playhead = _normalize_frame(frame, clip.len(), looping)
+      seek(position: f64):
+        playhead = _normalize_position(position, clip.samples(), looping)
 
       reset():
         playhead = 0.0
@@ -45,7 +45,7 @@ namespace std::sample<Channels = 2>:
 
     block:
       clip_bound = clip.bound()
-      clip_frames = clip.len()
+      clip_samples = clip.samples()
       clip_channels = clip.chans()
       step = f64(speed) * (clip.samplerate() / SR)
 
@@ -66,9 +66,9 @@ namespace std::sample<Channels = 2>:
                 outs[channel] = T(std::lookup::readC(clip, source_channel, playhead))
 
             next_playhead = playhead + step
-            if next_playhead >= f64(clip_frames) || next_playhead < 0.0:
+            if next_playhead >= f64(clip_samples) || next_playhead < 0.0:
               if looping:
-                playhead = wrap(next_playhead, f64(0.0), f64(clip_frames))
+                playhead = wrap(next_playhead, f64(0.0), f64(clip_samples))
                 looped()
               else:
                 playing = false

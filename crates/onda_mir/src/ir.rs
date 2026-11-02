@@ -803,11 +803,13 @@ pub enum Rvalue {
         index: Value,
         bounds: BoundsMode,
     },
-    BufferLen(BufferRef),
+    /// Per-channel sample count; total elements are samples multiplied by channels.
+    BufferSamples(BufferRef),
     BufferChannels(BufferRef),
     BufferSampleRate(BufferRef),
     BufferIsBound(BufferRef),
-    BufferParamLen(BufferParamRef),
+    /// Per-channel sample count of a buffer parameter.
+    BufferParamSamples(BufferParamRef),
     BufferParamChannels(BufferParamRef),
     BufferParamSampleRate(BufferParamRef),
     BufferParamIsBound(BufferParamRef),

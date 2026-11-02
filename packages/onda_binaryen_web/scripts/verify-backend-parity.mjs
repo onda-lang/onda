@@ -250,7 +250,7 @@ const scenarios = [
     blocks: 2,
   },
   {
-    name: "multichannel buffer frame and whole-slice lengths",
+    name: "multichannel buffer elements, samples, channel slices, and wrap interpolation",
     source: join(packageDir, "test/fixtures/stereo-buffer-len.onda"),
     blocks: 2,
   },

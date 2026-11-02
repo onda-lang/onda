@@ -96,7 +96,7 @@ pub struct RunBufferInfo {
     pub type_repr: String,
     pub channels: RunBufferChannels,
     pub loaded_path: Option<String>,
-    pub loaded_frames: Option<usize>,
+    pub loaded_samples: Option<usize>,
     pub loaded_channels: Option<usize>,
     pub loaded_sample_rate_hz: Option<f32>,
     pub waveform: Option<RunBufferWaveform>,
@@ -630,7 +630,7 @@ impl RunSession {
                     loaded_path: binding
                         .and_then(|binding| binding.loaded_path.as_ref())
                         .map(|path| display_path(path)),
-                    loaded_frames: binding.map(|binding| binding.frames),
+                    loaded_samples: binding.map(|binding| binding.frames),
                     loaded_channels: binding.map(|binding| binding.channels),
                     loaded_sample_rate_hz: binding.map(|binding| binding.sample_rate_hz),
                     waveform: binding.map(|binding| binding.waveform.clone()),

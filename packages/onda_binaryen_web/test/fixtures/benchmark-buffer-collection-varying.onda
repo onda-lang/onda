@@ -7,11 +7,11 @@ init:
   index = 0
 
 block:
-  frames = mono[0].len()
+  samples = mono[0].samples()
 
   sample:
     slot = (index / 32) % 4
     out1 = mono[slot][index] + fixed[slot][1, index] + dynamic[slot][1, index]
     index = index + 1
-    if index >= frames:
+    if index >= samples:
       index = 0

@@ -68,7 +68,7 @@ init:
   right.set_channel(1)
 
 task load_impulse():
-  frames = min(impulse.len(), MaxImpulseFrames)
+  frames = min(impulse.samples(), MaxImpulseFrames)
   total_transforms = Convolution::impulse_window_count(frames) * 2
   loading_frames = max(i32(max(ImpulseLoadSeconds, 0.0) * HOST_SR), 1)
   loading_blocks = 1 + (loading_frames - 1) / BS

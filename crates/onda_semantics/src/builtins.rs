@@ -198,12 +198,14 @@ pub(crate) fn is_unsafe_index_method_name(name: &str) -> bool {
 }
 
 pub const ARRAY_LEN_METHOD: &str = "len";
+pub const BUFFER_SAMPLES_METHOD: &str = "samples";
 pub const BUFFER_BOUND_METHOD: &str = "bound";
 pub const BUFFER_CHANS_METHOD: &str = "chans";
 pub const BUFFER_SAMPLERATE_METHOD: &str = "samplerate";
 
 pub const BUILTIN_INSTANCE_METHOD_NAMES: &[&str] = &[
     ARRAY_LEN_METHOD,
+    BUFFER_SAMPLES_METHOD,
     BUFFER_BOUND_METHOD,
     BUFFER_CHANS_METHOD,
     BUFFER_SAMPLERATE_METHOD,
@@ -219,7 +221,7 @@ pub fn is_builtin_instance_method_name(name: &str) -> bool {
 
 pub(crate) fn builtin_instance_method_return_type(name: &str) -> Option<PrimitiveType> {
     match name {
-        ARRAY_LEN_METHOD | BUFFER_CHANS_METHOD => Some(PrimitiveType::I32),
+        ARRAY_LEN_METHOD | BUFFER_SAMPLES_METHOD | BUFFER_CHANS_METHOD => Some(PrimitiveType::I32),
         BUFFER_BOUND_METHOD => Some(PrimitiveType::Bool),
         BUFFER_SAMPLERATE_METHOD => Some(PrimitiveType::F32),
         _ => None,
@@ -241,6 +243,11 @@ pub fn parse_array_len_instance_base(name: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+pub fn parse_buffer_samples_instance_base(name: &str) -> Option<&str> {
+    let (base, method) = split_instance_method_path(name)?;
+    (method == BUFFER_SAMPLES_METHOD).then_some(base)
 }
 
 pub fn parse_buffer_chans_instance_base(name: &str) -> Option<&str> {

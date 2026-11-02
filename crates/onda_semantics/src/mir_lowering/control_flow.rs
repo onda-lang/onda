@@ -205,17 +205,17 @@ impl<'a> FunctionLowerer<'a> {
                         if self.lower_struct_slice_alias(name, expr, block)? {
                             continue;
                         }
-                        if self.is_slice_expression(expr) {
-                            let slice = self.lower_slice_expression(expr, None, block)?;
-                            self.assign_slice_alias(name, slice, block, loc.clone().into())?;
-                            continue;
-                        }
                         if self.lower_buffer_alias_assignment(
                             name,
                             expr,
                             block,
                             loc.clone().into(),
                         )? {
+                            continue;
+                        }
+                        if self.is_slice_expression(expr) {
+                            let slice = self.lower_slice_expression(expr, None, block)?;
+                            self.assign_slice_alias(name, slice, block, loc.clone().into())?;
                             continue;
                         }
                     }

@@ -1,11 +1,42 @@
-outs:
-  out1
+import std/lookup
+import std/data
+
+outs 12
 
 buffers:
   bus: f32[2]
+  bank: f32[2] {2}
 
-def inspect(buf: buffer<f32[2]>):
-  return f32(buf.len())
+def inspect(buf: buffer<f32[]>):
+  alias = buf
+  return alias.len() * 100 + alias.samples() * 10 + alias.chans()
+
+proc Inspector:
+  buffers:
+    clips: f32[2] {2}
+  block:
+    selected = clips[0]
+    total = selected.len()
+    count = selected.samples()
+    sample:
+      out1 = f32(total * 100 + count * 10 + selected.chans())
+
+init:
+  data: std::data<3, 2>::Data<f32>
+  inspector = Inspector(clips = bank)
 
 sample:
-  out1 = f32(bus.len()) + inspect(bus)
+  selected = bank[0]
+  channel = bus[1, :]
+  out1 = f32(bus.len())
+  out2 = f32(bus.samples())
+  out3 = f32(inspect(bus))
+  out4 = f32(bank.len())
+  out5 = f32(selected.len())
+  out6 = f32(selected.samples())
+  out7 = f32(channel.len())
+  out8 = inspector()
+  out9 = bus.readLW(1, f32(bus.samples()) - 0.5)
+  out10 = bus.readCW(1, f32(bus.samples()) - 0.5)
+  out11 = f32(data.len())
+  out12 = f32(data.samples())

@@ -1008,10 +1008,10 @@ mod tests {
             json!({ "command": "run_metadata", "path": path }),
         );
         assert_eq!(metadata["params"][0]["defaultRepr"], "1");
-        assert_eq!(metadata["buffers"][0]["loadedFrames"], Value::Null);
+        assert_eq!(metadata["buffers"][0]["loadedSamples"], Value::Null);
         let run = session.run(&main).expect("active run retained");
         assert_eq!(run.snapshot_state_bytes().unwrap(), snapshot);
-        assert_eq!(run.buffer_info()[0].loaded_frames, Some(1));
+        assert_eq!(run.buffer_info()[0].loaded_samples, Some(1));
         let after = request(
             &mut session,
             json!({ "command": "run_render", "path": path }),

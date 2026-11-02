@@ -1068,9 +1068,9 @@ proc Player<T>:
     finished()
     looped()
   events:
-    play(start_frame: f64 = 0.0):
+    play(start_sample: f64 = 0.0):
     stop():
-    seek(frame: f64):
+    seek(position: f64):
     reset():
 ```
 
@@ -1089,10 +1089,10 @@ Namespace: `std::data<S = SR, C = 1>`.
 struct Data<T>:
   storage: T[S * C]
   def len(self):
-  def frames(self):
+  def samples(self):
   def chans(self):
-  def read(self, frame_i: i32, ch_i: i32 = 0):
-  def write(self, frame_i: i32, value: T, ch_i: i32 = 0):
+  def read(self, sample_index: i32, ch_i: i32 = 0):
+  def write(self, sample_index: i32, value: T, ch_i: i32 = 0):
   def readL(self, pos, ch_i: i32 = 0):
   def readC(self, pos, ch_i: i32 = 0):
 ```
@@ -1300,9 +1300,9 @@ const FinalStageCapacity = max(MaxImpulseLen - LargeStageEnd, 1)
 ### Functions
 
 ```onda
-def stage_window_count(frames: i32, start: i32, end: i32, window_size: i32) -> i32:
-def impulse_window_count(frames: i32) -> i32:
-def impulse_window_end(start: i32, frames: i32) -> i32:
+def stage_window_count(samples: i32, start: i32, end: i32, window_size: i32) -> i32:
+def impulse_window_count(samples: i32) -> i32:
+def impulse_window_end(start: i32, samples: i32) -> i32:
 ```
 
 ### Processor `TimeDomainConvolver<T>`

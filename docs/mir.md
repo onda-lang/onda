@@ -103,7 +103,7 @@ passes may promote or fold them without changing the semantic contract.
 - functions
 - init and process entry points
 
-MIR schema version 8 carries a recursive message schema alongside flattened event/delegate
+MIR schema version 9 carries a recursive message schema alongside flattened event/delegate
 parameters. One scalar or primitive tensor represents each leaf, independent of array extent.
 Struct slices retain one explicit logical `i32` length followed by read-only leaf slices; fixed
 shapes remain checked contracts. Both backends use the compiler-free ABI payload planner for
@@ -176,7 +176,9 @@ host interaction use explicit operations:
 
 - loads and stores through typed places
 - input and current-frame audio-output loads, plus audio/control output stores
-- interface-buffer and function-buffer-reference load/store and metadata queries
+- interface-buffer and function-buffer-reference load/store and metadata queries; `buffer_samples`
+  and `buffer_param_samples` report per-channel lengths, and scalar multiplication by the channel
+  count implements source-level buffer `.len()`
 - immutable constant-data loads
 - checked slice construction, indexed load/store, length, fill, and defined overlap handling
 - direct calls with already-bound arguments

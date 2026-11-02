@@ -227,7 +227,7 @@
       "type": "f32",
       "channelsKind": "dynamic",
       "loadedPath": "/audio/Piano.wav",
-      "loadedFrames": 96000,
+      "loadedSamples": 96000,
       "loadedChannels": 2,
       "loadedSampleRate": 48000,
       "waveform": {
@@ -500,7 +500,7 @@
       "type": "f32",
       "channelsKind": "dynamic",
       "loadedPath": "/audio/Texture.wav",
-      "loadedFrames": 96000,
+      "loadedSamples": 96000,
       "loadedChannels": 2,
       "loadedSampleRate": 48000,
       "waveform": {

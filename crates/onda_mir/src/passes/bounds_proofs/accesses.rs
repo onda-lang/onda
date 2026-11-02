@@ -150,12 +150,12 @@ fn rvalue(context: &Context<'_>, value: &mut Rvalue, prove: &mut Prove<'_>) {
             }
         }
         Rvalue::BufferLoad { buffer, .. }
-        | Rvalue::BufferLen(buffer)
+        | Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => buffer_ref(buffer, prove),
         Rvalue::BufferParamLoad { parameter, .. }
-        | Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => buffer_param(context, parameter, prove),

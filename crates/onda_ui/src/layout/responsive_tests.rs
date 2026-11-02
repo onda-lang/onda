@@ -83,7 +83,7 @@ fn fixture() -> RunUi {
         "params":[{"name":"gain","type":"f64","value":0.5,"rangeMin":0,"rangeMax":1}],
         "inputControls":[{"name":"cutoff","type":"f64","value":0.5,"rangeMin":0,"rangeMax":1}],
         "events":[{"name":"send","args":[{"name":"value","type":"f64","value":0.5}]}],
-        "buffers":[{"name":"clip","type":"f32","loadedPath":"piano.wav","loadedFrames":96000,
+        "buffers":[{"name":"clip","type":"f32","loadedPath":"piano.wav","loadedSamples":96000,
             "loadedChannels":2,"loadedSampleRate":48000,"waveform":{"minimums":[-0.5],"maximums":[0.5]}}],
         "logRevealed":true,"logText":"hello\nworld\n"
     }}));
@@ -229,7 +229,7 @@ fn slider_values_and_buffer_details_keep_their_original_row_when_narrowed() {
                     .scene
                     .labels
                     .iter()
-                    .find(|l| l.text.contains("96,000 frames"))
+                    .find(|l| l.text.contains("96,000 samples"))
                     .unwrap();
                 assert!((file.y + file.size * 0.7 - summary.y - summary.size * 0.7).abs() < 0.1);
                 assert!(file.x + file.width <= summary.x);

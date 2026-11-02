@@ -813,7 +813,7 @@ for (const [host, backend] of [
     await eventually(
       () =>
         frame(
-          "probe.state.buffers?.[0]?.loadedPath==='picked.wav' && probe.state.buffers[0].loadedFrames===32",
+          "probe.state.buffers?.[0]?.loadedPath==='picked.wav' && probe.state.buffers[0].loadedSamples===32",
         ),
       "GPU buffer picker and canonical WAV binding",
     );

@@ -25,7 +25,7 @@ sample:
 
     let mut output = [0.0_f32];
     process_interleaved(&mut instance, &[], &mut output, 1).expect("process unbound bank");
-    assert_near(output[0], 7.0, 1e-6);
+    assert_near(output[0], 8.0, 1e-6);
 }
 
 #[test]
@@ -4007,7 +4007,7 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 
 #[test]
 
-fn buffer_dynamic_len_returns_runtime_frame_count() {
+fn buffer_dynamic_len_returns_total_element_count() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -4044,7 +4044,7 @@ fn buffer_dynamic_len_returns_runtime_frame_count() {
     let out = decode_planar_f32(&out_bytes);
 
     for sample in out {
-        assert_near(sample, 3.0, 1e-6);
+        assert_near(sample, 6.0, 1e-6);
     }
 }
 
@@ -4091,7 +4091,7 @@ fn def_can_take_mono_buffer_typed_param() {
 
 #[test]
 
-fn def_dynamic_buffer_len_returns_runtime_frame_count() {
+fn def_dynamic_buffer_len_returns_total_element_count() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -4123,7 +4123,7 @@ fn def_dynamic_buffer_len_returns_runtime_frame_count() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     for sample in output {
-        assert_near(sample, 3.0, 1e-6);
+        assert_near(sample, 6.0, 1e-6);
     }
 }
 

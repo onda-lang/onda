@@ -1003,10 +1003,10 @@ export class MirCompilerLowering extends MirCompilerCore {
         return this.compileBufferLoad(data, context);
       case "buffer_param_load":
         return this.compileBufferParamLoad(data, context);
-      case "buffer_len":
-        return this.compileBufferLen(data, context);
-      case "buffer_param_len":
-        return this.compileBufferParamLen(data, context);
+      case "buffer_samples":
+        return this.compileBufferSamples(data, context);
+      case "buffer_param_samples":
+        return this.compileBufferParamSamples(data, context);
       case "buffer_channels":
         return this.compileBufferChannels(data, context);
       case "buffer_param_channels":
@@ -1410,7 +1410,7 @@ export class MirCompilerLowering extends MirCompilerCore {
     );
   }
 
-  compileBufferLen(bufferRef, context) {
+  compileBufferSamples(bufferRef, context) {
     this.requireBufferRef(bufferRef);
     return this.withBufferRefIndex(
       bufferRef,
@@ -1458,7 +1458,7 @@ export class MirCompilerLowering extends MirCompilerCore {
     );
   }
 
-  compileBufferParamLen(parameterId, context) {
+  compileBufferParamSamples(parameterId, context) {
     this.bufferParamType(parameterId, context);
     return this.withBufferParamSelector(
       parameterId,

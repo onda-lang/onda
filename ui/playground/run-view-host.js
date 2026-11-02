@@ -281,7 +281,7 @@ export class BrowserRunViewHost {
       return {
         ...buffer,
         loadedPath: file?.name ?? null,
-        loadedFrames: file ? (metadata?.frames ?? null) : null,
+        loadedSamples: file ? (metadata?.frames ?? null) : null,
         loadedChannels: file ? (metadata?.channels ?? null) : null,
         loadedSampleRate: file ? (metadata?.sampleRate ?? null) : null,
         waveform: file ? (metadata?.waveform ?? null) : null,
@@ -680,8 +680,8 @@ function mergeBuffers(buffers, existing, bufferFiles) {
       channelsKind: buffer.channels,
       channelsStatic: buffer.static_channels ?? null,
       loadedPath,
-      loadedFrames: preservesLoadedFile
-        ? (previous.loadedFrames ?? null)
+      loadedSamples: preservesLoadedFile
+        ? (previous.loadedSamples ?? null)
         : null,
       loadedChannels: preservesLoadedFile
         ? (previous.loadedChannels ?? null)

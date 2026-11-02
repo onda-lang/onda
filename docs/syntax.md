@@ -1773,33 +1773,41 @@ buffers:
 sample:
   mono0 = src[0]
   left0 = bus[0, 0]
-  source_frames = src.len()
+  source_samples = src.samples()
+  bus_elements = bus.len()
   source_bound = src.bound()
   bus_channels = bus.chans()
   source_rate = src.samplerate()
   key_count = piano.len()
-  middle_c_frames = piano[39].len()
+  middle_c_samples = piano[39].samples()
   middle_c_bound = piano[39].bound()
   middle_c0 = piano[39][0]
   right0 = stereo_layers[0][1, 0]
 ```
 
+`.len()` returns the total scalar element count across all channels. `.samples()` returns the
+per-channel length, so `buf.len() == buf.samples() * buf.chans()`. A stereo buffer with 44,100
+samples per channel has `.len() == 88200` and `.samples() == 44100`.
+Buffer slices select one channel; multichannel buffers require an explicit channel selector.
+Their `.len()` is the number of elements in that channel view. Ordinary arrays and slices
+have no channel dimension.
+
 The access forms are deliberately limited to one coordinate pair per selected buffer:
 
 | Declaration | Sample access | Slice access |
 | --- | --- | --- |
-| `mono: f32` | `mono[frame]` | `mono[start:end]` |
-| `stereo: f32[2]` | `stereo[channel, frame]` | `stereo[channel, start:end]` |
-| `bank: f32 {N}` | `bank[slot][frame]` | `bank[slot][start:end]` |
-| `layers: f32[2] {N}` | `layers[slot][channel, frame]` | `layers[slot][channel, start:end]` |
+| `mono: f32` | `mono[sample]` | `mono[start:end]` |
+| `stereo: f32[2]` | `stereo[channel, sample]` | `stereo[channel, start:end]` |
+| `bank: f32 {N}` | `bank[slot][sample]` | `bank[slot][start:end]` |
+| `layers: f32[2] {N}` | `layers[slot][channel, sample]` | `layers[slot][channel, start:end]` |
 
 `bank[slot]` and `layers[slot]` select a first-class buffer and can be passed to a function or used
-for metadata queries. A channel alone is not a first-class view; use the channel-and-frame or
-channel-and-slice forms above. The flattened `layers[slot, channel, frame]` form is not supported.
+for metadata queries. A channel alone is not a first-class view; use the channel-and-sample or
+channel-and-slice forms above. The flattened `layers[slot, channel, sample]` form is not supported.
 
 ### Aliases and Interpolation
 
-A selected buffer can also be bound to an immutable, scoped reference alias:
+A buffer or selected collection entry can also be bound to an immutable, scoped reference alias:
 
 ```onda
 buffers:
@@ -1821,12 +1829,12 @@ scope.
 
 `std/lookup` provides `readL`/`readC` for clamped linear/cubic interpolation and `readLW`/`readCW`
 for their wrap-aware counterparts. The wrapping variants interpolate across the final-to-first
-frame boundary and are intended for cyclic tables and loopers.
+sample boundary and are intended for cyclic tables and loopers.
 
 ### Indexing and Binding Rules
 
-All source-level coordinates clamp independently. In `stereo[channel, frame]`, for example, the
-channel clamps to the channel range and the frame clamps to the frame range before the address is
+All source-level coordinates clamp independently. In `stereo[channel, sample]`, for example, the
+channel clamps to the channel range and the sample clamps to the sample range before the address is
 formed. Fixed buffer-collection selectors likewise clamp and select a descriptor in constant time.
 The compiler removes that normalization when it can prove the complete coordinate range is valid.
 
@@ -1842,13 +1850,13 @@ sample:
 ```
 
 These coordinates are valid even for a neutral unbound buffer: every buffer
-has at least one frame, and `bus` has exactly two channels. With dynamic
+has at least one sample, and `bus` has exactly two channels. With dynamic
 coordinates, the program must establish the same guarantees itself.
 
 Free-call and receiver syntax are equivalent. A fixed buffer collection can either be accessed as
-one unchecked operation (`bank.read_unsafe(slot, frame)`) or selected compositionally
-(`bank[slot].read_unsafe(frame)`). In the latter form, `bank[slot]` retains ordinary clamped/proven
-selection and only the frame (and channel, for a multichannel buffer) is unchecked. A buffer
+one unchecked operation (`bank.read_unsafe(slot, sample)`) or selected compositionally
+(`bank[slot].read_unsafe(sample)`). In the latter form, `bank[slot]` retains ordinary clamped/proven
+selection and only the sample (and channel, for a multichannel buffer) is unchecked. A buffer
 reference alias made from a collection element supports the same receiver methods.
 
 Rules:
@@ -1856,17 +1864,18 @@ Rules:
 - `buffers N` expands to `buf1..bufN`.
 - Explicit declarations and count shorthand cannot currently be mixed in one `buffers` block.
 - `.len()` on a buffer collection returns its declared count. Select an element first to query its
-  frame count: `bank[i].len()`.
-- `.bound()`, `.chans()`, and `.samplerate()` apply to a selected buffer, not to the collection.
+  total element count with `bank[i].len()` or per-channel sample count with `bank[i].samples()`.
+- `.samples()`, `.bound()`, `.chans()`, and `.samplerate()` apply to an individual buffer,
+  not to the collection.
   `.bound()` reports whether that slot currently has a host binding. Exact channel counts are
   compile-time constants in generated code; dynamic counts come from the bound instance.
 - Runtime binding validates element type and channel constraints. Each fixed-array slot binds
   independently and may be omitted.
 - Host metadata names physical collection slots `bank[0]`, `bank[1]`, and so on, while separate
   collection metadata preserves the logical `bank` name and its contiguous slot range.
-- An unbound slot is a neutral one-frame buffer: reads return the element type's zero, writes are
-  discarded, `.len()` is `1`, `.samplerate()` is the host sample rate, and `.chans()` is the exact
-  declared channel count or `1` for a dynamic-channel declaration. `.bound()` is `false`; all
+- An unbound slot has one sample per channel: reads return the element type's zero and writes
+  are discarded. `.samples()` is `1`, `.len()` equals `.chans()`, and `.samplerate()` is the host
+  sample rate. `.chans()` is the exact declared channel count or `1` for a dynamic-channel declaration. `.bound()` is `false`; all
   other valid bindings report `true`.
 - Binding with a zero sample rate unbinds the buffer; the pointer and dimensions are ignored.
 - Primitive buffer slices are supported with the same slice syntax as arrays.
@@ -3142,7 +3151,7 @@ allocating storage, writing parameter defaults, and running `init(FULL)`.
 
 Initialization observes the buffer bindings current for that call. Unbound buffers retain their
 neutral behavior: reads return zero, writes are discarded, and metadata reports the neutral
-one-frame descriptor; `.bound()` distinguishes that fallback from a real binding. A later rebind
+descriptor with one sample per channel; `.bound()` distinguishes that fallback from a real binding. A later rebind
 is visible immediately to subsequent block, sample, event,
 and init entry points, but does not implicitly rerun initialization or change state that an earlier
 initializer derived from the old binding. A host that wants to refresh such derived state requests
@@ -3243,10 +3252,10 @@ access across the language; they are not limited to external buffers. Supported 
 includes fixed arrays, slices, named input/parameter/output arrays, the uniform dynamic views `ins`,
 `params`/`kins`, `outs`, and `kouts`, selected buffers, and fixed buffer collections. Ordinary
 direction rules still apply: inputs and parameters are read-only, while output views are write-only.
-Buffer forms accept their normal selector, channel, and frame coordinates.
+Buffer forms accept their normal selector, channel, and sample coordinates.
 
 Unchecked coordinates perform no clamp or runtime bounds check. The caller must prove every supplied
-index, collection selector, channel, and frame is valid. Violating that contract is memory-unsafe.
+index, collection selector, channel, and sample coordinate is valid. Violating that contract is memory-unsafe.
 These operations are an optimization escape hatch for a bound the compiler cannot express or prove,
 not a way to change ordinary clamped indexing semantics. Prefer normal indexing—especially with
 ranged integer selectors—when the compiler can establish the bound itself.

@@ -122,7 +122,7 @@ fn selected_buffer_parameter_metadata_requires_an_assigned_selector() {
     inspect.body.statements.push(Statement {
         kind: StatementKind::Assign {
             destination: Place::local(LocalId::new(1)),
-            value: Rvalue::BufferParamLen(crate::BufferParamRef::ArrayElement {
+            value: Rvalue::BufferParamSamples(crate::BufferParamRef::ArrayElement {
                 span: crate::ParameterId::new(0),
                 selector: Value::Local(LocalId::new(0)),
                 bounds: crate::BoundsMode::Clamp,
@@ -1969,7 +1969,7 @@ fn ordinary_validation_rejects_unchecked_buffer_collection_selectors() {
                 base: PlaceBase::Local(LocalId::new(0)),
                 projections: Vec::new(),
             },
-            value: Rvalue::BufferLen(BufferRef::ArrayElement {
+            value: Rvalue::BufferSamples(BufferRef::ArrayElement {
                 first: BufferId::new(0),
                 len: 1,
                 selector: Value::Constant(ScalarValue::I32(0)),

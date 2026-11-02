@@ -34,10 +34,10 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
     delegate ready(frame: TimeFrame)
 
     event seek(position: f32):
-      playhead = clamp(position, 0.0, 1.0) * f32(source.len() - 1)
+      playhead = clamp(position, 0.0, 1.0) * f32(source.samples() - 1)
 
     event read(stretch: f32):
-      source_frames = source.len()
+      source_samples = source.samples()
       source_step = source.samplerate() / SR
 
       if source.bound():
@@ -46,7 +46,7 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
           frame.samples[i] = std::lookup::readCW(source, 0, position)
 
         analysis_hop = f32(SynthesisHop) * source_step / max(stretch, 1.0)
-        playhead = wrap(playhead + analysis_hop, 0.0, f32(source_frames))
+        playhead = wrap(playhead + analysis_hop, 0.0, f32(source_samples))
       else:
         frame.samples[:] = 0.0
 
@@ -125,7 +125,7 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
       output_r: f32[N]
       normalization: f32[N]
       cursor = 0 {N, wrap}
-      submitted_frames = 0
+      submitted_samples = 0
 
     event reset():
       transform_l.clear()
@@ -136,7 +136,7 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
       output_r[:] = 0.0
       normalization[:] = 0.0
       cursor = 0
-      submitted_frames = 0
+      submitted_samples = 0
 
     event submit(frame: StereoSpectrum):
       transform_l.inverse(frame.real_l, frame.imag_l, time_l)
@@ -149,14 +149,14 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
         output_r[destination] += time_r[i] * window
         normalization[destination] += window * window
 
-      if submitted_frames < Overlap:
-        submitted_frames += 1
+      if submitted_samples < Overlap:
+        submitted_samples += 1
 
     sample:
       left = 0.0
       right = 0.0
       weight = normalization[cursor]
-      if submitted_frames >= Overlap && weight > 0.000001:
+      if submitted_samples >= Overlap && weight > 0.000001:
         left = output_l[cursor] / weight
         right = output_r[cursor] / weight
 

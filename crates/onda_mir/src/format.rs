@@ -632,7 +632,7 @@ fn format_rvalue(value: &Rvalue) -> String {
             format_value(*index),
             format_bounds(*bounds)
         ),
-        Rvalue::BufferLen(buffer) => format!("buffer_len {}", format_buffer_ref(*buffer)),
+        Rvalue::BufferSamples(buffer) => format!("buffer_samples {}", format_buffer_ref(*buffer)),
         Rvalue::BufferChannels(buffer) => {
             format!("buffer_channels {}", format_buffer_ref(*buffer))
         }
@@ -642,7 +642,9 @@ fn format_rvalue(value: &Rvalue) -> String {
         Rvalue::BufferIsBound(buffer) => {
             format!("buffer_is_bound {}", format_buffer_ref(*buffer))
         }
-        Rvalue::BufferParamLen(id) => format!("buffer_len {}", format_buffer_param_ref(*id)),
+        Rvalue::BufferParamSamples(id) => {
+            format!("buffer_samples {}", format_buffer_param_ref(*id))
+        }
         Rvalue::BufferParamChannels(id) => {
             format!("buffer_channels {}", format_buffer_param_ref(*id))
         }
