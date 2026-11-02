@@ -380,12 +380,27 @@ live fields and real resource alternatives, independent of uniform array capacit
 Ordinary scalar typing bypasses processor-view lookup, and view-only reachability
 work runs only when view specializations exist.
 
-Final validation passes: frontend 280 + 2; semantics 1,140; MIR 173 + 5 scaling + 6
-resource tests; native 165 plus integration suites; examples/runtime 847; C API
-57; Binaryen 109; and native/Wasm parity 59 scenarios at both Binaryen O4 and
-unoptimized settings. The separately invoked manual oversampling benchmark also
-passes. Strict Clippy, formatting, diff and 5,000-line source-file checks pass.
-Validation was performed on Linux; cross-platform execution is not claimed.
+The subsequent broad stress pass found and fixed two regressions: generated
+counted constructors needed the same private-parameter initialization exemption
+as scalar constructors, and literal array selectors needed per-slot lazy task
+activation alongside variable selectors. The minimal reproducers, four runtime
+selector/ownership combinations and a new native/Wasm scenario lock these down.
+
+Final broad validation passes: 3,641 Rust workspace tests; 361 web tests; all 54
+browser example projects and three projects with packaged assets; 60 native/Wasm
+parity scenarios at both Binaryen O4 and unoptimized settings; 159 programs through
+MIR/native IR inspection; and 144 current native runtime cases. The separately
+invoked manual oversampling benchmark passes. Three display-dependent Rust tests
+remain ignored. Strict Clippy, formatting, diff and 5,000-line source-file checks
+pass. Validation was performed on Linux; cross-platform execution is not claimed.
+
+The [broad stress report](../../scripts/bench/results/2026-11-02-processor-stress.md)
+records comparisons against both preserved workers, longer alternating trials,
+same-worker MIR replay and inspection of alignment, vectorization and machine
+code. Comparable ordinary startup/warmed outputs are bit-identical. No generated
+DSP runtime regression was confirmed in this corpus; the 16/128-voice bank gains
+remain 4.20×/4.92× over the original representation. Complete views preserve the
+first columnar stage's processing code and performance.
 
 The copied 128-voice Sustain program compiles to MIR and native IR with 53 state
 tensors. The final measurements, immutable worker identities, paired compile-time
