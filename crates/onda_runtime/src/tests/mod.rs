@@ -3218,8 +3218,7 @@ sample:
 #[test]
 fn tasks_in_runtime_indexed_proc_arrays_activate_lazily_per_slot() {
     const BLOCK_SIZE: usize = 4;
-    let mut instance = compile_test_instance(
-        r#"
+    let child = r#"
 proc Child:
   init:
     pin progress: i32 = 0
@@ -3231,49 +3230,53 @@ proc Child:
     await load()
     sample:
       out1 = f32(progress)
-proc Parent:
-  init:
-    children: Child[2] = Child()
-  sample:
-    out1 = children[0]() + children[1]()
-init:
-  parent = Parent()
-sample:
-  out1 = parent()
-"#,
-        BLOCK_SIZE,
-        1,
-    );
-    let mut output = [99.0_f32; BLOCK_SIZE];
-    unsafe {
-        bind_output(
-            &mut instance,
-            0,
-            output.as_mut_ptr().cast(),
-            std::mem::size_of_val(&output),
-        )
-        .expect("output should bind");
+"#;
+    for nested in [false, true] {
+        for selector in ["1", "index"] {
+            let owner = if nested {
+                format!(
+                    "proc Parent:\n  init:\n    children: Child[2] = Child()\n  sample:\n    index: i32 = 1\n    out1 = children[0]() + children[{selector}]()\ninit:\n  parent = Parent()\nsample:\n  out1 = parent()\n"
+                )
+            } else {
+                format!(
+                    "init:\n  children: Child[2] = Child()\nsample:\n  index: i32 = 1\n  out1 = children[0]() + children[{selector}]()\n"
+                )
+            };
+            let source = format!("{child}\n{owner}");
+            let mut instance = compile_test_instance(&source, BLOCK_SIZE, 1);
+            let mut output = [99.0_f32; BLOCK_SIZE];
+            unsafe {
+                bind_output(
+                    &mut instance,
+                    0,
+                    output.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&output),
+                )
+                .expect("output should bind");
+            }
+
+            process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+                .expect("both child tasks should yield");
+            assert_eq!(output, [0.0; BLOCK_SIZE]);
+            process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+                .expect("both child tasks should complete");
+            assert_eq!(output, [22.0; BLOCK_SIZE]);
+
+            init_checked(&mut instance, InitMode::PreservePinned)
+                .expect("default init should preserve nested task state");
+            output.fill(99.0);
+            process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+                .expect("default init should preserve completed child tasks");
+            assert_eq!(output, [22.0; BLOCK_SIZE]);
+
+            init_checked(&mut instance, InitMode::Full)
+                .expect("full init should restart nested tasks");
+            output.fill(99.0);
+            process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
+                .expect("restarted child tasks should yield");
+            assert_eq!(output, [0.0; BLOCK_SIZE]);
+        }
     }
-
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both child tasks should yield");
-    assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both child tasks should complete");
-    assert_eq!(output, [22.0; BLOCK_SIZE]);
-
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("default init should preserve nested task state");
-    output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default init should preserve completed child tasks");
-    assert_eq!(output, [22.0; BLOCK_SIZE]);
-
-    init_checked(&mut instance, InitMode::Full).expect("full init should restart nested tasks");
-    output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted child tasks should yield");
-    assert_eq!(output, [0.0; BLOCK_SIZE]);
 }
 
 #[test]

@@ -39,6 +39,12 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "literal processor array slots activate their tasks independently",
+    source: join(packageDir, "test/fixtures/indexed-task-activation.onda"),
+    blocks: 3,
+    expectedChannels: [[0, 0, 0, 0, 22, 22, 22, 22, 22, 22, 22, 22]],
+  },
+  {
     name: "retained processor views preserve captured owners across task yields and snapshots",
     source: join(packageDir, "test/fixtures/processor-view-task.onda"),
     expectedChannels: [[0, 0, 0, 0, 10, 10, 10, 10, 20, 20, 20, 20]],

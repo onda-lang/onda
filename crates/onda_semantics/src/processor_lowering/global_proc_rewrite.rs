@@ -204,9 +204,6 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
                 else {
                     return;
                 };
-                if matches!(index.as_ref(), Expr::Int { .. }) {
-                    return;
-                }
                 let array_base = base.clone();
                 let Some(slots) = proc_array_slots.get(&array_base) else {
                     return;

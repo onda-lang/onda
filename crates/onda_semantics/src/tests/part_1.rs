@@ -1466,6 +1466,28 @@ sample:
     }
 
     #[test]
+    fn proc_array_constructors_accept_private_params_and_events() {
+        let src = r#"
+proc Child:
+  params:
+    private value = 0.0
+  event set(value_v: f32):
+    value = value_v
+  sample:
+    out1 = value
+init:
+  children: Child[2]
+sample:
+  children[0].set(0.5)
+  for i in 0..2:
+    children[i].set(0.75)
+  out1 = children[1]()
+"#;
+        analyze(parse_program(src).expect("parse should succeed"))
+            .expect("array events should retain authority over their private params");
+    }
+
+    #[test]
     fn private_proc_params_reject_external_access() {
         let cases = [
             (

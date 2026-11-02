@@ -2366,6 +2366,14 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
 ) {
     let mut rewritten = Vec::<Stmt>::with_capacity(stmts.len());
     for (idx, mut stmt) in std::mem::take(stmts).into_iter().enumerate() {
+        // Constructor expansion has already validated and clamped these writes.
+        // A counted constructor is one generated subtree, just like a scalar
+        // constructor assignment; neither may trigger external-access checks
+        // or bound hooks before initialization has completed.
+        if skip_top_level_indices.is_some_and(|indices| indices.contains(&idx)) {
+            rewritten.push(stmt);
+            continue;
+        }
         match &mut stmt {
             Stmt::If {
                 then_branch,
@@ -2415,32 +2423,27 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => {}
         }
-        let skip_hook = skip_top_level_indices
-            .map(|indices| indices.contains(&idx))
-            .unwrap_or(false);
         if let Stmt::Assign {
             target, target_loc, ..
         } = &stmt
         {
-            if !skip_hook {
-                reject_private_proc_param_assignment(
-                    target,
-                    target_loc.clone(),
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    authorized_private_receiver,
-                    errors,
-                );
-                reject_bound_proc_dynamic_params_assignment(
-                    target,
-                    target_loc.clone(),
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    errors,
-                );
-            }
+            reject_private_proc_param_assignment(
+                target,
+                target_loc.clone(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                authorized_private_receiver,
+                errors,
+            );
+            reject_bound_proc_dynamic_params_assignment(
+                target,
+                target_loc.clone(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
         }
         if let Stmt::Assign { target, expr, .. } = &mut stmt {
             maybe_clamp_proc_param_assignment_expr(
@@ -2458,18 +2461,14 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                 proc_api,
             );
         }
-        let mut hook_stmts = if !skip_hook {
-            if let Stmt::Assign { target, .. } = &stmt {
-                bound_proc_param_hook_stmts_for_target(
-                    owner_proc,
-                    target,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                )
-            } else {
-                Vec::new()
-            }
+        let mut hook_stmts = if let Stmt::Assign { target, .. } = &stmt {
+            bound_proc_param_hook_stmts_for_target(
+                owner_proc,
+                target,
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+            )
         } else {
             Vec::new()
         };

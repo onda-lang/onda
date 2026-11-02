@@ -842,9 +842,6 @@ fn rewrite_stmt_for_managed_dynamic_proc_block_hooks(
                 else {
                     return;
                 };
-                if matches!(index.as_ref(), Expr::Int { .. }) {
-                    return;
-                }
                 let array_base = base.clone();
                 let array_key = array_base.strip_prefix("self.").unwrap_or(&array_base);
                 let Some(managed) = managed_arrays.get(array_key) else {
