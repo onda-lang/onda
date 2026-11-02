@@ -18,6 +18,7 @@ mod data_tests;
 mod expressions;
 mod lowerer_core;
 mod messages;
+mod processor_captures;
 mod processor_resources;
 mod processor_scalars;
 mod processor_view_joins;

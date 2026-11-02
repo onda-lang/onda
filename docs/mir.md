@@ -576,9 +576,12 @@ has one reference per live field, independent of array capacity. Field-level eff
 identities and parameter pruning therefore use the same MIR analyses as ordinary aggregates.
 Aggregate width and function parameter count have no additional arbitrary cap; checked storage
 sizes, aggregate complexity and function local limits still apply.
-These state views do not carry an enclosing processor's callback environment. Borrowing a child
-with owner delegate handlers is rejected explicitly before constructing a generic helper call;
-owner-local wrappers preserve that environment for direct calls and aliases.
+Borrowed views carry root storage, captured coordinates, lifecycle identity, bound resources and
+enclosing callback environments through helper calls. Joins retain symbolic root and resource
+selections with initialized tags on every path. Inherited constructor recipes resolve against
+captured enclosing frames at use sites; legalization then emits ordinary references, direct calls
+and explicit control flow. Writable views
+preserve overlapping origins and do not establish exclusivity.
 User functions accept resolved scalar, scalar-tuple, primitive-slice, buffer-reference,
 data-struct, and data-struct-array parameters. Explicit generic scalar contracts are specialized in
 semantics, as are context-independent inferred `f64` calls; an unresolved scalar specialization

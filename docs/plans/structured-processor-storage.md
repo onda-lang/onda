@@ -408,3 +408,22 @@ samples, allocation counts and reproduction instructions are recorded in
 [the dated benchmark report](../../scripts/bench/results/2026-11-02-processor-views.md).
 The complete-view implementation and cleanup described above are finished; a
 compact record ABI or different physical layout remains a separate experiment.
+
+### Final integration hardening
+
+The final review against the current integration branch exposed two capture-join gaps.
+Inherited child resources now retain typed declaration recipes and enclosing frames rather than
+materializing descriptors during member discovery. Recipes resolve against the selected parent's
+coordinates and state at operation use, preserving collection windows and current host bindings.
+
+Storage and direct-resource joins now retain symbolic capture choices until forwarding or use.
+Every nested choice tag is initialized on both paths, and legalization then reconstructs ordinary
+MIR references from actual source roots. This preserves nested joins without inactive descriptor
+reads, fabricated references, a changed helper ABI, or expansion by processor-array capacity.
+Retention walks both symbolic leaves and choice tags. View discovery is now read-only.
+
+Final regression coverage includes equal/different owner extents, owners with different resource
+layouts, callbacks, nested storage and resource joins, deep collection windows, and snapshot restore
+after rebinding at LLVM O0/O3. MIR validation also rejects overflowing interface spans and non-i32
+selectors in local-buffer call arguments. The final broad-pass report records integrated-suite and
+native generated-code measurements separately from the earlier phase measurements.

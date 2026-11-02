@@ -185,8 +185,9 @@ impl Validator<'_> {
             crate::BufferSpanRef::Interface { first, len } => {
                 !mapped
                     && len == expected_len
-                    && (first.raw()..first.raw().saturating_add(len))
-                        .all(|id| accepts(crate::BufferId::new(id)))
+                    && first.raw().checked_add(len).is_some_and(|end| {
+                        (first.raw()..end).all(|id| accepts(crate::BufferId::new(id)))
+                    })
             }
             crate::BufferSpanRef::MappedInterface { map, start, len } => {
                 mapped

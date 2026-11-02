@@ -4,6 +4,7 @@
 //! exclusivity and are subject to the same effect analysis and pruning as
 //! authored parameters.
 
+use super::processor_captures::ProcessorCapture;
 use super::*;
 use crate::processor_views::{
     ProcessorEnvironmentShape, ProcessorProjection, ProcessorStateShape, ProcessorStorageShape,
@@ -13,10 +14,10 @@ use crate::processor_views::{
 #[derive(Debug, Clone)]
 pub(super) struct LoweredProcessorEnvironment {
     pub shape: ProcessorEnvironmentShape,
-    pub owner: Option<String>,
-    pub state_root: Option<String>,
+    pub owner: Option<ProcessorCapture<String>>,
+    pub state_root: Option<ProcessorCapture<String>>,
     pub coordinates: Vec<Value>,
-    pub resources: Vec<Expr>,
+    pub resources: Vec<ProcessorCapture<Expr>>,
     pub outer: Option<Box<LoweredProcessorEnvironment>>,
 }
 
@@ -103,6 +104,9 @@ fn capture_parameters(
         ));
     }
     for (index, resource) in environment.resources.iter().enumerate() {
+        if resource.binding.is_some() {
+            continue;
+        }
         let kind = match resource.mapped_len.or(resource.len) {
             Some(len) => TypedFnParam::BufferArray {
                 elem_ty: resource.elem_ty,
@@ -179,15 +183,27 @@ impl FunctionLowerer<'_> {
         }
         Ok(LoweredProcessorEnvironment {
             shape: shape.clone(),
-            state_root: shape.state.as_ref().map(|_| format!("{prefix}_owner")),
-            owner: shape.owner.as_ref().map(|_| format!("{prefix}_owner")),
+            state_root: shape
+                .state
+                .as_ref()
+                .map(|_| ProcessorCapture::Direct(format!("{prefix}_owner"))),
+            owner: shape
+                .owner
+                .as_ref()
+                .map(|_| ProcessorCapture::Direct(format!("{prefix}_owner"))),
             coordinates,
             resources: shape
                 .resources
                 .iter()
                 .enumerate()
                 .map(|(index, resource)| {
-                    if let Some(count) = resource.alternatives {
+                    if let Some(binding) = &resource.binding {
+                        self.processor_views
+                            .declaration(&binding.owner_struct, &binding.field_name)
+                            .expect("registered processor resource declaration")
+                            .resources[binding.resource_index]
+                            .clone()
+                    } else if let Some(count) = resource.alternatives {
                         Expr::ArrayLiteral {
                             loc: function_location(self.function).into(),
                             values: (0..count)
@@ -200,6 +216,7 @@ impl FunctionLowerer<'_> {
                         Expr::var(format!("{prefix}_resource_{index}"))
                     }
                 })
+                .map(ProcessorCapture::Direct)
                 .collect(),
             outer: shape
                 .outer
@@ -278,19 +295,24 @@ impl FunctionLowerer<'_> {
             shape: &ProcessorEnvironmentShape,
         ) -> Option<LoweredProcessorEnvironment> {
             let owner = match &source.owner {
-                Some(Expr::Var { name, .. }) => Some(name.clone()),
+                Some(Expr::Var { name, .. }) => Some(ProcessorCapture::Direct(name.clone())),
                 None => None,
                 _ => return None,
             };
             Some(LoweredProcessorEnvironment {
                 state_root: match &source.state_root {
-                    Some(Expr::Var { name, .. }) => Some(name.clone()),
+                    Some(Expr::Var { name, .. }) => Some(ProcessorCapture::Direct(name.clone())),
                     _ => None,
                 },
                 shape: shape.clone(),
                 owner,
                 coordinates: Vec::new(),
-                resources: source.resources.clone(),
+                resources: source
+                    .resources
+                    .iter()
+                    .cloned()
+                    .map(ProcessorCapture::Direct)
+                    .collect(),
                 outer: source
                     .outer
                     .as_ref()
@@ -320,9 +342,8 @@ impl FunctionLowerer<'_> {
     }
 
     pub(super) fn processor_view(
-        &mut self,
+        &self,
         name: &str,
-        block: &mut MirBlock,
     ) -> Result<Option<LoweredProcessorView>, MirLoweringError> {
         if let Some(
             Binding::StructParameter {
@@ -404,9 +425,12 @@ impl FunctionLowerer<'_> {
                 environments: vec![LoweredProcessorEnvironment {
                     shape: environment,
                     owner: None,
-                    state_root: Some(name.to_owned()),
+                    state_root: Some(ProcessorCapture::Direct(name.to_owned())),
                     coordinates: Vec::new(),
-                    resources,
+                    resources: resources
+                        .into_iter()
+                        .map(ProcessorCapture::Direct)
+                        .collect(),
                     outer: None,
                 }],
             }));
@@ -421,56 +445,60 @@ impl FunctionLowerer<'_> {
         let Some(owner_type) = self.owner_struct_name(owner).map(str::to_owned) else {
             return Ok(None);
         };
-        let outer = self.processor_view(owner, block)?;
-        let outer_source = if let Some(parent) = &outer {
-            let mut captures = Vec::new();
-            for environment in &parent.environments {
-                let mut capture = environment.source();
-                for (index, resource) in environment.resources.iter().enumerate() {
-                    capture.resources[index] = self.processor_resource_expression(
-                        resource,
-                        &environment.shape.resources[index],
-                        environment.coordinates.last().copied(),
-                        block,
-                    )?;
-                }
-                captures.push(capture);
-            }
-            Some(ProcessorViewSource {
-                shape: parent.shape.clone(),
-                captures,
-            })
-        } else {
-            None
-        };
-        let Some(source) = self.processor_views.member_source(
-            &owner_type,
-            field,
-            &Expr::var(owner),
-            outer_source.as_ref(),
-        ) else {
+        let outer = self.processor_view(owner)?;
+        let Some(declaration) = self.processor_views.declaration(&owner_type, field) else {
             return Ok(None);
         };
-        let mut view = self.captured_processor_source(&source)?;
-        if let Some(parent) = &outer {
-            view.tag = parent.tag;
-            for (environment, parent) in view.environments.iter_mut().zip(&parent.environments) {
-                environment.coordinates = parent.coordinates.clone();
-                if environment.outer.is_some() {
-                    environment.outer = Some(Box::new(parent.clone()));
-                }
-            }
-        }
-        Ok(Some(view))
+        let environments = if let Some(parent) = &outer {
+            parent
+                .environments
+                .iter()
+                .map(|parent| {
+                    let shape = self
+                        .processor_views
+                        .member_environment(declaration, Some(&parent.shape));
+                    LoweredProcessorEnvironment {
+                        owner: shape.owner.as_ref().and(parent.state_root.clone()),
+                        state_root: parent.state_root.clone(),
+                        coordinates: parent.coordinates.clone(),
+                        resources: declaration
+                            .resources
+                            .iter()
+                            .cloned()
+                            .map(ProcessorCapture::Direct)
+                            .collect(),
+                        outer: shape.outer.as_ref().map(|_| Box::new(parent.clone())),
+                        shape,
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let source = self
+                .processor_views
+                .member_source(&owner_type, field, &Expr::var(owner), None)
+                .expect("registered processor member");
+            self.captured_processor_source(&source)?.environments
+        };
+        Ok(Some(LoweredProcessorView {
+            shape: ProcessorViewShape {
+                proc_name: declaration.proc_name.clone(),
+                len: declaration.len,
+                environments: environments
+                    .iter()
+                    .map(|environment| environment.shape.clone())
+                    .collect(),
+            },
+            tag: outer.as_ref().and_then(|parent| parent.tag),
+            environments,
+        }))
     }
 
     pub(super) fn selected_processor_view(
-        &mut self,
+        &self,
         base: &str,
         coordinate: Value,
-        block: &mut MirBlock,
     ) -> Result<Option<LoweredProcessorView>, MirLoweringError> {
-        let Some(mut view) = self.processor_view(base, block)? else {
+        let Some(mut view) = self.processor_view(base)? else {
             return Ok(None);
         };
         view.shape = view.shape.selected();
@@ -490,33 +518,20 @@ impl FunctionLowerer<'_> {
     }
 }
 
-impl LoweredProcessorEnvironment {
-    fn source(&self) -> crate::processor_views::ProcessorEnvironmentCapture {
-        crate::processor_views::ProcessorEnvironmentCapture {
-            state_root: self.state_root.as_ref().map(Expr::var),
-            owner: self.owner.as_ref().map(Expr::var),
-            coordinates: Vec::new(),
-            resources: self.resources.clone(),
-            outer: self.outer.as_ref().map(|outer| Box::new(outer.source())),
-        }
-    }
-}
-
 impl FunctionLowerer<'_> {
     pub(super) fn processor_argument_view(
-        &mut self,
+        &self,
         expression: &Expr,
         prepared: &PreparedCallArgument,
-        block: &mut MirBlock,
     ) -> Result<Option<LoweredProcessorView>, MirLoweringError> {
         if let Some(source) = indexed_read_source(expression) {
             let PreparedCallArgument::IndexedStruct(element) = prepared else {
                 return Ok(None);
             };
-            return self.selected_processor_view(source.base, Value::Local(element.index), block);
+            return self.selected_processor_view(source.base, Value::Local(element.index));
         }
         match expression {
-            Expr::Var { name, .. } => self.processor_view(name, block),
+            Expr::Var { name, .. } => self.processor_view(name),
             _ => Ok(None),
         }
     }
@@ -541,9 +556,15 @@ impl FunctionLowerer<'_> {
                         location.clone(),
                     )
                 })?;
+            let root = self.materialize_processor_storage_capture(
+                root,
+                &storage,
+                block,
+                location.clone(),
+            )?;
             if storage.len.is_some() {
                 self.append_processor_owner_array(
-                    root,
+                    &root,
                     &storage.proc_name,
                     block,
                     out,
@@ -552,7 +573,7 @@ impl FunctionLowerer<'_> {
             } else {
                 let fields = self.struct_field_shapes(&storage.proc_name, location.clone())?;
                 out.extend(self.struct_reference_arguments(
-                    root,
+                    &root,
                     &fields,
                     None,
                     block,
@@ -586,7 +607,15 @@ impl FunctionLowerer<'_> {
             ));
         }
         for (resource, shape) in captured.resources.iter().zip(&expected.resources) {
-            self.append_processor_resource_arguments(resource, shape, block, out)?;
+            if shape.binding.is_none() {
+                let resource = self.materialize_processor_resource_capture(
+                    resource,
+                    shape,
+                    block,
+                    location.clone(),
+                )?;
+                self.append_processor_resource_arguments(&resource, shape, block, out)?;
+            }
         }
         if let Some(outer) = &expected.outer {
             let captured = captured.outer.as_ref().ok_or_else(|| {
@@ -634,7 +663,7 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
-    fn captured_value_expression(
+    pub(super) fn captured_value_expression(
         &mut self,
         value: Value,
         block: &mut MirBlock,
@@ -673,7 +702,7 @@ impl FunctionLowerer<'_> {
         };
         let mut normalized_args = args.to_vec();
         let view = if let Some(source) = indexed_read_source(&receiver.expr) {
-            let Some(view) = self.processor_view(source.base, block)? else {
+            let Some(view) = self.processor_view(source.base)? else {
                 return Ok(None);
             };
             if !view.environments.iter().any(|environment| {
@@ -704,10 +733,10 @@ impl FunctionLowerer<'_> {
                 source.access,
                 receiver.expr.loc().into(),
             );
-            self.selected_processor_view(source.base, Value::Local(coordinate), block)?
+            self.selected_processor_view(source.base, Value::Local(coordinate))?
                 .expect("resolved processor array")
         } else if let Expr::Var { name, .. } = &receiver.expr {
-            let Some(view) = self.processor_view(name, block)? else {
+            let Some(view) = self.processor_view(name)? else {
                 return Ok(None);
             };
             view
@@ -766,7 +795,13 @@ impl FunctionLowerer<'_> {
             .to_owned();
         let mut rewritten = Vec::new();
         if let Some(owner) = &environment.owner {
-            let mut owner_root = owner.clone();
+            let storage = root_storage(&environment.shape).expect("typed processor owner storage");
+            let mut owner_root = self.materialize_processor_storage_capture(
+                owner,
+                &storage,
+                block,
+                location.clone(),
+            )?;
             let mut coordinates = environment.coordinates.as_slice();
             if environment
                 .shape
@@ -848,21 +883,11 @@ impl FunctionLowerer<'_> {
                     )
                 })?;
             }
-            let (expression, shape) = frame
-                .resources
-                .get(resource.resource_index)
-                .zip(frame.shape.resources.get(resource.resource_index))
-                .ok_or_else(|| {
-                    self.error(
-                        "processor operation lost an ordered resource capture",
-                        location.clone(),
-                    )
-                })?;
-            let expr = self.processor_resource_expression(
-                expression,
-                shape,
-                frame.coordinates.last().copied(),
+            let expr = self.processor_environment_resource_expression(
+                frame,
+                resource.resource_index,
                 block,
+                location.clone(),
             )?;
             rewritten.push(onda_frontend::CallArg { name: None, expr });
         }

@@ -279,6 +279,15 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
         environment: &mut processor_views::LoweredProcessorEnvironment,
         visit: &mut impl FnMut(&mut LocalId),
     ) {
+        if let Some(owner) = &mut environment.owner {
+            owner.visit_values(&mut |tag| value(tag, visit));
+        }
+        if let Some(root) = &mut environment.state_root {
+            root.visit_values(&mut |tag| value(tag, visit));
+        }
+        for resource in &mut environment.resources {
+            resource.visit_values(&mut |tag| value(tag, visit));
+        }
         for coordinate in &mut environment.coordinates {
             value(coordinate, visit);
         }
@@ -385,17 +394,30 @@ fn processor_capture_roots(binding: &Binding) -> Vec<String> {
         environment: &processor_views::LoweredProcessorEnvironment,
         result: &mut Vec<String>,
     ) {
-        result.extend(environment.owner.iter().cloned());
-        result.extend(environment.state_root.iter().cloned());
-        for resource in &environment.resources {
-            for expression in resource.walk() {
-                match expression {
-                    Expr::Var { name, .. } | Expr::Index { base: name, .. } => {
-                        result.push(name.clone())
-                    }
-                    _ => {}
-                }
+        if let Some(owner) = &environment.owner {
+            owner.visit_leaves(&mut |root| result.push(root.clone()));
+        }
+        if let Some(root) = &environment.state_root {
+            root.visit_leaves(&mut |root| result.push(root.clone()));
+        }
+        for (resource, shape) in environment
+            .resources
+            .iter()
+            .zip(&environment.shape.resources)
+        {
+            if shape.binding.is_some() {
+                continue;
             }
+            resource.visit_leaves(&mut |resource| {
+                for expression in resource.walk() {
+                    match expression {
+                        Expr::Var { name, .. } | Expr::Index { base: name, .. } => {
+                            result.push(name.clone())
+                        }
+                        _ => {}
+                    }
+                }
+            });
         }
         if let Some(outer) = &environment.outer {
             capture_roots(outer, result);

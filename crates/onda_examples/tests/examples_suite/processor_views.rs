@@ -559,3 +559,283 @@ sample:
         }
     }
 }
+
+#[test]
+fn joined_child_resources_keep_roots_coordinates_callbacks_and_rebinding() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-view-joined-resources.onda"
+    );
+    for (same_extent, different_owner) in [(false, false), (true, false), (false, true)] {
+        let source = if same_extent {
+            source.replace(
+                "others: Bank[3] = [Bank(source = left), Bank(source = right), Bank(source = left)]",
+                "others: Bank[2] = [Bank(source = left), Bank(source = right)]",
+            )
+        } else {
+            source.to_owned()
+        };
+        let source = if different_owner {
+            let owner = source
+                .split("proc Bank:")
+                .nth(1)
+                .unwrap()
+                .split("def step")
+                .next()
+                .unwrap();
+            let other = format!(
+                "proc OtherBank:{}",
+                owner
+                    .replace("    source: f32", "    source: f32\n    extra: f64")
+                    .replace(
+                        "count += value * 10",
+                        "count += value * 10 + i32(extra[0] - 123.0)"
+                    )
+            );
+            let source = source.replace("def step", &format!("{other}def step"));
+            source.replace(
+                "others: Bank[3] = [Bank(source = left), Bank(source = right), Bank(source = left)]",
+                "others: OtherBank[3] = [OtherBank(source = left, extra = interleaved), OtherBank(source = right, extra = interleaved), OtherBank(source = left, extra = interleaved)]",
+            ).replace(
+                "    owner = others[index]\n    selected = owner.voices[0]",
+                "    other = others[index]\n    selected = other.voices[0]",
+            )
+        } else {
+            source
+        };
+        for callbacks in if different_owner {
+            &[true][..]
+        } else {
+            &[false, true][..]
+        } {
+            let callbacks = *callbacks;
+            let source = if callbacks {
+                source.clone()
+            } else {
+                source.replace(
+                    "  when voices[0].fired(value):\n    count += value * 10\n  when voices[1].fired(value):\n    count += value\n", "",
+                )
+            };
+            for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+                let (mut instance, _, _) = compile_instance_with_options(
+                    &source,
+                    4,
+                    CompileOptions {
+                        sample_rate: 48_000.0,
+                        block_size: 4,
+                        fast_math: false,
+                        opt_level,
+                    },
+                );
+                let mut left = [2.0_f32];
+                let mut right = [7.0_f32];
+                let mut unused = [123.0_f64];
+                for (name, ptr, ty) in [
+                    ("left", left.as_mut_ptr().cast(), PrimitiveType::F32),
+                    ("right", right.as_mut_ptr().cast(), PrimitiveType::F32),
+                    (
+                        "interleaved",
+                        unused.as_mut_ptr().cast(),
+                        PrimitiveType::F64,
+                    ),
+                ] {
+                    let index = instance.buffer_index(name).unwrap();
+                    bind_buffer(&mut instance, index, ptr, 1, 1, 48_000.0, ty).unwrap();
+                }
+                let mut output = [0.0; 8];
+                process_interleaved(&mut instance, &[], &mut output, 4).unwrap();
+                let counts = if callbacks {
+                    [1.0, 10001.0, 10002.0, 20002.0]
+                } else {
+                    [0.0; 4]
+                };
+                for (frame, (value, count)) in
+                    [3.0, 8.0, 4.0, 9.0].into_iter().zip(counts).enumerate()
+                {
+                    assert_eq!(&output[frame * 2..frame * 2 + 2], &[value, count]);
+                }
+                assert_eq!(left, [4.0]);
+                assert_eq!(right, [9.0]);
+                assert_eq!(unused, [123.0]);
+                let snapshot = instance.snapshot_state_bytes().unwrap();
+                let mut rebound_left = [20.0_f32];
+                let mut rebound_right = [70.0_f32];
+                for (name, samples) in [("left", &mut rebound_left), ("right", &mut rebound_right)]
+                {
+                    let index = instance.buffer_index(name).unwrap();
+                    bind_buffer(
+                        &mut instance,
+                        index,
+                        samples.as_mut_ptr().cast(),
+                        1,
+                        1,
+                        48_000.0,
+                        PrimitiveType::F32,
+                    )
+                    .unwrap();
+                }
+                instance.restore_state_bytes(&snapshot).unwrap();
+                process_interleaved(&mut instance, &[], &mut output, 4).unwrap();
+                assert_eq!(
+                    output.into_iter().step_by(2).collect::<Vec<_>>(),
+                    [21.0, 71.0, 22.0, 72.0]
+                );
+                assert_eq!(rebound_left, [22.0]);
+                assert_eq!(rebound_right, [72.0]);
+            }
+        }
+    }
+}
+
+#[test]
+fn joined_deep_child_resources_preserve_collection_windows() {
+    let source = r#"
+proc Voice:
+  buffers:
+    source: f32
+  sample:
+    out1 = source[0]
+proc Bank:
+  params:
+    pick: i32 = 0
+  buffers:
+    source: f32 {2}
+  init:
+    voices: Voice[2] = Voice(source = source[pick])
+  sample:
+    out1 = 0.0
+proc Rack:
+  buffers:
+    source: f32 {4}
+  init:
+    banks: Bank[2] = [Bank(source = source[0:2], pick = 1), Bank(source = source[2:4], pick = 0)]
+  sample:
+    out1 = 0.0
+def step(voice) -> f32:
+  return voice()
+def exercise(racks, first: bool) -> f32:
+  if first:
+    rack = racks[0]
+    bank = rack.banks[0]
+    selected = bank.voices[1]
+  else:
+    rack = racks[1]
+    bank = rack.banks[1]
+    selected = bank.voices[0]
+  return step(selected)
+buffers:
+  clips: f32 {4}
+init:
+  racks: Rack[2] = Rack(source = clips)
+  first = true
+sample:
+  out1 = exercise(racks, first)
+  first = !first
+"#;
+    for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let (mut instance, _, _) = compile_instance_with_options(
+            source,
+            4,
+            CompileOptions {
+                sample_rate: 48_000.0,
+                block_size: 4,
+                fast_math: false,
+                opt_level,
+            },
+        );
+        let mut buffers = [[1.0_f32], [2.0], [3.0], [4.0]];
+        for (index, samples) in buffers.iter_mut().enumerate() {
+            let index = instance.buffer_index(&format!("clips[{index}]")).unwrap();
+            bind_buffer(
+                &mut instance,
+                index,
+                samples.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .unwrap();
+        }
+        let mut output = [0.0; 4];
+        process_interleaved(&mut instance, &[], &mut output, 4).unwrap();
+        assert_eq!(output, [2.0, 3.0, 2.0, 3.0], "{opt_level:?}");
+        let snapshot = instance.snapshot_state_bytes().unwrap();
+        let mut rebound = [[10.0_f32], [20.0], [30.0], [40.0]];
+        for (index, samples) in rebound.iter_mut().enumerate() {
+            let index = instance.buffer_index(&format!("clips[{index}]")).unwrap();
+            bind_buffer(
+                &mut instance,
+                index,
+                samples.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .unwrap();
+        }
+        instance.restore_state_bytes(&snapshot).unwrap();
+        process_interleaved(&mut instance, &[], &mut output, 4).unwrap();
+        assert_eq!(output, [20.0, 30.0, 20.0, 30.0], "{opt_level:?}");
+    }
+}
+
+#[test]
+fn nested_processor_joins_keep_storage_captures_initialized_on_every_path() {
+    render_channels(
+        include_str!(
+            "../../../../packages/onda_binaryen_web/test/fixtures/processor-view-nested-joins.onda"
+        ),
+        &[
+            &[2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0],
+            &[0.0, 0.0, 7.0, 7.0, 7.0, 7.0, 14.0, 14.0],
+            &[0.0, 100.0, 100.0, 200.0, 200.0, 300.0, 300.0, 400.0],
+        ],
+    );
+}
+
+#[test]
+fn nested_processor_joins_preserve_selected_resource_captures() {
+    let source = include_str!("../../../../packages/onda_binaryen_web/test/fixtures/processor-view-nested-joins.onda")
+        .replace("proc Voice:", "proc Voice:\n  buffers:\n    source: f32")
+        .replace("    fired(1)", "    source[0] += 1.0\n    fired(1)")
+        .replace("proc Bank:", "proc Bank:\n  buffers:\n    source: f32")
+        .replace("proc OtherBank:", "proc OtherBank:\n  buffers:\n    source: f32")
+        .replace("Voice()", "Voice(source = source)")
+        .replace("init:\n  left = Bank(weight = 2)", "buffers:\n  clip_left: f32\n  clip_right: f32\n  clip_third: f32\ninit:\n  left = Bank(weight = 2, source = clip_left)")
+        .replace("right = Bank(weight = 7)", "right = Bank(weight = 7, source = clip_right)")
+        .replace("other = OtherBank()", "other = OtherBank(source = clip_third)");
+    for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let (mut instance, _, _) = compile_instance_with_options(
+            &source,
+            8,
+            CompileOptions {
+                sample_rate: 48_000.0,
+                block_size: 8,
+                fast_math: false,
+                opt_level,
+            },
+        );
+        let mut buffers = [[0.0_f32]; 3];
+        for (name, samples) in ["clip_left", "clip_right", "clip_third"]
+            .into_iter()
+            .zip(&mut buffers)
+        {
+            let index = instance.buffer_index(name).unwrap();
+            bind_buffer(
+                &mut instance,
+                index,
+                samples.as_mut_ptr().cast(),
+                1,
+                1,
+                48_000.0,
+                PrimitiveType::F32,
+            )
+            .unwrap();
+        }
+        let mut output = [0.0; 24];
+        process_interleaved(&mut instance, &[], &mut output, 8).unwrap();
+        assert_eq!(buffers, [[2.0], [2.0], [4.0]], "{opt_level:?}");
+        assert_eq!(&output[21..], &[4.0, 14.0, 400.0], "{opt_level:?}");
+    }
+}

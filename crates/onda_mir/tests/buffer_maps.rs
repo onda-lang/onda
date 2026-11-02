@@ -137,7 +137,7 @@ fn dynamic_map_selection_unions_only_the_mapped_resources() {
         0,
         statement(StatementKind::Assign {
             destination: Place::local(LocalId::new(0)),
-            value: Rvalue::BufferParamLen(BufferParamRef::ArrayElement {
+            value: Rvalue::BufferParamSamples(BufferParamRef::ArrayElement {
                 span: ParameterId::new(0),
                 selector: Value::Constant(ScalarValue::I32(0)),
                 bounds: BoundsMode::Clamp,
@@ -208,6 +208,114 @@ fn write_analysis_reports_a_missing_map_without_panicking() {
     let mut program = mapped_program();
     program.buffer_maps.clear();
     assert!(analyze_buffer_writes(&program).is_err());
+}
+
+#[test]
+fn rejects_overflowing_interface_buffer_spans() {
+    let mut program = mapped_program();
+    for ty in &mut program.types {
+        if let Type::BufferMap {
+            element,
+            channels,
+            access,
+            len,
+        } = *ty
+        {
+            *ty = Type::BufferSpan {
+                element,
+                channels,
+                access,
+                len,
+            };
+        }
+    }
+    program.interface.buffers[1].element = ScalarType::F32;
+    let set_span = |program: &mut Program, first| {
+        let StatementKind::Call { args, .. } = &mut program.functions[1].body.statements[0].kind
+        else {
+            unreachable!()
+        };
+        args[0] = CallArgument::BufferSpan(BufferSpanRef::Interface {
+            first: BufferId::new(first),
+            len: 3,
+        });
+    };
+    set_span(&mut program, 0);
+    validate(&program).expect("a contiguous homogeneous interface span is valid");
+    set_span(&mut program, u32::MAX);
+    assert!(
+        validate(&program).is_err(),
+        "overflow cannot produce an empty valid span"
+    );
+}
+
+#[test]
+fn rejects_noninteger_local_buffer_call_selectors() {
+    let mut program = mapped_program();
+    let buffer_ty = TypeId::new(program.types.len() as u32);
+    program.types.push(Type::Buffer {
+        element: ScalarType::F32,
+        channels: BufferChannels::Mono,
+        access: AccessMode::ReadWrite,
+    });
+    let mut consume = function("consume", FunctionKind::User);
+    consume.params.push(FunctionParam {
+        name: "buffer".into(),
+        ty: buffer_ty,
+        mode: PassingMode::ReadWriteReference,
+        integer_range: None,
+    });
+    let consume_id = FunctionId::new(program.functions.len() as u32);
+    program.functions.push(consume);
+    let process = &mut program.functions[1];
+    process.locals.push(Local {
+        name: None,
+        ty: TypeId::new(1),
+        integer_range: None,
+    });
+    process.body.statements.extend([
+        statement(StatementKind::Assign {
+            destination: Place::local(LocalId::new(0)),
+            value: Rvalue::MakeBuffer {
+                source: CallArgument::BufferSpan(BufferSpanRef::MappedInterface {
+                    map: BufferMapId::new(0),
+                    start: 0,
+                    len: 3,
+                }),
+                ty: TypeId::new(1),
+            },
+        }),
+        statement(StatementKind::Call {
+            results: Vec::new(),
+            function: consume_id,
+            args: vec![CallArgument::BufferParam(BufferParamRef::LocalElement {
+                collection: LocalId::new(0),
+                selector: Value::Constant(ScalarValue::I32(0)),
+                bounds: BoundsMode::Clamp,
+            })],
+        }),
+    ]);
+    validate(&program).expect("an integer selector into an initialized local map is valid");
+    for invalid in [ScalarValue::F32(0.0), ScalarValue::Bool(false)] {
+        let StatementKind::Call { args, .. } = &mut program.functions[1]
+            .body
+            .statements
+            .last_mut()
+            .unwrap()
+            .kind
+        else {
+            unreachable!()
+        };
+        let CallArgument::BufferParam(BufferParamRef::LocalElement { selector, .. }) = &mut args[0]
+        else {
+            unreachable!()
+        };
+        *selector = Value::Constant(invalid);
+        assert!(
+            validate(&program).is_err(),
+            "buffer selectors must have integer type"
+        );
+    }
 }
 
 #[test]

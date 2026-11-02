@@ -282,6 +282,7 @@ fn resource_shapes(specs: &[ProcBufferSpec], mapped: bool) -> Vec<ProcessorResou
             mapped,
             mapped_len: None,
             alternatives: None,
+            binding: None,
         })
         .collect()
 }
@@ -398,6 +399,7 @@ fn declaration_resource_shapes(
                 mapped_len: mapped
                     .then(|| extent.unwrap() * if spec.is_array { spec.array_len } else { 1 }),
                 alternatives,
+                binding: None,
             }
         })
         .collect()
@@ -707,6 +709,7 @@ pub(super) fn build_view_catalog(
                             mapped,
                             mapped_len: mapped.then_some(slots.len()),
                             alternatives: spec.is_array.then_some(choice_count).flatten(),
+                            binding: None,
                         }
                     })
                     .collect()

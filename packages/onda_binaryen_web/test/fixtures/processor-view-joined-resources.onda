@@ -1,0 +1,44 @@
+proc Voice:
+  buffers:
+    source: f32
+  delegate fired(value: i32)
+  sample:
+    source[0] += 1.0
+    fired(1)
+    out1 = source[0]
+proc Bank:
+  buffers:
+    source: f32
+  init:
+    voices: Voice[2] = Voice(source = source)
+    count: i32 = 0
+  when voices[0].fired(value):
+    count += value * 10
+  when voices[1].fired(value):
+    count += value
+  sample:
+    out1 = f32(count)
+def step(voice) -> f32:
+  return voice()
+def exercise(banks, others, choose_first: bool, index: i32) -> f32:
+  if choose_first:
+    owner = banks[index]
+    selected = owner.voices[1]
+  else:
+    owner = others[index]
+    selected = owner.voices[0]
+  return step(selected)
+buffers:
+  left: f32
+  interleaved: f64
+  right: f32
+init:
+  banks: Bank[2] = [Bank(source = left), Bank(source = right)]
+  others: Bank[3] = [Bank(source = left), Bank(source = right), Bank(source = left)]
+  choose_first = true
+  index: i32 = 0
+sample:
+  out1 = exercise(banks, others, choose_first, index)
+  choose_first = !choose_first
+  index = 1 - index
+  out2 = banks[0]() + banks[1]() * 10.0 + others[0]() * 100.0 + others[1]() * 1000.0

@@ -301,7 +301,7 @@ impl FunctionLowerer<'_> {
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
         self.prepare_scalar_processor_view(source, block, loc.clone())?;
-        let processor = self.processor_view(source, block)?;
+        let processor = self.processor_view(source)?;
         for shape in self.data_shapes(data, loc.clone())? {
             let (path, extent) = match shape {
                 StructFieldShape::Scalar { name, .. } => (name, None),
@@ -716,7 +716,7 @@ impl FunctionLowerer<'_> {
             self.bindings.get(name),
             Some(Binding::StructArrayParameter { .. })
         ) {
-            let processor = self.processor_view(name, block)?;
+            let processor = self.processor_view(name)?;
             if let Some(Binding::StructArrayParameter {
                 processor: value, ..
             }) = self.bindings.get_mut(name)
@@ -750,7 +750,7 @@ impl FunctionLowerer<'_> {
         else {
             return Ok(());
         };
-        let processor = self.processor_view(name, block)?;
+        let processor = self.processor_view(name)?;
         let mut fields = Vec::new();
         for shape in self.struct_field_shapes(&struct_name, loc.clone())? {
             let (path, element) = match shape {

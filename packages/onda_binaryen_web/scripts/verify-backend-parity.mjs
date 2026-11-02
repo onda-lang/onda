@@ -39,6 +39,18 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "nested processor joins initialize selected storage captures on every path",
+    source: join(packageDir, "test/fixtures/processor-view-nested-joins.onda"),
+    blocks: 2,
+    expectedChannels: [[2, 2, 2, 2, 4, 4, 4, 4], [0, 0, 7, 7, 7, 7, 14, 14], [0, 100, 100, 200, 200, 300, 300, 400]],
+  },
+  {
+    name: "joined child resources resolve selected owner roots inside each operation",
+    source: join(packageDir, "test/fixtures/processor-view-joined-resources.onda"),
+    blocks: 1,
+    expectedChannels: [[1, 1, 2, 2], [1, 10001, 10002, 20002]],
+  },
+  {
     name: "literal processor array slots activate their tasks independently",
     source: join(packageDir, "test/fixtures/indexed-task-activation.onda"),
     blocks: 3,

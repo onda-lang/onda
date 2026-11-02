@@ -170,7 +170,7 @@ impl FunctionLowerer<'_> {
         block.statements.extend(dispatch.statements);
     }
 
-    fn join_processor_coordinate(
+    pub(super) fn join_processor_coordinate(
         &mut self,
         then_value: Value,
         else_value: Value,
@@ -195,9 +195,24 @@ impl FunctionLowerer<'_> {
         loc: SourceLoc,
     ) -> LoweredProcessorEnvironment {
         let mut result = environment.clone();
-        // Root references and resource recipes are valid before the branch.
-        // Only coordinates need values on both paths; inactive coordinates are
-        // never projected until their matching environment tag is selected.
+        // Capture leaves are persistent roots or parameters. Initialize choice
+        // tags on both paths; physical references are reconstructed at use sites.
+        result.owner = environment
+            .owner
+            .as_ref()
+            .map(|capture| self.publish_processor_capture(capture, active, inactive, loc.clone()));
+        result.state_root = if environment.state_root == environment.owner {
+            result.owner.clone()
+        } else {
+            environment.state_root.as_ref().map(|capture| {
+                self.publish_processor_capture(capture, active, inactive, loc.clone())
+            })
+        };
+        result.resources = environment
+            .resources
+            .iter()
+            .map(|capture| self.publish_processor_capture(capture, active, inactive, loc.clone()))
+            .collect();
         result.coordinates = environment
             .coordinates
             .iter()
@@ -232,39 +247,30 @@ impl FunctionLowerer<'_> {
             ));
         }
         let owner = match (&a.owner, &b.owner, &a.shape.owner) {
-            (Some(a_root), Some(b_root), Some(projection)) => {
-                let fallback = ProcessorStorageShape {
-                    proc_name: projection.owner.clone(),
-                    len: None,
-                };
-                let storage = a.shape.owner_storage.as_ref().unwrap_or(&fallback);
-                Some(self.join_processor_storage_root(
-                    a_root,
-                    b_root,
-                    storage,
-                    then_block,
-                    else_block,
-                    loc.clone(),
-                )?)
-            }
+            (Some(a_root), Some(b_root), Some(_)) => Some(self.join_processor_capture(
+                a_root,
+                b_root,
+                then_block,
+                else_block,
+                loc.clone(),
+            )),
             (None, None, None) => None,
             _ => {
                 return Err(self.error("processor environment owner capture changed at a join", loc))
             }
         };
         let state_root = match (&a.state_root, &b.state_root, &a.shape.state) {
-            (Some(a_root), Some(b_root), Some(state)) => {
+            (Some(a_root), Some(b_root), Some(_)) => {
                 if a.owner.as_ref() == Some(a_root) && b.owner.as_ref() == Some(b_root) {
                     owner.clone()
                 } else {
-                    Some(self.join_processor_storage_root(
+                    Some(self.join_processor_capture(
                         a_root,
                         b_root,
-                        &state.storage,
                         then_block,
                         else_block,
                         loc.clone(),
-                    )?)
+                    ))
                 }
             }
             (None, None, _) => None,
@@ -284,14 +290,12 @@ impl FunctionLowerer<'_> {
                 self.join_processor_coordinate(*a, *b, then_block, else_block, loc.clone())
             })
             .collect();
-        let resources = self.join_processor_resource_expressions(
-            &a.resources,
-            &b.resources,
-            &a.shape.resources,
-            then_block,
-            else_block,
-            loc.clone(),
-        )?;
+        let resources = a
+            .resources
+            .iter()
+            .zip(&b.resources)
+            .map(|(a, b)| self.join_processor_capture(a, b, then_block, else_block, loc.clone()))
+            .collect();
         let outer = match (&a.outer, &b.outer) {
             (Some(a), Some(b)) => Some(Box::new(self.join_processor_environment(
                 a,
@@ -313,7 +317,7 @@ impl FunctionLowerer<'_> {
         })
     }
 
-    fn join_processor_storage_root(
+    pub(super) fn join_processor_storage_root(
         &mut self,
         a: &str,
         b: &str,

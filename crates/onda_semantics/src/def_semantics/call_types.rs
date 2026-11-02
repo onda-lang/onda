@@ -256,6 +256,7 @@ impl CallTypeEnv {
                                 mapped: false,
                                 mapped_len: None,
                                 alternatives: None,
+                                binding: None,
                             })
                             .collect(),
                         outer: None,

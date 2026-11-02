@@ -37,6 +37,9 @@ fn resource_shape(
     environment: &ProcessorEnvironmentShape,
 ) -> Option<ProcessorResourceShape> {
     for (index, shape) in environment.resources.iter().enumerate() {
+        if shape.binding.is_some() {
+            continue;
+        }
         let resource = format!("{prefix}_resource_{index}");
         if let Some(count) = shape.alternatives {
             if name
@@ -59,6 +62,108 @@ fn resource_shape(
 }
 
 impl FunctionLowerer<'_> {
+    /// Resolve inherited constructor recipes only after selecting the active
+    /// environment. Forwarding a view therefore needs only roots and coordinates,
+    /// never descriptors initialized in an inactive branch.
+    pub(super) fn processor_environment_resource_expression(
+        &mut self,
+        frame: &processor_views::LoweredProcessorEnvironment,
+        index: usize,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<Expr, MirLoweringError> {
+        let (expression, shape) = frame
+            .resources
+            .get(index)
+            .zip(frame.shape.resources.get(index))
+            .ok_or_else(|| {
+                self.error(
+                    "processor operation lost an ordered resource capture",
+                    location.clone(),
+                )
+            })?;
+        let expression = if let Some(binding) = &shape.binding {
+            let expression = self
+                .processor_views
+                .declaration(&binding.owner_struct, &binding.field_name)
+                .and_then(|declaration| declaration.resources.get(binding.resource_index))
+                .cloned()
+                .ok_or_else(|| {
+                    self.error(
+                        "inherited processor resource lost its declaration recipe",
+                        location.clone(),
+                    )
+                })?;
+            let parent = frame.outer.as_deref().ok_or_else(|| {
+                self.error(
+                    "inherited processor resource lost its owner frame",
+                    location.clone(),
+                )
+            })?;
+            let names = self
+                .processor_views
+                .owner_resources
+                .get(&binding.owner_struct)
+                .cloned()
+                .unwrap_or_default();
+            let needs_owner = expression.walk().any(|node| {
+                let name = match node {
+                    Expr::Var { name, .. }
+                    | Expr::Index { base: name, .. }
+                    | Expr::Slice { base: name, .. } => name,
+                    _ => return false,
+                };
+                name == "self"
+                    || name
+                        .strip_prefix("self.")
+                        .is_some_and(|field| !names.iter().any(|name| name == field))
+            });
+            let owner = needs_owner
+                .then(|| {
+                    self.processor_environment_state(parent, block, location.clone())
+                        .map(Expr::var)
+                })
+                .transpose()?;
+            let mut resources = vec![None; parent.resources.len()];
+            for (index, name) in names.iter().enumerate() {
+                let used = expression.walk().any(|node| {
+                    let name_in_recipe = match node {
+                        Expr::Var { name, .. }
+                        | Expr::Index { base: name, .. }
+                        | Expr::Slice { base: name, .. } => name,
+                        _ => return false,
+                    };
+                    name_in_recipe
+                        .strip_prefix("self.")
+                        .unwrap_or(name_in_recipe)
+                        == name
+                });
+                if used {
+                    resources[index] = Some(self.processor_environment_resource_expression(
+                        parent,
+                        index,
+                        block,
+                        location.clone(),
+                    )?);
+                }
+            }
+            self.processor_views.instantiate_member_resource(
+                &binding.owner_struct,
+                &expression,
+                owner.as_ref(),
+                &resources,
+            )
+        } else {
+            self.materialize_processor_resource_capture(expression, shape, block, location.clone())?
+        };
+        self.processor_resource_expression(
+            &expression,
+            shape,
+            frame.coordinates.last().copied(),
+            block,
+        )
+    }
+
     pub(super) fn lexical_processor_resources(
         &self,
         owner: &str,
@@ -105,6 +210,7 @@ impl FunctionLowerer<'_> {
                     mapped: false,
                     mapped_len: None,
                     alternatives: None,
+                    binding: None,
                 },
                 Expr::var(name),
             ));

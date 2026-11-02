@@ -3,6 +3,78 @@
 use super::*;
 
 impl FunctionLowerer<'_> {
+    /// Reconstruct a selected logical owner from persistent roots and captured
+    /// coordinates, including array axes between scalar child projections.
+    pub(super) fn processor_environment_state(
+        &mut self,
+        frame: &processor_views::LoweredProcessorEnvironment,
+        block: &mut MirBlock,
+        location: SourceLoc,
+    ) -> Result<String, MirLoweringError> {
+        let state = frame.shape.state.as_ref().ok_or_else(|| {
+            self.error(
+                "processor resource owner lost its state shape",
+                location.clone(),
+            )
+        })?;
+        let capture = frame.state_root.as_ref().ok_or_else(|| {
+            self.error(
+                "processor resource owner lost its state root",
+                location.clone(),
+            )
+        })?;
+        let mut root = self.materialize_processor_storage_capture(
+            capture,
+            &state.storage,
+            block,
+            location.clone(),
+        )?;
+        let axes = std::iter::once((None, state.storage.len.is_some().then_some(0))).chain(
+            state.projection.edges.iter().map(|edge| {
+                (
+                    Some(edge.declaration.as_str()),
+                    edge.coordinate_axis
+                        .map(|axis| axis + usize::from(state.storage.len.is_some())),
+                )
+            }),
+        );
+        for (field, axis) in axes {
+            if let Some(field) = field {
+                root = format!("{root}.{field}");
+            }
+            if let Some(axis) = axis {
+                let coordinate = frame.coordinates.get(axis).copied().ok_or_else(|| {
+                    self.error(
+                        "processor resource owner lost its selection coordinate",
+                        location.clone(),
+                    )
+                })?;
+                let selected = self.fresh_data_name();
+                let index = self.captured_value_expression(coordinate, block, location.clone());
+                let expression = Expr::Index {
+                    loc: location.clone().into(),
+                    base: root,
+                    index: Box::new(index),
+                };
+                if !self.lower_struct_array_element_alias(
+                    &selected,
+                    &expression,
+                    block,
+                    location.clone(),
+                )? {
+                    return Err(self.error(
+                        "processor resource owner could not materialize its state",
+                        location,
+                    ));
+                }
+                root = selected;
+            } else {
+                self.prepare_scalar_processor_view(&root, block, location.clone())?;
+            }
+        }
+        Ok(root)
+    }
+
     pub(super) fn prepare_scalar_processor_view(
         &mut self,
         root: &str,
@@ -26,7 +98,7 @@ impl FunctionLowerer<'_> {
             return Ok(());
         }
         let proc_name = declaration.proc_name.clone();
-        let processor = self.processor_view(root, block)?;
+        let processor = self.processor_view(root)?;
         for shape in self.struct_field_shapes(&proc_name, loc.clone())? {
             let path = match &shape {
                 StructFieldShape::Scalar { name, .. } | StructFieldShape::Array { name, .. } => {

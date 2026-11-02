@@ -1207,7 +1207,6 @@ impl<'a> FunctionLowerer<'a> {
                     .processor_argument_view(
                         ordered_args[index],
                         prepared_args[index].as_ref().expect("argument prepared"),
-                        block,
                     )?
                     .ok_or_else(|| {
                         self.error(

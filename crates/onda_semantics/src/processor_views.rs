@@ -77,6 +77,14 @@ pub struct ProcessorLexicalResource {
     pub parameter: String,
 }
 
+/// A constructor recipe evaluated against the enclosing captured environment.
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct ProcessorResourceBinding {
+    pub owner_struct: String,
+    pub field_name: String,
+    pub resource_index: usize,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct ProcessorResourceShape {
     pub elem_ty: PrimitiveType,
@@ -88,6 +96,7 @@ pub struct ProcessorResourceShape {
     pub mapped_len: Option<usize>,
     /// A finite choice of scalar descriptors or contiguous descriptor spans.
     pub alternatives: Option<usize>,
+    pub binding: Option<ProcessorResourceBinding>,
 }
 
 impl Ord for ProcessorResourceShape {
@@ -106,6 +115,7 @@ impl Ord for ProcessorResourceShape {
             self.mapped,
             self.mapped_len,
             self.alternatives,
+            &self.binding,
         )
             .cmp(&(
                 other.elem_ty.name(),
@@ -114,6 +124,7 @@ impl Ord for ProcessorResourceShape {
                 other.mapped,
                 other.mapped_len,
                 other.alternatives,
+                &other.binding,
             ))
     }
 }
@@ -313,82 +324,28 @@ impl ProcessorViewCatalog {
         for variant in 0..alternatives {
             let parent_shape = outer.and_then(|outer| outer.shape.environments.get(variant));
             let parent_capture = outer.and_then(|outer| outer.captures.get(variant));
-            let mut environment = declaration.environment.clone();
-            if let Some(parent) = parent_shape {
-                if let Some(parent_state) = &parent.state {
-                    let mut projection = parent_state.projection.clone();
-                    let axis = projection.coordinate_arity();
-                    projection.edges.push(ProcessorProjectionEdge {
-                        declaration: declaration.field_name.clone(),
-                        proc_name: declaration.proc_name.clone(),
-                        extent: declaration.len,
-                        coordinate_axis: declaration.len.map(|_| axis),
-                    });
-                    environment.state = Some(ProcessorStateShape {
-                        storage: parent_state.storage.clone(),
-                        projection: projection.clone(),
-                    });
-                    if environment.owner.is_some() {
-                        environment.owner = Some(projection);
-                        environment.owner_storage = Some(parent_state.storage.clone());
-                    }
-                }
-                if parent.owner.is_some()
-                    || parent.outer.is_some()
-                    || (environment.owner.is_some() && !parent.resources.is_empty())
-                {
-                    environment.outer = Some(Box::new(parent.clone()));
-                }
-            }
+            let environment = self.member_environment(declaration, parent_shape);
             let state_root = parent_capture
                 .and_then(|capture| capture.state_root.clone())
                 .or_else(|| Some(owner_expression.clone()));
-            let mut resources = declaration.resources.clone();
-            for resource in &mut resources {
-                resource.visit_mut(|node| {
-                    if let Expr::Index { base, .. } | Expr::Slice { base, .. } = node {
-                        if let Some(index) =
-                            self.owner_resources.get(owner_struct).and_then(|names| {
-                                names.iter().position(|name| {
-                                    name == base.strip_prefix("self.").unwrap_or(base)
-                                })
-                            })
-                        {
-                            if let Some(Expr::Var { name, .. }) =
-                                parent_capture.and_then(|capture| capture.resources.get(index))
-                            {
-                                *base = name.clone();
-                            }
-                        }
-                    }
-                    if let Expr::Var { name, .. } = node {
-                        if let Some((index, _)) =
-                            self.owner_resources.get(owner_struct).and_then(|names| {
-                                names.iter().enumerate().find(|(_, resource)| {
-                                    resource.as_str() == name.strip_prefix("self.").unwrap_or(name)
-                                })
-                            })
-                        {
-                            if let Some(capture) =
-                                parent_capture.and_then(|capture| capture.resources.get(index))
-                            {
-                                *node = capture.clone();
-                                return false;
-                            }
-                        }
-                        if name == "self" {
-                            *node = owner_expression.clone();
-                            return false;
-                        }
-                        if let (Some(field), Expr::Var { name: owner, .. }) =
-                            (name.strip_prefix("self."), owner_expression)
-                        {
-                            *name = format!("{owner}.{field}");
-                        }
-                    }
-                    true
-                });
-            }
+            let resources = if parent_shape.is_some() {
+                // Inherited resources remain declaration recipes. Their parent roots and
+                // coordinates are captured below; descriptors are selected at the call.
+                declaration.resources.clone()
+            } else {
+                declaration
+                    .resources
+                    .iter()
+                    .map(|resource| {
+                        self.instantiate_member_resource(
+                            owner_struct,
+                            resource,
+                            Some(owner_expression),
+                            &[],
+                        )
+                    })
+                    .collect()
+            };
             captures.push(ProcessorEnvironmentCapture {
                 state_root: state_root.clone(),
                 owner: environment.owner.as_ref().and(state_root),
@@ -411,6 +368,96 @@ impl ProcessorViewCatalog {
             },
             captures,
         })
+    }
+
+    pub fn member_environment(
+        &self,
+        declaration: &ProcessorViewDeclaration,
+        parent: Option<&ProcessorEnvironmentShape>,
+    ) -> ProcessorEnvironmentShape {
+        let mut environment = declaration.environment.clone();
+        if let Some(parent) = parent {
+            if let Some(parent_state) = &parent.state {
+                let mut projection = parent_state.projection.clone();
+                let axis = projection.coordinate_arity();
+                projection.edges.push(ProcessorProjectionEdge {
+                    declaration: declaration.field_name.clone(),
+                    proc_name: declaration.proc_name.clone(),
+                    extent: declaration.len,
+                    coordinate_axis: declaration.len.map(|_| axis),
+                });
+                environment.state = Some(ProcessorStateShape {
+                    storage: parent_state.storage.clone(),
+                    projection: projection.clone(),
+                });
+                if environment.owner.is_some() {
+                    environment.owner = Some(projection);
+                    environment.owner_storage = Some(parent_state.storage.clone());
+                }
+            }
+            if parent.owner.is_some() || parent.outer.is_some() || !environment.resources.is_empty()
+            {
+                environment.outer = Some(Box::new(parent.clone()));
+            }
+            for (index, resource) in environment.resources.iter_mut().enumerate() {
+                resource.binding = Some(ProcessorResourceBinding {
+                    owner_struct: declaration.owner_struct.clone(),
+                    field_name: declaration.field_name.clone(),
+                    resource_index: index,
+                });
+            }
+        }
+        environment
+    }
+
+    pub fn instantiate_member_resource(
+        &self,
+        owner_struct: &str,
+        expression: &Expr,
+        owner_expression: Option<&Expr>,
+        parent_resources: &[Option<Expr>],
+    ) -> Expr {
+        let mut resource = expression.clone();
+        resource.visit_mut(|node| {
+            if let Expr::Index { base, .. } | Expr::Slice { base, .. } = node {
+                if let Some(index) = self.owner_resources.get(owner_struct).and_then(|names| {
+                    names
+                        .iter()
+                        .position(|name| name == base.strip_prefix("self.").unwrap_or(base))
+                }) {
+                    if let Some(Expr::Var { name, .. }) =
+                        parent_resources.get(index).and_then(Option::as_ref)
+                    {
+                        *base = name.clone();
+                    }
+                }
+            }
+            if let Expr::Var { name, .. } = node {
+                if let Some((index, _)) = self.owner_resources.get(owner_struct).and_then(|names| {
+                    names.iter().enumerate().find(|(_, resource)| {
+                        resource.as_str() == name.strip_prefix("self.").unwrap_or(name)
+                    })
+                }) {
+                    if let Some(capture) = parent_resources.get(index).and_then(Option::as_ref) {
+                        *node = capture.clone();
+                        return false;
+                    }
+                }
+                if name == "self" {
+                    if let Some(owner) = owner_expression {
+                        *node = owner.clone();
+                        return false;
+                    }
+                }
+                if let (Some(field), Some(Expr::Var { name: owner, .. })) =
+                    (name.strip_prefix("self."), owner_expression)
+                {
+                    *name = format!("{owner}.{field}");
+                }
+            }
+            true
+        });
+        resource
     }
 
     pub fn declaration(&self, owner: &str, field: &str) -> Option<&ProcessorViewDeclaration> {

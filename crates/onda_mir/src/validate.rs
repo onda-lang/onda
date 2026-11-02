@@ -1550,17 +1550,12 @@ impl Validator<'_> {
                                         "buffer-parameter call argument references a non-buffer parameter",
                                     );
                                 }
-                                if let crate::BufferParamRef::ArrayElement { selector, .. } =
-                                    parameter
-                                {
-                                    self.require_i32_value(
-                                        function_id,
-                                        function,
-                                        *selector,
-                                        statement.source,
-                                        "buffer-parameter collection selector",
-                                    );
-                                }
+                                self.validate_buffer_param_ref(
+                                    function_id,
+                                    function,
+                                    *parameter,
+                                    statement.source,
+                                );
                             }
                             CallArgument::BufferSpan(span) => self.validate_buffer_span_value(
                                 function_id,
