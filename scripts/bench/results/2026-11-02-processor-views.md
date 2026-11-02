@@ -142,5 +142,5 @@ python3 scripts/bench/run.py --filter 'proc-bank|proc-helper-callback' \
 The JSON's `sources` object preserves the exact custom inputs used in this report;
 write an entry to an `.onda` file and select it with `--source` for exact source
 replay. Rebuild/preserve each worker separately, alternate compiler-control order,
-and run measurements sequentially. The implementation plan and verification
-commands are in [structured processor storage](../../../docs/plans/structured-processor-storage.md).
+and run measurements sequentially. Additional verification and inspection options
+are documented in the [benchmark guide](../README.md).

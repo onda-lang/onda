@@ -161,9 +161,9 @@ this processor capacity. They do not justify claiming zero processor-abstraction
 In the nested callback case, two routing tensors are initialized but never read by process/helpers;
 callbacks use captured coordinates directly. They occupy **131,072 bytes** of state/snapshot
 storage at 16,384 slots. The generator remains necessary for top-level delegate subscriptions.
-The plan explicitly preserves the existing state ABI, so selective pruning is a future optimization,
-not a missing correctness requirement. Cached output stores and conservative callback-loop
-vectorization are further opportunities exposed by the current MIR model.
+The current implementation retains these fields; selective pruning remains an optimization
+opportunity. Cached output stores and conservative callback-loop vectorization are further
+opportunities exposed by the current MIR model.
 
 ## Compiler time, separately from DSP runtime
 
