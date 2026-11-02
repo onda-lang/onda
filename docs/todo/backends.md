@@ -59,6 +59,13 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
 
 - Keep Onda source scalar and select SIMD inside backends. Consume shared alignment, range, and
   dependence facts from [compiler analyses](compiler.md#dsp-loop-proofs-and-diagnostics).
+- Measure processor callback-loop SIMD as the
+  [shared MIR effect/dependence proofs](compiler.md#dsp-scheduling-and-processor-array-performance)
+  improve. Use the 16/128/1,024/16,384-slot cases from the
+  [final processor-storage report](../../scripts/bench/results/2026-11-02-processor-final.md#mir-alignment-and-larger-capacity-stress),
+  inspecting LLVM remarks, aligned accesses, scalar tails, register pressure and callback latency.
+  Preserve callback and reduction order, retain safe scalar execution when proofs are insufficient,
+  and require repeated generated-code runtime gains with native/Wasm output parity.
 - Improve native vectorization decisions for small strided kernels. The current f32 FFT's fused
   8-point base stage lowers to extensive shuffles and register spills; evaluate vectorization
   direction, width, interleaving, and register pressure with measured code quality rather than

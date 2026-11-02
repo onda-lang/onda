@@ -99,12 +99,41 @@ A 1,000-instance `Sine` bank exposes avoidable state traffic and a serial floati
 reduction in the sample loop. Calls and table lookups are already inlined; enabling fast math lets
 LLVM vectorize the bank. Use this workload to guide general processor and MIR optimizations.
 
+The [final processor-storage report](../../scripts/bench/results/2026-11-02-processor-final.md#mir-alignment-and-larger-capacity-stress)
+adds measured follow-ups from banks up to 16,384 slots. Its ordinary-array numerical references
+carry less state and omit callback dispatch; use them to identify costs while accounting for that
+difference in work.
+
+- Prune unused compiler-generated delegate routing state per instance.
+  - In the 16,384-slot nested callback bank, `__onda_delegate_index` and
+    `__onda_delegate_route` are initialized but never read by processing/helpers, which use captured
+    coordinates directly. Removing these two tensors would save 131,072 bytes of state/snapshot
+    storage and their initialization writes.
+  - Prove routing fields unused across reachable helpers, events, aliases, and replacement paths.
+    Keep the routing generator for top-level subscriptions that still read these fields.
+  - Derive state/snapshot metadata from the retained layout and verify initialization, cloning,
+    snapshot/restore, and delegate identity/order. Measure storage, initialization and snapshot
+    costs separately from DSP runtime.
+
 - Reduce processor state traffic using field-level liveness and effect analysis.
   - Eliminate unobservable processor-output stores and reuse invariant parameters, increments, and
     offsets across samples when writes and aliases permit it.
+  - Use the reported 16/128/1,024/16,384-slot banks to prove when cached outputs are used only by
+    their producing call. Forward immediate uses while retaining stores observed through aliases,
+    helpers, events or later samples; check removed stores in MIR/LLVM and measure state bytes and
+    runtime against the current processor baseline.
   - Keep evolving state in locals where possible, committing it at observable boundaries.
   - Preserve event, exported-function, state-snapshot, and segmented-processing behavior, including
     state and effect ordering on failure.
+
+- Expose independent work in processor callback loops through shared MIR proofs.
+  - The reported callback bank remains conservative about vectorization despite contiguous state
+    tensors and explicit owner coordinates. Analyze which iterations affect shared owner state and
+    whether separating or peeling those iterations leaves provably independent work.
+  - Preserve synchronous callback order, overlapping views, checked failures and the ordered
+    floating-point reduction. Keep uncertain effects on the original execution path.
+  - Share reusable effect/dependence facts in MIR; evaluate vectorization and target costs in the
+    [backends](backends.md#optimization-follow-ups), with native/Wasm differential coverage.
 
 - Evaluate block scheduling or bounded tiling of independent processor computations.
   - Reuse oscillator/filter state across several samples and expose independent work to backend
