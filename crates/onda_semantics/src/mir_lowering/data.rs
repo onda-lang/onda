@@ -276,6 +276,7 @@ impl FunctionLowerer<'_> {
                 }
                 Binding::StructView {
                     struct_name: struct_name.clone(),
+                    processor: None,
                 }
             }
             DataType::Array {
@@ -299,6 +300,8 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        self.prepare_scalar_processor_view(source, block, loc.clone())?;
+        let processor = self.processor_view(source, block)?;
         for shape in self.data_shapes(data, loc.clone())? {
             let (path, extent) = match shape {
                 StructFieldShape::Scalar { name, .. } => (name, None),
@@ -352,7 +355,32 @@ impl FunctionLowerer<'_> {
             self.bindings
                 .insert(Self::data_leaf_name(name, &path), binding);
         }
-        self.bind_data_root(name, data, loc)?;
+        self.bind_data_root(name, data, loc.clone())?;
+        if processor.is_some() {
+            if matches!(
+                self.bindings.get(name),
+                Some(Binding::StructArrayStorage { .. })
+            ) {
+                self.prepare_data_array_view(name, block, loc)?;
+            }
+            if let Some(
+                Binding::StructView {
+                    processor: value, ..
+                }
+                | Binding::StructParameter {
+                    processor: value, ..
+                }
+                | Binding::StructArrayParameter {
+                    processor: value, ..
+                }
+                | Binding::ProcArrayParameter {
+                    processor: value, ..
+                },
+            ) = self.bindings.get_mut(name)
+            {
+                *value = processor;
+            }
+        }
         Ok(())
     }
 
@@ -467,7 +495,7 @@ impl FunctionLowerer<'_> {
                 match self.bindings.get(name) {
                     Some(
                         Binding::StructParameter { struct_name, .. }
-                        | Binding::StructView { struct_name },
+                        | Binding::StructView { struct_name, .. },
                     ) => return Some(DataType::Struct(struct_name.clone())),
                     Some(
                         Binding::Array(_, element, len)
@@ -510,6 +538,28 @@ impl FunctionLowerer<'_> {
                             element: ArrayElemType::Primitive(*element),
                             len: *len as usize,
                         });
+                    }
+                }
+                if let Some((owner, field)) = name.rsplit_once('.') {
+                    let owner_type =
+                        self.owner_struct_name(owner)
+                            .map(str::to_owned)
+                            .or_else(|| match self.data_type_of(&Expr::var(owner)) {
+                                Some(DataType::Struct(name)) => Some(name),
+                                _ => None,
+                            });
+                    if let Some(owner_type) = owner_type {
+                        if let Some(declaration) =
+                            self.processor_views.declaration(&owner_type, field)
+                        {
+                            return Some(match declaration.len {
+                                None => DataType::Struct(declaration.proc_name.clone()),
+                                Some(len) => DataType::Array {
+                                    element: ArrayElemType::Struct(declaration.proc_name.clone()),
+                                    len,
+                                },
+                            });
+                        }
                     }
                 }
                 let (root, path) = name.split_once('.')?;
@@ -659,10 +709,20 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        if let Some((owner, _)) = name.rsplit_once('.') {
+            self.prepare_scalar_processor_view(owner, block, loc.clone())?;
+        }
         if matches!(
             self.bindings.get(name),
             Some(Binding::StructArrayParameter { .. })
         ) {
+            let processor = self.processor_view(name, block)?;
+            if let Some(Binding::StructArrayParameter {
+                processor: value, ..
+            }) = self.bindings.get_mut(name)
+            {
+                *value = processor;
+            }
             return Ok(());
         }
         if self
@@ -671,6 +731,18 @@ impl FunctionLowerer<'_> {
         {
             return Ok(());
         }
+        if let Some((owner, array)) = self.nested_proc_array_source_any(name) {
+            let canonical = format!("{owner}.{}", array.field_name);
+            if canonical != name {
+                self.prepare_data_array_view(&canonical, block, loc.clone())?;
+                if let Some(binding @ Binding::StructArrayParameter { .. }) =
+                    self.bindings.get(&canonical).cloned()
+                {
+                    self.bindings.insert(name.to_owned(), binding);
+                    return Ok(());
+                }
+            }
+        }
         let Some(DataType::Array {
             element: ArrayElemType::Struct(struct_name),
             len,
@@ -678,6 +750,7 @@ impl FunctionLowerer<'_> {
         else {
             return Ok(());
         };
+        let processor = self.processor_view(name, block)?;
         let mut fields = Vec::new();
         for shape in self.struct_field_shapes(&struct_name, loc.clone())? {
             let (path, element) = match shape {
@@ -697,6 +770,7 @@ impl FunctionLowerer<'_> {
         self.bindings.insert(
             name.to_owned(),
             Binding::StructArrayParameter {
+                processor,
                 struct_name,
                 length: StructArrayLength::Fixed(self.data_extent(len, loc)?),
                 fields,
@@ -712,6 +786,7 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
     ) -> Result<String, MirLoweringError> {
         if let Expr::Var { name, .. } = expr {
+            self.prepare_scalar_processor_view(name, block, expr.loc())?;
             return Ok(name.clone());
         }
         if let Some(selection) = self.lower_indexed_data_field(expr, block)? {

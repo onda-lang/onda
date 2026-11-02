@@ -5,6 +5,8 @@
 //! calls without reverse-engineering pointer provenance from lowered code.
 
 use crate::call_graph::CallGraph;
+mod resource_aliases;
+use resource_aliases::{infer_local_resource_aliases, ResourceAliases};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -408,90 +410,14 @@ pub fn analyze_buffer_writes(
     Ok(BufferWriteAnalysis { may_write })
 }
 
-fn infer_local_resource_aliases(
-    program: &Program,
-    function: &Function,
-) -> Vec<HashSet<ResourceOrigin>> {
-    let mut aliases = vec![HashSet::new(); function.locals.len()];
-    loop {
-        let previous = aliases.clone();
-        collect_block_aliases(program, function, &function.body, &previous, &mut aliases);
-        if aliases == previous {
-            return aliases;
-        }
-    }
-}
-
-fn collect_block_aliases(
-    program: &Program,
-    function: &Function,
-    block: &Block,
-    previous: &[HashSet<ResourceOrigin>],
-    aliases: &mut [HashSet<ResourceOrigin>],
-) {
-    for statement in &block.statements {
-        match &statement.kind {
-            StatementKind::Assign { destination, value }
-                if destination.projections.is_empty()
-                    && matches!(destination.base, PlaceBase::Local(_)) =>
-            {
-                let PlaceBase::Local(local) = destination.base else {
-                    unreachable!()
-                };
-                aliases[local.index()]
-                    .extend(rvalue_resource_origins(program, function, value, previous));
-            }
-            StatementKind::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                collect_block_aliases(program, function, then_block, previous, aliases);
-                collect_block_aliases(program, function, else_block, previous, aliases);
-            }
-            StatementKind::Loop { body } => {
-                collect_block_aliases(program, function, body, previous, aliases)
-            }
-            _ => {}
-        }
-    }
-}
-
-fn rvalue_resource_origins(
-    program: &Program,
-    function: &Function,
-    value: &Rvalue,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
+fn value_resource_origins(value: Value, aliases: &ResourceAliases) -> HashSet<ResourceOrigin> {
     match value {
-        Rvalue::Use(value) => value_resource_origins(*value, aliases),
-        Rvalue::Load(place) => place_resource_origins(place, aliases),
-        Rvalue::MakeSlice { source, .. } => match source {
-            SliceSource::Buffer { buffer, .. } => buffer_ref_resource_origins(*buffer),
-            SliceSource::BufferParam { parameter, .. } => {
-                buffer_param_resource_origins(program, function, *parameter)
-            }
-            SliceSource::Place(place) => place_resource_origins(place, aliases),
-            SliceSource::ConstData(_) => HashSet::new(),
-        },
-        _ => HashSet::new(),
-    }
-}
-
-fn value_resource_origins(
-    value: Value,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
-    match value {
-        Value::Local(local) => aliases.get(local.index()).cloned().unwrap_or_default(),
+        Value::Local(local) => aliases.all(local),
         Value::Constant(_) => HashSet::new(),
     }
 }
 
-fn place_resource_origins(
-    place: &Place,
-    aliases: &[HashSet<ResourceOrigin>],
-) -> HashSet<ResourceOrigin> {
+fn place_resource_origins(place: &Place, aliases: &ResourceAliases) -> HashSet<ResourceOrigin> {
     match place.base {
         PlaceBase::Parameter(parameter) => {
             HashSet::from([ResourceOrigin::Parameter(ParameterSlot {
@@ -499,7 +425,7 @@ fn place_resource_origins(
                 slot: 0,
             })])
         }
-        PlaceBase::Local(local) => aliases.get(local.index()).cloned().unwrap_or_default(),
+        PlaceBase::Local(local) => aliases.all(local),
         PlaceBase::State(_) | PlaceBase::Param(_) | PlaceBase::EventParam(_) => HashSet::new(),
     }
 }
@@ -551,7 +477,7 @@ fn collect_block_resource_writes(
     program: &Program,
     function: &Function,
     block: &Block,
-    aliases: &[HashSet<ResourceOrigin>],
+    aliases: &ResourceAliases,
     unsupported_results: &HashSet<usize>,
     summaries: &[FunctionBufferWriteSummary],
     output: &mut FunctionBufferWriteSummary,
@@ -571,7 +497,7 @@ fn collect_block_resource_writes(
             }
             StatementKind::BufferParamStore { parameter, .. } => {
                 mark_resource_origins(
-                    buffer_param_resource_origins(program, function, *parameter),
+                    buffer_param_resource_origins(program, function, *parameter, aliases),
                     output,
                 );
             }
@@ -638,7 +564,7 @@ fn collect_block_resource_writes(
                             argument,
                             aliases,
                             parameter.slot,
-                        ),
+                        )?,
                         output,
                     );
                 }
@@ -684,7 +610,7 @@ fn collect_block_resource_writes(
 
 fn mark_value_resource_write(
     value: Value,
-    aliases: &[HashSet<ResourceOrigin>],
+    aliases: &ResourceAliases,
     unsupported_results: &HashSet<usize>,
     context: &str,
     output: &mut FunctionBufferWriteSummary,
@@ -704,15 +630,63 @@ fn call_argument_resource_origins(
     program: &Program,
     function: &Function,
     argument: &CallArgument,
-    aliases: &[HashSet<ResourceOrigin>],
+    aliases: &ResourceAliases,
     slot: usize,
-) -> HashSet<ResourceOrigin> {
-    match argument {
+) -> Result<HashSet<ResourceOrigin>, BufferWriteAnalysisError> {
+    Ok(match argument {
         CallArgument::Buffer(buffer) => buffer_ref_resource_origins(*buffer),
         CallArgument::BufferParam(parameter) => {
-            buffer_param_resource_origins(program, function, *parameter)
+            buffer_param_resource_origins(program, function, *parameter, aliases)
         }
         CallArgument::BufferSpan(span) => match span {
+            crate::BufferSpanRef::Local {
+                collection,
+                start,
+                len,
+                bounds,
+            } => {
+                let source_len = program.types[function.locals[collection.index()].ty.index()]
+                    .buffer_collection()
+                    .map_or(0, |(_, _, _, len, _)| len);
+                let starts = selected_slots(
+                    *start,
+                    source_len.saturating_sub(*len).saturating_add(1) as usize,
+                    *bounds,
+                );
+                starts
+                    .into_iter()
+                    .flat_map(|start| {
+                        if slot < *len as usize {
+                            aliases.slot(*collection, start + slot)
+                        } else {
+                            (0..*len as usize)
+                                .flat_map(|slot| aliases.slot(*collection, start + slot))
+                                .collect()
+                        }
+                    })
+                    .collect()
+            }
+            crate::BufferSpanRef::MappedInterface { map, start, len } => {
+                let Some(entries) = program.buffer_maps.get(map.index()).and_then(|map| {
+                    start
+                        .checked_add(*len)
+                        .and_then(|end| map.buffers.get(*start as usize..end as usize))
+                }) else {
+                    return Err(BufferWriteAnalysisError::new(format!(
+                        "MIR buffer-write analysis references invalid window of buffer map {}",
+                        map.raw()
+                    )));
+                };
+                entries.get(slot).map_or_else(
+                    || {
+                        entries
+                            .iter()
+                            .map(|id| ResourceOrigin::Buffer(id.index()))
+                            .collect()
+                    },
+                    |id| HashSet::from([ResourceOrigin::Buffer(id.index())]),
+                )
+            }
             crate::BufferSpanRef::Interface { first, len } if slot < *len as usize => {
                 HashSet::from([ResourceOrigin::Buffer(first.index().saturating_add(slot))])
             }
@@ -738,13 +712,29 @@ fn call_argument_resource_origins(
                 })
                 .collect(),
         },
+        CallArgument::Value(Value::Local(local))
+            if program.types[function.locals[local.index()].ty.index()]
+                .buffer_collection()
+                .is_some() =>
+        {
+            aliases.slot(*local, slot)
+        }
+        CallArgument::Place(Place {
+            base: PlaceBase::Local(local),
+            ..
+        }) if program.types[function.locals[local.index()].ty.index()]
+            .buffer_collection()
+            .is_some() =>
+        {
+            aliases.slot(*local, slot)
+        }
         CallArgument::Place(place) | CallArgument::ArrayWindow { array: place, .. } => {
             place_resource_origins(place, aliases)
         }
         CallArgument::Value(value)
         | CallArgument::SliceElement { slice: value, .. }
         | CallArgument::SliceWindow { slice: value, .. } => value_resource_origins(*value, aliases),
-    }
+    })
 }
 
 fn call_argument_uses_unsupported_result(
@@ -811,8 +801,23 @@ fn buffer_param_resource_origins(
     program: &Program,
     function: &Function,
     parameter: crate::BufferParamRef,
+    aliases: &ResourceAliases,
 ) -> HashSet<ResourceOrigin> {
     match parameter {
+        crate::BufferParamRef::Local(local) => value_resource_origins(Value::Local(local), aliases),
+        crate::BufferParamRef::LocalElement {
+            collection,
+            selector,
+            bounds,
+        } => {
+            let len = program.types[function.locals[collection.index()].ty.index()]
+                .buffer_collection()
+                .map_or(1, |(_, _, _, len, _)| len);
+            selected_slots(selector, len as usize, bounds)
+                .into_iter()
+                .flat_map(|slot| aliases.slot(collection, slot))
+                .collect()
+        }
         crate::BufferParamRef::Direct(parameter) => {
             HashSet::from([ResourceOrigin::Parameter(ParameterSlot {
                 parameter: parameter.index(),
@@ -829,7 +834,9 @@ fn buffer_param_resource_origins(
                 .get(span.index())
                 .and_then(|parameter| program.types.get(parameter.ty.index()))
                 .and_then(|ty| match ty {
-                    Type::BufferSpan { len, .. } => Some(*len as usize),
+                    Type::BufferSpan { len, .. } | Type::BufferMap { len, .. } => {
+                        Some(*len as usize)
+                    }
                     _ => None,
                 })
                 .unwrap_or(1);
@@ -1329,7 +1336,12 @@ fn value_reference_origins(
                 .locals
                 .get(local.index())
                 .and_then(|local| program.types.get(local.ty.index()))
-                .is_some_and(|ty| matches!(ty, Type::Buffer { .. } | Type::BufferSpan { .. })) =>
+                .is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        Type::Buffer { .. } | Type::BufferSpan { .. } | Type::BufferMap { .. }
+                    )
+                }) =>
         {
             ReferenceOrigins::default()
         }
@@ -2263,6 +2275,7 @@ fn scan_rvalue(
     effects: &mut FunctionEffects,
 ) {
     match value {
+        Rvalue::MakeBuffer { source, .. } => scan_call_argument(source, effects),
         Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => scan_value(*value, effects),
         Rvalue::Load(place) => scan_place(place, Access::Read, effects),
@@ -2463,8 +2476,14 @@ fn scan_call_argument(argument: &CallArgument, effects: &mut FunctionEffects) {
             mark_buffer_param_ref(*parameter, Access::Read, effects);
         }
         CallArgument::BufferSpan(span) => match span {
-            crate::BufferSpanRef::Interface { .. } => {
+            crate::BufferSpanRef::Interface { .. }
+            | crate::BufferSpanRef::MappedInterface { .. } => {
                 effects.reads.insert(MemoryRegionSet::BUFFERS);
+            }
+            crate::BufferSpanRef::Local { start, bounds, .. } => {
+                scan_value(*start, effects);
+                mark_checked_bounds(*bounds, effects);
+                effects.reads.insert(MemoryRegionSet::INDIRECT);
             }
             crate::BufferSpanRef::Parameter { span, .. } => {
                 effects.reads.insert(MemoryRegionSet::ARGUMENTS);
@@ -2553,10 +2572,10 @@ fn mark_buffer_param_ref(
     for index in parameter.possible_indices() {
         mark_parameter(ParameterId::new(index as u32), access, effects);
     }
-    if let crate::BufferParamRef::ArrayElement {
-        selector, bounds, ..
-    } = parameter
-    {
+    if parameter.local().is_some() {
+        mark_region(MemoryRegionSet::BUFFERS, access, effects);
+    }
+    if let Some((selector, bounds)) = parameter.selection() {
         scan_value(selector, effects);
         mark_checked_bounds(bounds, effects);
     }
@@ -2624,13 +2643,15 @@ fn merge_argument_effects(
         }
         CallArgument::Buffer(_) => (MemoryRegionSet::BUFFERS, None),
         CallArgument::BufferParam(_) => unreachable!("buffer parameter arguments return above"),
-        CallArgument::BufferSpan(crate::BufferSpanRef::Interface { .. }) => {
-            (MemoryRegionSet::BUFFERS, None)
-        }
+        CallArgument::BufferSpan(
+            crate::BufferSpanRef::Interface { .. } | crate::BufferSpanRef::MappedInterface { .. },
+        ) => (MemoryRegionSet::BUFFERS, None),
         CallArgument::BufferSpan(crate::BufferSpanRef::Parameter { .. }) => {
             unreachable!("buffer span parameter arguments return above")
         }
-        CallArgument::Value(_) => (MemoryRegionSet::INDIRECT, None),
+        CallArgument::BufferSpan(crate::BufferSpanRef::Local { .. }) | CallArgument::Value(_) => {
+            (MemoryRegionSet::INDIRECT, None)
+        }
     };
     let mut changed = false;
     if access.reads {

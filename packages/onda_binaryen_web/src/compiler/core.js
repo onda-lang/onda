@@ -58,6 +58,7 @@ export class MirCompilerCore {
     this.controlOutputLayout = [];
     this.eventLayout = [];
     this.constLayout = [];
+    this.bufferMapLayout = [];
     this.localArrayLayout = [];
     this.localScalarRefLayout = [];
     this.memorySegments = [];
@@ -706,6 +707,15 @@ export class MirCompilerCore {
     ) {
       this.fail("Binaryen shrinkLevel must be an integer from 0 through 2");
     }
+    if (mir.buffer_maps !== undefined && !Array.isArray(mir.buffer_maps)) {
+      this.fail("MIR field 'buffer_maps' must be an array");
+    }
+    for (const [id, map] of (mir.buffer_maps ?? []).entries()) {
+      if (!Array.isArray(map?.buffers) || map.buffers.length === 0 || map.buffers.length > 0x7fff_ffff
+        || map.buffers.some((entry) => !Number.isInteger(entry) || entry < 0 || entry >= mir.interface.buffers.length)) {
+        this.fail(`buffer map ${id} contains invalid symbolic resources`);
+      }
+    }
     this.validateCurrentSchemaEnvelope();
     this.validateProcessEntrySignature();
     this.validateAcyclicCallGraph();
@@ -1050,7 +1060,7 @@ export class MirCompilerCore {
       ) {
         const parameter = func.params?.[parameterRef.data.span];
         const type = parameter && this.type(parameter.ty);
-        const len = type?.kind === "buffer_span" ? type.data.len : 1;
+        const len = ["buffer_span", "buffer_map"].includes(type?.kind) ? type.data.len : 1;
         return selectedSlots(
           parameterRef.data.selector,
           len,
@@ -1059,11 +1069,15 @@ export class MirCompilerCore {
       }
       return [];
     };
-    const bufferParamOrigins = (parameterRef, func) => new Set(
-      bufferParamSlots(parameterRef, func).map(({ parameter, slot }) =>
-        parameterOrigin(parameter, slot)
-      ),
-    );
+    const bufferParamOrigins = (parameterRef, func, aliases) => {
+      if (parameterRef?.kind === "local") return new Set(aliases?.[parameterRef.data] ?? []);
+      if (parameterRef?.kind === "local_element") {
+        const { collection, selector, bounds } = parameterRef.data;
+        const len = this.type(func.locals[collection].ty).data.len;
+        return new Set(selectedSlots(selector, len, bounds).flatMap((slot) => [...(aliases.collections?.[collection]?.[slot] ?? aliases[collection] ?? [])]));
+      }
+      return new Set(bufferParamSlots(parameterRef, func).map(({ parameter, slot }) => parameterOrigin(parameter, slot)));
+    };
     const localId = (value) =>
       value?.kind === "local" && Number.isInteger(value.data)
         ? value.data
@@ -1074,9 +1088,11 @@ export class MirCompilerCore {
       setEquals(lhs.buffers, rhs.buffers)
       && setEquals(lhs.parameters, rhs.parameters);
 
+    const localOrigins = (id, aliases) => new Set(aliases.collections?.[id]
+      ? aliases.collections[id].flatMap((origins) => [...origins]) : aliases[id] ?? []);
     const valueOrigins = (value, aliases) => {
       const id = localId(value);
-      return id === null ? new Set() : new Set(aliases[id] ?? []);
+      return id === null ? new Set() : localOrigins(id, aliases);
     };
     const placeOrigins = (place, aliases) => {
       const base = place?.base;
@@ -1084,11 +1100,12 @@ export class MirCompilerCore {
         return new Set([parameterOrigin(base.data, 0)]);
       }
       if (base?.kind === "local" && Number.isInteger(base.data)) {
-        return new Set(aliases[base.data] ?? []);
+        return localOrigins(base.data, aliases);
       }
       return new Set();
     };
     const rvalueOrigins = (value, aliases, func) => {
+      if (value?.kind === "make_buffer") return argumentOrigins(value.data.source, aliases, func, null);
       if (value?.kind === "use") {
         return valueOrigins(value.data, aliases);
       }
@@ -1103,7 +1120,7 @@ export class MirCompilerCore {
         return bufferOrigins(source.data?.buffer);
       }
       if (source?.kind === "buffer_param") {
-        return bufferParamOrigins(source.data?.parameter, func);
+        return bufferParamOrigins(source.data?.parameter, func, aliases);
       }
       if (source?.kind === "place") {
         return placeOrigins(source.data, aliases);
@@ -1111,36 +1128,71 @@ export class MirCompilerCore {
       return new Set();
     };
     const collectAliases = (func) => {
-      const aliases = (func.locals ?? []).map(() => new Set());
-      let changed = true;
-      const visitBlock = (block) => {
-        for (const statement of block?.statements ?? []) {
-          const kind = statement.kind?.kind;
-          const data = statement.kind?.data;
-          if (
-            kind === "assign"
-            && data?.destination?.projections?.length === 0
-            && data.destination.base?.kind === "local"
-          ) {
-            const destination = data.destination.base.data;
-            const origins = rvalueOrigins(data.value, aliases, func);
-            for (const origin of origins) {
-              if (!aliases[destination].has(origin)) {
-                aliases[destination].add(origin);
-                changed = true;
-              }
+      const aliases = [];
+      aliases.collections = [];
+      const resourceType = (id) => {
+        const type = this.type(func.locals[id].ty);
+        return ["slice", "buffer", "buffer_span", "buffer_map"].includes(type.kind) ? type : null;
+      };
+      if (!(func.locals ?? []).some((_, id) => resourceType(id))) return aliases;
+      const sourceLocal = (value) => {
+        if (value.kind === "use") return localId(value.data);
+        if (value.kind === "load") return value.data.base?.kind === "local" ? value.data.base.data : null;
+        const source = value.kind === "make_buffer" || value.kind === "make_slice" ? value.data.source : null;
+        if (source?.kind === "value") return localId(source.data);
+        if (source?.kind === "place") return source.data.base?.kind === "local" ? source.data.base.data : null;
+        if (source?.kind === "buffer_span" && source.data.kind === "local") return source.data.data.collection;
+        const reference = source?.kind === "buffer_param" ? source.data?.parameter ?? source.data : null;
+        if (reference?.kind === "local") return reference.data;
+        if (reference?.kind === "local_element") return reference.data.collection;
+        return null;
+      };
+      const assignments = [];
+      const blocks = [func.body];
+      while (blocks.length) {
+        for (const statement of blocks.pop()?.statements ?? []) {
+          const { kind, data } = statement.kind;
+          if (kind === "assign" && data.destination.projections.length === 0
+              && data.destination.base.kind === "local" && resourceType(data.destination.base.data)) {
+            assignments.push(data);
+          } else if (kind === "if") blocks.push(data.else_block, data.then_block);
+          else if (kind === "loop") blocks.push(data.body);
+        }
+      }
+      const dependents = new Map();
+      assignments.forEach((assignment, index) => {
+        const source = sourceLocal(assignment.value);
+        if (source !== null) {
+          if (!dependents.has(source)) dependents.set(source, []);
+          dependents.get(source).push(index);
+        }
+      });
+      const pending = assignments.map((_, index) => index);
+      const queued = new Uint8Array(assignments.length).fill(1);
+      for (let cursor = 0; cursor < pending.length; cursor += 1) {
+        const index = pending[cursor];
+        queued[index] = 0;
+        const { destination, value } = assignments[index];
+        const id = destination.base.data;
+        const origins = rvalueOrigins(value, aliases, func);
+        const target = aliases[id] ??= new Set();
+        let changed = false;
+        for (const origin of origins) if (!target.has(origin)) { target.add(origin); changed = true; }
+        const type = resourceType(id);
+        if (["buffer_span", "buffer_map"].includes(type.kind)) {
+          const slots = aliases.collections[id] ??= Array.from({ length: type.data.len }, () => new Set());
+          const source = value.kind === "make_buffer" ? value.data.source
+            : value.kind === "use" ? { kind: "value", data: value.data }
+            : value.kind === "load" ? { kind: "place", data: value.data } : null;
+          for (let slot = 0; slot < slots.length; slot += 1) {
+            for (const origin of argumentOrigins(source, aliases, func, slot)) {
+              if (!slots[slot].has(origin)) { slots[slot].add(origin); changed = true; }
             }
-          } else if (kind === "if") {
-            visitBlock(data?.then_block);
-            visitBlock(data?.else_block);
-          } else if (kind === "loop") {
-            visitBlock(data?.body);
           }
         }
-      };
-      while (changed) {
-        changed = false;
-        visitBlock(func.body);
+        if (changed) for (const dependent of dependents.get(id) ?? []) {
+          if (!queued[dependent]) { queued[dependent] = 1; pending.push(dependent); }
+        }
       }
       return aliases;
     };
@@ -1197,9 +1249,17 @@ export class MirCompilerCore {
         case "buffer":
           return bufferOrigins(argument.data);
         case "buffer_param":
-          return bufferParamOrigins(argument.data, func);
+          return bufferParamOrigins(argument.data, func, aliases);
         case "buffer_span": {
           const span = argument.data;
+          if (span?.kind === "local") {
+            const { collection, start, len, bounds } = span.data;
+            const sourceLen = this.type(func.locals[collection].ty).data.len;
+            const starts = selectedSlots(start, sourceLen - len + 1, bounds);
+            return new Set(starts.flatMap((start) => Number.isInteger(slot) && slot >= 0 && slot < len
+              ? [...(aliases.collections[collection]?.[start + slot] ?? aliases[collection] ?? [])]
+              : Array.from({ length: len }, (_, index) => [...(aliases.collections[collection]?.[start + index] ?? aliases[collection] ?? [])]).flat()));
+          }
           if (span?.kind === "interface") {
             const len = span.data?.len ?? 0;
             if (Number.isInteger(slot) && slot >= 0 && slot < len) {
@@ -1208,6 +1268,13 @@ export class MirCompilerCore {
             return new Set(Array.from({ length: len }, (_, index) =>
               bufferOrigin(span.data.first + index)
             ));
+          }
+          if (span?.kind === "mapped_interface") {
+            const entries = this.mir.buffer_maps[span.data.map].buffers
+              .slice(span.data.start, span.data.start + span.data.len);
+            return new Set(Number.isInteger(slot) && slot >= 0 && slot < entries.length
+              ? [bufferOrigin(entries[slot])]
+              : entries.map(bufferOrigin));
           }
           if (span?.kind === "parameter") {
             const start = span.data?.start ?? 0;
@@ -1221,11 +1288,16 @@ export class MirCompilerCore {
           }
           return new Set();
         }
-        case "place":
+        case "place": {
+          const base = argument.data?.base;
+          if (base?.kind === "local" && aliases.collections[base.data]?.[slot]) return new Set(aliases.collections[base.data][slot]);
+          if (base?.kind === "parameter" && ["buffer_span", "buffer_map"].includes(this.type(func.params[base.data].ty).kind) && Number.isInteger(slot)) return new Set([parameterOrigin(base.data, slot)]);
           return placeOrigins(argument.data, aliases);
+        }
         case "array_window":
           return placeOrigins(argument.data?.array, aliases);
         case "value":
+          if (argument.data?.kind === "local" && aliases.collections[argument.data.data]?.[slot]) return new Set(aliases.collections[argument.data.data][slot]);
           return valueOrigins(argument.data, aliases);
         case "slice_element":
         case "slice_window":
@@ -1279,7 +1351,7 @@ export class MirCompilerCore {
               }
             } else if (kind === "buffer_param_store") {
               markOrigins(
-                bufferParamOrigins(data?.parameter, func),
+                bufferParamOrigins(data?.parameter, func, aliases[functionId]),
                 summary,
               );
             } else if (kind === "slice_store") {
@@ -1435,7 +1507,7 @@ export class MirCompilerCore {
         || value.kind === "slice_copy"
         || delegatePayloadMayFail
         || binaryMayFail(functionId, value)
-        || (checkedBoundsKinds.has(value.kind) && bounds === "checked")
+        || ((checkedBoundsKinds.has(value.kind) || value.kind === "local_element" || (value.kind === "local" && value.data?.collection !== undefined)) && bounds === "checked")
         || (dynamicBoundsKinds.has(value.kind) && bounds !== "unchecked")
       ) {
         direct[functionId] = true;
@@ -1508,6 +1580,17 @@ export class MirCompilerCore {
         data: bytes,
       });
       this.constLayout.push({ address, scalar, len: data.values.length });
+      this.nextStaticAddress += bytes.byteLength;
+    }
+
+    for (const map of this.mir.buffer_maps ?? []) {
+      this.nextStaticAddress = alignUp(this.nextStaticAddress, 4);
+      const address = this.nextStaticAddress;
+      const bytes = new Uint8Array(map.buffers.length * 4);
+      const view = new DataView(bytes.buffer);
+      map.buffers.forEach((id, index) => view.setUint32(index * 4, id, true));
+      this.memorySegments.push({ offset: this.module.i32.const(address), data: bytes });
+      this.bufferMapLayout.push({ address });
       this.nextStaticAddress += bytes.byteLength;
     }
 
@@ -1989,16 +2072,20 @@ export class MirCompilerCore {
         components: ["i32", "i32", "i32", "i32", "f32", "i32"],
       };
     }
-    if (type.kind === "buffer_span") {
+    if (["buffer_span", "buffer_map"].includes(type.kind)) {
       this.bufferChannelMetadata(type.data.channels, type.data.element);
+      if (!Number.isInteger(type.data.len) || type.data.len <= 0 || type.data.len > 0x7fff_ffff
+        || !["read_only", "read_write"].includes(type.data.access)) {
+        this.fail(`${description} has an invalid buffer collection contract`);
+      }
       if (passingMode !== "value") {
         this.fail(`${description} buffer span must use value passing mode`);
       }
       return {
         index,
         typeId,
-        kind: "buffer_span",
-        components: ["i32", "i32", "i32", "i32", "i32", "i32"],
+        kind: type.kind,
+        components: Array(type.kind === "buffer_map" ? 7 : 6).fill("i32"),
       };
     }
     if (type.kind === "array") {
@@ -2028,8 +2115,8 @@ export class MirCompilerCore {
     if (layout.kind === "array") return;
     const suffixes = layout.kind === "buffer"
       ? ["read_address", "write_address", "frames", "channels", "sample_rate", "bound"]
-      : layout.kind === "buffer_span"
-        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table", "bound_table"]
+      : ["buffer_span", "buffer_map"].includes(layout.kind)
+        ? ["read_table", "write_table", "frames_table", "channels_table", "sample_rates_table", "bound_table", ...(layout.kind === "buffer_map" ? ["resource_map"] : [])]
         : ["read_address", "write_address", "length", "stride"];
     for (const [offset, suffix] of suffixes.entries()) {
       binaryen.Function.setLocalName(

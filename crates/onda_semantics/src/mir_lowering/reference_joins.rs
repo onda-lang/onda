@@ -89,11 +89,13 @@ impl FunctionLowerer<'_> {
         let (
             Binding::StructArrayParameter {
                 struct_name,
+                processor: then_processor,
                 length: then_length,
                 fields: then_fields,
             },
             Binding::StructArrayParameter {
                 struct_name: other_struct,
+                processor: else_processor,
                 length: else_length,
                 fields: else_fields,
             },
@@ -104,6 +106,13 @@ impl FunctionLowerer<'_> {
         if struct_name != other_struct || then_fields.len() != else_fields.len() {
             return Ok(None);
         }
+        let processor = self.join_processor_views(
+            then_processor.as_ref(),
+            else_processor.as_ref(),
+            then_block,
+            else_block,
+            loc.clone(),
+        )?;
         let length = match (then_length, else_length) {
             (StructArrayLength::Fixed(a), StructArrayLength::Fixed(b)) if a == b => {
                 StructArrayLength::Fixed(*a)
@@ -146,6 +155,7 @@ impl FunctionLowerer<'_> {
         }
         Ok(Some(Binding::StructArrayParameter {
             struct_name: struct_name.clone(),
+            processor,
             length,
             fields,
         }))

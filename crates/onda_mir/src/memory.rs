@@ -3,7 +3,7 @@
 //! array retain the same identity, including views forwarded through helpers.
 //! Contiguous views retain possible logical element ranges across definitions
 //! and call sites. Physical sizes and alignment remain backend decisions.
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, VecDeque};
 
 use crate::*;
 
@@ -11,11 +11,219 @@ use crate::*;
 // repeatedly shift a view. Exceeding the budget loses ranges, never identity.
 const MAX_RANGES_PER_STATE: usize = 16;
 
+fn integer_multiple(value: i64) -> u64 {
+    1u64.checked_shl(value.trailing_zeros()).unwrap_or(0)
+}
+
+// Every divisor here is a power of two, with zero representing exact zero.
+fn common_divisor(a: u64, b: u64) -> u64 {
+    match (a, b) {
+        (0, value) | (value, 0) => value,
+        _ => a.min(b),
+    }
+}
+
+fn value_multiple(value: Value, locals: &[u64]) -> u64 {
+    match value {
+        Value::Constant(ScalarValue::I32(value)) => integer_multiple(i64::from(value)),
+        Value::Constant(ScalarValue::I64(value)) => integer_multiple(value),
+        Value::Local(local) => locals.get(local.index()).copied().unwrap_or(1),
+        _ => 1,
+    }
+}
+
+/// Track low zero bits through single-definition integer expressions. Address
+/// escapes and repeated assignments are deliberately unknown. A dependency
+/// worklist keeps long expression chains linear and leaves cycles conservative.
+fn integer_multiples(program: &Program, function: &Function) -> Vec<u64> {
+    let mut definitions = vec![None; function.locals.len()];
+    let mut writes = vec![0u8; function.locals.len()];
+    let mut escaped = vec![false; function.locals.len()];
+    let mut pending = vec![&function.body];
+    while let Some(block) = pending.pop() {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Assign { destination, value } => {
+                    if let PlaceBase::Local(local) = destination.base {
+                        if destination.projections.is_empty() {
+                            writes[local.index()] = writes[local.index()].saturating_add(1);
+                            definitions[local.index()] = Some(value);
+                        }
+                    }
+                    if let Rvalue::MakeSlice {
+                        source:
+                            SliceSource::Place(Place {
+                                base: PlaceBase::Local(local),
+                                ..
+                            }),
+                        ..
+                    } = value
+                    {
+                        escaped[local.index()] = true;
+                    }
+                }
+                StatementKind::Call { results, args, .. } => {
+                    for local in results {
+                        escaped[local.index()] = true;
+                    }
+                    for argument in args {
+                        if let CallArgument::Place(Place {
+                            base: PlaceBase::Local(local),
+                            ..
+                        })
+                        | CallArgument::ArrayWindow {
+                            array:
+                                Place {
+                                    base: PlaceBase::Local(local),
+                                    ..
+                                },
+                            ..
+                        } = argument
+                        {
+                            escaped[local.index()] = true;
+                        }
+                    }
+                }
+                StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => pending.extend([then_block, else_block]),
+                StatementKind::Loop { body } => pending.push(body),
+                _ => {}
+            }
+        }
+    }
+    let integer_width = |local: usize| match program.types[function.locals[local].ty.index()] {
+        Type::Scalar(ScalarType::I32) => Some(32),
+        Type::Scalar(ScalarType::I64) => Some(64),
+        _ => None,
+    };
+    for (index, definition) in definitions.iter_mut().enumerate() {
+        if writes[index] != 1 || escaped[index] || integer_width(index).is_none() {
+            *definition = None;
+        }
+    }
+    let mut users = vec![Vec::new(); function.locals.len()];
+    let mut dependencies = vec![0usize; function.locals.len()];
+    for (index, definition) in definitions.iter().enumerate() {
+        let values = match definition {
+            Some(Rvalue::Use(value) | Rvalue::Cast { value, .. }) => [Some(*value), None],
+            Some(Rvalue::Unary {
+                op: UnaryOp::Negate,
+                operand,
+            }) => [Some(*operand), None],
+            Some(Rvalue::Binary {
+                op: BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::ShiftLeft,
+                lhs,
+                rhs,
+            }) => [Some(*lhs), Some(*rhs)],
+            Some(Rvalue::Load(Place {
+                base: PlaceBase::Local(local),
+                projections,
+            })) if projections.is_empty() => [Some(Value::Local(*local)), None],
+            _ => [None, None],
+        };
+        for value in values.into_iter().flatten() {
+            if let Value::Local(local) = value {
+                if definitions[local.index()].is_some() {
+                    dependencies[index] += 1;
+                    users[local.index()].push(index);
+                }
+            }
+        }
+    }
+    let mut pending = dependencies
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &count)| (count == 0 && definitions[index].is_some()).then_some(index))
+        .collect::<VecDeque<_>>();
+    let mut multiples = vec![1; function.locals.len()];
+    while let Some(index) = pending.pop_front() {
+        let width = integer_width(index).unwrap();
+        let product = |a: u64, b: u64| {
+            let bits = a.trailing_zeros().saturating_add(b.trailing_zeros());
+            if bits >= width {
+                0
+            } else {
+                1u64 << bits
+            }
+        };
+        multiples[index] = match definitions[index].unwrap() {
+            Rvalue::Use(value) | Rvalue::Cast { value, .. } => {
+                let multiple = value_multiple(*value, &multiples);
+                if multiple.trailing_zeros() >= width {
+                    0
+                } else {
+                    multiple
+                }
+            }
+            Rvalue::Unary {
+                op: UnaryOp::Negate,
+                operand,
+            } => value_multiple(*operand, &multiples),
+            Rvalue::Load(Place {
+                base: PlaceBase::Local(local),
+                projections,
+            }) if projections.is_empty() => multiples[local.index()],
+            Rvalue::Binary {
+                op: BinaryOp::Multiply,
+                lhs,
+                rhs,
+            } => product(
+                value_multiple(*lhs, &multiples),
+                value_multiple(*rhs, &multiples),
+            ),
+            Rvalue::Binary {
+                op: BinaryOp::Add | BinaryOp::Subtract,
+                lhs,
+                rhs,
+            } => common_divisor(
+                value_multiple(*lhs, &multiples),
+                value_multiple(*rhs, &multiples),
+            ),
+            Rvalue::Binary {
+                op: BinaryOp::ShiftLeft,
+                lhs,
+                rhs,
+            } => {
+                let shift = match rhs {
+                    Value::Constant(ScalarValue::I32(value)) => Some(*value as u64),
+                    Value::Constant(ScalarValue::I64(value)) => Some(*value as u64),
+                    _ => None,
+                };
+                shift.map_or(1, |shift| {
+                    product(
+                        value_multiple(*lhs, &multiples),
+                        1u64 << (shift & (u64::from(width) - 1)),
+                    )
+                })
+            }
+            _ => 1,
+        };
+        for &user in &users[index] {
+            dependencies[user] -= 1;
+            if dependencies[user] == 0 {
+                pending.push_back(user);
+            }
+        }
+    }
+    multiples
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StorageOrigins {
-    states: BTreeMap<StateId, Option<BTreeSet<ElementRange>>>,
+    states: BTreeMap<StateId, StateOrigin>,
     non_state: bool,
     unknown: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StateOrigin {
+    ranges: Option<BTreeSet<ElementRange>>,
+    // Divisibility of the offset from the state base in top-level element units.
+    // Zero denotes the object's base; None permits an offset within an element.
+    offset_multiple: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,7 +262,10 @@ impl StorageOrigins {
         Self {
             states: BTreeMap::from([(
                 state,
-                Some(BTreeSet::from([ElementRange { start: 0, len }])),
+                StateOrigin {
+                    ranges: Some(BTreeSet::from([ElementRange { start: 0, len }])),
+                    offset_multiple: Some(0),
+                },
             )]),
             ..Self::default()
         }
@@ -81,34 +292,90 @@ impl StorageOrigins {
     /// callers must establish their property for every returned view.
     pub fn state_regions(&self) -> Option<impl Iterator<Item = StateRegion> + '_> {
         let _ = self.only_states()?;
-        self.states.values().all(Option::is_some).then(|| {
-            self.states.iter().flat_map(|(&state, ranges)| {
-                ranges
-                    .as_ref()
-                    .unwrap()
-                    .iter()
-                    .map(move |range| StateRegion {
-                        state,
-                        start: range.start,
-                        len: range.len,
-                    })
+        self.states
+            .values()
+            .all(|origin| origin.ranges.is_some())
+            .then(|| {
+                self.states.iter().flat_map(|(&state, origin)| {
+                    origin
+                        .ranges
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .map(move |range| StateRegion {
+                            state,
+                            start: range.start,
+                            len: range.len,
+                        })
+                })
             })
-        })
+    }
+
+    /// Power-of-two divisors of every possible start offset, in each state's
+    /// top-level element units. Zero means the exact object base. These facts
+    /// imply neither a known range nor disjointness between views.
+    pub fn state_offset_multiples(&self) -> Option<impl Iterator<Item = (StateId, u64)> + '_> {
+        let _ = self.only_states()?;
+        self.states
+            .values()
+            .all(|origin| origin.offset_multiple.is_some())
+            .then(|| {
+                self.states
+                    .iter()
+                    .map(|(&state, origin)| (state, origin.offset_multiple.unwrap()))
+            })
     }
 
     fn forget_ranges(mut self) -> Self {
-        self.states.values_mut().for_each(|range| *range = None);
+        self.states.values_mut().for_each(|origin| {
+            origin.ranges = None;
+            origin.offset_multiple = None;
+        });
         self
     }
 
-    fn window(mut self, start: Value, len: Value, bounds: BoundsMode, fixed: bool) -> Self {
+    fn window(
+        mut self,
+        start: Value,
+        len: Value,
+        bounds: BoundsMode,
+        fixed: bool,
+        multiples: &[u64],
+    ) -> Self {
         let integer = |value| match value {
             Value::Constant(ScalarValue::I32(value)) => Some(i64::from(value)),
             Value::Constant(ScalarValue::I64(value)) => Some(value),
             _ => None,
         };
-        for ranges in self.states.values_mut() {
-            *ranges = ranges.as_ref().and_then(|ranges| {
+        for origin in self.states.values_mut() {
+            let mut increment = value_multiple(start, multiples);
+            if bounds == BoundsMode::Clamp {
+                let unknown_endpoint = if integer(start).is_some_and(|start| start <= 0) {
+                    0
+                } else {
+                    1
+                };
+                increment = origin.ranges.as_ref().map_or(unknown_endpoint, |ranges| {
+                    ranges.iter().fold(increment, |multiple, source| {
+                        let available = i64::from(source.len);
+                        let endpoint = if fixed {
+                            integer(len)
+                                .filter(|len| *len >= 0 && *len <= available)
+                                .map(|len| available - len)
+                        } else {
+                            Some(available)
+                        };
+                        let start = endpoint.map(|endpoint| {
+                            integer(start).map_or(endpoint, |start| start.clamp(0, endpoint))
+                        });
+                        common_divisor(multiple, start.map_or(1, integer_multiple))
+                    })
+                });
+            }
+            origin.offset_multiple = origin
+                .offset_multiple
+                .map(|base| common_divisor(base, increment));
+            origin.ranges = origin.ranges.as_ref().and_then(|ranges| {
                 ranges
                     .iter()
                     .map(|source| {
@@ -131,29 +398,41 @@ impl StorageOrigins {
                     })
                     .collect()
             });
+            if let Some(ranges) = &origin.ranges {
+                origin.offset_multiple = Some(ranges.iter().fold(0, |multiple, range| {
+                    common_divisor(multiple, integer_multiple(i64::from(range.start)))
+                }));
+            }
         }
         self
     }
 
     fn merge(&mut self, other: &Self) -> bool {
         let mut changed = (other.non_state && !self.non_state) || (other.unknown && !self.unknown);
-        for (&state, ranges) in &other.states {
+        for (&state, incoming) in &other.states {
             match self.states.entry(state) {
                 Entry::Vacant(entry) => {
-                    entry.insert(ranges.clone());
+                    entry.insert(incoming.clone());
                     changed = true;
                 }
                 Entry::Occupied(mut entry) => {
-                    if let Some(known) = entry.get_mut() {
-                        if let Some(incoming) = ranges {
-                            let before = known.len();
-                            known.extend(incoming);
-                            changed |= known.len() != before;
-                            if known.len() > MAX_RANGES_PER_STATE {
-                                entry.insert(None);
+                    let known = entry.get_mut();
+                    let multiple = known
+                        .offset_multiple
+                        .zip(incoming.offset_multiple)
+                        .map(|(a, b)| common_divisor(a, b));
+                    changed |= multiple != known.offset_multiple;
+                    known.offset_multiple = multiple;
+                    if let Some(ranges) = &mut known.ranges {
+                        if let Some(incoming) = &incoming.ranges {
+                            let before = ranges.len();
+                            ranges.extend(incoming);
+                            changed |= ranges.len() != before;
+                            if ranges.len() > MAX_RANGES_PER_STATE {
+                                known.ranges = None;
                             }
                         } else {
-                            entry.insert(None);
+                            known.ranges = None;
                             changed = true;
                         }
                     }
@@ -171,6 +450,7 @@ struct FunctionOrigins {
     parameters: Vec<StorageOrigins>,
     locals: Vec<StorageOrigins>,
     results: Vec<StorageOrigins>,
+    integer_multiples: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -221,6 +501,7 @@ pub fn analyze_memory(program: &Program) -> MemoryAnalysis {
                 ],
                 locals: vec![StorageOrigins::default(); function.locals.len()],
                 results: vec![StorageOrigins::default(); function.results.len()],
+                integer_multiples: integer_multiples(program, function),
             })
             .collect(),
         function_visits: 0,
@@ -289,7 +570,7 @@ fn place_origins(
         if program.place_type(function, &base).is_some_and(|ty| {
             matches!(program.types[ty.index()], Type::Array { element, .. } if !matches!(program.types[element.index()], Type::Array { .. }))
         }) {
-            return origins.window(*index, Value::Constant(ScalarValue::I32(1)), *bounds, true);
+            return origins.window(*index, Value::Constant(ScalarValue::I32(1)), *bounds, true, &current.integer_multiples);
         }
     }
     origins.forget_ranges()
@@ -334,8 +615,13 @@ fn rvalue_origins(
             len,
             bounds,
             ..
-        } => slice_place_origins(program, function, place, current)
-            .window(*start, *len, *bounds, false),
+        } => slice_place_origins(program, function, place, current).window(
+            *start,
+            *len,
+            *bounds,
+            false,
+            &current.integer_multiples,
+        ),
         // External buffers, constant data, and stack allocations cannot alias
         // owned state under the MIR/processor ABI storage contract.
         Rvalue::MakeSlice { .. } => StorageOrigins::non_state(),
@@ -361,18 +647,36 @@ fn argument_origins(
             slice,
             index,
             bounds,
-        } => value_origins(*slice, current).window(*index, length, *bounds, true),
+        } => value_origins(*slice, current).window(
+            *index,
+            length,
+            *bounds,
+            true,
+            &current.integer_multiples,
+        ),
         CallArgument::SliceWindow {
             slice,
             start,
             bounds,
-        } => value_origins(*slice, current).window(*start, length, *bounds, true),
+        } => value_origins(*slice, current).window(
+            *start,
+            length,
+            *bounds,
+            true,
+            &current.integer_multiples,
+        ),
         CallArgument::Place(place) => place_origins(program, function, place, current),
         CallArgument::ArrayWindow {
             array,
             start,
             bounds,
-        } => place_origins(program, function, array, current).window(*start, length, *bounds, true),
+        } => place_origins(program, function, array, current).window(
+            *start,
+            length,
+            *bounds,
+            true,
+            &current.integer_multiples,
+        ),
         _ => StorageOrigins::non_state(),
     }
 }

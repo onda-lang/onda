@@ -61,6 +61,10 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Option<(BufferBindingReference, PrimitiveType)> {
         match self.bindings.get(name).cloned() {
             Some(Binding::BufferAlias(reference, element)) => Some((reference, element)),
+            Some(Binding::BufferValue(local, element)) => Some((
+                BufferBindingReference::Parameter(onda_mir::BufferParamRef::Local(local)),
+                element,
+            )),
             Some(Binding::BufferParameter(parameter, element)) => Some((
                 BufferBindingReference::Parameter(onda_mir::BufferParamRef::Direct(parameter)),
                 element,
@@ -77,7 +81,7 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn selected_buffer_reference(
+    pub(super) fn selected_buffer_reference(
         &mut self,
         expression: &Expr,
         bounds: BoundsMode,
@@ -86,6 +90,11 @@ impl<'a> FunctionLowerer<'a> {
         let Expr::Index { base, index, .. } = expression else {
             return Ok(None);
         };
+        if let Some(reference) =
+            self.local_buffer_collection_reference(base, index, bounds, block)?
+        {
+            return Ok(Some(reference));
+        }
         let parameter_array = match self.bindings.get(base).cloned() {
             Some(Binding::BufferParameterArray(span, element, _)) => Some((span, element)),
             _ => None,
@@ -226,7 +235,7 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn owner_struct_name(&self, root: &str) -> Option<&str> {
         match self.bindings.get(root) {
             Some(Binding::StructParameter { struct_name, .. })
-            | Some(Binding::StructView { struct_name }) => Some(struct_name.as_str()),
+            | Some(Binding::StructView { struct_name, .. }) => Some(struct_name.as_str()),
             _ => self
                 .runtime_globals_for_unbound(root)
                 .and_then(|globals| globals.struct_roots.get(root))
@@ -259,115 +268,22 @@ impl<'a> FunctionLowerer<'a> {
         })
     }
 
-    pub(super) fn nested_proc_slot_call_arguments(
-        &mut self,
-        owner: &str,
-        slot: &str,
-        shapes: &[StructFieldShape],
-        block: &mut MirBlock,
-        location: SourceLoc,
-    ) -> Result<Vec<CallArgument>, MirLoweringError> {
-        let shapes = shapes
-            .iter()
-            .map(|shape| match shape {
-                StructFieldShape::Scalar { name, ty } => StructFieldShape::Scalar {
-                    name: format!("{slot}__{name}"),
-                    ty: *ty,
-                },
-                StructFieldShape::Array { name, element, len } => StructFieldShape::Array {
-                    name: format!("{slot}__{name}"),
-                    element: *element,
-                    len: *len,
-                },
-            })
-            .collect::<Vec<_>>();
-        self.struct_reference_arguments(owner, &shapes, None, block, location)
-    }
-
-    pub(super) fn lower_nested_proc_array_argument(
-        &mut self,
-        expected_struct: &str,
-        base: &str,
-        index: &Expr,
-        access: IndexAccess,
-        block: &mut MirBlock,
-        location: SourceLoc,
-    ) -> Result<Option<LoweredIndexedStructArgument>, MirLoweringError> {
-        let Some((owner, array)) = self.nested_proc_array_source(base, expected_struct) else {
-            return Ok(None);
-        };
-        if array.slots.is_empty() || array.slots.len() > i32::MAX as usize {
-            return Err(self.error(
-                format!(
-                    "nested processor array '{}.{}' has an invalid semantic length {}",
-                    array.owner_struct,
-                    array.field_name,
-                    array.slots.len()
-                ),
-                location,
-            ));
-        }
-        let raw_index = self.lower_expr(index, block)?;
-        let raw_index = self.coerce(raw_index, PrimitiveType::I32, block, index.loc())?;
-        let normalized = self.materialize_index_to_length(
-            raw_index.value,
-            Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
-            access,
-            block,
-            location.clone(),
-        );
-        let shapes = self.struct_field_shapes(expected_struct, location.clone())?;
-        let alternatives = array
-            .slots
-            .iter()
-            .map(|slot| {
-                self.nested_proc_slot_call_arguments(&owner, slot, &shapes, block, location.clone())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(LoweredIndexedStructArgument::Dispatch {
-            index: normalized,
-            alternatives,
-        }))
-    }
-
     pub(super) fn named_proc_slot_index(
         &self,
         name: &str,
         expected_struct: &str,
     ) -> Option<(String, usize)> {
-        if let Some(globals) = self.runtime_globals {
-            for (root, (struct_name, len)) in &globals.array_struct_roots {
-                if struct_name != expected_struct {
-                    continue;
-                }
-                for index in 0..*len as usize {
-                    if name == format!("{root}[{index}]") {
-                        return Some((root.clone(), index));
-                    }
-                }
-            }
-        }
-        for array in self
-            .nested_proc_arrays
-            .iter()
-            .filter(|array| array.proc_name == expected_struct)
+        let (base, raw_index) = name.rsplit_once('[')?;
+        let index = raw_index.strip_suffix(']')?.parse::<usize>().ok()?;
+        if let Some((struct_name, len)) = self
+            .runtime_globals
+            .and_then(|globals| globals.array_struct_roots.get(base))
         {
-            for (index, slot) in array.slots.iter().enumerate() {
-                if name == slot
-                    && self.owner_struct_name("self") == Some(array.owner_struct.as_str())
-                {
-                    return Some((array.field_name.clone(), index));
-                }
-                let suffix = format!(".{slot}");
-                let Some(owner) = name.strip_suffix(&suffix) else {
-                    continue;
-                };
-                if self.owner_struct_name(owner) == Some(array.owner_struct.as_str()) {
-                    return Some((format!("{owner}.{}", array.field_name), index));
-                }
-            }
+            return (struct_name == expected_struct && index < *len as usize)
+                .then(|| (base.to_owned(), index));
         }
-        None
+        let (owner, array) = self.nested_proc_array_source(base, expected_struct)?;
+        (index < array.len).then(|| (format!("{owner}.{}", array.field_name), index))
     }
 
     /// Resolves `array[index]` as an addressable data-struct value at the MIR
@@ -380,7 +296,7 @@ impl<'a> FunctionLowerer<'a> {
         expected_struct: &str,
         expression: &Expr,
         block: &mut MirBlock,
-    ) -> Result<Option<LoweredIndexedStructArgument>, MirLoweringError> {
+    ) -> Result<Option<LoweredStructArrayElement>, MirLoweringError> {
         let synthesized;
         let access;
         let (base, index) = if let Some(source) = indexed_read_source(expression) {
@@ -400,7 +316,6 @@ impl<'a> FunctionLowerer<'a> {
                 _ => return Ok(None),
             }
         };
-
         self.prepare_data_array_view(base, block, expression.loc())?;
         let shapes = self.struct_field_shapes(expected_struct, expression.loc())?;
         let (actual_struct, length, static_length, parameter_fields, runtime_root) =
@@ -408,6 +323,7 @@ impl<'a> FunctionLowerer<'a> {
                 struct_name,
                 length,
                 fields,
+                ..
             }) = self.bindings.get(base).cloned()
             {
                 let length = self.struct_array_length_value(length, block, expression.loc());
@@ -434,16 +350,6 @@ impl<'a> FunctionLowerer<'a> {
                     .runtime_globals
                     .and_then(|globals| globals.array_struct_roots.get(base).cloned())
                 else {
-                    if let Some(argument) = self.lower_nested_proc_array_argument(
-                        expected_struct,
-                        base,
-                        index,
-                        access,
-                        block,
-                        expression.loc(),
-                    )? {
-                        return Ok(Some(argument));
-                    }
                     return Err(self.error(
                         format!(
                         "indexed struct argument '{base}[...]' is not a resolved struct-array root"
@@ -480,15 +386,15 @@ impl<'a> FunctionLowerer<'a> {
         );
 
         let mut fields = Vec::with_capacity(shapes.len());
-        for shape in shapes {
+        for (field_index, shape) in shapes.into_iter().enumerate() {
             let (field_name, expected_element, width, is_array) = match shape {
                 StructFieldShape::Scalar { name, ty } => (name, ty, 1, false),
                 StructFieldShape::Array { name, element, len } => (name, element, len, true),
             };
             let field_base = if let Some(parameter_fields) = &parameter_fields {
                 let (_, slice, actual_element) = parameter_fields
-                    .iter()
-                    .find(|(candidate, _, _)| *candidate == field_name)
+                    .get(field_index)
+                    .filter(|(candidate, _, _)| *candidate == field_name)
                     .ok_or_else(|| {
                         self.error(
                             format!(
@@ -574,12 +480,10 @@ impl<'a> FunctionLowerer<'a> {
             });
         }
 
-        Ok(Some(LoweredIndexedStructArgument::Direct(
-            LoweredStructArrayElement {
-                index: normalized,
-                fields,
-            },
-        )))
+        Ok(Some(LoweredStructArrayElement {
+            index: normalized,
+            fields,
+        }))
     }
 
     pub(super) fn append_indexed_struct_call_arguments(
@@ -635,6 +539,38 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
+    fn append_proc_array_fields(
+        &self,
+        root: &str,
+        shapes: &[StructFieldShape],
+        fields: &[(String, LocalId, PrimitiveType)],
+        call_args: &mut Vec<CallArgument>,
+        location: SourceLoc,
+    ) -> Result<(), MirLoweringError> {
+        if shapes.len() != fields.len() {
+            return Err(self.error(
+                format!("processor-array view '{root}' has an invalid field count"),
+                location,
+            ));
+        }
+        // Both lists follow the canonical aggregate leaf order. Validate that
+        // contract while forwarding, without a path search for every field.
+        for (shape, (path, local, actual)) in shapes.iter().zip(fields) {
+            let (name, element) = match shape {
+                StructFieldShape::Scalar { name, ty } => (name, ty),
+                StructFieldShape::Array { name, element, .. } => (name, element),
+            };
+            if path != name || actual != element {
+                return Err(self.error(
+                    format!("processor-array view '{root}' has an invalid field '{path}'"),
+                    location,
+                ));
+            }
+            call_args.push(CallArgument::Value(Value::Local(*local)));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn append_proc_array_call_arguments(
         &mut self,
@@ -664,12 +600,50 @@ impl<'a> FunctionLowerer<'a> {
         })?;
         let shapes = self.proc_array_field_shapes(expected_proc, expression.loc())?;
 
+        self.prepare_data_array_view(root, block, expression.loc())?;
+        if let Some(Binding::StructArrayParameter {
+            struct_name,
+            length,
+            fields,
+            ..
+        }) = self.bindings.get(root).cloned()
+        {
+            let Some((owner, array)) = self.nested_proc_array_source_any(root) else {
+                return Err(self.error(
+                    "processor-array view has no owner identity",
+                    expression.loc(),
+                ));
+            };
+            if struct_name != expected_proc || array.len != expected_len as usize {
+                return Err(self.error(
+                    format!("processor-array view '{root}' does not match '{expected_proc}[{expected_len}]'"),
+                    expression.loc(),
+                ));
+            }
+            let length = self.struct_array_length_value(length, block, expression.loc());
+            call_args.push(CallArgument::Value(length));
+            if self.proc_array_hook_types.contains(expected_proc) {
+                let active_name = format!("{owner}.{}", array.active_field);
+                let active = self.lower_named_slice(
+                    &active_name,
+                    SliceSelection::default(),
+                    Some(onda_mir::AccessMode::ReadWrite),
+                    block,
+                    expression.loc(),
+                )?;
+                call_args.push(CallArgument::Value(active.value));
+            }
+            self.append_proc_array_fields(root, &shapes, &fields, call_args, expression.loc())?;
+            return Ok(());
+        }
+
         if let Some(Binding::ProcArrayParameter {
             proc_name: actual_proc,
             fixed_len,
             length,
             active,
             fields,
+            ..
         }) = self.bindings.get(root).cloned()
         {
             if actual_proc != expected_proc || fixed_len != expected_len {
@@ -690,31 +664,10 @@ impl<'a> FunctionLowerer<'a> {
                 expression.loc(),
             );
             call_args.push(CallArgument::Value(length.value));
-            call_args.push(CallArgument::Value(Value::Local(active)));
-            for shape in shapes {
-                let (field_name, expected_element) = match shape {
-                    StructFieldShape::Scalar { name, ty } => (name, ty),
-                    StructFieldShape::Array { name, element, .. } => (name, element),
-                };
-                let (_, local, actual_element) = fields
-                    .iter()
-                    .find(|(candidate, _, _)| *candidate == field_name)
-                    .ok_or_else(|| {
-                        self.error(
-                            format!(
-                                "forwarded proc-array parameter '{root}' is missing field '{field_name}'"
-                            ),
-                            expression.loc(),
-                        )
-                    })?;
-                if *actual_element != expected_element {
-                    return Err(self.error(
-                        format!("forwarded proc-array field '{root}.{field_name}' changed type"),
-                        expression.loc(),
-                    ));
-                }
-                call_args.push(CallArgument::Value(Value::Local(*local)));
+            if let Some(active) = active {
+                call_args.push(CallArgument::Value(Value::Local(active)));
             }
+            self.append_proc_array_fields(root, &shapes, &fields, call_args, expression.loc())?;
             return Ok(());
         }
 
@@ -749,12 +702,13 @@ impl<'a> FunctionLowerer<'a> {
             actual_len as i32,
         ))));
 
-        let active_name = runtime_proc_array_active_symbol(root);
-        let (_, active_element, active_len) = globals
-            .state_arrays
-            .get(&active_name)
-            .copied()
-            .ok_or_else(|| {
+        if self.proc_array_hook_types.contains(expected_proc) {
+            let active_name = runtime_proc_array_active_symbol(root);
+            let (_, active_element, active_len) = globals
+                .state_arrays
+                .get(&active_name)
+                .copied()
+                .ok_or_else(|| {
                 self.error(
                     format!(
                         "proc-array argument '{root}' has no active-slot storage '{active_name}'"
@@ -762,22 +716,23 @@ impl<'a> FunctionLowerer<'a> {
                     expression.loc(),
                 )
             })?;
-        if active_element != PrimitiveType::Bool || active_len != actual_len {
-            return Err(self.error(
-                format!(
-                    "proc-array active-slot storage '{active_name}' must be bool[{actual_len}]"
-                ),
+            if active_element != PrimitiveType::Bool || active_len != actual_len {
+                return Err(self.error(
+                    format!(
+                        "proc-array active-slot storage '{active_name}' must be bool[{actual_len}]"
+                    ),
+                    expression.loc(),
+                ));
+            }
+            let active = self.lower_named_slice(
+                &active_name,
+                SliceSelection::default(),
+                Some(onda_mir::AccessMode::ReadWrite),
+                block,
                 expression.loc(),
-            ));
+            )?;
+            call_args.push(CallArgument::Value(active.value));
         }
-        let active = self.lower_named_slice(
-            &active_name,
-            SliceSelection::default(),
-            Some(onda_mir::AccessMode::ReadWrite),
-            block,
-            expression.loc(),
-        )?;
-        call_args.push(CallArgument::Value(active.value));
 
         for shape in shapes {
             let (field_name, expected_element, width) = match shape {
@@ -886,13 +841,6 @@ impl<'a> FunctionLowerer<'a> {
                         Expr::var(source).with_loc(expression.loc()),
                     ));
                 }
-                // Nested aliases already carry their evaluated dispatch index.
-                // Do not reinterpret them as a fresh indexed access.
-                if let Expr::Var { name, .. } = expression {
-                    if self.nested_proc_aliases.contains_key(name) {
-                        return Ok(PreparedCallArgument::DirectReference(expression.clone()));
-                    }
-                }
                 if let Some(argument) =
                     self.lower_indexed_struct_argument(struct_name, expression, block)?
                 {
@@ -906,6 +854,9 @@ impl<'a> FunctionLowerer<'a> {
                         expression.loc(),
                     ));
                 }
+                if let Expr::Var { name, .. } = expression {
+                    self.prepare_scalar_processor_view(name, block, expression.loc())?;
+                }
                 Ok(PreparedCallArgument::DirectReference(expression.clone()))
             }
             TypedFnParam::Buffer { .. } => {
@@ -914,12 +865,12 @@ impl<'a> FunctionLowerer<'a> {
                         expression,
                         Expr::Index { base, .. }
                             if self.runtime_globals_for_unbound(base).is_some_and(|globals| globals.buffer_arrays.contains_key(base))
-                                || matches!(self.bindings.get(base), Some(Binding::BufferParameterArray(..)))
+                                || matches!(self.bindings.get(base), Some(Binding::BufferParameterArray(..) | Binding::BufferCollectionValue { .. }))
                     )
                     || matches!(
                         expression,
                         Expr::UserCall { name, .. }
-                            if name == PROC_INDEX_BUFFER_SELECT_SENTINEL
+                            if name == PROCESSOR_RESOURCE_SELECT
                     );
                 if !side_effect_free {
                     return Err(self.error(
@@ -948,7 +899,7 @@ impl<'a> FunctionLowerer<'a> {
                     || matches!(
                         expression,
                         Expr::UserCall { name, .. }
-                            if name == PROC_INDEX_BUFFER_SELECT_SENTINEL
+                            if name == PROCESSOR_RESOURCE_SELECT
                     );
                 if !valid_shape {
                     return Err(self.error(
@@ -993,7 +944,7 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn lower_buffer_array_call_arguments(
+    pub(super) fn lower_buffer_array_call_arguments(
         &self,
         callee_name: &str,
         param_name: &str,
@@ -1002,6 +953,29 @@ impl<'a> FunctionLowerer<'a> {
         expression: &Expr,
         out: &mut Vec<CallArgument>,
     ) -> Result<(), MirLoweringError> {
+        if let Expr::Var { name, .. } = expression {
+            if let Some(Binding::BufferCollectionValue {
+                local,
+                element,
+                start,
+                len,
+            }) = self.bindings.get(name)
+            {
+                if *element != expected_elem || *len as usize != expected_len {
+                    return Err(self.error(
+                        "local buffer collection has incompatible shape",
+                        expression.loc(),
+                    ));
+                }
+                out.push(CallArgument::BufferSpan(onda_mir::BufferSpanRef::Local {
+                    collection: *local,
+                    start: *start,
+                    len: *len,
+                    bounds: BoundsMode::Checked,
+                }));
+                return Ok(());
+            }
+        }
         let (base, requested_start, requested_end) = match expression {
             Expr::Var { name, .. } => (name.as_str(), None, None),
             Expr::Slice {
@@ -1125,6 +1099,23 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<Option<Vec<LoweredValue>>, MirLoweringError> {
+        if let Some(result) =
+            self.try_lower_processor_operation(name, args, result_storage, location.clone(), block)?
+        {
+            return Ok(result);
+        }
+        self.lower_direct_user_call_into(name, type_args, args, result_storage, location, block)
+    }
+
+    pub(super) fn lower_direct_user_call_into(
+        &mut self,
+        name: &str,
+        type_args: &[onda_frontend::CallTypeArg],
+        args: &[onda_frontend::CallArg],
+        result_storage: Option<&str>,
+        location: SourceLoc,
+        block: &mut MirBlock,
+    ) -> Result<Option<Vec<LoweredValue>>, MirLoweringError> {
         if !type_args.is_empty() {
             return Err(self.error(
                 format!("call to '{name}' still has unresolved type arguments"),
@@ -1209,9 +1200,30 @@ impl<'a> FunctionLowerer<'a> {
             )?);
         }
 
+        let mut processor_captures = Vec::new();
+        for (index, param) in param_names.iter().enumerate() {
+            if let Some(expected) = self.processor_views.function_param(name, param).cloned() {
+                let captured = self
+                    .processor_argument_view(
+                        ordered_args[index],
+                        prepared_args[index].as_ref().expect("argument prepared"),
+                        block,
+                    )?
+                    .ok_or_else(|| {
+                        self.error(
+                            format!("processor parameter '{param}' lost its complete view"),
+                            ordered_args[index].loc(),
+                        )
+                    })?;
+                processor_captures.push((expected, captured));
+            }
+        }
         let mut call_args = Vec::with_capacity(ordered_args.len());
-        let mut pending_dispatch = None::<PendingCallDispatch>;
-        let mut indexed_struct_selection = None::<LocalId>;
+        let mut resource_selection = None::<ResourceCallSelection>;
+        // Buffer bindings belong to the processor receiver. Indexed data payloads
+        // must not replace its captured selection. Family coordinates below
+        // refine this to the innermost selected processor array.
+        let mut processor_selection = None::<LocalId>;
         for (parameter_index, ((expression, kind), param_name)) in ordered_args
             .iter()
             .copied()
@@ -1270,6 +1282,18 @@ impl<'a> FunctionLowerer<'a> {
                         ));
                     }
                     let value = self.coerce(value, param_ty, block, expression.loc())?;
+                    if crate::internal_names::proc_coordinate_parameter_index(param_name).is_some()
+                    {
+                        let index = match value.value {
+                            Value::Local(local) => local,
+                            value => {
+                                let local = self.new_local(None, PrimitiveType::I32);
+                                self.assign_value(block, local, value, expression.loc());
+                                local
+                            }
+                        };
+                        processor_selection = Some(index);
+                    }
                     call_args.push(CallArgument::Value(value.value));
                 }
                 TypedFnParam::Array { elem_ty, len } => {
@@ -1342,7 +1366,7 @@ impl<'a> FunctionLowerer<'a> {
                         ..
                     } = expression
                     {
-                        if selector == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+                        if selector == PROCESSOR_RESOURCE_SELECT {
                             let mut choices = Vec::new();
                             for choice in selector_args.iter().filter(|argument| {
                                 !matches!(
@@ -1405,8 +1429,8 @@ impl<'a> FunctionLowerer<'a> {
                                 };
                                 choices.push(argument);
                             }
-                            if pending_dispatch.is_none() {
-                                let Some(index) = indexed_struct_selection else {
+                            if resource_selection.is_none() {
+                                let Some(index) = processor_selection else {
                                     return Err(self.error(
                                         format!(
                                             "call to '{name}' has a processor-indexed buffer selector without a matching processor dispatch"
@@ -1414,91 +1438,46 @@ impl<'a> FunctionLowerer<'a> {
                                         expression.loc(),
                                     ));
                                 };
-                                pending_dispatch = Some(PendingCallDispatch {
+                                resource_selection = Some(ResourceCallSelection {
                                     index,
-                                    argument_start: call_args.len(),
-                                    argument_len: 0,
-                                    alternatives: vec![Vec::new(); choices.len()],
-                                    slot_arguments: Vec::new(),
+                                    choices: choices.len(),
+                                    arguments: Vec::new(),
                                 });
                             }
-                            let dispatch = pending_dispatch
+                            let dispatch = resource_selection
                                 .as_mut()
                                 .expect("processor-indexed buffer dispatch was initialized");
-                            if choices.len() != dispatch.alternatives.len() {
+                            if choices.len() != dispatch.choices {
                                 return Err(self.error(
                                     format!(
                                         "call to '{name}' processor-indexed buffer selector has {} alternatives, expected {}",
                                         choices.len(),
-                                        dispatch.alternatives.len()
+                                        dispatch.choices
                                     ),
                                     expression.loc(),
                                 ));
                             }
                             let argument_index = call_args.len();
                             call_args.push(choices[0].clone());
-                            dispatch.slot_arguments.push((argument_index, choices));
+                            dispatch.arguments.push((argument_index, choices));
                             continue;
                         }
                     }
-                    if let Expr::Index { base, index, .. } = expression {
-                        if let Some(Binding::BufferParameterArray(span, actual, _len)) =
-                            self.bindings.get(base).cloned()
-                        {
-                            if actual != *elem_ty {
-                                return Err(self.error(
-                                    format!(
-                                        "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
-                                        elem_ty.name(),
-                                        actual.name()
-                                    ),
-                                    expression.loc(),
-                                ));
-                            }
-                            let lowered = self.lower_expr(index, block)?;
-                            let selector = self
-                                .coerce(lowered, PrimitiveType::I32, block, index.loc())?
-                                .value;
-                            call_args.push(CallArgument::BufferParam(
-                                onda_mir::BufferParamRef::ArrayElement {
-                                    span,
-                                    selector,
-                                    bounds: BoundsMode::Clamp,
-                                },
-                            ));
-                            continue;
-                        }
-                        let Some((first, actual, len)) = self
-                            .runtime_globals
-                            .and_then(|globals| globals.buffer_arrays.get(base).copied())
-                        else {
-                            return Err(self.error(
-                                format!(
-                                    "call to '{name}' buffer parameter '{param_name}' references unsupported buffer array '{base}'"
-                                ),
-                                expression.loc(),
-                            ));
-                        };
+                    if let Some((reference, actual)) =
+                        self.selected_buffer_reference(expression, BoundsMode::Clamp, block)?
+                    {
                         if actual != *elem_ty {
-                            return Err(self.error(
-                                format!(
-                                    "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
-                                    elem_ty.name(),
-                                    actual.name()
-                                ),
-                                expression.loc(),
-                            ));
+                            return Err(self
+                                .error("selected buffer changed element type", expression.loc()));
                         }
-                        let lowered = self.lower_expr(index, block)?;
-                        let selector = self
-                            .coerce(lowered, PrimitiveType::I32, block, index.loc())?
-                            .value;
-                        call_args.push(CallArgument::Buffer(onda_mir::BufferRef::ArrayElement {
-                            first,
-                            len,
-                            selector,
-                            bounds: BoundsMode::Clamp,
-                        }));
+                        call_args.push(match reference {
+                            MaterializedBufferReference::Interface(reference) => {
+                                CallArgument::Buffer(reference)
+                            }
+                            MaterializedBufferReference::Parameter(reference) => {
+                                CallArgument::BufferParam(reference)
+                            }
+                        });
                         continue;
                     }
                     let Expr::Var {
@@ -1512,7 +1491,18 @@ impl<'a> FunctionLowerer<'a> {
                             expression.loc(),
                         ));
                     };
-                    if let Some(Binding::BufferAlias(reference, actual)) =
+                    if let Some(Binding::BufferValue(local, actual)) =
+                        self.bindings.get(buffer_name).cloned()
+                    {
+                        if actual != *elem_ty {
+                            return Err(
+                                self.error("local buffer changed element type", expression.loc())
+                            );
+                        }
+                        call_args.push(CallArgument::BufferParam(onda_mir::BufferParamRef::Local(
+                            local,
+                        )));
+                    } else if let Some(Binding::BufferAlias(reference, actual)) =
                         self.bindings.get(buffer_name).cloned()
                     {
                         if actual != *elem_ty {
@@ -1592,15 +1582,7 @@ impl<'a> FunctionLowerer<'a> {
                         ..
                     } = &prepared_expression
                     {
-                        if selector == PROC_INDEX_BUFFER_SELECT_SENTINEL {
-                            let Some(dispatch) = pending_dispatch.as_mut() else {
-                                return Err(self.error(
-                                    format!(
-                                        "call to '{name}' has a processor-indexed buffer collection selector without a matching processor dispatch"
-                                    ),
-                                    prepared_expression.loc(),
-                                ));
-                            };
+                        if selector == PROCESSOR_RESOURCE_SELECT {
                             let mut alternatives = Vec::<Vec<CallArgument>>::new();
                             for choice in selector_args.iter().filter(|argument| {
                                 !matches!(
@@ -1619,24 +1601,44 @@ impl<'a> FunctionLowerer<'a> {
                                 )?;
                                 alternatives.push(expanded);
                             }
-                            if alternatives.len() != dispatch.alternatives.len() {
+                            if resource_selection.is_none() {
+                                let index = processor_selection.ok_or_else(|| self.error(
+                                    "resource collection selection lost its processor coordinate", prepared_expression.loc()))?;
+                                resource_selection = Some(ResourceCallSelection {
+                                    index,
+                                    choices: alternatives.len(),
+                                    arguments: Vec::new(),
+                                });
+                            }
+                            let dispatch = resource_selection
+                                .as_mut()
+                                .expect("resource selection initialized");
+                            if alternatives.len() != dispatch.choices {
                                 return Err(self.error(
                                     format!(
                                         "call to '{name}' processor-indexed buffer collection selector has {} alternatives, expected {}",
                                         alternatives.len(),
-                                        dispatch.alternatives.len()
+                                        dispatch.choices
                                     ),
                                     prepared_expression.loc(),
                                 ));
                             }
-                            for physical_slot in 0..*len {
+                            let physical_width = alternatives.first().map_or(0, Vec::len);
+                            if physical_width == 0
+                                || alternatives
+                                    .iter()
+                                    .any(|alternative| alternative.len() != physical_width)
+                            {
+                                return Err(self.error("resource collection alternatives have inconsistent physical widths", prepared_expression.loc()));
+                            }
+                            for physical_slot in 0..physical_width {
                                 let choices = alternatives
                                     .iter()
                                     .map(|alternative| alternative[physical_slot].clone())
                                     .collect::<Vec<_>>();
                                 let argument_index = call_args.len();
                                 call_args.push(choices[0].clone());
-                                dispatch.slot_arguments.push((argument_index, choices));
+                                dispatch.arguments.push((argument_index, choices));
                             }
                             continue;
                         }
@@ -1671,112 +1673,23 @@ impl<'a> FunctionLowerer<'a> {
                         }
                     };
                     let expression = &prepared_expression;
-                    if let Expr::Var { name: root, .. } = expression {
-                        if let Some(mut alias) = self.nested_proc_aliases.get(root).cloned() {
-                            if alias.struct_name != *struct_name {
-                                return Err(self.error(
-                                    format!(
-                                        "call to '{name}' struct parameter '{param_name}' expected '{struct_name}', got '{}'",
-                                        alias.struct_name
-                                    ),
-                                    expression.loc(),
-                                ));
-                            }
-                            if pending_dispatch.is_some() {
-                                return Err(self.error(
-                                    format!(
-                                        "call to '{name}' contains more than one dynamically indexed nested processor argument"
-                                    ),
-                                    expression.loc(),
-                                ));
-                            }
-                            for alternative in &mut alias.alternatives {
-                                self.restrict_reference_arguments(
-                                    alternative,
-                                    access,
-                                    block,
-                                    expression.loc(),
-                                )?;
-                            }
-                            let Some(first) = alias.alternatives.first() else {
-                                return Err(self.error(
-                                    format!(
-                                        "call to '{name}' has no nested processor dispatch alternatives"
-                                    ),
-                                    expression.loc(),
-                                ));
-                            };
-                            let argument_start = call_args.len();
-                            let argument_len = first.len();
-                            call_args.extend(first.iter().cloned());
-                            pending_dispatch = Some(PendingCallDispatch {
-                                index: alias.index,
-                                argument_start,
-                                argument_len,
-                                alternatives: alias.alternatives,
-                                slot_arguments: Vec::new(),
-                            });
-                            continue;
-                        }
-                    }
                     if let Some(argument) = indexed_argument {
-                        match argument {
-                            LoweredIndexedStructArgument::Direct(argument) => {
-                                indexed_struct_selection = Some(argument.index);
-                                let start = call_args.len();
-                                self.append_indexed_struct_call_arguments(
-                                    argument,
-                                    expression.loc(),
-                                    block,
-                                    &mut call_args,
-                                );
-                                self.restrict_reference_arguments(
-                                    &mut call_args[start..],
-                                    access,
-                                    block,
-                                    expression.loc(),
-                                )?;
-                            }
-                            LoweredIndexedStructArgument::Dispatch {
-                                index,
-                                mut alternatives,
-                            } => {
-                                if pending_dispatch.is_some() {
-                                    return Err(self.error(
-                                        format!(
-                                            "call to '{name}' contains more than one dynamically indexed nested processor argument"
-                                        ),
-                                        expression.loc(),
-                                    ));
-                                }
-                                for alternative in &mut alternatives {
-                                    self.restrict_reference_arguments(
-                                        alternative,
-                                        access,
-                                        block,
-                                        expression.loc(),
-                                    )?;
-                                }
-                                let Some(first) = alternatives.first() else {
-                                    return Err(self.error(
-                                        format!(
-                                            "call to '{name}' has no nested processor dispatch alternatives"
-                                        ),
-                                        expression.loc(),
-                                    ));
-                                };
-                                let argument_start = call_args.len();
-                                let argument_len = first.len();
-                                call_args.extend(first.iter().cloned());
-                                pending_dispatch = Some(PendingCallDispatch {
-                                    index,
-                                    argument_start,
-                                    argument_len,
-                                    alternatives,
-                                    slot_arguments: Vec::new(),
-                                });
-                            }
+                        if parameter_index == 0 && param_name == "self" {
+                            processor_selection = Some(argument.index);
                         }
+                        let start = call_args.len();
+                        self.append_indexed_struct_call_arguments(
+                            argument,
+                            expression.loc(),
+                            block,
+                            &mut call_args,
+                        );
+                        self.restrict_reference_arguments(
+                            &mut call_args[start..],
+                            access,
+                            block,
+                            expression.loc(),
+                        )?;
                         continue;
                     }
                     let Expr::Var { name: root, .. } = expression else {
@@ -1842,6 +1755,7 @@ impl<'a> FunctionLowerer<'a> {
                         struct_name: actual_struct,
                         length,
                         fields,
+                        ..
                     }) = self.bindings.get(root).cloned()
                     {
                         if actual_struct != *struct_name {
@@ -1855,14 +1769,14 @@ impl<'a> FunctionLowerer<'a> {
                         let length =
                             self.struct_array_length_value(length, block, expression.loc());
                         call_args.push(CallArgument::Value(length));
-                        for shape in shapes {
+                        for (field_index, shape) in shapes.into_iter().enumerate() {
                             let (field_name, expected_element) = match shape {
                                 StructFieldShape::Scalar { name, ty } => (name, ty),
                                 StructFieldShape::Array { name, element, .. } => (name, element),
                             };
                             let (_, local, actual_element) = fields
-                                .iter()
-                                .find(|(candidate, _, _)| *candidate == field_name)
+                                .get(field_index)
+                                .filter(|(candidate, _, _)| *candidate == field_name)
                                 .ok_or_else(|| {
                                     self.error(
                                         format!(
@@ -1967,7 +1881,7 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         if let Some(delegate_index) = crate::processor_lowering::delegate_publish_index(name) {
-            if pending_dispatch.is_some() || returns_value {
+            if resource_selection.is_some() || returns_value {
                 return Err(self.error(
                     "invalid generated delegate publication call shape",
                     location,
@@ -2012,6 +1926,15 @@ impl<'a> FunctionLowerer<'a> {
         };
         let result_storage = result_storage.or(discarded_result_storage.as_deref());
 
+        for (expected, captured) in processor_captures {
+            self.append_processor_view_arguments(
+                &expected,
+                &captured,
+                block,
+                &mut call_args,
+                location.clone(),
+            )?;
+        }
         let mut pending_data_copy = None;
         if let Some(data) = data_result.as_ref() {
             let destination = result_storage.expect("aggregate result storage prepared above");
@@ -2040,12 +1963,12 @@ impl<'a> FunctionLowerer<'a> {
                 .copied()
                 .map(|ty| (self.new_local(None, ty), ty))
                 .collect::<Vec<_>>();
-            self.push_call_with_optional_dispatch(
+            self.push_resource_selected_call(
                 block,
                 function_id,
                 locals.iter().map(|(local, _)| *local).collect(),
                 call_args,
-                pending_dispatch,
+                resource_selection,
                 location.clone(),
             )?;
             Some(
@@ -2058,12 +1981,12 @@ impl<'a> FunctionLowerer<'a> {
                     .collect(),
             )
         } else {
-            self.push_call_with_optional_dispatch(
+            self.push_resource_selected_call(
                 block,
                 function_id,
                 Vec::new(),
                 call_args,
-                pending_dispatch,
+                resource_selection,
                 location.clone(),
             )?;
             // Source functions without an explicit result retain the language's
@@ -2085,140 +2008,6 @@ impl<'a> FunctionLowerer<'a> {
             self.copy_data(&destination, &temporary, &data, block, location)?;
         }
         Ok(result)
-    }
-
-    pub(super) fn push_call_with_optional_dispatch(
-        &mut self,
-        block: &mut MirBlock,
-        function: FunctionId,
-        results: Vec<LocalId>,
-        args: Vec<CallArgument>,
-        dispatch: Option<PendingCallDispatch>,
-        location: SourceLoc,
-    ) -> Result<(), MirLoweringError> {
-        let Some(dispatch) = dispatch else {
-            self.push_statement(
-                block,
-                StatementKind::Call {
-                    results,
-                    function,
-                    args,
-                },
-                location,
-            );
-            return Ok(());
-        };
-        if dispatch.alternatives.is_empty()
-            || dispatch
-                .alternatives
-                .iter()
-                .any(|alternative| alternative.len() != dispatch.argument_len)
-        {
-            return Err(self.error(
-                "nested processor dispatch alternatives have inconsistent ABI widths",
-                location,
-            ));
-        }
-        let end = dispatch
-            .argument_start
-            .checked_add(dispatch.argument_len)
-            .filter(|end| *end <= args.len())
-            .ok_or_else(|| {
-                self.error(
-                    "nested processor dispatch argument range is invalid",
-                    location.clone(),
-                )
-            })?;
-        let mut calls = Vec::with_capacity(dispatch.alternatives.len());
-        for (slot, alternative) in dispatch.alternatives.into_iter().enumerate() {
-            let mut alternative_args = args.clone();
-            alternative_args.splice(dispatch.argument_start..end, alternative);
-            for (argument_index, choices) in &dispatch.slot_arguments {
-                let Some(choice) = choices.get(slot) else {
-                    return Err(self.error(
-                        "nested processor dispatch has an incomplete slot-dependent argument",
-                        location,
-                    ));
-                };
-                let Some(argument) = alternative_args.get_mut(*argument_index) else {
-                    return Err(self.error(
-                        "nested processor dispatch slot-dependent argument index is invalid",
-                        location,
-                    ));
-                };
-                *argument = choice.clone();
-            }
-            calls.push(alternative_args);
-        }
-        let chain = self.build_dispatched_call_chain(
-            dispatch.index,
-            function,
-            &results,
-            &calls,
-            0,
-            location,
-        );
-        block.statements.extend(chain.statements);
-        Ok(())
-    }
-
-    pub(super) fn build_dispatched_call_chain(
-        &mut self,
-        index: LocalId,
-        function: FunctionId,
-        results: &[LocalId],
-        calls: &[Vec<CallArgument>],
-        slot: usize,
-        location: SourceLoc,
-    ) -> MirBlock {
-        let mut block = MirBlock::default();
-        if slot + 1 == calls.len() {
-            self.push_statement(
-                &mut block,
-                StatementKind::Call {
-                    results: results.to_vec(),
-                    function,
-                    args: calls[slot].clone(),
-                },
-                location,
-            );
-            return block;
-        }
-        let condition = self.compare_value(
-            &mut block,
-            CompareOp::Equal,
-            Value::Local(index),
-            Value::Constant(ScalarValue::I32(slot as i32)),
-            location.clone(),
-        );
-        let mut then_block = MirBlock::default();
-        self.push_statement(
-            &mut then_block,
-            StatementKind::Call {
-                results: results.to_vec(),
-                function,
-                args: calls[slot].clone(),
-            },
-            location.clone(),
-        );
-        let else_block = self.build_dispatched_call_chain(
-            index,
-            function,
-            results,
-            calls,
-            slot + 1,
-            location.clone(),
-        );
-        self.push_statement(
-            &mut block,
-            StatementKind::If {
-                condition,
-                then_block,
-                else_block,
-            },
-            location,
-        );
-        block
     }
 
     pub(super) fn lower_buffer_metadata_call(
@@ -2327,7 +2116,7 @@ impl<'a> FunctionLowerer<'a> {
                     ));
                 }
                 return Ok(Some(LoweredValue {
-                    value: Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
+                    value: Value::Constant(ScalarValue::I32(array.len as i32)),
                     ty: PrimitiveType::I32,
                 }));
             }

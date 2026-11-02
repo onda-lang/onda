@@ -151,6 +151,16 @@ impl PermissionAnalysis<'_> {
     fn expression(&mut self, expr: &Expr, env: &ReferenceEnv) {
         for expr in expr.walk() {
             if let Expr::UserCall { name, args, .. } = expr {
+                // Stepping a borrowed processor writes its output cache even
+                // when the sample body only reads bound resources.
+                if env
+                    .types
+                    .struct_instances
+                    .get(name)
+                    .is_some_and(|owner| self.proc_types.contains(owner))
+                {
+                    self.writes.extend(self.storage_origins(name, env));
+                }
                 if name == PROC_INDEX_CALL_SENTINEL
                     || name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
                         == Some(PROC_INDEX_CALL_SENTINEL)

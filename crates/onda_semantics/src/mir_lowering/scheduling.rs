@@ -2,6 +2,14 @@ use super::*;
 use crate::def_semantics::call_types::StatementFlow;
 
 impl<'a> FunctionLowerer<'a> {
+    fn proc_state_binding_name(&self, name: &str) -> String {
+        if self.bindings.contains_key(name) {
+            name.to_owned()
+        } else {
+            format!("self.{name}")
+        }
+    }
+
     pub(super) fn lower_oversampled_proc_step(
         &mut self,
         meta: &ProcStepOversampleMeta,
@@ -27,6 +35,12 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             ));
         }
+        let (reference_prologue, sample_body) = self
+            .function
+            .body
+            .split_at_checked(meta.reference_prologue_len)
+            .ok_or_else(|| self.error("invalid processor reference prologue", location.clone()))?;
+        self.lower_statements(reference_prologue, destination, ContinueMode::None)?;
         let expected_stages = factor.trailing_zeros() as usize;
         let factor_u32 = u32::try_from(factor).map_err(|_| {
             self.error(
@@ -89,7 +103,7 @@ impl<'a> FunctionLowerer<'a> {
                 );
                 let stages = stage_meta
                     .iter()
-                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location.clone()))
+                    .map(|stage| self.proc_sinc_stage_references(stage, ty, location.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.emit_interpolation_stages(
                     destination,
@@ -128,8 +142,8 @@ impl<'a> FunctionLowerer<'a> {
         output_names.sort();
         let mut outputs = Vec::with_capacity(output_names.len());
         for name in output_names {
-            let binding_name = format!("self.{name}");
-            let (place, ty) = self.reference_binding_place(&binding_name, location.clone())?;
+            let binding_name = self.proc_state_binding_name(&name);
+            let (reference, ty) = self.scalar_reference_binding(&binding_name, location.clone())?;
             let stage_meta = &meta.output_state_fields[&name].down_stages;
             let down_stages = if matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
                 if stage_meta.len() != expected_stages {
@@ -144,7 +158,7 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 stage_meta
                     .iter()
-                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location.clone()))
+                    .map(|stage| self.proc_sinc_stage_references(stage, ty, location.clone()))
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 if !stage_meta.is_empty() {
@@ -162,7 +176,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.new_array_local(Some(format!("$oversample.{name}.values")), ty, factor_u32);
             outputs.push(OversampledOutputRuntime {
                 ty,
-                destination: OversampledOutputDestination::Place(place),
+                destination: OversampledOutputDestination::State(reference),
                 values,
                 down_stages,
             });
@@ -200,13 +214,17 @@ impl<'a> FunctionLowerer<'a> {
             });
             self.assign_value(&mut substep_body, *parameter_local, value, location.clone());
         }
-        self.lower_statements(&self.function.body, &mut substep_body, ContinueMode::None)?;
+        self.lower_statements(sample_body, &mut substep_body, ContinueMode::None)?;
         for output in &outputs {
-            let OversampledOutputDestination::Place(place) = &output.destination else {
+            let OversampledOutputDestination::State(reference) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
             };
-            let value =
-                self.load_place_value(&mut substep_body, output.ty, place, location.clone());
+            let value = self.load_scalar_reference(
+                &mut substep_body,
+                output.ty,
+                reference,
+                location.clone(),
+            );
             self.store_local_array_value(
                 &mut substep_body,
                 output.values,
@@ -226,10 +244,10 @@ impl<'a> FunctionLowerer<'a> {
         for output in &outputs {
             let decimated =
                 self.emit_decimation_stages(output, factor, destination, location.clone());
-            let OversampledOutputDestination::Place(place) = &output.destination else {
+            let OversampledOutputDestination::State(reference) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
             };
-            self.assign_place_value(destination, place.clone(), decimated, location.clone());
+            self.store_scalar_reference(destination, reference, decimated, location.clone());
         }
         Ok(())
     }
@@ -297,18 +315,32 @@ impl<'a> FunctionLowerer<'a> {
         );
     }
 
-    pub(super) fn reference_binding_place(
+    pub(super) fn scalar_reference_binding(
         &self,
         name: &str,
         location: SourceLoc,
-    ) -> Result<(Place, PrimitiveType), MirLoweringError> {
+    ) -> Result<(ScalarReference, PrimitiveType), MirLoweringError> {
         match self.bindings.get(name) {
             Some(Binding::ReferenceParameter(parameter, ty)) => Ok((
-                Place {
+                ScalarReference::Place(Place {
                     base: PlaceBase::Parameter(*parameter),
                     projections: Vec::new(),
-                },
+                }),
                 *ty,
+            )),
+            Some(Binding::PlaceAlias(place, ty)) => {
+                Ok((ScalarReference::Place(place.clone()), *ty))
+            }
+            Some(Binding::SliceElementAlias {
+                slice,
+                element,
+                index,
+            }) => Ok((
+                ScalarReference::SliceElement {
+                    slice: *slice,
+                    index: *index,
+                },
+                *element,
             )),
             _ => Err(self.error(
                 format!(
@@ -320,19 +352,19 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    pub(super) fn proc_sinc_stage_places(
+    pub(super) fn proc_sinc_stage_references(
         &self,
         stage: &ProcSincStageStateFields,
         expected_ty: PrimitiveType,
         location: SourceLoc,
-    ) -> Result<[Place; 8], MirLoweringError> {
+    ) -> Result<[ScalarReference; 8], MirLoweringError> {
         let names = [
             &stage.a0, &stage.a1, &stage.a2, &stage.a3, &stage.b0, &stage.b1, &stage.b2, &stage.b3,
         ];
-        let mut places = Vec::with_capacity(8);
+        let mut references = Vec::with_capacity(8);
         for name in names {
-            let binding_name = format!("self.{name}");
-            let (place, ty) = self.reference_binding_place(&binding_name, location.clone())?;
+            let binding_name = self.proc_state_binding_name(name);
+            let (reference, ty) = self.scalar_reference_binding(&binding_name, location.clone())?;
             if ty != expected_ty {
                 return Err(self.error(
                     format!(
@@ -344,9 +376,9 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 ));
             }
-            places.push(place);
+            references.push(reference);
         }
-        places.try_into().map_err(|_| {
+        references.try_into().map_err(|_| {
             self.error(
                 format!(
                     "processor step '{}' filter stage does not contain eight state taps",
@@ -738,7 +770,10 @@ impl<'a> FunctionLowerer<'a> {
                     ty,
                     Value::Local(raw),
                     values,
-                    &stages.iter().map(mir_sinc_stage_places).collect::<Vec<_>>(),
+                    &stages
+                        .iter()
+                        .map(mir_sinc_stage_references)
+                        .collect::<Vec<_>>(),
                     factor,
                     location.clone(),
                 );
@@ -799,7 +834,7 @@ impl<'a> FunctionLowerer<'a> {
                     current,
                 },
                 values,
-                down_stages: stages.iter().map(mir_sinc_stage_places).collect(),
+                down_stages: stages.iter().map(mir_sinc_stage_references).collect(),
             });
         }
 

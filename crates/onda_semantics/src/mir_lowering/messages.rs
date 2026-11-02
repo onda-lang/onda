@@ -175,6 +175,7 @@ impl FunctionLowerer<'_> {
             self.bindings.insert(
                 name,
                 Binding::StructArrayParameter {
+                    processor: None,
                     struct_name,
                     length: StructArrayLength::Local(length),
                     fields,

@@ -3,14 +3,14 @@ use super::*;
 #[derive(Debug, Clone)]
 struct RuntimeManagedProcArray {
     proc_name: String,
-    slots: Vec<String>,
+    slots: ProcArrayDeclaration,
     active_symbol: String,
 }
 
 fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
     mut stmt: Stmt,
     proc_api: &HashMap<String, ProcApi>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     runtime_managed_arrays: &mut HashMap<String, RuntimeManagedProcArray>,
     temp_counter: &mut usize,
 ) -> Vec<Stmt> {
@@ -36,7 +36,7 @@ fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
     fn collect_guards_from_expr(
         expr: &mut Expr,
         proc_api: &HashMap<String, ProcApi>,
-        proc_array_slots: &HashMap<String, Vec<String>>,
+        proc_array_slots: &ProcArrayDeclarations,
         runtime_managed_arrays: &mut HashMap<String, RuntimeManagedProcArray>,
         guards: &mut Vec<Stmt>,
         temp_counter: &mut usize,
@@ -591,16 +591,18 @@ fn record_proc_instance_oversample_factor(
 }
 
 fn propagate_uniform_proc_array_oversample_factors(
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     factors: &mut HashMap<String, usize>,
 ) {
     for (base, slots) in proc_array_slots {
-        let mut slot_factors = slots.iter().filter_map(|slot| factors.get(slot).copied());
+        let mut slot_factors = slots
+            .binding_names()
+            .filter_map(|slot| factors.get(slot).copied());
         let Some(first) = slot_factors.next() else {
             continue;
         };
         if slots
-            .iter()
+            .binding_names()
             .all(|slot| factors.get(slot).copied() == Some(first))
         {
             factors.insert(base.clone(), first);
@@ -629,15 +631,12 @@ fn reject_explicit_oversampled_child_calls_in_context(
     let Some(shape) = lowering_shapes.get(proc_name) else {
         return;
     };
-    let nested_instances = shape
-        .state
-        .nested_procs
-        .iter()
-        .map(|(name, nested)| {
+    let nested_instances = declared_child_bindings(&shape.state, &shape.nested_proc_array_slots)
+        .map(|(name, proc_name)| {
             (
                 name.clone(),
                 ProcCallInstance {
-                    proc_name: nested.proc_name.clone(),
+                    proc_name: proc_name.to_owned(),
                     buffer_args: Vec::new(),
                     delegate_context_args: Vec::new(),
                     routes_owner_delegates: false,
@@ -689,6 +688,14 @@ fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
     let mut symbols = HashSet::new();
     for block in &program.blocks {
         match block {
+            Block::Buffers(buffers) => {
+                symbols.extend(
+                    buffers
+                        .iter()
+                        .filter(|buffer| buffer.array_size.is_some())
+                        .map(|buffer| buffer.name.clone()),
+                );
+            }
             Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
                 for port in ports.iter() {
                     if matches!(
@@ -749,7 +756,7 @@ pub(super) fn rewrite_top_level_proc_calls(
 ) -> TopLevelProcRewriteMeta {
     let constructor_array_symbols = top_level_constructor_array_symbols(program);
     let mut global_proc_instances = HashMap::<String, ProcCallInstance>::new();
-    let mut global_proc_array_slots = HashMap::<String, Vec<String>>::new();
+    let mut global_proc_array_slots = ProcArrayDeclarations::new();
     let mut global_proc_instance_oversample_factors = HashMap::<String, usize>::new();
     let mut global_proc_array_broadcast_slots = HashMap::<String, (usize, usize)>::new();
     let mut runtime_managed_arrays = HashMap::<String, RuntimeManagedProcArray>::new();
@@ -801,11 +808,16 @@ pub(super) fn rewrite_top_level_proc_calls(
                             });
                         }
                     }
-                    let slot_names = (0..len)
-                        .map(|idx| format!("{array_var}[{idx}]"))
-                        .collect::<Vec<_>>();
+                    let uniform = proc_array_init::is_uniform(init, &constructor_array_symbols);
+                    let slot_names = ProcArrayDeclaration::new(
+                        array_var.clone(),
+                        proc_ctor.clone(),
+                        len,
+                        uniform,
+                    );
                     global_proc_array_slots.insert(array_var.clone(), slot_names.clone());
-                    let mut expanded = Vec::<Stmt>::with_capacity(len + 1);
+                    let mut expanded =
+                        Vec::<Stmt>::with_capacity(slot_names.binding_names().len() + 1);
                     if let Some(mut decl_stmt) = pending_stmts.first().cloned() {
                         if let Stmt::Assign {
                             expr: Expr::ArrayCtor { init, .. },
@@ -820,7 +832,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         // aggregate defaults are only valid during a full init.
                         expanded.extend(mark_pinned_initializer_stmt(decl_stmt));
                     }
-                    for idx in 0..len {
+                    for idx in 0..if uniform { 1 } else { len } {
                         let mut args = Vec::<CallArg>::new();
                         let slot_var = format!("{array_var}[{idx}]");
                         if let Some(values) = init {
@@ -1032,6 +1044,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     })
                                     .collect::<Vec<_>>();
                             }
+                            let setup_start = rewritten_init.len();
                             for assign in ctor_assigns {
                                 constructor_setup_indices.insert(rewritten_init.len());
                                 rewritten_init.push(assign);
@@ -1060,6 +1073,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     args: init_args,
                                 },
                             });
+                            if let Some((array_base, _)) = &array_slot {
+                                let declaration = &global_proc_array_slots[array_base];
+                                if declaration.binding_names().len() == 1 {
+                                    let body = rewritten_init.split_off(setup_start);
+                                    constructor_setup_indices.retain(|index| *index < setup_start);
+                                    constructor_setup_indices.insert(setup_start);
+                                    rewritten_init.push(proc_array_init::top_level_setup(
+                                        array_base,
+                                        declaration.len(),
+                                        body,
+                                    ));
+                                }
+                            }
                         } else {
                             rewritten_init.push(Stmt::Expr {
                                 loc: Default::default(),
@@ -1109,7 +1135,7 @@ pub(super) fn rewrite_top_level_proc_calls(
     }
 
     for (base, slots) in &global_proc_array_slots {
-        let Some(first_slot) = slots.first() else {
+        let Some(first_slot) = slots.first_binding() else {
             continue;
         };
         let Some(instance) = global_proc_instances.get(first_slot) else {
@@ -1453,21 +1479,29 @@ pub(super) fn rewrite_top_level_proc_calls(
             let mut managed = runtime_managed_arrays.iter().collect::<Vec<_>>();
             managed.sort_by_key(|(a, _)| *a);
             for (_base, info) in &managed {
-                for slot_idx in 0..info.slots.len() {
-                    reset_prefix.push(Stmt::Assign {
+                let variable = "__onda_proc_reset_slot";
+                reset_prefix.push(Stmt::For {
+                    loc: Default::default(),
+                    var: variable.to_owned(),
+                    var_ty: PrimitiveType::I32,
+                    step: None,
+                    start: Expr::int(0),
+                    end: Expr::int(info.slots.len() as i64),
+                    end_inclusive: false,
+                    body: vec![Stmt::Assign {
                         loc: Default::default(),
                         target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: info.active_symbol.clone(),
-                            index: Expr::int(slot_idx as i64),
+                            index: Expr::var(variable),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
                         expr: Expr::bool(false),
-                    });
-                }
+                    }],
+                });
             }
 
             exec.pre.retain(|stmt| {
@@ -1496,31 +1530,42 @@ pub(super) fn rewrite_top_level_proc_calls(
             exec.pre = reset_prefix;
 
             for (base, info) in managed {
-                for (slot_idx, slot_name) in info.slots.iter().enumerate() {
-                    let Some(instance) = global_proc_instances.get(slot_name) else {
-                        continue;
-                    };
-                    let Some(api) = proc_api.get(&info.proc_name) else {
-                        continue;
-                    };
-                    let mut post_args = Vec::<CallArg>::new();
-                    post_args.push(CallArg {
-                        name: None,
-                        expr: Expr::Index {
-                            loc: Default::default(),
-                            base: (*base).clone(),
-                            index: Box::new(Expr::int(slot_idx as i64)),
-                        },
-                    });
-                    post_args.extend(expand_proc_buffer_call_args(
-                        instance, api, slot_name, errors,
-                    ));
-                    exec.post.push(Stmt::If {
+                let Some((_, api, instances)) = resolve_proc_array_dispatch_context(
+                    &info.slots,
+                    &global_proc_instances,
+                    proc_api,
+                    "processor block-post",
+                    errors,
+                ) else {
+                    continue;
+                };
+                let variable = "__onda_proc_finish_slot";
+                let index = Expr::var(variable);
+                let mut args = vec![CallArg {
+                    name: None,
+                    expr: Expr::Index {
+                        loc: Default::default(),
+                        base: base.clone(),
+                        index: Box::new(index.clone()),
+                    },
+                }];
+                args.extend(dynamic_proc_array_buffer_call_args(
+                    &instances, &api, base, &index, errors,
+                ));
+                exec.post.push(Stmt::For {
+                    loc: Default::default(),
+                    var: variable.to_owned(),
+                    var_ty: PrimitiveType::I32,
+                    step: None,
+                    start: Expr::int(0),
+                    end: Expr::int(info.slots.len() as i64),
+                    end_inclusive: false,
+                    body: vec![Stmt::If {
                         loc: Default::default(),
                         cond: Expr::Index {
                             loc: Default::default(),
                             base: info.active_symbol.clone(),
-                            index: Box::new(Expr::int(slot_idx as i64)),
+                            index: Box::new(index),
                         },
                         then_branch: vec![Stmt::Expr {
                             loc: Default::default(),
@@ -1528,12 +1573,12 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 loc: Default::default(),
                                 name: format!("{}{}", info.proc_name, PROC_BLOCK_POST_FN_SUFFIX),
                                 type_args: Vec::new(),
-                                args: post_args,
+                                args,
                             },
                         }],
                         else_branch: Vec::new(),
-                    });
-                }
+                    }],
+                });
             }
         }
     }
@@ -1594,15 +1639,21 @@ sample:
             typed.array_vars
         );
         assert!(
-            typed.block_pre.iter().any(|stmt| matches!(
-                stmt,
-                Stmt::Assign {
-                    target: AssignTarget::Index { base, index },
-                    expr: Expr::Bool { value: false, .. },
-                    ..
-                } if base == "__onda_proc_block_active_voices"
-                    && matches!(index, Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. })
-            )),
+            typed.block_pre.iter().any(|statement| {
+                let mut resets = false;
+                statement.visit_statements(|stmt| {
+                    resets |= matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Bool { value: false, .. },
+                        ..
+                    } if base == "__onda_proc_block_active_voices"
+                        && matches!(index, Expr::Var { .. })
+                    );
+                });
+                resets
+            }),
             "expected managed active-slot reset in block_pre: {:?}",
             typed.block_pre
         );

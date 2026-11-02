@@ -1694,14 +1694,24 @@ fn collect_expr_field_usage(
                             .get(param_idx)
                             .and_then(|s| s.as_deref())
                             .and_then(|struct_name| {
-                                resolve_struct_field_decl(struct_name, field, struct_defs)
-                            })
-                            .map(|decl| {
-                                if matches!(decl.ty, TypedFieldType::Array(_)) {
-                                    StructFieldUsage::Array
-                                } else {
-                                    StructFieldUsage::Scalar
+                                if crate::resolve_flattened_struct_array_leaf_type(
+                                    struct_name,
+                                    field,
+                                    struct_defs,
+                                )
+                                .is_some()
+                                {
+                                    return Some(StructFieldUsage::Array);
                                 }
+                                resolve_struct_field_decl(struct_name, field, struct_defs).map(
+                                    |decl| {
+                                        if matches!(decl.ty, TypedFieldType::Array(_)) {
+                                            StructFieldUsage::Array
+                                        } else {
+                                            StructFieldUsage::Scalar
+                                        }
+                                    },
+                                )
                             })
                             .unwrap_or(StructFieldUsage::Scalar);
                         mark_param_field_usage(

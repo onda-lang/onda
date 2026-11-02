@@ -85,6 +85,12 @@ mod generic_defs;
 mod language_core;
 #[path = "examples_suite/proc_local_defs.rs"]
 mod proc_local_defs;
+#[path = "examples_suite/processor_buffer_payload.rs"]
+mod processor_buffer_payload;
+#[path = "examples_suite/processor_storage.rs"]
+mod processor_storage;
+#[path = "examples_suite/processor_views.rs"]
+mod processor_views;
 #[path = "examples_suite/slices_and_ports.rs"]
 mod slices_and_ports;
 #[path = "examples_suite/stdlib_dsp_regressions.rs"]

@@ -516,7 +516,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("buffer parameter '{name}' used where a scalar value is required"),
                     location,
                 )),
-                Binding::BufferAlias(_, _) => Err(self.error(
+                Binding::BufferAlias(_, _) | Binding::BufferValue(_, _) | Binding::BufferCollectionValue { .. } => Err(self.error(
                     format!("buffer-reference alias '{name}' used where a scalar value is required"),
                     location,
                 )),

@@ -1,0 +1,23 @@
+proc Voice:
+  buffers:
+    source: f32
+  sample:
+    out1 = source[0]
+
+def step_child(voice) -> f32:
+  return voice()
+def step_array(voices, index: i32) -> f32:
+  return step_child(voices[index])
+def forward(voices, index: i32) -> f32:
+  return step_array(voices, index)
+
+buffers:
+  left: f32
+  interleaved: f64
+  right: f32
+init:
+  voices: Voice[2] = [Voice(source = left), Voice(source = right)]
+  selector: i32 = 0
+sample:
+  out1 = forward(voices, selector)
+  selector = 1 - selector

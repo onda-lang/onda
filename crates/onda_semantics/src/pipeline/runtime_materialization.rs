@@ -18,7 +18,9 @@ pub(super) fn materialize_reachable_typed_defs(
     contexts: CallContexts<'_>,
     errors: &mut Vec<Diagnostic>,
     defaults: &super::runtime_defaults::RuntimeDefaults<'_>,
+    processor_views: &mut crate::processor_views::ProcessorViewCatalog,
 ) -> MaterializedRuntime {
+    processor_views.register_operation_uses(&defs);
     let indices = defs
         .iter()
         .enumerate()
@@ -56,6 +58,16 @@ pub(super) fn materialize_reachable_typed_defs(
             &mut selected,
             &mut pending,
         );
+        // Borrowed processor operations have an explicit environment route.
+        // Retain its shared adapters in the same context as an ordinary call.
+        for dependency in processor_views.function_dependencies(&def.name) {
+            if let Some(&index) = indices.get(dependency) {
+                let key = (index, contexts.callee(dependency, None, context));
+                if selected.insert(key) {
+                    pending.push(key);
+                }
+            }
+        }
     }
     let mut remaining = HashMap::<usize, usize>::new();
     for (index, _) in &selected {
@@ -82,6 +94,26 @@ pub(super) fn materialize_reachable_typed_defs(
             (source != &names[key]).then(|| (source.clone(), names[key].clone()))
         })
         .collect();
+    for &key @ (index, context) in &selected {
+        let source = &catalog[index].as_ref().unwrap().name;
+        let targets = processor_views
+            .function_dependencies(source)
+            .into_iter()
+            .filter_map(|dependency| {
+                let &target = indices.get(dependency)?;
+                let target_context = contexts.callee(dependency, None, context);
+                Some((
+                    dependency.to_owned(),
+                    names[&(target, target_context)].clone(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (source_target, target) in targets {
+            processor_views
+                .materialized_operations
+                .insert((names[&key].clone(), source_target), target);
+        }
+    }
     let mut array_names = HashSet::new();
     let mut rewrite = |body: &mut [Stmt], context: CompileContext| {
         for stmt in body {

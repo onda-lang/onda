@@ -18,8 +18,13 @@ mod data_tests;
 mod expressions;
 mod lowerer_core;
 mod messages;
+mod processor_resources;
+mod processor_scalars;
+mod processor_view_joins;
+mod processor_views;
 mod reference_joins;
 mod references;
+mod resource_calls;
 mod retained_bindings;
 mod retained_storage;
 mod scheduling;
@@ -47,12 +52,13 @@ use onda_mir::{
 use crate::executable_data::declared_binding_locations;
 use crate::indexed_read_source;
 use crate::internal_names::{
-    runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
-    PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
+    runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol,
+    PROCESSOR_RESOURCE_SELECT, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 use crate::mir_scalar::{
     map_binary, map_compare, map_intrinsic, mir_scalar, scalar_type, source_scalar_type,
 };
+use crate::processor_views::ProcessorViewCatalog;
 use crate::{
     bind_call_args_at, builtin_constant_type, builtin_constant_value_f64, can_assign_expr_to_type,
     can_eval_const_expr_exact_int, effective_untyped_assignment_type, eval_const_expr_i64_exact,
@@ -280,6 +286,8 @@ fn lower_user_functions_with_const_data(
                 &structs,
                 &program.aggregate_layouts,
                 &program.nested_proc_arrays,
+                &program.processor_views,
+                &program.proc_array_hook_types,
                 const_arrays,
                 mir.config,
                 config,
@@ -380,7 +388,11 @@ fn lower_program_to_mir(
         onda_mir::FunctionKind::Process,
     ));
 
-    let mut globals = RuntimeGlobals::default();
+    let processor_resources = processor_resources::ProcessorResourceCatalog::default();
+    let mut globals = RuntimeGlobals {
+        processor_resources: Some(&processor_resources),
+        ..RuntimeGlobals::default()
+    };
     populate_interface(program, &mut mir, &mut globals)?;
     populate_delegates(program, &mut mir)?;
     populate_state(program, &mut mir, &mut globals)?;
@@ -482,6 +494,7 @@ fn lower_program_to_mir(
     )?;
     param_arrays::clamp_parameter_arrays(&mut mir);
     mir.const_data = const_arrays.take_data(true);
+    mir.buffer_maps = processor_resources.take_maps();
     if prune_before_range_analysis {
         // Processor lowering intentionally begins with uniform flattened ABIs.
         // Prune unused leaves before whole-program range propagation so every
@@ -1478,7 +1491,10 @@ fn populate_state(
     let proc_array_active_slots = program
         .array_struct_roots
         .iter()
-        .filter(|root| proc_array_types.contains(root.struct_name.as_str()))
+        .filter(|root| {
+            proc_array_types.contains(root.struct_name.as_str())
+                && program.proc_array_hook_types.contains(&root.struct_name)
+        })
         .map(|root| (runtime_proc_array_active_symbol(&root.name), root.len))
         .collect::<HashMap<_, _>>();
     let all_internal_active_names = program
@@ -1494,6 +1510,8 @@ fn populate_state(
     );
     globals.aggregate_layouts = program.aggregate_layouts.clone();
     globals.nested_proc_arrays = program.nested_proc_arrays.clone();
+    globals.processor_views = program.processor_views.clone();
+    globals.proc_array_hook_types = program.proc_array_hook_types.clone();
     globals.struct_roots = program.struct_roots.clone();
     for root in &program.array_struct_roots {
         let len = u32::try_from(root.len).map_err(|_| {
@@ -2094,6 +2112,7 @@ struct RuntimeGlobals<'a> {
     state_arrays: HashMap<String, (onda_mir::StateId, PrimitiveType, u32)>,
     array_struct_roots: HashMap<String, (String, u32)>,
     const_arrays: Option<&'a ConstDataCatalog<'a>>,
+    processor_resources: Option<&'a processor_resources::ProcessorResourceCatalog>,
     inputs: HashMap<String, (onda_mir::InputId, PrimitiveType)>,
     input_arrays: HashMap<String, (onda_mir::InputId, PrimitiveType, u32)>,
     outputs: HashMap<String, (onda_mir::OutputId, PrimitiveType)>,
@@ -2108,6 +2127,8 @@ struct RuntimeGlobals<'a> {
     structs: HashMap<String, Vec<TypedStructField>>,
     aggregate_layouts: AggregateLayoutTable,
     nested_proc_arrays: Vec<TypedNestedProcArray>,
+    processor_views: ProcessorViewCatalog,
+    proc_array_hook_types: HashSet<String>,
     struct_roots: HashMap<String, String>,
     top_level_oversampling: TopLevelOversamplingState,
 }
@@ -2149,12 +2170,20 @@ struct OversampledOutputRuntime {
     ty: PrimitiveType,
     destination: OversampledOutputDestination,
     values: LocalId,
-    down_stages: Vec<[Place; 8]>,
+    down_stages: Vec<[ScalarReference; 8]>,
+}
+
+/// A borrowed scalar location, including one selected from an aggregate view.
+/// Both forms preserve the original state identity in MIR memory analysis.
+#[derive(Debug, Clone)]
+enum ScalarReference {
+    Place(Place),
+    SliceElement { slice: LocalId, index: Value },
 }
 
 #[derive(Debug, Clone)]
 enum OversampledOutputDestination {
-    Place(Place),
+    State(ScalarReference),
     Interface {
         output: onda_mir::OutputId,
         element: Option<u32>,
@@ -2188,15 +2217,6 @@ struct LoweredStructArrayElement {
     fields: Vec<LoweredStructArrayField>,
 }
 
-#[derive(Debug, Clone)]
-enum LoweredIndexedStructArgument {
-    Direct(LoweredStructArrayElement),
-    Dispatch {
-        index: LocalId,
-        alternatives: Vec<Vec<CallArgument>>,
-    },
-}
-
 /// One source argument after its observable expression evaluation has
 /// completed, but before its value/reference pieces are reordered into the
 /// callee's ABI parameter order.
@@ -2205,7 +2225,7 @@ enum PreparedCallArgument {
     Scalar(LoweredValue),
     Array(LoweredSlice),
     Tuple(Vec<LoweredValue>),
-    IndexedStruct(LoweredIndexedStructArgument),
+    IndexedStruct(LoweredStructArrayElement),
     /// Direct resource/aggregate references contain no evaluable subexpression.
     /// ABI loads and slice-descriptor construction may happen later, but cannot
     /// invoke user code or mutate language-visible storage.
@@ -2219,19 +2239,10 @@ enum BufferArrayCallSource {
 }
 
 #[derive(Debug, Clone)]
-struct PendingCallDispatch {
+struct ResourceCallSelection {
     index: LocalId,
-    argument_start: usize,
-    argument_len: usize,
-    alternatives: Vec<Vec<CallArgument>>,
-    slot_arguments: Vec<(usize, Vec<CallArgument>)>,
-}
-
-#[derive(Debug, Clone)]
-struct NestedProcElementAlias {
-    struct_name: String,
-    index: LocalId,
-    alternatives: Vec<Vec<CallArgument>>,
+    choices: usize,
+    arguments: Vec<(usize, Vec<CallArgument>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -2311,6 +2322,13 @@ enum Binding {
     BufferParameter(ParameterId, PrimitiveType),
     BufferParameterArray(ParameterId, PrimitiveType, u32),
     BufferAlias(BufferBindingReference, PrimitiveType),
+    BufferValue(LocalId, PrimitiveType),
+    BufferCollectionValue {
+        local: LocalId,
+        element: PrimitiveType,
+        start: Value,
+        len: u32,
+    },
     Local(LocalId, PrimitiveType),
     Array(LocalId, PrimitiveType, u32),
     ArrayParameter(ParameterId, PrimitiveType, u32),
@@ -2326,21 +2344,25 @@ enum Binding {
     },
     StructParameter {
         struct_name: String,
+        processor: Option<processor_views::LoweredProcessorView>,
     },
     StructArrayParameter {
         struct_name: String,
+        processor: Option<processor_views::LoweredProcessorView>,
         length: StructArrayLength,
         fields: Vec<(String, LocalId, PrimitiveType)>,
     },
     ProcArrayParameter {
         proc_name: String,
         fixed_len: u32,
+        processor: Option<processor_views::LoweredProcessorView>,
         length: ParameterId,
-        active: LocalId,
+        active: Option<LocalId>,
         fields: Vec<(String, LocalId, PrimitiveType)>,
     },
     StructView {
         struct_name: String,
+        processor: Option<processor_views::LoweredProcessorView>,
     },
     StructArrayStorage {
         struct_name: String,
@@ -2391,6 +2413,8 @@ struct FunctionLowerer<'a> {
     structs: &'a HashMap<String, Vec<TypedStructField>>,
     aggregate_layouts: &'a AggregateLayoutTable,
     nested_proc_arrays: &'a [TypedNestedProcArray],
+    processor_views: &'a ProcessorViewCatalog,
+    proc_array_hook_types: &'a HashSet<String>,
     const_arrays: &'a ConstDataCatalog<'a>,
     host_config: onda_mir::CompileConfig,
     config: onda_mir::CompileConfig,
@@ -2415,7 +2439,6 @@ struct FunctionLowerer<'a> {
     /// materializing their right-hand side before replacing that storage.
     data_initialization_sites: HashSet<(String, SourceLoc)>,
     next_data_id: usize,
-    nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
     event_struct_slices: Vec<(String, String)>,
     event_slice_parameters: Vec<(String, onda_mir::EventParamId, PrimitiveType)>,
 }
@@ -2953,11 +2976,13 @@ fn scalar_value_is_all_bits_zero(value: Value) -> bool {
     }
 }
 
-fn mir_sinc_stage_places(stage: &MirSincStageState) -> [Place; 8] {
+fn mir_sinc_stage_references(stage: &MirSincStageState) -> [ScalarReference; 8] {
     debug_assert!(matches!(stage.ty, PrimitiveType::F32 | PrimitiveType::F64));
-    stage.taps.map(|state| Place {
-        base: PlaceBase::State(state),
-        projections: Vec::new(),
+    stage.taps.map(|state| {
+        ScalarReference::Place(Place {
+            base: PlaceBase::State(state),
+            projections: Vec::new(),
+        })
     })
 }
 

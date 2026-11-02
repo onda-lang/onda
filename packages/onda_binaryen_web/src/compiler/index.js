@@ -1405,7 +1405,7 @@ export class MirCompiler extends MirCompilerLowering {
         lhs.data.element === rhs.data.element &&
         JSON.stringify(lhs.data.channels) === JSON.stringify(rhs.data.channels) &&
         lhs.data.access === rhs.data.access;
-    } else if (lhs.kind === "buffer_span") {
+    } else if (["buffer_span", "buffer_map"].includes(lhs.kind)) {
       equivalent =
         lhs.data.element === rhs.data.element &&
         JSON.stringify(lhs.data.channels) === JSON.stringify(rhs.data.channels) &&

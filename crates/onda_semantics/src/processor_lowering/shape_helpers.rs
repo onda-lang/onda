@@ -1,21 +1,17 @@
 use super::*;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
 
-fn is_proc_operator_helper_name(name: &str) -> bool {
-    name.ends_with(PROC_STEP_FN_SUFFIX)
-        || name.contains(PROC_CALL_OUT_FN_PREFIX)
-        || (name.contains(".__onda_proc_nested_")
-            && (name.ends_with("_step") || name.contains("_call_out")))
-}
-
-pub(crate) fn proc_name_for_lowered_proc_call(name: &str) -> Option<&str> {
+pub(crate) fn proc_name_for_lowered_proc_call<'a>(
+    name: &str,
+    proc_api: &'a HashMap<String, ProcApi>,
+) -> Option<&'a str> {
     let name = crate::compile_context::lowered_function_origin(name);
-    if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
-        return Some(step_proc);
-    }
-    let (call_proc, out_idx_raw) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)?;
-    out_idx_raw.parse::<usize>().ok()?;
-    Some(call_proc)
+    proc_api.iter().find_map(|(proc_name, api)| {
+        (name == format!("{proc_name}{PROC_STEP_FN_SUFFIX}")
+            || (0..api.outputs.names.len())
+                .any(|index| name == format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{index}")))
+        .then_some(proc_name.as_str())
+    })
 }
 
 fn nested_proc_operator_timing(
@@ -30,12 +26,12 @@ fn nested_proc_operator_timing(
                 .get(&instance.proc_name)
                 .map(|api| api.outputs.timing);
         }
-        let prefix = format!("{owner_proc}.__onda_proc_nested_{nested_var}_call_out");
-        if let Some(raw_idx) = name.strip_prefix(&prefix) {
-            raw_idx.parse::<usize>().ok()?;
-            return proc_api
-                .get(&instance.proc_name)
-                .map(|api| api.outputs.timing);
+        if let Some(api) = proc_api.get(&instance.proc_name) {
+            if (0..api.outputs.names.len())
+                .any(|index| name == nested_call_out_fn_name(owner_proc, nested_var, index))
+            {
+                return Some(api.outputs.timing);
+            }
         }
     }
     None
@@ -51,7 +47,7 @@ fn proc_operator_helper_timing(
     {
         return Some(timing);
     }
-    let proc_name = proc_name_for_lowered_proc_call(name)?;
+    let proc_name = proc_name_for_lowered_proc_call(name, proc_api)?;
     proc_api.get(proc_name).map(|api| api.outputs.timing)
 }
 
@@ -151,12 +147,10 @@ fn collect_proc_operator_helper_diags_from_expr(
         Expr::UserCall {
             name, args, loc, ..
         } => {
-            if is_proc_operator_helper_name(name) {
-                if let Some(timing) =
-                    proc_operator_helper_timing(name, owner_proc, nested_instances, proc_api)
-                {
-                    out.push((DiagCtx::new(loc.clone()), timing));
-                }
+            if let Some(timing) =
+                proc_operator_helper_timing(name, owner_proc, nested_instances, proc_api)
+            {
+                out.push((DiagCtx::new(loc.clone()), timing));
             }
             for arg in args {
                 collect_proc_operator_helper_diags_from_expr(
@@ -306,7 +300,7 @@ fn collect_non_sample_proc_operator_diags_from_expr(
     expr: &Expr,
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &HashMap<String, ProcArrayAliasInfo>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
@@ -335,7 +329,7 @@ fn collect_non_sample_proc_operator_diags_from_expr_stmt(
     expr: &Expr,
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &HashMap<String, ProcArrayAliasInfo>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
@@ -381,7 +375,7 @@ fn collect_non_sample_proc_operator_diags_from_target(
     target: &AssignTarget,
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &HashMap<String, ProcArrayAliasInfo>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
@@ -401,7 +395,7 @@ fn collect_non_sample_proc_operator_diags_from_target(
 
 fn proc_alias_from_expr(
     expr: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     aliases: &HashMap<String, ProcArrayAliasInfo>,
 ) -> Option<ProcArrayAliasInfo> {
     if let Some(source) = indexed_read_source(expr) {
@@ -432,7 +426,7 @@ fn collect_non_sample_proc_operator_diags_from_stmts(
     stmts: &[Stmt],
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut HashMap<String, ProcArrayAliasInfo>,
     out: &mut Vec<(DiagCtx, OutputTiming)>,
@@ -614,7 +608,7 @@ fn push_non_sample_proc_call_errors_in_proc_stmts(
     stmts: &[Stmt],
     owner_proc: &str,
     nested_instances: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     context: &str,
     allowed: Option<OutputTiming>,
@@ -786,7 +780,7 @@ fn seed_called_proc_local_defs_from_stmts(
 pub(super) fn reject_non_sample_proc_operator_calls_in_proc(
     proc: &onda_frontend::ProcessorDef,
     nested_instances: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -988,9 +982,21 @@ pub(super) fn compute_effective_proc_block_flags(
             .unwrap_or(false);
         if !has_block {
             if let Some(shape) = base_shapes.get(proc_name) {
-                for nested_state in shape.state.nested_procs.values() {
+                for child_proc_name in shape
+                    .state
+                    .nested_procs
+                    .values()
+                    .map(|child| &child.proc_name)
+                    .chain(
+                        shape
+                            .state
+                            .nested_proc_arrays
+                            .values()
+                            .map(|child| &child.proc_name),
+                    )
+                {
                     if visit(
-                        &nested_state.proc_name,
+                        child_proc_name,
                         proc_defs_by_name,
                         base_shapes,
                         cache,
@@ -1158,7 +1164,7 @@ fn bound_proc_param_names(param_specs: &[ProcParamSpec]) -> HashSet<String> {
 fn nested_proc_receiver_root<'a>(
     root: &'a str,
     state: &ProcStateFields,
-    nested_proc_array_slots: &HashMap<String, Vec<String>>,
+    nested_proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<&'a str> {
     if state.nested_procs.contains_key(root) || nested_proc_array_slots.contains_key(root) {
         return Some(root);
@@ -1213,7 +1219,7 @@ struct HookSafeCtx<'a> {
     output_names: &'a HashSet<String>,
     output_array_names: &'a HashSet<String>,
     state: &'a ProcStateFields,
-    nested_proc_array_slots: &'a HashMap<String, Vec<String>>,
+    nested_proc_array_slots: &'a ProcArrayDeclarations,
     child_proc_surfaces: &'a HashMap<String, ChildProcSurface>,
 }
 
@@ -1249,7 +1255,7 @@ fn sample_oversample_factor_for_shape(
     )
 }
 
-fn proc_options_for_shape(
+pub(super) fn proc_options_for_shape(
     proc: &onda_frontend::ProcessorDef,
     host_options: AnalysisOptions,
 ) -> AnalysisOptions {
@@ -1361,7 +1367,7 @@ fn build_child_proc_surfaces(
 fn nested_proc_name_for_receiver<'a>(
     receiver: &str,
     state: &'a ProcStateFields,
-    nested_proc_array_slots: &HashMap<String, Vec<String>>,
+    nested_proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<&'a str> {
     let receiver = receiver.strip_prefix("self.").unwrap_or(receiver);
     if let Some(nested) = state.nested_procs.get(receiver) {
@@ -1379,7 +1385,7 @@ fn nested_proc_name_for_receiver<'a>(
     }
     if let Some(array_base) = nested_proc_array_slots.iter().find_map(|(base, slots)| {
         slots
-            .iter()
+            .binding_names()
             .any(|slot| slot == receiver)
             .then_some(base.as_str())
     }) {
@@ -2143,7 +2149,7 @@ fn validate_proc_param_binds(
     output_names: &HashSet<String>,
     output_array_names: &HashSet<String>,
     state: &ProcStateFields,
-    nested_proc_array_slots: &HashMap<String, Vec<String>>,
+    nested_proc_array_slots: &ProcArrayDeclarations,
     child_proc_surfaces: &HashMap<String, ChildProcSurface>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -2567,6 +2573,7 @@ pub(super) fn compute_proc_shape(
     fn_signatures_full: &HashMap<String, FnSignature>,
     fn_defs_full: &[FunctionDef],
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
+    source_proc_types: &HashMap<String, Vec<TypedStructField>>,
     const_arrays: &HashMap<String, TypedArrayInfo>,
     const_scalars: &HashMap<String, PrimitiveType>,
     const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
@@ -2931,6 +2938,12 @@ pub(super) fn compute_proc_shape(
     proc_state_tuples.retain(|name, _| !is_compiler_scratch(name));
     proc_struct_instances.retain(|name, _| !is_compiler_scratch(name));
     let mut proc_struct_instances_typed = proc_struct_instances.clone();
+    proc_struct_instances_typed.extend(
+        state
+            .nested_procs
+            .iter()
+            .map(|(name, child)| (name.clone(), child.proc_name.clone())),
+    );
 
     for (root, info) in proc_state_array_struct_roots.clone() {
         if !typed_struct_defs.contains_key(&info.struct_name) {
@@ -3224,6 +3237,8 @@ pub(super) fn compute_proc_shape(
         errors,
     );
 
+    let mut source_struct_defs = typed_struct_defs.clone();
+    source_struct_defs.extend(source_proc_types.clone());
     let analysis_plan_seeds = build_proc_owner_analysis_plan_seeds(
         &reserved,
         &out_names,
@@ -3273,7 +3288,7 @@ pub(super) fn compute_proc_shape(
                     io_surface_array_names: &proc_io_surface_array_names,
                     dynamic_param_array_names: &dynamic_param_array_names,
                     param_names: &typed_param_names,
-                    struct_defs: &typed_struct_defs,
+                    struct_defs: &source_struct_defs,
                     fn_signatures: &proc_fn_signatures,
                     fn_return_types,
                     options: proc_options,
@@ -3307,7 +3322,7 @@ pub(super) fn compute_proc_shape(
                     param_names: &typed_param_names,
                     validation_input_names: &ins_names,
                     validation_output_names: &out_names,
-                    struct_defs: &typed_struct_defs,
+                    struct_defs: &source_struct_defs,
                     fn_signatures: &proc_fn_signatures,
                     fn_return_types,
                     options: proc_options,
@@ -3341,7 +3356,7 @@ pub(super) fn compute_proc_shape(
         }
     }
 
-    let mut nested_proc_array_slots = HashMap::<String, Vec<String>>::new();
+    let mut nested_proc_array_slots = ProcArrayDeclarations::new();
     let mut nested_proc_array_active_fields = HashMap::<String, String>::new();
     let mut nested_proc_array_names = state.nested_proc_arrays.keys().cloned().collect::<Vec<_>>();
     nested_proc_array_names.sort();
@@ -3358,54 +3373,35 @@ pub(super) fn compute_proc_shape(
         else {
             continue;
         };
-        let mut slots = Vec::<String>::with_capacity(len);
-        for idx in 0..len {
-            let slot = format!("{array_name}[{idx}]");
-            if reserved.contains(&slot) {
-                push_semantic(
-                    DiagCtx::default(),
-                    errors,
-                    format!(
-                        "processor '{}' processor-array slot '{}' conflicts with reserved symbol",
-                        proc.name, slot
-                    ),
-                );
-                continue;
-            }
-            if let Some(existing) = state.nested_procs.get(&slot) {
-                if existing.proc_name != array_state.proc_name {
-                    push_semantic(
-                        DiagCtx::default(),
-                        errors,
-                        format!(
-                            "processor '{}' processor-array slot '{}' has conflicting processor types '{}' and '{}'",
-                            proc.name, slot, existing.proc_name, array_state.proc_name
-                        ),
-                    );
-                }
-            } else if state.scalars.contains_key(&slot)
-                || state.data.contains_key(&slot)
-                || state.struct_instances.contains_key(&slot)
-            {
-                push_semantic(
-                    DiagCtx::default(),
-                    errors,
-                    format!(
-                        "processor '{}' processor-array slot '{}' conflicts with existing state symbol",
-                        proc.name, slot
-                    ),
-                );
-                continue;
-            } else {
-                state.nested_procs.insert(
-                    slot.clone(),
-                    ProcNestedState {
-                        proc_name: array_state.proc_name.clone(),
-                    },
-                );
-            }
-            slots.push(slot);
-        }
+        let constructor = proc.init.iter().find_map(|statement| match statement {
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                expr: Expr::ArrayCtor { init, .. },
+                ..
+            } if name == &array_name => Some(init),
+            _ => None,
+        });
+        let array_symbols = state
+            .data
+            .keys()
+            .chain(field_array_slots.keys())
+            .chain(in_array_slots.keys())
+            .chain(
+                buffer_specs
+                    .iter()
+                    .filter(|buffer| buffer.is_array)
+                    .map(|buffer| &buffer.name),
+            )
+            .cloned()
+            .collect();
+        let uniform =
+            constructor.is_none_or(|init| proc_array_init::is_uniform(init, &array_symbols));
+        let slots = ProcArrayDeclaration::new(
+            array_name.clone(),
+            array_state.proc_name.clone(),
+            len,
+            uniform,
+        );
         nested_proc_array_active_fields.insert(
             array_name.clone(),
             runtime_proc_array_active_symbol(&array_name),
@@ -3561,6 +3557,23 @@ pub(super) fn compute_proc_shape(
             });
         }
     }
+    // Processor arrays have the same nominal, columnar representation as data
+    // struct arrays. Their extent is a tensor axis, never a field multiplier.
+    let mut proc_array_names = state.nested_proc_arrays.keys().collect::<Vec<_>>();
+    proc_array_names.sort();
+    for name in proc_array_names {
+        let array = &state.nested_proc_arrays[name];
+        fields.push(StructField {
+            loc: Default::default(),
+            name: name.clone(),
+            ty: FieldType::Array(onda_frontend::ArrayTypeSpec {
+                elem: ArrayElemType::Struct(array.proc_name.clone()),
+                size: Box::new(array.size_expr.clone()),
+            }),
+            ty_loc: Default::default(),
+            default: None,
+        });
+    }
     for instance in &struct_instance_names {
         if reserved.contains(instance) {
             continue;
@@ -3702,6 +3715,9 @@ pub(super) fn build_proc_lowering_shape(
 
     let mut nested_vars = base.state.nested_procs.keys().cloned().collect::<Vec<_>>();
     nested_vars.sort();
+    for array in base.state.nested_proc_arrays.values() {
+        let _ = build_proc_lowering_shape(&array.proc_name, base_shapes, cache, visiting, errors);
+    }
 
     for nested_var in nested_vars {
         let Some(nested_state) = base.state.nested_procs.get(&nested_var) else {
@@ -3718,7 +3734,15 @@ pub(super) fn build_proc_lowering_shape(
             continue;
         };
 
-        nested_fields.insert(nested_var.clone(), callee_shape.field_names.clone());
+        nested_fields.insert(
+            nested_var.clone(),
+            callee_shape
+                .field_names
+                .iter()
+                .filter(|name| !callee_shape.state.nested_procs.contains_key(*name))
+                .cloned()
+                .collect(),
+        );
         for (array_base, slots) in &callee_shape.field_array_slots {
             let prefixed_base = nested_field_name(&nested_var, array_base);
             let prefixed_slots = slots
@@ -3729,10 +3753,7 @@ pub(super) fn build_proc_lowering_shape(
         }
         for (array_base, slots) in &callee_shape.nested_proc_array_slots {
             let prefixed_base = nested_field_name(&nested_var, array_base);
-            let prefixed_slots = slots
-                .iter()
-                .map(|slot| nested_field_name(&nested_var, slot))
-                .collect::<Vec<_>>();
+            let prefixed_slots = slots.prefixed(&nested_var);
             nested_proc_array_slots.insert(prefixed_base, prefixed_slots);
         }
         for (array_base, active_field) in &callee_shape.nested_proc_array_active_fields {
@@ -3763,49 +3784,8 @@ pub(super) fn build_proc_lowering_shape(
         }
     }
 
-    let mut nested_proc_array_names = base
-        .nested_proc_array_slots
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    nested_proc_array_names.sort();
-    for array_name in nested_proc_array_names {
-        let Some(array_state) = base.state.nested_proc_arrays.get(&array_name) else {
-            continue;
-        };
-        let Some(array_slots) = base.nested_proc_array_slots.get(&array_name) else {
-            continue;
-        };
-        let Some(callee_shape) =
-            build_proc_lowering_shape(&array_state.proc_name, base_shapes, cache, visiting, errors)
-        else {
-            continue;
-        };
-        let mut scalar_fields = callee_shape
-            .fields
-            .iter()
-            .filter_map(|field| {
-                if matches!(field.ty, FieldType::Scalar(_)) {
-                    Some(field.name.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        scalar_fields.sort();
-        for field_name in scalar_fields {
-            let field_array_base = format!("{array_name}.{field_name}");
-            let field_slots = array_slots
-                .iter()
-                .map(|slot| nested_field_name(slot, &field_name))
-                .collect::<Vec<_>>();
-            field_array_slots
-                .entry(field_array_base)
-                .or_insert(field_slots);
-        }
-    }
-
     let _ = visiting.pop();
+    field_names.extend(base.state.nested_procs.keys().cloned());
 
     let resolved = ProcLoweringShape {
         ins: base.ins,

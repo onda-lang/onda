@@ -222,7 +222,7 @@ pub(super) fn record_top_level_proc_array_arg_oversample_factor(
     let Some(slots) = top_level_proc_rewrite.global_proc_array_slots.get(base) else {
         return;
     };
-    for slot in slots {
+    for slot in slots.binding_names() {
         record_top_level_proc_arg_oversample_factor(
             slot,
             sample_oversample_factor,
@@ -232,12 +232,14 @@ pub(super) fn record_top_level_proc_array_arg_oversample_factor(
             errors,
         );
     }
-    let mut slot_factors = slots.iter().filter_map(|slot| out.get(slot).copied());
+    let mut slot_factors = slots
+        .binding_names()
+        .filter_map(|slot| out.get(slot).copied());
     let Some(first) = slot_factors.next() else {
         return;
     };
     if slots
-        .iter()
+        .binding_names()
         .all(|slot| out.get(slot).copied() == Some(first))
     {
         out.insert(base.to_owned(), first);
@@ -495,6 +497,13 @@ pub(super) fn collect_reachable_def_names(
     sample_and_event_exec: &[Stmt],
     defs: &[FunctionDef],
 ) -> HashSet<String> {
+    collect_reachable_def_names_from_roots(&[init, block_exec, sample_and_event_exec], defs)
+}
+
+pub(super) fn collect_reachable_def_names_from_roots(
+    roots: &[&[Stmt]],
+    defs: &[FunctionDef],
+) -> HashSet<String> {
     let def_map = defs
         .iter()
         .map(|def| (def.name.clone(), def))
@@ -503,14 +512,9 @@ pub(super) fn collect_reachable_def_names(
     let mut pending = Vec::<String>::new();
     let mut seen_pending = HashSet::<String>::new();
 
-    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(block_exec, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(
-        sample_and_event_exec,
-        &def_names,
-        &mut pending,
-        &mut seen_pending,
-    );
+    for root in roots {
+        seed_called_typed_defs_from_stmts(root, &def_names, &mut pending, &mut seen_pending);
+    }
 
     let mut reachable = HashSet::<String>::new();
     while let Some(name) = pending.pop() {
@@ -544,50 +548,43 @@ pub(super) fn def_is_neither_phase_generated_root(name: &str) -> bool {
     name.ends_with(PROC_INIT_FN_SUFFIX) || name.contains(PROC_EVENT_FN_PREFIX)
 }
 
-pub(super) fn proc_name_for_lowered_proc_call(name: &str) -> Option<&str> {
-    if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
-        return Some(step_proc);
-    }
-    let (call_proc, out_idx_raw) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)?;
-    out_idx_raw.parse::<usize>().ok()?;
-    Some(call_proc)
-}
-
 pub(super) fn lowered_proc_call_timing(
     name: &str,
-    proc_api: &HashMap<String, ProcApi>,
+    _proc_api: &HashMap<String, ProcApi>,
     generated_proc_call_timing: &HashMap<String, OutputTiming>,
 ) -> Option<OutputTiming> {
-    if let Some(timing) = generated_proc_call_timing.get(name).copied() {
-        return Some(timing);
-    }
-    let proc_name = proc_name_for_lowered_proc_call(name)?;
-    proc_api.get(proc_name).map(|api| api.outputs.timing)
+    let origin = crate::compile_context::lowered_function_origin(name);
+    generated_proc_call_timing.get(origin).copied()
 }
 
 pub(super) fn generated_proc_call_timing_map(
     proc_api: &HashMap<String, ProcApi>,
-    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+    processor_views: &crate::processor_views::ProcessorViewCatalog,
 ) -> HashMap<String, OutputTiming> {
-    let mut out = HashMap::<String, OutputTiming>::new();
-    for (owner_proc, shape) in lowering_shapes {
-        for (nested_var, nested) in &shape.state.nested_procs {
-            let Some(api) = proc_api.get(&nested.proc_name) else {
-                continue;
-            };
-            out.insert(
-                nested_step_fn_name(owner_proc, nested_var),
-                api.outputs.timing,
-            );
-            for out_idx in 0..api.outputs.names.len() {
-                out.insert(
-                    nested_call_out_fn_name(owner_proc, nested_var, out_idx),
-                    api.outputs.timing,
-                );
+    use crate::processor_views::ProcessorOperation;
+    processor_views
+        .operations
+        .iter()
+        .filter_map(|operation| {
+            if !matches!(
+                operation.kind,
+                ProcessorOperation::Step | ProcessorOperation::CallOutput(_)
+            ) {
+                return None;
             }
-        }
-    }
-    out
+            let proc_name = operation
+                .projection
+                .edges
+                .last()
+                .map_or(operation.projection.owner.as_str(), |edge| {
+                    edge.proc_name.as_str()
+                });
+            Some((
+                operation.name.clone(),
+                proc_api.get(proc_name)?.outputs.timing,
+            ))
+        })
+        .collect()
 }
 
 pub(super) fn collect_proc_call_diags_from_expr(
@@ -747,10 +744,10 @@ pub(super) fn reject_non_sample_proc_operator_calls(
     events: &[TypedEvent],
     defs: &[FunctionDef],
     proc_api: &HashMap<String, ProcApi>,
-    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+    processor_views: &crate::processor_views::ProcessorViewCatalog,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let generated_proc_call_timing = generated_proc_call_timing_map(proc_api, lowering_shapes);
+    let generated_proc_call_timing = generated_proc_call_timing_map(proc_api, processor_views);
     push_proc_call_phase_errors(
         init,
         "init",
@@ -919,14 +916,14 @@ pub(super) fn def_has_concrete_param_contract(
     })
 }
 
-pub(super) fn try_indexed_proc_call_meta_in_def<'a>(
+pub(super) fn try_indexed_proc_call_meta_in_def<'a, 'b>(
     expr: &'a Expr,
-    proc_api: &HashMap<String, ProcApi>,
-) -> Option<(&'a str, &'a [CallArg], &'a str, &'a Expr)> {
+    proc_api: &'b HashMap<String, ProcApi>,
+) -> Option<(&'b str, &'a [CallArg], &'a str, &'a Expr)> {
     let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
-    let proc_name = crate::processor_lowering::proc_name_for_lowered_proc_call(name)?;
+    let proc_name = crate::processor_lowering::proc_name_for_lowered_proc_call(name, proc_api)?;
     let api = proc_api.get(proc_name)?;
     if !api.has_block {
         return None;
@@ -1498,7 +1495,7 @@ pub(super) fn inject_sample_def_owner_proc_block_hooks(
     defs: &[TypedFunction],
     proc_api: &HashMap<String, ProcApi>,
     global_proc_instances: &HashMap<String, ProcCallInstance>,
-    global_proc_array_slots: &HashMap<String, Vec<String>>,
+    global_proc_array_slots: &ProcArrayDeclarations,
     errors: &mut Vec<Diagnostic>,
 ) {
     if defs.is_empty() || global_proc_instances.is_empty() {

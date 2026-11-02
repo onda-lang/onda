@@ -190,7 +190,7 @@ pub(crate) fn collect_flattened_proc_integer_ranges(
         }
         for (field, nested) in &shape.state.nested_proc_arrays {
             if let Some(slots) = shape.nested_proc_array_slots.get(field) {
-                for slot in slots {
+                for slot in slots.binding_names() {
                     collect_flattened_proc_integer_ranges(
                         &nested.proc_name,
                         &format!("{prefix}{slot}__"),

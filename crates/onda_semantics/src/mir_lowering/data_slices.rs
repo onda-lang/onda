@@ -65,6 +65,7 @@ impl FunctionLowerer<'_> {
             struct_name,
             length,
             fields: destination_fields,
+            ..
         }) = self.bindings.get(&destination).cloned()
         else {
             unreachable!()
@@ -241,6 +242,7 @@ impl FunctionLowerer<'_> {
         self.bindings.insert(
             name.to_owned(),
             Binding::StructArrayParameter {
+                processor: None,
                 struct_name,
                 length: match len {
                     Value::Local(local) => StructArrayLength::Local(local),

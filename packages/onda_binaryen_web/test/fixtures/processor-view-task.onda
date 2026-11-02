@@ -1,0 +1,53 @@
+proc Voice:
+  buffers:
+    source: f32
+  delegate fired(value: i32)
+  event poke():
+    source[0] += 1.0
+    fired(i32(source[0]))
+  sample:
+    out1 = 0.0
+def fire(voice):
+  voice.poke()
+proc Bank:
+  buffers:
+    source: f32
+  delegate changed(value: i32)
+  init:
+    voices: Voice[2] = Voice(source = source)
+    total: i32 = 0
+  when voices[1].fired(value):
+    total += value
+    changed(value)
+  sample:
+    out1 = f32(total)
+proc Rack:
+  buffers:
+    sources: f32 {2}
+  init:
+    banks: Bank[2] = [Bank(source = sources[0]), Bank(source = sources[1])]
+    selector: i32 = 1
+    total: i32 = 0
+  when banks[0].changed(value):
+    total += value
+  when banks[1].changed(value):
+    total += value * 10
+  task prepare():
+    bank = banks[selector]
+    selected = bank.voices[1]
+    yield
+    fire(selected)
+  event change():
+    selector = 0
+  block:
+    await prepare()
+    sample:
+      out1 = f32(total)
+buffers:
+  sources: f32 {2}
+init:
+  rack = Rack(sources = sources)
+event change():
+  rack.change()
+sample:
+  out1 = rack()

@@ -1417,6 +1417,10 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                             expr: Expr::var(field_pair.as_str().to_owned())
                                 .with_loc(stmt_loc_from_pair(&field_pair)),
                         },
+                        CallArg {
+                            name: Some(PROC_CACHED_FIELD_ARG.to_owned()),
+                            expr: Expr::bool(true),
+                        },
                     ],
                 }
             }

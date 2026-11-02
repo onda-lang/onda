@@ -3092,6 +3092,7 @@ struct RoutedHandler {
     delegate: String,
     function: String,
     takes_index: bool,
+    selected_index: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -3100,7 +3101,8 @@ struct PendingTopWhen {
     delegate: DelegateDef,
     function: String,
     takes_index: bool,
-    slots: Vec<(String, i32)>,
+    target: String,
+    selected_index: Option<i32>,
 }
 
 fn top_when_function(pending: &PendingTopWhen, errors: &mut Vec<Diagnostic>) -> FunctionDef {
@@ -3132,7 +3134,7 @@ fn resolve_top_when(
         return None;
     }
     let receiver = &when.target.receiver[0];
-    let (slots, takes_index) = if let Some(index) = &when.target.index {
+    let (target, takes_index, selected_index) = if let Some(index) = &when.target.index {
         let Some(array_slots) = meta.global_proc_array_slots.get(receiver) else {
             push_semantic(
                 DiagCtx::new(when.target.loc.clone()),
@@ -3162,7 +3164,10 @@ fn resolve_top_when(
             );
             return None;
         };
-        let Some(slot) = array_slots.get(index_usize) else {
+        let Some(slot) = (index_usize < array_slots.len())
+            .then(|| array_slots.first_binding())
+            .flatten()
+        else {
             push_semantic(
                 DiagCtx::new(when.target.loc.clone()),
                 errors,
@@ -3173,18 +3178,11 @@ fn resolve_top_when(
             );
             return None;
         };
-        (vec![(slot.clone(), index as i32)], false)
+        (slot.clone(), false, Some(index as i32))
     } else if let Some(array_slots) = meta.global_proc_array_slots.get(receiver) {
-        (
-            array_slots
-                .iter()
-                .enumerate()
-                .map(|(index, slot)| (slot.clone(), index as i32))
-                .collect(),
-            true,
-        )
+        (array_slots.first_binding()?.clone(), true, None)
     } else if meta.global_proc_instances.contains_key(receiver) {
-        (vec![(receiver.clone(), -1)], false)
+        (receiver.clone(), false, None)
     } else {
         push_semantic(
             DiagCtx::new(when.target.loc.clone()),
@@ -3194,8 +3192,7 @@ fn resolve_top_when(
         return None;
     };
 
-    let (first_slot, _) = slots.first()?;
-    let Some(instance) = meta.global_proc_instances.get(first_slot) else {
+    let Some(instance) = meta.global_proc_instances.get(&target) else {
         push_semantic(
             DiagCtx::new(when.target.loc.clone()),
             errors,
@@ -3237,7 +3234,8 @@ fn resolve_top_when(
         delegate,
         function: top_when_def_name(ordinal, 0),
         takes_index,
-        slots,
+        target,
+        selected_index,
     })
 }
 
@@ -3269,26 +3267,24 @@ pub(super) fn lower_top_level_child_whens(
         .collect::<Vec<_>>();
 
     let mut slot_handlers = BTreeMap::<String, Vec<RoutedHandler>>::new();
-    let mut slot_indices = BTreeMap::<String, i32>::new();
     for handler in &pending {
         runtime_defs.insert(handler.function.clone());
         program
             .blocks
             .push(Block::Def(top_when_function(handler, errors)));
-        for (slot, index) in &handler.slots {
-            slot_indices.insert(slot.clone(), *index);
-            slot_handlers
-                .entry(slot.clone())
-                .or_default()
-                .push(RoutedHandler {
-                    delegate: handler.delegate.name.clone(),
-                    function: handler.function.clone(),
-                    takes_index: handler.takes_index,
-                });
-        }
+        slot_handlers
+            .entry(handler.target.clone())
+            .or_default()
+            .push(RoutedHandler {
+                delegate: handler.delegate.name.clone(),
+                function: handler.function.clone(),
+                takes_index: handler.takes_index,
+                selected_index: handler.selected_index,
+            });
     }
 
-    let mut route_by_signature = BTreeMap::<Vec<(String, String, bool)>, (i32, String)>::new();
+    let mut route_by_signature =
+        BTreeMap::<Vec<(String, String, bool, Option<i32>)>, (i32, String)>::new();
     let mut next_route = 1_i32;
     let mut slot_routes = BTreeMap::<String, i32>::new();
     for (slot, handlers) in &slot_handlers {
@@ -3299,6 +3295,7 @@ pub(super) fn lower_top_level_child_whens(
                     handler.delegate.clone(),
                     handler.function.clone(),
                     handler.takes_index,
+                    handler.selected_index,
                 )
             })
             .collect::<Vec<_>>();
@@ -3320,7 +3317,7 @@ pub(super) fn lower_top_level_child_whens(
         for delegate in &proc.delegates {
             let matching = signature
                 .iter()
-                .filter(|(delegate_name, _, _)| delegate_name == &delegate.name)
+                .filter(|(delegate_name, _, _, _)| delegate_name == &delegate.name)
                 .collect::<Vec<_>>();
             if matching.is_empty() {
                 continue;
@@ -3333,7 +3330,7 @@ pub(super) fn lower_top_level_child_whens(
                 continue;
             };
             let mut route_body = Vec::new();
-            for (_, function, takes_index) in matching {
+            for (_, function, takes_index, selected_index) in matching {
                 let mut args = Vec::new();
                 if *takes_index {
                     args.push(CallArg {
@@ -3345,7 +3342,7 @@ pub(super) fn lower_top_level_child_whens(
                     name: None,
                     expr: Expr::var(param.name.clone()),
                 }));
-                route_body.push(Stmt::Expr {
+                let call = Stmt::Expr {
                     loc: Default::default(),
                     expr: Expr::UserCall {
                         loc: Default::default(),
@@ -3353,6 +3350,21 @@ pub(super) fn lower_top_level_child_whens(
                         type_args: Vec::new(),
                         args,
                     },
+                };
+                route_body.push(if let Some(index) = selected_index {
+                    Stmt::If {
+                        loc: Default::default(),
+                        cond: Expr::Compare {
+                            loc: Default::default(),
+                            op: CmpOp::Eq,
+                            lhs: Box::new(Expr::var(DELEGATE_INDEX_FIELD)),
+                            rhs: Box::new(Expr::int(i64::from(*index))),
+                        },
+                        then_branch: vec![call],
+                        else_branch: Vec::new(),
+                    }
+                } else {
+                    call
                 });
             }
             dispatcher.body.push(Stmt::If {
@@ -3375,34 +3387,56 @@ pub(super) fn lower_top_level_child_whens(
         .find(|block| matches!(block, Block::Init(_)))
     {
         for (slot, route) in slot_routes {
-            init.body.push(Stmt::Assign {
-                loc: Default::default(),
-                target_loc: Default::default(),
-                target: routed_field_target(
-                    &slot,
-                    DELEGATE_ROUTE_FIELD,
-                    &meta.global_proc_array_slots,
-                ),
-                decl_ty: None,
-                generic_decl_ty: None,
-                is_typed_decl: false,
-                typed_decl_ty_loc: Default::default(),
-                expr: Expr::int(i64::from(route)),
-            });
-            init.body.push(Stmt::Assign {
-                loc: Default::default(),
-                target_loc: Default::default(),
-                target: routed_field_target(
-                    &slot,
+            let array = meta
+                .global_proc_array_slots
+                .iter()
+                .find(|(_, array)| array.first_binding() == Some(&slot));
+            let variable = "__onda_delegate_init_index";
+            let mut body = Vec::new();
+            for (field, value) in [
+                (DELEGATE_ROUTE_FIELD, Expr::int(i64::from(route))),
+                (
                     DELEGATE_INDEX_FIELD,
-                    &meta.global_proc_array_slots,
+                    if array.is_some() {
+                        Expr::var(variable)
+                    } else {
+                        Expr::int(-1)
+                    },
                 ),
-                decl_ty: None,
-                generic_decl_ty: None,
-                is_typed_decl: false,
-                typed_decl_ty_loc: Default::default(),
-                expr: Expr::int(i64::from(*slot_indices.get(&slot).unwrap_or(&-1))),
-            });
+            ] {
+                let target = if let Some((base, _)) = array {
+                    AssignTarget::Index {
+                        base: format!("{base}.{field}"),
+                        index: Expr::var(variable),
+                    }
+                } else {
+                    AssignTarget::Var(format!("{slot}.{field}"))
+                };
+                body.push(Stmt::Assign {
+                    loc: Default::default(),
+                    target_loc: Default::default(),
+                    target,
+                    decl_ty: None,
+                    generic_decl_ty: None,
+                    is_typed_decl: false,
+                    typed_decl_ty_loc: Default::default(),
+                    expr: value,
+                });
+            }
+            if let Some((_, array)) = array {
+                init.body.push(Stmt::For {
+                    loc: Default::default(),
+                    var: variable.to_owned(),
+                    var_ty: PrimitiveType::I32,
+                    step: None,
+                    start: Expr::int(0),
+                    end: Expr::int(array.len() as i64),
+                    end_inclusive: false,
+                    body,
+                });
+            } else {
+                init.body.extend(body);
+            }
         }
     }
 }
@@ -3452,7 +3486,7 @@ fn direct_proc_when_target(
             );
             return None;
         };
-        let Some(slot) = slots.get(index_usize) else {
+        if index_usize >= slots.len() {
             push_semantic(
                 DiagCtx::new(when.target.loc.clone()),
                 errors,
@@ -3462,8 +3496,8 @@ fn direct_proc_when_target(
                 ),
             );
             return None;
-        };
-        return Some((slot.clone(), None));
+        }
+        return Some((receiver.clone(), None));
     }
     if shape.nested_proc_array_slots.contains_key(receiver) {
         return Some((receiver.clone(), Some(0)));
@@ -3495,21 +3529,28 @@ pub(super) fn validate_proc_child_whens(
             else {
                 continue;
             };
-            let child_slot = if whole_array.is_some() {
+            let child_name = if whole_array.is_some() {
                 shape
                     .nested_proc_array_slots
                     .get(&resolved)
-                    .and_then(|slots| slots.first())
+                    .map(|array| array.proc_name.as_str())
+            } else if when.target.index.is_some() {
+                shape
+                    .state
+                    .nested_proc_arrays
+                    .get(&when.target.receiver[0])
+                    .map(|child| child.proc_name.as_str())
             } else {
-                Some(&resolved)
+                shape
+                    .state
+                    .nested_procs
+                    .get(&resolved)
+                    .map(|child| child.proc_name.as_str())
             };
-            let Some(child_slot) = child_slot else {
+            let Some(child_name) = child_name else {
                 continue;
             };
-            let Some(child) = shape.state.nested_procs.get(child_slot) else {
-                continue;
-            };
-            let Some(child_proc) = proc_defs.get(&child.proc_name) else {
+            let Some(child_proc) = proc_defs.get(child_name) else {
                 continue;
             };
             let Some(_delegate) = child_proc
@@ -3522,7 +3563,7 @@ pub(super) fn validate_proc_child_whens(
                     errors,
                     format!(
                         "processor '{}' has no delegate named '{}'",
-                        child.proc_name, when.target.delegate
+                        child_name, when.target.delegate
                     ),
                 );
                 continue;
@@ -3531,36 +3572,35 @@ pub(super) fn validate_proc_child_whens(
     }
 }
 
-fn proc_array_slot_index(path: &str, base: &str) -> Option<i32> {
-    let suffix = path
-        .strip_prefix(base)?
-        .strip_prefix('[')?
-        .strip_suffix(']')?;
-    suffix.parse().ok()
-}
-
-fn routed_field_target(
-    slot: &str,
-    field: &str,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-) -> AssignTarget {
-    if let Some((array, index)) = find_proc_array_slot(slot, proc_array_slots) {
-        AssignTarget::Index {
-            base: format!("{array}.{field}"),
-            index: Expr::int(index as i64),
-        }
-    } else {
-        AssignTarget::Var(format!("{slot}.{field}"))
-    }
+pub(super) fn nested_proc_captures_delegate_context(
+    owner: &ProcessorDef,
+    child: &ProcessorDef,
+    declaration: &str,
+    options: AnalysisOptions,
+    coordinate_arity: usize,
+) -> bool {
+    child.delegates.iter().any(|delegate| {
+        !proc_child_when_body(
+            owner,
+            child,
+            declaration,
+            &delegate.name,
+            options,
+            &[],
+            proc_storage::family_coordinate(coordinate_arity).as_ref(),
+        )
+        .is_empty()
+    })
 }
 
 pub(super) fn proc_child_when_body(
     owner: &ProcessorDef,
     callee: &ProcessorDef,
-    nested_path: &str,
+    declaration: &str,
     delegate_name: &str,
     options: AnalysisOptions,
     owner_buffer_args: &[String],
+    selected_index: Option<&Expr>,
 ) -> Vec<Stmt> {
     let Some(delegate) = callee
         .delegates
@@ -3575,6 +3615,10 @@ pub(super) fn proc_child_when_body(
             continue;
         }
         let receiver = &when.target.receiver[0];
+        if receiver != declaration {
+            continue;
+        }
+        let mut condition = None;
         let leading = if let Some(index_expr) = &when.target.index {
             let Some(index) = eval_const_expr_i64_exact(
                 index_expr,
@@ -3584,16 +3628,19 @@ pub(super) fn proc_child_when_body(
             ) else {
                 continue;
             };
-            if nested_path != format!("{receiver}[{index}]") {
+            if let Some(selected) = selected_index {
+                condition = Some(Expr::Compare {
+                    loc: Default::default(),
+                    op: CmpOp::Eq,
+                    lhs: Box::new(selected.clone()),
+                    rhs: Box::new(Expr::int(index)),
+                });
+            } else {
                 continue;
             }
             None
-        } else if nested_path == receiver {
-            None
-        } else if let Some(index) = proc_array_slot_index(nested_path, receiver) {
-            Some(Expr::int(i64::from(index)))
         } else {
-            continue;
+            selected_index.cloned()
         };
         let handler = proc_child_when_handler_name(ordinal);
         if !owner.local_defs.iter().any(|def| def.name == handler) {
@@ -3613,6 +3660,15 @@ pub(super) fn proc_child_when_body(
                 name: None,
                 expr: Expr::var(buffer.clone()),
             }));
+        }
+        if let Some(cond) = condition {
+            let handler = body.pop().expect("handler was just inserted");
+            body.push(Stmt::If {
+                loc: Default::default(),
+                cond,
+                then_branch: vec![handler],
+                else_branch: Vec::new(),
+            });
         }
     }
     body

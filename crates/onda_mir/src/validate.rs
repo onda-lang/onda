@@ -8,6 +8,7 @@ use crate::{
     PROCESS_PARAM_COUNT, PROCESS_PARAM_NAMES,
 };
 
+mod buffer_values;
 mod call_arguments;
 mod helpers;
 mod messages;
@@ -325,6 +326,7 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
 
 fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
     match value {
+        Rvalue::MakeBuffer { source, .. } => call_arg_uses_unchecked_bounds(source),
         Rvalue::Load(place) => place_uses_unchecked_bounds(place),
         Rvalue::BufferLoad { buffer, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
@@ -377,6 +379,9 @@ fn call_arg_uses_unchecked_bounds(argument: &CallArgument) -> bool {
         CallArgument::Value(_) => false,
         CallArgument::Buffer(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
         CallArgument::BufferParam(parameter) => buffer_param_ref_uses_unchecked_bounds(*parameter),
+        CallArgument::BufferSpan(crate::BufferSpanRef::Local { bounds, .. }) => {
+            *bounds == crate::BoundsMode::Unchecked
+        }
         CallArgument::BufferSpan(_) => false,
     }
 }
@@ -395,6 +400,9 @@ fn buffer_param_ref_uses_unchecked_bounds(parameter: crate::BufferParamRef) -> b
     matches!(
         parameter,
         crate::BufferParamRef::ArrayElement {
+            bounds: crate::BoundsMode::Unchecked,
+            ..
+        } | crate::BufferParamRef::LocalElement {
             bounds: crate::BoundsMode::Unchecked,
             ..
         }
@@ -478,6 +486,12 @@ impl Validator<'_> {
                     channels,
                     len,
                     ..
+                }
+                | Type::BufferMap {
+                    element,
+                    channels,
+                    len,
+                    ..
                 } => {
                     if *len == 0 || *len > i32::MAX as u32 {
                         self.program_error(format!(
@@ -494,6 +508,24 @@ impl Validator<'_> {
                     }
                 }
                 Type::Scalar(_) | Type::Slice { .. } => {}
+            }
+        }
+
+        for (index, map) in self.program.buffer_maps.iter().enumerate() {
+            if map.buffers.is_empty() || map.buffers.len() > i32::MAX as usize {
+                self.program_error(format!(
+                    "buffer map {index} length must be in 1..={}",
+                    i32::MAX
+                ));
+            }
+            if map
+                .buffers
+                .iter()
+                .any(|id| id.index() >= self.program.interface.buffers.len())
+            {
+                self.program_error(format!(
+                    "buffer map {index} references an invalid interface buffer"
+                ));
             }
         }
 
@@ -962,7 +994,8 @@ impl Validator<'_> {
                 Type::Scalar(_)
                 | Type::Slice { .. }
                 | Type::Buffer { .. }
-                | Type::BufferSpan { .. } => Vec::new(),
+                | Type::BufferSpan { .. }
+                | Type::BufferMap { .. } => Vec::new(),
                 Type::Tuple(elements) => elements.clone(),
                 Type::Array { element, .. } => vec![*element],
                 Type::Struct(structure) => self
@@ -985,9 +1018,10 @@ impl Validator<'_> {
             .iter()
             .map(|ty| match ty {
                 Type::Scalar(scalar) => LogicalSize::Fixed(logical_scalar_bytes(*scalar)),
-                Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => {
-                    LogicalSize::Unsized
-                }
+                Type::Slice { .. }
+                | Type::Buffer { .. }
+                | Type::BufferSpan { .. }
+                | Type::BufferMap { .. } => LogicalSize::Unsized,
                 Type::Tuple(_) | Type::Array { .. } | Type::Struct(_) => LogicalSize::Pending,
             })
             .collect::<Vec<_>>();
@@ -1057,7 +1091,8 @@ impl Validator<'_> {
                     Type::Scalar(_)
                     | Type::Slice { .. }
                     | Type::Buffer { .. }
-                    | Type::BufferSpan { .. } => unreachable!(),
+                    | Type::BufferSpan { .. }
+                    | Type::BufferMap { .. } => unreachable!(),
                 };
                 match computed {
                     Some(bytes) if bytes <= i32::MAX as u64 => {
@@ -1132,17 +1167,6 @@ impl Validator<'_> {
     }
 
     fn validate_function(&mut self, id: FunctionId, function: &Function) {
-        if function.params.len() > crate::MAX_FUNCTION_PARAMETER_COUNT {
-            self.function_error(
-                id,
-                function.source,
-                format!(
-                    "function declares {} parameters, exceeding the limit of {}",
-                    function.params.len(),
-                    crate::MAX_FUNCTION_PARAMETER_COUNT
-                ),
-            );
-        }
         if function.locals.len() > crate::MAX_FUNCTION_LOCAL_COUNT {
             self.function_error(
                 id,
@@ -1206,7 +1230,9 @@ impl Validator<'_> {
                 }
             }
             match self.program.types.get(param.ty.index()) {
-                Some(Type::BufferSpan { .. }) if param.mode != crate::PassingMode::Value => {
+                Some(Type::BufferSpan { .. } | Type::BufferMap { .. })
+                    if param.mode != crate::PassingMode::Value =>
+                {
                     self.function_error(
                         id,
                         function.source,
@@ -1536,7 +1562,12 @@ impl Validator<'_> {
                                     );
                                 }
                             }
-                            CallArgument::BufferSpan(_) => {}
+                            CallArgument::BufferSpan(span) => self.validate_buffer_span_value(
+                                function_id,
+                                function,
+                                *span,
+                                statement.source,
+                            ),
                         }
                     }
                     for (index, (arg, param)) in
@@ -1891,8 +1922,7 @@ impl Validator<'_> {
                             function_id,
                             statement.source,
                             format!(
-                                "buffer operation references non-buffer parameter {}",
-                                parameter.raw()
+                                "buffer operation references non-buffer parameter {parameter:?}"
                             ),
                         ),
                     }
@@ -2308,7 +2338,13 @@ impl Validator<'_> {
                                 statement.source,
                                 state,
                             ),
-                        CallArgument::BufferSpan(_) => {}
+                        CallArgument::BufferSpan(span) => self.assignment_read_buffer_argument(
+                            function_id,
+                            function,
+                            &CallArgument::BufferSpan(*span),
+                            statement.source,
+                            state,
+                        ),
                     }
                 }
                 if let Some(parameters) = self
@@ -2405,7 +2441,13 @@ impl Validator<'_> {
                         }
                         CallArgument::Buffer(_)
                         | CallArgument::BufferParam(_)
-                        | CallArgument::BufferSpan(_) => {}
+                        | CallArgument::BufferSpan(_) => self.assignment_read_buffer_argument(
+                            function_id,
+                            function,
+                            argument,
+                            statement.source,
+                            state,
+                        ),
                     }
                 }
             }
@@ -2566,6 +2608,11 @@ impl Validator<'_> {
         state: &AssignmentState,
     ) {
         match rvalue {
+            Rvalue::MakeBuffer {
+                source: argument, ..
+            } => {
+                self.assignment_read_buffer_argument(function_id, function, argument, source, state)
+            }
             Rvalue::InitAll => {}
             Rvalue::Use(value) => {
                 self.assignment_read_value(function_id, function, *value, source, state)
@@ -2759,7 +2806,10 @@ impl Validator<'_> {
         source: SourceSpan,
         state: &AssignmentState,
     ) {
-        if let crate::BufferParamRef::ArrayElement { selector, .. } = parameter {
+        if let Some(local) = parameter.local() {
+            self.assignment_read_value(function_id, function, Value::Local(local), source, state);
+        }
+        if let Some((selector, _)) = parameter.selection() {
             self.assignment_read_value(function_id, function, selector, source, state);
         }
     }
@@ -3034,6 +3084,10 @@ impl Validator<'_> {
         source: SourceSpan,
     ) {
         match value {
+            Rvalue::MakeBuffer {
+                source: argument,
+                ty,
+            } => self.validate_buffer_value(function_id, function, argument, *ty, source),
             Rvalue::InitAll => {
                 if function.kind != FunctionKind::Init {
                     self.function_error(
@@ -3325,10 +3379,7 @@ impl Validator<'_> {
                     self.function_error(
                         function_id,
                         source,
-                        format!(
-                            "buffer operation references non-buffer parameter {}",
-                            parameter.raw()
-                        ),
+                        format!("buffer operation references non-buffer parameter {parameter:?}"),
                     );
                 }
                 self.validate_optional_value(function_id, function, *channel, source);
@@ -3366,10 +3417,7 @@ impl Validator<'_> {
                     self.function_error(
                         function_id,
                         source,
-                        format!(
-                            "buffer metadata references non-buffer parameter {}",
-                            parameter.raw()
-                        ),
+                        format!("buffer metadata references non-buffer parameter {parameter:?}"),
                     );
                 }
             }
@@ -3427,10 +3475,7 @@ impl Validator<'_> {
                             self.function_error(
                                 function_id,
                                 source,
-                                format!(
-                                    "slice references non-buffer parameter {}",
-                                    parameter.raw()
-                                ),
+                                format!("slice references non-buffer parameter {parameter:?}"),
                             );
                         }
                         self.validate_optional_value(function_id, function, *channel, source);
@@ -3505,10 +3550,7 @@ impl Validator<'_> {
                     self.function_error(
                         function_id,
                         source,
-                        format!(
-                            "place references missing function parameter {}",
-                            parameter.raw()
-                        ),
+                        format!("place references missing function parameter {parameter:?}"),
                     );
                 }
                 function.params.get(parameter.index()).map(|param| param.ty)
@@ -3687,6 +3729,7 @@ impl Validator<'_> {
         expected: crate::TypeId,
     ) -> bool {
         match value {
+            Rvalue::MakeBuffer { ty, .. } => self.program.types_equivalent(*ty, expected),
             Rvalue::Use(value) => self.value_matches_type(function, *value, expected),
             Rvalue::Load(place) => self
                 .place_type(function, place)
@@ -4297,7 +4340,7 @@ impl Validator<'_> {
             let default = match default {
                 crate::ConstantValue::Scalar(value) => *value,
                 crate::ConstantValue::Aggregate(_) => {
-                    return Some("requires a scalar default".to_owned())
+                    return Some("requires a scalar default".to_owned());
                 }
             };
             match (range.min, range.max, default, step) {
@@ -4549,7 +4592,10 @@ impl Validator<'_> {
             }
             *seen = true;
             match &self.program.types[ty.index()] {
-                Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => return true,
+                Type::Slice { .. }
+                | Type::Buffer { .. }
+                | Type::BufferSpan { .. }
+                | Type::BufferMap { .. } => return true,
                 Type::Tuple(elements) => pending.extend(elements.iter().copied()),
                 Type::Array { element, .. } => pending.push(*element),
                 Type::Struct(structure) => {

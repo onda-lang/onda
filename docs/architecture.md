@@ -238,6 +238,19 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     each `await`. Reset invalidates only the program counter, leaving frame initialization to the
     next start.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
+    `logical_types` describes source processor fields before physical flattening. `view_catalog`
+    registers declared projections, generated operations and ordered resource captures;
+    `storage_projections` supplies exact typed storage plans to `proc_storage`. Uniform arrays
+    retain one declaration and constructor binding, with counted initialization and lifecycle loops.
+    `projection_callbacks` composes enclosing callback handlers, and `projection_resources` shares
+    the ordered capture plan between signatures and calls.
+  - `processor_views.rs` — complete processor shapes and capture recipes used by call inference,
+    specialization and MIR. Shapes contain declared projections and resource layouts; physical root
+    instances and captured coordinates are values. Specialization and compile-context materialization
+    retain the required shared owner adapters without constructing fake source calls.
+    Lexical resource captures record the owner declaration ordinal and actual parameter at signature
+    generation, including task resume helpers. Lowering consumes that metadata without recovering
+    ownership from parameter names; lexical bindings retain their normal shadowing rules.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
 - `proc_call_rewrite.rs`, `proc_call_rewrite/call_arguments.rs`, `proc_call_support.rs`,
   `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, named-argument and call-surface
@@ -635,7 +648,9 @@ and invalidation in detail. The main opportunities exposed to backends are:
 - MIR storage origins preserve owned-object identities and possible contiguous element ranges through
   views and calls, including different views passed to the same helper. MIR folds common descriptor
   lengths and removes proven slice construction and window checks. Native lowering computes
-  reference alignment from the recorded element offsets; overlapping views keep the same identity.
+  reference alignment from exact element offsets or a proven common power-of-two offset divisor;
+  dynamic aligned windows retain that proof even when their exact ranges are unknown. Alignment
+  never implies disjointness; overlapping views keep the same identity.
   LLVM alias scopes share proven disjoint groups of accessed origins, avoiding a full complement
   list per state object. Overlapping unions refine those groups without discarding disjointness
   facts; mixed origins receive only negative alias facts. Pointwise audio proofs allow a native
@@ -762,3 +777,28 @@ all input before writing aligned workspace; synchronous internal forwarding borr
 Logical host encoding/decoding and workspace provisioning happen outside realtime execution.
 Typed nominal structs retain only their directly declared fields; semantic passes recursively walk
 those references when they need leaf paths rather than storing duplicated dotted descendants.
+Processor arrays follow the same layout at top level and inside other processors: each primitive
+field is one tensor whose axes include the enclosing array dimensions. Selecting an instance
+captures its coordinate once and borrows the corresponding scalar elements or history windows.
+Shared child wrappers take the owner view and coordinates, so homogeneous runtime calls do not
+dispatch across every instance. The physical helper ABI remains one reference per live field,
+independent of array capacity; MIR retains per-field effects and backend parameter pruning.
+Borrowed scalar children and arrays share this logical view model, while scalar children may
+remain physically flattened. A view carries root storage, captured coordinates, lifecycle identity,
+resources and enclosing callback environments. Joins retain explicit alternatives; owner selection
+is reconstructed inside the matching call branch from persistent or parameter roots. Writable
+references remain overlapping capabilities, with no exclusivity promise. MIR legalization uses
+ordinary references and direct calls, preserving live-field pruning and alignment facts.
+Heterogeneous bound buffers can still require resource selection. Their selection reuses the
+captured coordinate and resolves the current host binding rather than persisting native pointers.
+MIR `BufferMap` collections represent non-contiguous interface selections with an immutable table
+of symbolic resource identities. LLVM and Binaryen borrow that map alongside the current descriptor
+tables; forwarding and subviews copy a constant-size handle, and selection performs an indexed
+lookup without gathering descriptor tables. Ordinary buffers and contiguous `BufferSpan`
+collections retain their existing direct representation. Resource effects follow each mapped slot
+through calls and subviews, including repeated entries and unrelated interleaved interface types.
+When constructor bindings come from unrelated owner parameters, the view forwards those existing
+buffer or contiguous-span descriptors. A balanced branch selects one typed local descriptor before
+the child call. This finite choice needs no descriptor table construction during processing.
+Descriptor locals remain ephemeral: retained initialization aliases save selector values and
+reconstruct descriptors from current logical bindings after restore.

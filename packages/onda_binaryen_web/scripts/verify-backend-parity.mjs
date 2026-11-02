@@ -39,6 +39,82 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "retained processor views preserve captured owners across task yields and snapshots",
+    source: join(packageDir, "test/fixtures/processor-view-task.onda"),
+    expectedChannels: [[0, 0, 0, 0, 10, 10, 10, 10, 20, 20, 20, 20]],
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "event", name: "change", values: [] },
+      { kind: "render" },
+      { kind: "restore" },
+      { kind: "event", name: "change", values: [] },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "deep owner callbacks select resources from each enclosing frame",
+    source: join(packageDir, "test/fixtures/processor-view-deep-resources.onda"),
+    blocks: 1,
+    expectedChannels: [[2, 22, 31, 121]],
+  },
+  {
+    name: "forwarded resource element choices write only their selected bindings",
+    source: join(packageDir, "test/fixtures/processor-view-resource-elements.onda"),
+    blocks: 1,
+    expectedChannels: [[1, 1, 2, 2]],
+  },
+  {
+    name: "forwarded resource span choices preserve complete collections and writes",
+    source: join(packageDir, "test/fixtures/processor-view-span-writes.onda"),
+    blocks: 1,
+    expectedChannels: [[22, 77, 22, 77], [202, 70902, 70902, 70902]],
+  },
+  {
+    name: "forwarded heterogeneous resources preserve owner callbacks and writes",
+    source: join(packageDir, "test/fixtures/processor-view-resource-routing.onda"),
+    blocks: 1,
+    expectedChannels: [[20200, 7020207, 7040207, 14040207]],
+  },
+  {
+    name: "joined views reconstruct array owners from captured roots and coordinates",
+    source: join(packageDir, "test/fixtures/processor-view-owner-arrays.onda"),
+    blocks: 1,
+    expectedChannels: [[10, 1010, 1020, 2020]],
+  },
+  {
+    name: "forwarded processor views retain owner callbacks and instance identity",
+    source: join(packageDir, "test/fixtures/processor-view-environments.onda"),
+    blocks: 1,
+    expectedChannels: [[6, 1408, 1414, 2816], [704, 2804, 3508, 5608]],
+  },
+  {
+    name: "indexed and aliased cached fields do not step processors",
+    source: join(packageDir, "test/fixtures/processor-cached-fields.onda"),
+    blocks: 2,
+    expectedChannels: [[81, 234, 387, 540, 693, 846, 999, 1152]],
+  },
+  {
+    name: "nested processor banks preserve per-slot history, events and snapshots",
+    source: join(packageDir, "test/fixtures/processor-storage.onda"),
+    expectedChannels: [[
+      6127, 2222, 3333, 7238,
+      3333, 4444, 8349, 4444,
+      3333, 4444, 8349, 4444,
+    ]],
+    actions: [
+      { kind: "event", name: "Seed", values: [0, 127, 7] },
+      { kind: "event", name: "Seed", values: [0, 0, 2] },
+      { kind: "event", name: "Seed", values: [1, 127, 11] },
+      { kind: "event", name: "Seed", values: [1, 0, 5] },
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "render" },
+      { kind: "restore" },
+      { kind: "render" },
+    ],
+  },
+  {
     name: "mixed state and local storage preserves in-place dependencies",
     source: join(packageDir, "test/fixtures/mixed-storage-origins.onda"),
     blocks: 3,

@@ -106,6 +106,35 @@ pub enum Type {
         access: AccessMode,
         len: u32,
     },
+    /// An immutable indexed view over current interface buffer descriptors.
+    /// Its map contains symbolic resource identities, never sample pointers.
+    BufferMap {
+        element: ScalarType,
+        channels: BufferChannels,
+        access: AccessMode,
+        len: u32,
+    },
+}
+
+impl Type {
+    /// Logical collection contract and whether selection uses an immutable map.
+    pub fn buffer_collection(&self) -> Option<(ScalarType, BufferChannels, AccessMode, u32, bool)> {
+        match *self {
+            Self::BufferSpan {
+                element,
+                channels,
+                access,
+                len,
+            } => Some((element, channels, access, len, false)),
+            Self::BufferMap {
+                element,
+                channels,
+                access,
+                len,
+            } => Some((element, channels, access, len, true)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

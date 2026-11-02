@@ -991,6 +991,7 @@ mod tests {
                 },
             ],
             const_data: Vec::new(),
+            buffer_maps: Vec::new(),
             functions: vec![init, process, fixed_event, dynamic_event],
             entry_points: EntryPoints {
                 init: FunctionId::new(0),

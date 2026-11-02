@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
-    untyped_literal_type, PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL,
-    PROC_INDEX_EXPR_ARG,
+    untyped_literal_type, PROCESSOR_RESOURCE_SELECT, PROC_INDEX_BASE_ARG, PROC_INDEX_EXPR_ARG,
 };
 use onda_frontend::SourceLoc;
 
@@ -386,7 +385,7 @@ fn infer_expr_calls(
                                             name: selector_name,
                                             args: selector_args,
                                             ..
-                                        } if selector_name == PROC_INDEX_BUFFER_SELECT_SENTINEL => {
+                                        } if selector_name == PROCESSOR_RESOURCE_SELECT => {
                                             let mut saw_any_buffer = false;
                                             let mut saw_invalid_slot = false;
                                             for selector_arg in selector_args {

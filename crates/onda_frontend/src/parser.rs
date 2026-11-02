@@ -27,6 +27,7 @@ use crate::diagnostics::Diagnostic;
 
 const PROC_FIELD_SENTINEL_PREFIX: &str = "__onda_proc_field__";
 const PROC_FIELD_SENTINEL_ARG: &str = "__onda_proc_field";
+const PROC_CACHED_FIELD_ARG: &str = "__onda_proc_cached_field";
 const PROC_INDEX_CALL_SENTINEL: &str = "__onda_proc_index_call";
 const PROC_INDEX_BASE_ARG: &str = "__onda_proc_index_base";
 const PROC_INDEX_EXPR_ARG: &str = "__onda_proc_index_expr";

@@ -66,15 +66,13 @@ fn is_proc_event_stmt_call(
     expr: &Expr,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
-    proc_event_names: &HashSet<String>,
+    fn_signatures: &HashMap<String, FnSignature>,
 ) -> bool {
     let Expr::UserCall { name, args, .. } = expr else {
         return false;
     };
-    if proc_event_names.contains(name)
-        && args.first().is_some_and(|arg| {
-            matches!(&arg.expr, Expr::Index { base, .. } if proc_array_roots.contains_key(base))
-        })
+    if !fn_signatures.contains_key(name)
+        && crate::expr_validation::has_indexed_proc_receiver(args, proc_array_roots)
     {
         return true;
     }
@@ -832,7 +830,7 @@ fn analyze_flow_stmt(
                     &expr,
                     nested_proc_instances,
                     proc_array_roots,
-                    common.proc_event_names,
+                    common.fn_signatures,
                 ) {
                     if let Expr::UserCall { args, .. } = &expr {
                         for arg in args {
@@ -1812,6 +1810,18 @@ fn analyze_flow_assignment(
                 validate_fixed_data_expr(expr, scope_expr_env!(), errors);
                 match data {
                     DataType::Struct(struct_name) => {
+                        if let Some(source) = indexed_read_source(expr)
+                            .filter(|source| proc_array_roots.contains_key(source.base))
+                        {
+                            local_proc_aliases.insert(
+                                name.clone(),
+                                ProcArrayAliasInfo {
+                                    array_base: source.base.to_owned(),
+                                    index_expr: source.index.clone(),
+                                    access: source.access,
+                                },
+                            );
+                        }
                         if add_struct_element_alias_bindings(
                             name,
                             &struct_name,

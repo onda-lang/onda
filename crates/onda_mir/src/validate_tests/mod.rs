@@ -55,18 +55,58 @@ fn accepts_well_formed_empty_program() {
 }
 
 #[test]
-fn rejects_impractically_large_function_abi_and_local_tables() {
+fn accepts_wide_function_abi_and_validates_its_last_argument() {
     let mut program = empty_program();
-    let mut oversized = function("oversized", FunctionKind::User);
-    oversized.params = vec![
-        FunctionParam {
-            name: "value".to_owned(),
+    let mut wide = function("wide", FunctionKind::User);
+    wide.params = (0..1100)
+        .map(|index| FunctionParam {
+            name: format!("value{index}"),
             ty: TypeId::new(0),
             mode: PassingMode::Value,
             integer_range: None,
-        };
-        crate::MAX_FUNCTION_PARAMETER_COUNT + 1
-    ];
+        })
+        .collect();
+    wide.locals.push(Local {
+        name: None,
+        ty: TypeId::new(0),
+        integer_range: None,
+    });
+    wide.body.statements.push(Statement {
+        kind: StatementKind::Assign {
+            destination: Place::local(LocalId::new(0)),
+            value: Rvalue::Load(Place {
+                base: PlaceBase::Parameter(crate::ParameterId::new(1099)),
+                projections: Vec::new(),
+            }),
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+    program.functions.push(wide);
+    program.functions[1].body.statements.push(Statement {
+        kind: StatementKind::Call {
+            results: Vec::new(),
+            function: FunctionId::new(2),
+            args: vec![CallArgument::Value(Value::Constant(ScalarValue::I32(7))); 1100],
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+
+    assert!(super::validate(&program).is_ok());
+
+    let StatementKind::Call { args, .. } = &mut program.functions[1].body.statements[0].kind else {
+        unreachable!()
+    };
+    args[1099] = CallArgument::Value(Value::Constant(ScalarValue::F32(7.0)));
+    let errors = super::validate(&program).expect_err("the final argument must still be checked");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("argument 1099 does not match")));
+}
+
+#[test]
+fn rejects_impractically_large_local_tables() {
+    let mut program = empty_program();
+    let mut oversized = function("oversized", FunctionKind::User);
     oversized.locals = vec![
         Local {
             name: None,
@@ -78,13 +118,7 @@ fn rejects_impractically_large_function_abi_and_local_tables() {
     program.functions.push(oversized);
 
     let errors = super::validate(&program).expect_err("oversized function must be rejected");
-    let parameter_limit = crate::MAX_FUNCTION_PARAMETER_COUNT.to_string();
     let local_limit = crate::MAX_FUNCTION_LOCAL_COUNT.to_string();
-    assert!(errors.iter().any(|error| {
-        error.message.contains(&format!(
-            "parameters, exceeding the limit of {parameter_limit}"
-        ))
-    }));
     assert!(errors.iter().any(|error| error
         .message
         .contains(&format!("locals, exceeding the limit of {local_limit}"))));

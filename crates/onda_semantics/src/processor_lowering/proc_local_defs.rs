@@ -16,16 +16,16 @@ pub(super) fn nested_wrapper_local_def_name(
     nested_path: &str,
     local_name: &str,
 ) -> String {
-    let nested_component = nested_path
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
+    let nested_component = if nested_path.contains("[]") {
+        // A family must never share a helper with an authored scalar child
+        // whose underscores happen to match the sanitized array spelling.
+        format!(
+            "__onda_family_{}",
+            crate::internal_names::encode_internal_symbol_component(nested_path)
+        )
+    } else {
+        crate::internal_names::sanitize_runtime_symbol_component(nested_path)
+    };
     format!("{owner_proc}{PROC_LOCAL_DEF_FN_PREFIX}nested__{nested_component}__{local_name}")
 }
 
@@ -194,11 +194,7 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
     }
 
     let local_names = def_map.keys().cloned().collect::<HashSet<_>>();
-    let buffer_capturing_names = local_names
-        .iter()
-        .filter(|name| super::is_generated_proc_delegate_local(proc, name))
-        .cloned()
-        .collect::<HashSet<_>>();
+    let buffer_capturing_names = super::local_resources::captures(proc);
     let captured_buffers = proc
         .buffers
         .iter()
@@ -227,7 +223,18 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
         rewrite(&mut task.body);
     }
     for def in &mut proc.local_defs {
-        rewrite(&mut def.body);
+        let captures = captured_buffers
+            .iter()
+            .enumerate()
+            .map(|(index, name)| super::local_resources::parameter_name(def, name, index))
+            .collect::<Vec<_>>();
+        rewrite_stmt_list_local_calls(
+            &mut def.body,
+            &local_names,
+            &buffer_capturing_names,
+            &captures,
+            &proc.name,
+        );
     }
 }
 
@@ -1151,5 +1158,37 @@ impl super::ProcLoweringShape {
             .retain(|name, _| visible(name));
         result.nested_fields.retain(|name, _| visible(name));
         result
+    }
+}
+
+#[cfg(test)]
+mod family_names {
+    #[test]
+    fn array_family_and_scalar_child_with_matching_underscores_compile_independently() {
+        let source = r#"
+proc Child:
+  params:
+    gain = 0.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain
+  sample:
+    out1 = cached
+proc Parent:
+  init:
+    voices: Child[2] = Child(gain = 2.0)
+    voices__ = Child(gain = 7.0)
+  sample:
+    out1 = voices[0]() + voices__()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#;
+        let program = onda_frontend::parse_program(source).expect("valid source");
+        let typed = crate::analyze(program).expect("distinct child identities");
+        crate::mir_lowering::lower_program_to_validated_mir(&typed)
+            .expect("distinct bound parameter hooks reach MIR");
     }
 }

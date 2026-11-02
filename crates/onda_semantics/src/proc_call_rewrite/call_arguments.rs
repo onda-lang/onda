@@ -35,6 +35,7 @@ fn proc_named_arg_is_internal(name: Option<&str>) -> bool {
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG)
+            | Some(PROC_CACHED_FIELD_ARG)
     )
 }
 
@@ -251,7 +252,7 @@ fn proc_named_arg_call_target_from_parts(
     name: &str,
     args: &[CallArg],
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcNamedArgCallTarget> {
@@ -298,7 +299,7 @@ fn proc_named_arg_call_target_from_parts(
         if raw_idx < 0 || raw_idx >= slots.len() as i64 {
             None
         } else {
-            slots.get(raw_idx as usize).cloned()
+            slots.binding(raw_idx as usize).cloned()
         }
     });
     Some(ProcNamedArgCallTarget {
@@ -374,7 +375,7 @@ fn proc_index_base_and_expr_from_args(
 fn lower_named_proc_param_calls_in_expr(
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &ProcArrayAliases,
     prelude: &mut Vec<Stmt>,
@@ -539,7 +540,7 @@ fn lower_named_proc_param_calls_in_expr(
 fn lower_named_proc_param_call_expr(
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &ProcArrayAliases,
     prelude: &mut Vec<Stmt>,
@@ -734,7 +735,7 @@ fn normalize_indexed_receiver_for_named_proc_args(
     target: &mut ProcNamedArgCallTarget,
     args: &mut [CallArg],
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &ProcArrayAliases,
     prelude: &mut Vec<Stmt>,
@@ -788,7 +789,7 @@ fn normalize_indexed_receiver_for_named_proc_args(
 fn reject_named_proc_param_calls_in_expr(
     expr: &Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
@@ -942,7 +943,7 @@ fn reject_named_proc_param_calls_in_expr(
 fn lower_named_proc_param_calls_in_stmt(
     stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut ProcArrayAliases,
     temp_counter: &mut usize,
@@ -1119,7 +1120,7 @@ fn lower_named_proc_param_calls_in_stmt(
 pub(super) fn update_proc_array_aliases_from_assignment(
     target: &AssignTarget,
     expr: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     aliases: &mut ProcArrayAliases,
 ) {
     let AssignTarget::Var(name) = target else {
@@ -1134,7 +1135,7 @@ pub(super) fn update_proc_array_aliases_from_assignment(
 
 pub(super) fn proc_array_alias_from_index_expr(
     expr: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<ProcArrayAliasInfo> {
     let source = indexed_read_source(expr)?;
     let array_base = resolve_proc_array_base_key(source.base, proc_array_slots)?;
@@ -1149,7 +1150,7 @@ pub(super) fn proc_array_alias_from_index_expr(
 fn lower_named_proc_param_calls_in_stmts_with_aliases(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut ProcArrayAliases,
     temp_counter: &mut usize,
@@ -1175,10 +1176,11 @@ fn lower_named_proc_param_calls_in_stmts_with_aliases(
 pub(crate) fn lower_named_proc_param_calls_in_stmts(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    crate::proc_call_support::capture_proc_alias_selectors(stmts, proc_array_slots);
     let mut aliases = ProcArrayAliases::new();
     let mut temp_counter = 0usize;
     lower_named_proc_param_calls_in_stmts_with_aliases(
@@ -1654,7 +1656,7 @@ pub(crate) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
 pub(crate) fn rewrite_proc_calls_in_expr(
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -1772,9 +1774,6 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     return;
                 };
                 match index_target {
-                    ProcIndexResolution::Slot(resolved_slot) => {
-                        *name = resolved_slot;
-                    }
                     ProcIndexResolution::Dynamic {
                         array_base,
                         index_expr,
@@ -1824,7 +1823,8 @@ pub(crate) fn rewrite_proc_calls_in_expr(
             }
 
             if let Some(proc_var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
+                let cached = crate::proc_call_support::has_cached_proc_field_marker(args);
+                let mut dynamic_index = None::<(String, Expr, ProcArrayDeclaration, IndexAccess)>;
                 let proc_var = if proc_var_raw == PROC_INDEX_CALL_SENTINEL {
                     if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
@@ -1838,7 +1838,6 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         return;
                     };
                     match index_target {
-                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
                         ProcIndexResolution::Dynamic {
                             array_base,
                             index_expr,
@@ -1920,6 +1919,16 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     ) else {
                         return;
                     };
+                    if cached {
+                        *expr = indexed_read_expr(
+                            format!("{array_base}.{}", api.outputs.names[out_idx]),
+                            index_expr,
+                            access,
+                            expr_loc.into(),
+                        );
+                        return;
+                    }
+                    args.retain(|argument| argument.name.as_deref() != Some(PROC_CACHED_FIELD_ARG));
                     let rewritten = build_dynamic_proc_array_dispatch_args(
                         args,
                         &api,
@@ -1961,7 +1970,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     errors,
                 ) {
                     ProcParamFieldRead::Readable(param) => {
-                        *expr = Expr::var(format!("{proc_var}.{}", param.name));
+                        *expr = proc_instance_field_expr(&proc_var, &param.name, proc_array_slots);
                         return;
                     }
                     ProcParamFieldRead::Rejected => return,
@@ -1976,6 +1985,15 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                 ) else {
                     return;
                 };
+                if cached {
+                    *expr = proc_instance_field_expr(
+                        &proc_var,
+                        &api.outputs.names[out_idx],
+                        proc_array_slots,
+                    );
+                    return;
+                }
+                args.retain(|argument| argument.name.as_deref() != Some(PROC_CACHED_FIELD_ARG));
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                 rewritten.push(CallArg {
                     name: None,
@@ -2031,7 +2049,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
             }
 
             if let Some((base_raw, event_name)) = split_dot_path(name) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
+                let mut dynamic_index = None::<(String, Expr, ProcArrayDeclaration, IndexAccess)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                     if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
@@ -2045,7 +2063,6 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         return;
                     };
                     match index_target {
-                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
                         ProcIndexResolution::Dynamic {
                             array_base,
                             index_expr,

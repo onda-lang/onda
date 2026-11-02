@@ -12,6 +12,10 @@ pub(crate) struct CallTypeEnv {
     pub(crate) processor_apis: std::rc::Rc<HashMap<String, crate::proc_state_rewrite::ProcApi>>,
     /// Processor layout is declaration metadata, shared by every lexical scope.
     pub(crate) nominal_arrays: std::rc::Rc<HashMap<String, HashMap<String, CallArrayType>>>,
+    pub(crate) processor_views:
+        std::rc::Rc<std::cell::RefCell<crate::processor_views::ProcessorViewCatalog>>,
+    pub(crate) processor_bindings: HashMap<String, crate::processor_views::ProcessorViewShape>,
+    shadowed_processor_roots: HashSet<String>,
     /// Lexical bindings whose concrete semantic type still depends on a call
     /// site or an unresolved expression. Keeping existence separate from type
     /// prevents a later reassignment from being mistaken for a declaration.
@@ -154,6 +158,164 @@ impl CallArrayType {
 }
 
 impl CallTypeEnv {
+    pub(crate) fn processor_view_shape(
+        &self,
+        expression: &Expr,
+    ) -> Option<crate::processor_views::ProcessorViewShape> {
+        if let Some(indexed) = crate::indexed_read_source(expression) {
+            return self
+                .processor_view_shape(&Expr::var(indexed.base))
+                .map(|shape| shape.selected());
+        }
+        let Expr::Var { name, .. } = expression else {
+            return None;
+        };
+        if let Some(shape) = self.processor_bindings.get(name) {
+            return Some(shape.clone());
+        }
+        // Concrete lexical values and resources shadow implicit owner fields.
+        // Nominal aggregate roots can still carry declared child projections.
+        let root = name.split('.').next().unwrap_or(name);
+        if !self.struct_instances.contains_key(root)
+            && (self.scalar_types.contains_key(root)
+                || self.buffer_types.contains_key(root)
+                || self.tuple_elem_types.contains_key(root)
+                || self
+                    .array_types
+                    .get(root)
+                    .is_some_and(|array| array.primitive_elem().is_some()))
+        {
+            return None;
+        }
+        let catalog = self.processor_views.borrow();
+        let global_visible = !self.shadowed_processor_roots.contains(name)
+            && !name
+                .match_indices('.')
+                .any(|(index, _)| self.shadowed_processor_roots.contains(&name[..index]));
+        if let Some(source) = catalog.roots.get(name).filter(|_| global_visible) {
+            return Some(source.shape.clone());
+        }
+        let (owner, field) = name.rsplit_once('.').unwrap_or(("self", name));
+        let owner_shape = (owner != name)
+            .then(|| self.processor_view_shape(&Expr::var(owner)))
+            .flatten();
+        let owner_struct = self.struct_instances.get(owner).cloned().or_else(|| {
+            owner_shape
+                .as_ref()
+                .filter(|shape| shape.len.is_none())
+                .map(|shape| shape.proc_name.clone())
+        });
+        if let Some(owner_struct) =
+            owner_struct.filter(|owner_type| catalog.declaration(owner_type, field).is_some())
+        {
+            let outer = owner_shape.map(|shape| {
+                let captures = shape
+                    .environments
+                    .iter()
+                    .map(|_| crate::processor_views::ProcessorEnvironmentCapture {
+                        state_root: Some(Expr::var(owner)),
+                        owner: None,
+                        coordinates: Vec::new(),
+                        resources: Vec::new(),
+                        outer: None,
+                    })
+                    .collect();
+                crate::processor_views::ProcessorViewSource { shape, captures }
+            });
+            if let Some(source) =
+                catalog.member_source(&owner_struct, field, &Expr::var(owner), outer.as_ref())
+            {
+                return Some(source.shape);
+            }
+        }
+        if let Some(proc_name) = self.struct_instances.get(name) {
+            if let Some(api) = self.processor_apis.get(proc_name) {
+                use crate::processor_views::*;
+                let mut shape = ProcessorViewShape::plain(proc_name.clone(), None);
+                if !api.buffers.is_empty() {
+                    shape.environments.push(ProcessorEnvironmentShape {
+                        state: Some(ProcessorStateShape {
+                            storage: ProcessorStorageShape {
+                                proc_name: proc_name.clone(),
+                                len: None,
+                            },
+                            projection: ProcessorProjection {
+                                owner: proc_name.clone(),
+                                edges: Vec::new(),
+                            },
+                        }),
+                        owner_storage: None,
+                        owner: None,
+                        resources: api
+                            .buffers
+                            .iter()
+                            .map(|buffer| ProcessorResourceShape {
+                                elem_ty: buffer.elem_ty,
+                                channels: buffer.channels.clone(),
+                                len: buffer.is_array.then_some(buffer.array_len),
+                                mapped: false,
+                                mapped_len: None,
+                                alternatives: None,
+                            })
+                            .collect(),
+                        outer: None,
+                    });
+                }
+                return Some(shape);
+            }
+        }
+        if let Some(CallArrayType {
+            elem: CallArrayElemType::Nominal(proc_name),
+            len: Some(len),
+        }) = self.array_types.get(name)
+        {
+            if self.processor_apis.contains_key(proc_name) {
+                use crate::processor_views::*;
+                return Some(ProcessorViewShape {
+                    proc_name: proc_name.clone(),
+                    len: Some(*len),
+                    environments: vec![ProcessorEnvironmentShape {
+                        state: Some(ProcessorStateShape {
+                            storage: ProcessorStorageShape {
+                                proc_name: proc_name.clone(),
+                                len: Some(*len),
+                            },
+                            projection: ProcessorProjection {
+                                owner: proc_name.clone(),
+                                edges: Vec::new(),
+                            },
+                        }),
+                        owner_storage: None,
+                        owner: None,
+                        resources: Vec::new(),
+                        outer: None,
+                    }],
+                });
+            }
+        }
+        None
+    }
+
+    pub(crate) fn bind_processor_function_params(&mut self, function: &str) {
+        let catalog = self.processor_views.borrow();
+        let origin = crate::compile_context::source_function_name(function);
+        if let Some(params) = catalog.function_params.get(origin) {
+            self.processor_bindings.extend(params.clone());
+        }
+    }
+
+    pub(crate) fn join_processor_bindings_from(&mut self, other: &Self) {
+        for (name, shape) in &mut self.processor_bindings {
+            if let Some(joined) = other
+                .processor_bindings
+                .get(name)
+                .and_then(|other| shape.join(other))
+            {
+                *shape = joined;
+            }
+        }
+    }
+
     pub(crate) fn fixed_array_length_call(&self, expr: &Expr) -> Option<i32> {
         let Expr::UserCall {
             name,
@@ -308,6 +470,8 @@ impl CallTypeEnv {
     }
 
     pub(crate) fn shadow_binding(&mut self, name: &str) {
+        self.shadowed_processor_roots.insert(name.to_owned());
+        crate::shadow_rooted_entries(&mut self.processor_bindings, name);
         self.unresolved_bindings
             .retain(|binding| !crate::path_is_within_root(binding, name));
         crate::shadow_rooted_entries(&mut self.scalar_types, name);
@@ -327,6 +491,19 @@ impl CallTypeEnv {
     /// through a branch. Numeric scalars and tuple elements use the same join
     /// rule as return inference and MIR branch lowering.
     pub(crate) fn intersect_with(&mut self, other: &Self) {
+        self.shadowed_processor_roots
+            .retain(|name| other.shadowed_processor_roots.contains(name));
+        self.processor_bindings.retain(|name, shape| {
+            let Some(joined) = other
+                .processor_bindings
+                .get(name)
+                .and_then(|other| shape.join(other))
+            else {
+                return false;
+            };
+            *shape = joined;
+            true
+        });
         let mut common_bindings = std::mem::take(&mut self.unresolved_bindings);
         common_bindings.retain(|name| other.has_binding(name));
         let mut retain_or_mark_unresolved = |name: &str, resolved: bool| {
@@ -539,13 +716,21 @@ pub(crate) fn infer_struct_symbol_type(
     env: &CallTypeEnv,
     context: CallTypeContext<'_>,
 ) -> Option<String> {
-    env.struct_instances.get(name).cloned().or_else(|| {
-        let field = lookup_struct_field(name, env, context)?;
-        if !matches!(field.ty, TypedFieldType::Struct) {
-            return None;
-        }
-        field.struct_name.clone()
-    })
+    env.struct_instances
+        .get(name)
+        .cloned()
+        .or_else(|| {
+            env.processor_view_shape(&Expr::var(name))
+                .filter(|shape| shape.len.is_none())
+                .map(|shape| shape.proc_name)
+        })
+        .or_else(|| {
+            let field = lookup_struct_field(name, env, context)?;
+            if !matches!(field.ty, TypedFieldType::Struct) {
+                return None;
+            }
+            field.struct_name.clone()
+        })
 }
 
 pub(crate) fn infer_struct_expr_type(
@@ -978,6 +1163,26 @@ pub(crate) fn infer_tuple_arg_types(
 }
 
 pub(crate) fn update_call_type_env_after_assign(
+    target: &AssignTarget,
+    decl_ty: Option<&DeclType>,
+    generic_decl_ty: Option<&str>,
+    expr: &Expr,
+    env: &mut CallTypeEnv,
+    context: CallTypeContext<'_>,
+) {
+    let processor_view = match target {
+        AssignTarget::Var(name) if has_semantic_binding(name, env, context) => {
+            env.processor_view_shape(&Expr::var(name))
+        }
+        _ => env.processor_view_shape(expr),
+    };
+    update_call_type_env_after_assign_impl(target, decl_ty, generic_decl_ty, expr, env, context);
+    if let (AssignTarget::Var(name), Some(shape)) = (target, processor_view) {
+        env.processor_bindings.insert(name.clone(), shape);
+    }
+}
+
+fn update_call_type_env_after_assign_impl(
     target: &AssignTarget,
     decl_ty: Option<&DeclType>,
     generic_decl_ty: Option<&str>,

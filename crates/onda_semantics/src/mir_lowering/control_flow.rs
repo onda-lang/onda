@@ -459,36 +459,27 @@ impl<'a> FunctionLowerer<'a> {
                     let condition =
                         self.coerce(condition, PrimitiveType::Bool, block, cond.loc())?;
                     let outer_bindings = self.bindings.clone();
-                    let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut then_block = MirBlock::default();
                     let then_flow =
                         self.lower_statements(then_branch, &mut then_block, continue_mode.clone())?;
                     let then_bindings = self.bindings.clone();
-                    let then_nested_proc_aliases = self.nested_proc_aliases.clone();
                     self.bindings = outer_bindings.clone();
-                    self.nested_proc_aliases = outer_nested_proc_aliases.clone();
                     let mut else_block = MirBlock::default();
                     let else_flow =
                         self.lower_statements(else_branch, &mut else_block, continue_mode.clone())?;
                     let else_bindings = self.bindings.clone();
-                    let else_nested_proc_aliases = self.nested_proc_aliases.clone();
                     match (then_flow, else_flow) {
                         (StatementFlow::Continues, StatementFlow::Terminates) => {
                             self.bindings = then_bindings;
-                            self.nested_proc_aliases = then_nested_proc_aliases;
                         }
                         (StatementFlow::Terminates, StatementFlow::Continues) => {
                             self.bindings = else_bindings;
-                            self.nested_proc_aliases = else_nested_proc_aliases;
                         }
                         (StatementFlow::Continues, StatementFlow::Continues) => {
                             self.merge_branch_scopes(
                                 outer_bindings,
                                 then_bindings,
                                 else_bindings,
-                                outer_nested_proc_aliases,
-                                then_nested_proc_aliases,
-                                else_nested_proc_aliases,
                                 &mut then_block,
                                 &mut else_block,
                                 loc.clone().into(),
@@ -496,7 +487,6 @@ impl<'a> FunctionLowerer<'a> {
                         }
                         (StatementFlow::Terminates, StatementFlow::Terminates) => {
                             self.bindings = outer_bindings;
-                            self.nested_proc_aliases = outer_nested_proc_aliases;
                         }
                     }
                     self.push_statement(
@@ -518,7 +508,6 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 Stmt::While { cond, body, loc } => {
                     let outer_bindings = self.bindings.clone();
-                    let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
                     let mut loop_body = MirBlock::default();
                     let condition = self.lower_expr(cond, &mut loop_body)?;
                     let condition =
@@ -526,7 +515,6 @@ impl<'a> FunctionLowerer<'a> {
                     let mut then_block = MirBlock::default();
                     self.lower_statements(body, &mut then_block, ContinueMode::Plain)?;
                     self.bindings = outer_bindings;
-                    self.nested_proc_aliases = outer_nested_proc_aliases;
                     let mut else_block = MirBlock::default();
                     self.push_statement(&mut else_block, StatementKind::Break, loc.clone().into());
                     if condition.value == Value::Constant(ScalarValue::Bool(true)) {
@@ -673,7 +661,6 @@ impl<'a> FunctionLowerer<'a> {
         };
 
         let outer_bindings = self.bindings.clone();
-        let outer_nested_proc_aliases = self.nested_proc_aliases.clone();
         // The source-language loop variable and its induction counter retain
         // the selected integer width end to end. Constant loops stop at their
         // statically computed final iteration; dynamic loops retain ordinary
@@ -741,7 +728,6 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         self.bindings = outer_bindings;
-        self.nested_proc_aliases = outer_nested_proc_aliases;
         self.push_statement(
             destination,
             StatementKind::Loop { body: loop_body },
@@ -756,9 +742,6 @@ impl<'a> FunctionLowerer<'a> {
         outer_bindings: HashMap<String, Binding>,
         then_bindings: HashMap<String, Binding>,
         else_bindings: HashMap<String, Binding>,
-        outer_nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
-        then_nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
-        else_nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
         then_block: &mut MirBlock,
         else_block: &mut MirBlock,
         location: SourceLoc,
@@ -795,37 +778,6 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
-        let mut merged_alias_names = then_nested_proc_aliases
-            .keys()
-            .filter(|name| {
-                !outer_nested_proc_aliases.contains_key(*name)
-                    && else_nested_proc_aliases.contains_key(*name)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        merged_alias_names.sort();
-
-        self.nested_proc_aliases = outer_nested_proc_aliases;
-        for name in merged_alias_names {
-            let Some(then_alias) = then_nested_proc_aliases.get(&name).cloned() else {
-                continue;
-            };
-            let Some(else_alias) = else_nested_proc_aliases.get(&name).cloned() else {
-                continue;
-            };
-            if then_alias.struct_name == else_alias.struct_name
-                && then_alias.alternatives == else_alias.alternatives
-                && self.local_types_match(then_alias.index, else_alias.index)
-            {
-                self.copy_branch_local(
-                    else_block,
-                    then_alias.index,
-                    else_alias.index,
-                    location.clone(),
-                );
-                self.nested_proc_aliases.insert(name, then_alias);
-            }
-        }
         Ok(())
     }
 
@@ -944,13 +896,25 @@ impl<'a> FunctionLowerer<'a> {
             (
                 Binding::StructView {
                     struct_name: then_struct,
+                    processor: then_processor,
                 },
                 Binding::StructView {
                     struct_name: else_struct,
+                    processor: else_processor,
                 },
-            ) if then_struct == else_struct => Ok(Some(Binding::StructView {
-                struct_name: then_struct,
-            })),
+            ) if then_struct == else_struct => {
+                let processor = self.join_processor_views(
+                    then_processor.as_ref(),
+                    else_processor.as_ref(),
+                    then_block,
+                    else_block,
+                    location.clone(),
+                )?;
+                Ok(Some(Binding::StructView {
+                    struct_name: then_struct,
+                    processor,
+                }))
+            }
             (
                 Binding::StructArrayStorage { struct_name, len },
                 Binding::StructArrayStorage {

@@ -83,11 +83,14 @@ pub(crate) trait CallTypeRewriter {
                     body_env.shadow_binding(var);
                     body_env.scalar_types.insert(var.clone(), *var_ty);
                     self.rewrite_stmts(body, &mut body_env);
+                    env.join_processor_bindings_from(&body_env);
                     StatementFlow::Continues
                 }
                 Stmt::While { cond, body, .. } => {
                     self.rewrite_expr(cond, env);
-                    self.rewrite_stmts(body, &mut env.clone());
+                    let mut body_env = env.clone();
+                    self.rewrite_stmts(body, &mut body_env);
+                    env.join_processor_bindings_from(&body_env);
                     StatementFlow::Continues
                 }
                 Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,

@@ -52,7 +52,21 @@ pub(super) fn retain_init_bindings(
             MirType::Slice { .. }
         )
     });
-    bindings.retain(|name, _| has_matching_root(name, |root| views.contains_key(root)));
+    let mut retention_roots = views.keys().cloned().collect::<HashSet<_>>();
+    let mut pending = retention_roots.iter().cloned().collect::<Vec<_>>();
+    while let Some(root) = pending.pop() {
+        for (name, binding) in &bindings {
+            if !crate::path_is_within_root(name, &root) {
+                continue;
+            }
+            for capture in processor_capture_roots(binding) {
+                if retention_roots.insert(capture.clone()) {
+                    pending.push(capture);
+                }
+            }
+        }
+    }
+    bindings.retain(|name, _| has_matching_root(name, |root| retention_roots.contains(root)));
     let mut retained = HashSet::new();
     for binding in bindings.values_mut() {
         visit_binding_locals(binding, &mut |local| {
@@ -143,6 +157,36 @@ pub(super) fn retain_init_bindings(
             _ => {}
         }
     }
+    // Some captured values are consumed directly from binding metadata, such
+    // as an owner's selected row or an environment tag. They need an entry
+    // load even when no reconstructed descriptor reads them in the prelude.
+    let mut captured_values = HashSet::new();
+    for binding in bindings.values_mut() {
+        visit_binding_locals(binding, &mut |local| {
+            if owned.contains_key(local)
+                && matches!(
+                    types[init.locals[local.index()].ty.index()],
+                    MirType::Scalar(_)
+                )
+            {
+                captured_values.insert(*local);
+            }
+        });
+    }
+    let mut captured_values = captured_values.into_iter().collect::<Vec<_>>();
+    captured_values.sort();
+    restore
+        .statements
+        .extend(captured_values.into_iter().map(|local| Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(local),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::State(owned[&local]),
+                    projections: Vec::new(),
+                }),
+            },
+            source: init.source,
+        }));
     // Compact before sharing the prelude: unrelated init temporaries must not
     // inflate every process, event, and runtime helper's local frame.
     let mut live = onda_mir::referenced_locals(&restore);
@@ -190,6 +234,7 @@ pub(super) fn view_extents(
             struct_name,
             length: StructArrayLength::Local(length),
             fields,
+            ..
         } = binding
         else {
             continue;
@@ -230,9 +275,54 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
             visit(local);
         }
     }
+    fn visit_environment(
+        environment: &mut processor_views::LoweredProcessorEnvironment,
+        visit: &mut impl FnMut(&mut LocalId),
+    ) {
+        for coordinate in &mut environment.coordinates {
+            value(coordinate, visit);
+        }
+        if let Some(outer) = &mut environment.outer {
+            visit_environment(outer, visit);
+        }
+    }
+    if let Some(processor) = match binding {
+        Binding::StructView { processor, .. }
+        | Binding::StructParameter { processor, .. }
+        | Binding::StructArrayParameter { processor, .. }
+        | Binding::ProcArrayParameter { processor, .. } => processor.as_mut(),
+        _ => None,
+    } {
+        if let Some(tag) = &mut processor.tag {
+            value(tag, visit);
+        }
+        for capture in &mut processor.environments {
+            visit_environment(capture, visit);
+        }
+    }
     match binding {
         Binding::Local(local, _) | Binding::Array(local, _, _) | Binding::Slice(local, _, _, _) => {
             visit(local)
+        }
+        Binding::BufferValue(local, _) => visit(local),
+        Binding::BufferCollectionValue { local, start, .. } => {
+            visit(local);
+            value(start, visit);
+        }
+        Binding::BufferAlias(
+            BufferBindingReference::Interface(onda_mir::BufferRef::ArrayElement {
+                selector, ..
+            }),
+            _,
+        )
+        | Binding::BufferAlias(
+            BufferBindingReference::Parameter(onda_mir::BufferParamRef::ArrayElement {
+                selector,
+                ..
+            }),
+            _,
+        ) => {
+            value(selector, visit);
         }
         Binding::SliceElementAlias { slice, index, .. } => {
             visit(slice);
@@ -268,7 +358,9 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
             }
         }
         Binding::ProcArrayParameter { active, fields, .. } => {
-            visit(active);
+            if let Some(active) = active {
+                visit(active);
+            }
             for (_, local, _) in fields {
                 visit(local);
             }
@@ -286,4 +378,41 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
         | Binding::StructView { .. }
         | Binding::StructArrayStorage { .. } => {}
     }
+}
+
+fn processor_capture_roots(binding: &Binding) -> Vec<String> {
+    fn capture_roots(
+        environment: &processor_views::LoweredProcessorEnvironment,
+        result: &mut Vec<String>,
+    ) {
+        result.extend(environment.owner.iter().cloned());
+        result.extend(environment.state_root.iter().cloned());
+        for resource in &environment.resources {
+            for expression in resource.walk() {
+                match expression {
+                    Expr::Var { name, .. } | Expr::Index { base: name, .. } => {
+                        result.push(name.clone())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(outer) = &environment.outer {
+            capture_roots(outer, result);
+        }
+    }
+    let processor = match binding {
+        Binding::StructView { processor, .. }
+        | Binding::StructParameter { processor, .. }
+        | Binding::StructArrayParameter { processor, .. }
+        | Binding::ProcArrayParameter { processor, .. } => processor.as_ref(),
+        _ => None,
+    };
+    let mut result = Vec::new();
+    if let Some(processor) = processor {
+        for capture in &processor.environments {
+            capture_roots(capture, &mut result);
+        }
+    }
+    result
 }

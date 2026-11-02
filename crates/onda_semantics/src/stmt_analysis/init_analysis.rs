@@ -1245,7 +1245,11 @@ fn analyze_assign_init(
                 }
             }
 
-            if allow_owner_state_intro {
+            let processor_constructor = ctx.proc_init_resolution().is_some_and(|context| {
+                matches!(expr, Expr::UserCall { name, .. }
+                    if resolve_proc_ctor_symbol_name(name, context.current_ns, context.proc_symbols).is_some())
+            });
+            if allow_owner_state_intro && !processor_constructor {
                 if validate_primitive_array_literal_replacement(
                     name,
                     expr,

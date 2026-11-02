@@ -1,19 +1,32 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::proc_state_rewrite::{ProcArrayDeclaration, ProcArrayDeclarations};
 use crate::*;
 use onda_frontend::{EventParamDecl, LogicalOp};
 
+#[cfg(test)]
+mod declaration_tests;
 mod delegate_lowering;
 mod generated_blocks;
 mod generic_proc_rewrite;
 mod generic_struct_source_rewrite;
 mod global_proc_rewrite;
 mod graph_lowering;
+mod logical_types;
+pub(crate) use logical_types::processor_source_types;
+mod local_resources;
 mod nested_paths;
 mod nested_proc_lowering;
+mod proc_array_hooks;
+mod proc_array_init;
 mod proc_local_defs;
+mod proc_storage;
+mod projection_callbacks;
+mod projection_resources;
 mod retained_data;
 mod shape_helpers;
+mod storage_projections;
+mod view_catalog;
 use delegate_lowering::*;
 use generated_blocks::*;
 pub(crate) use generated_blocks::{
@@ -28,6 +41,7 @@ pub(crate) use graph_lowering::*;
 pub(crate) use nested_paths::*;
 use nested_proc_lowering::*;
 use proc_local_defs::*;
+pub(crate) use proc_storage::nested_array_bind_hook_call;
 pub(crate) use shape_helpers::proc_name_for_lowered_proc_call;
 use shape_helpers::*;
 
@@ -270,7 +284,7 @@ struct ProcBaseShape {
     out_types: HashMap<String, PrimitiveType>,
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
-    nested_proc_array_slots: HashMap<String, Vec<String>>,
+    nested_proc_array_slots: ProcArrayDeclarations,
     nested_proc_array_active_fields: HashMap<String, String>,
     state: ProcStateFields,
     fields: Vec<StructField>,
@@ -288,7 +302,7 @@ pub(crate) struct ProcLoweringShape {
     pub(crate) out_types: HashMap<String, PrimitiveType>,
     pub(crate) in_array_slots: HashMap<String, Vec<String>>,
     pub(crate) field_array_slots: HashMap<String, Vec<String>>,
-    pub(crate) nested_proc_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) nested_proc_array_slots: ProcArrayDeclarations,
     pub(crate) nested_proc_array_active_fields: HashMap<String, String>,
     pub(crate) state: ProcStateFields,
     pub(crate) fields: Vec<StructField>,
@@ -307,7 +321,7 @@ struct ProcLoweringEnv {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TopLevelProcRewriteMeta {
     pub(crate) global_proc_instances: HashMap<String, ProcCallInstance>,
-    pub(crate) global_proc_array_slots: HashMap<String, Vec<String>>,
+    pub(crate) global_proc_array_slots: ProcArrayDeclarations,
     pub(crate) global_proc_instance_oversample_factors: HashMap<String, usize>,
 }
 
@@ -324,6 +338,7 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) compiler_scratch_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) top_level_delegates: Vec<DelegateDef>,
+    pub(crate) processor_views: crate::processor_views::ProcessorViewCatalog,
 }
 
 fn collect_flattened_proc_field_metadata(
@@ -371,6 +386,22 @@ fn collect_flattened_proc_field_metadata(
                 compiler_owned_fields,
                 compiler_scratch_fields,
             );
+        }
+        for (field, array) in &shape.state.nested_proc_arrays {
+            collect_flattened_proc_field_metadata(
+                &array.proc_name,
+                &format!("{prefix}{field}."),
+                proc_defs,
+                shapes,
+                visiting,
+                pinned_fields,
+                compiler_owned_fields,
+                compiler_scratch_fields,
+            );
+        }
+        for active in shape.nested_proc_array_active_fields.values() {
+            compiler_owned_fields.insert(format!("{prefix}{active}"));
+            compiler_scratch_fields.insert(format!("{prefix}{active}"));
         }
     }
     visiting.remove(proc_name);
@@ -463,6 +494,9 @@ pub(crate) fn internal_proc_index_call_signature(include_field_arg: bool) -> FnS
     if include_field_arg {
         params.push(PROC_FIELD_SENTINEL_ARG.to_owned());
         defaults.push(None);
+        param_types.push(None);
+        params.push(PROC_CACHED_FIELD_ARG.to_owned());
+        defaults.push(Some(Expr::bool(false)));
         param_types.push(None);
     }
 
@@ -1164,7 +1198,7 @@ fn build_proc_lowering_env(
         let local_defs = unique_proc_local_defs(proc);
         let needs_buffer_capture = local_defs
             .iter()
-            .any(|def| is_generated_proc_delegate_local(proc, &def.name));
+            .any(|def| local_resources::captures(proc).contains(&def.name));
         let captured_buffers = if needs_buffer_capture {
             let factor = proc_sample_oversample_factors
                 .get(&proc.name)
@@ -1192,13 +1226,13 @@ fn build_proc_lowering_env(
             Vec::new()
         };
         for local_def in local_defs {
-            let buffers = if is_generated_proc_delegate_local(proc, &local_def.name) {
-                captured_buffers.as_slice()
+            let buffers = if local_resources::captures(proc).contains(&local_def.name) {
+                local_resources::parameters(&local_def, &captured_buffers)
             } else {
-                &[]
+                Vec::new()
             };
             pre_desugar_defs.push(pre_desugar_proc_local_hidden_def(
-                &proc.name, &local_def, buffers,
+                &proc.name, &local_def, &buffers,
             ));
         }
     }
@@ -1291,6 +1325,17 @@ fn build_proc_lowering_env(
         .collect::<HashMap<_, _>>();
 
     let mut base_shapes = HashMap::<String, ProcBaseShape>::new();
+    let source_proc_types = logical_types::processor_source_types(
+        &proc_defs_by_name,
+        &struct_defs_by_name,
+        &ctor_symbols,
+        &pre_desugar_fn_signatures,
+        &pre_desugar_def_return_types,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+    );
     let mut proc_api = HashMap::<String, ProcApi>::new();
     let mut proc_order = Vec::<String>::new();
     for proc in &mut proc_defs {
@@ -1359,6 +1404,7 @@ fn build_proc_lowering_env(
             &pre_desugar_fn_signatures,
             &pre_desugar_defs,
             &proc_defs_by_name,
+            &source_proc_types,
             const_arrays,
             const_scalars,
             const_scope,
@@ -1446,22 +1492,20 @@ fn build_proc_lowering_env(
         let Some(shape) = base_shapes.get(proc_name) else {
             continue;
         };
-        let nested_instances = shape
-            .state
-            .nested_procs
-            .iter()
-            .map(|(name, nested)| {
-                (
-                    name.clone(),
-                    ProcCallInstance {
-                        proc_name: nested.proc_name.clone(),
-                        buffer_args: Vec::new(),
-                        delegate_context_args: Vec::new(),
-                        routes_owner_delegates: false,
-                    },
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let nested_instances =
+            declared_child_bindings(&shape.state, &shape.nested_proc_array_slots)
+                .map(|(name, proc_name)| {
+                    (
+                        name.clone(),
+                        ProcCallInstance {
+                            proc_name: proc_name.to_owned(),
+                            buffer_args: Vec::new(),
+                            delegate_context_args: Vec::new(),
+                            routes_owner_delegates: false,
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>();
         reject_non_sample_proc_operator_calls_in_proc(
             proc,
             &nested_instances,
@@ -1554,7 +1598,7 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
-    let mut runtime_def_names = crate::task_lowering::lower_tasks(
+    let lowered_tasks = crate::task_lowering::lower_tasks(
         &mut program,
         options,
         const_arrays,
@@ -1562,6 +1606,7 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
+    let mut runtime_def_names = lowered_tasks.runtime_defs;
     let prepared_delegates = prepare_delegate_source(&mut program, errors);
     runtime_def_names.extend(prepared_delegates.runtime_defs.iter().cloned());
     if let Some(Block::Init(init)) = program
@@ -1607,6 +1652,7 @@ fn desugar_processors_impl(
             compiler_owned_proc_fields: HashMap::new(),
             compiler_scratch_proc_fields: HashMap::new(),
             top_level_delegates: prepared_delegates.top_level,
+            processor_views: Default::default(),
         };
     };
     let existing_struct_names = program
@@ -1645,12 +1691,11 @@ fn desugar_processors_impl(
     let proc_instance_oversample_factors = top_level_proc_rewrite
         .global_proc_instance_oversample_factors
         .clone();
-
     let (
         generated_structs,
         mut generated_defs,
-        def_sample_oversample_factors,
-        proc_step_oversample_meta,
+        mut def_sample_oversample_factors,
+        mut proc_step_oversample_meta,
     ) = generate_lowered_proc_blocks(
         &proc_order,
         &proc_defs_by_name,
@@ -1660,7 +1705,33 @@ fn desugar_processors_impl(
         options,
         errors,
     );
+    projection_resources::complete_operation_calls(
+        &mut generated_defs,
+        &lowering_shapes,
+        &proc_defs_by_name,
+        options,
+        errors,
+    );
+    proc_storage::materialize_processor_projections(
+        &mut generated_defs,
+        &lowering_shapes,
+        &proc_defs_by_name,
+        &struct_defs_by_name,
+        &mut def_sample_oversample_factors,
+        &mut proc_step_oversample_meta,
+    );
     crate::task_lowering::materialize_task_abort_returns(&mut generated_defs);
+    let mut processor_views = view_catalog::build_view_catalog(
+        &lowering_shapes,
+        &proc_defs_by_name,
+        &top_level_proc_rewrite,
+        &proc_api,
+        options,
+        &generated_defs,
+    );
+    processor_views
+        .lexical_resources
+        .extend(lowered_tasks.lexical_resources);
     program.blocks.retain(|b| !matches!(b, Block::Proc(_)));
     program
         .blocks
@@ -1702,6 +1773,7 @@ fn desugar_processors_impl(
         compiler_owned_proc_fields,
         compiler_scratch_proc_fields,
         top_level_delegates: prepared_delegates.top_level,
+        processor_views,
     }
 }
 
@@ -2720,11 +2792,11 @@ graph:
             block_pre.iter().any(|stmt| matches!(
                 stmt,
                 Stmt::Assign {
-                    target: AssignTarget::Var(name),
+                    target: AssignTarget::IndexedMember { base, field, .. },
                     ..
-                } if name == "voices[0].gain" || name == "voices[1].gain"
+                } if base == "voices" && field == "gain"
             )),
-            "expected graph lowering to preserve proc-array slot endpoint paths in block_pre: {:?}",
+            "expected graph lowering to preserve indexed processor endpoints in block_pre: {:?}",
             block_pre
         );
 

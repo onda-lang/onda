@@ -3561,6 +3561,140 @@ test("refreshes hoisted forwarded descriptors for every process call", async () 
   assert.equal(view.getFloat32(output, true), 43);
 });
 
+function mappedBufferCollectionMir() {
+  const mir = forwardedBufferCollectionMir();
+  const mappedType = mir.functions[2].params[1].ty;
+  mir.types[mappedType].kind = "buffer_map";
+  mir.types[mappedType].data.len = 3;
+  const childType = mir.types.length;
+  mir.types.push(type("buffer_map", { ...mir.types[mappedType].data, len: 2 }));
+  mir.interface.buffers.splice(1, 0, {
+    name: "unrelated", element: "i32", channels: "mono", access: "read_only",
+  });
+  mir.buffer_maps = [{ buffers: [2, 2, 0] }];
+  const thenBlock = mir.functions[1].body.statements[4].kind.data.body.statements[1].kind.data.then_block;
+  thenBlock.statements[0].kind.data.args[1].data = {
+    kind: "mapped_interface", data: { map: 0, start: 0, len: 3 },
+  };
+  const child = structuredClone(mir.functions[2]);
+  child.name = "read_mapped_subview";
+  child.params[1].ty = childType;
+  mir.functions.push(child);
+  mir.functions[2].body.statements = [
+    statement("call", {
+      results: [2], function: 3,
+      args: [
+        { kind: "place", data: place("parameter", 0) },
+        { kind: "buffer_span", data: { kind: "parameter", data: { span: 1, start: 1, len: 2 } } },
+        { kind: "value", data: local(1) },
+      ],
+    }),
+    statement("return", { values: [local(2)] }),
+  ];
+  mir.functions[2].body.statements.unshift(assign(place("local", 1), {
+    kind: "load", data: place("parameter", 2),
+  }));
+  return mir;
+}
+
+function localResourceDescriptorMir() {
+  const mir = mappedBufferCollectionMir();
+  const child = mir.functions[3];
+  const collectionType = child.params[1].ty;
+  const bufferType = mir.types.length;
+  mir.types.push(type("buffer", { element: "f32", channels: "dynamic", access: "read_write" }));
+  const collection = child.locals.length;
+  const buffer = collection + 1;
+  child.locals.push({ name: null, ty: collectionType }, { name: null, ty: bufferType });
+  const read = child.body.statements[2].kind.data.value.data;
+  const selection = read.parameter;
+  read.parameter = { kind: "local", data: buffer };
+  child.body.statements.splice(2, 0,
+    assign(place("local", collection), { kind: "make_buffer", data: {
+      ty: collectionType, source: { kind: "buffer_span", data: { kind: "parameter", data: { span: 1, start: 0, len: 2 } } },
+    } }),
+    assign(place("local", buffer), { kind: "make_buffer", data: {
+      ty: bufferType, source: { kind: "buffer_param", data: { kind: "local_element", data: {
+        collection, selector: selection.data.selector, bounds: "clamp",
+      } } },
+    } }),
+  );
+  return mir;
+}
+
+test("mapped resource subviews keep symbolic identities and refresh host bindings", async () => {
+  for (const fixture of [mappedBufferCollectionMir, localResourceDescriptorMir]) {
+  for (const optimize of [false, true]) {
+    const artifact = compileMir(fixture(), { optimize });
+    const { instance } = await WebAssembly.instantiate(artifact.wasm);
+    const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+    let heap = Number(__heap_base.value);
+    const allocate = (size) => { const address = heap; heap += Math.max(size, 8); return address; };
+    const params = allocate(16);
+    const state = allocate(artifact.metadata.runtime.state_size_bytes);
+    const outputs = allocate(4);
+    const buffers = allocate(12);
+    const frames = allocate(12);
+    const channels = allocate(12);
+    const sampleRates = allocate(12);
+    const first = allocate(4);
+    const second = allocate(4);
+    const output = allocate(4);
+    const view = new DataView(memory.buffer);
+    view.setUint32(outputs, output, true);
+    for (let id = 0; id < 3; id += 1) {
+      view.setUint32(buffers + id * 4, first, true);
+      view.setInt32(frames + id * 4, 1, true);
+      view.setInt32(channels + id * 4, 1, true);
+      view.setFloat32(sampleRates + id * 4, 48_000, true);
+    }
+    view.setFloat32(first, 21, true);
+    view.setFloat32(second, 43, true);
+    onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+    const run = () => callProcess(onda_process, 0, outputs, 0, 1, 0, params, state,
+      buffers, frames, channels, sampleRates);
+    run();
+    assert.equal(view.getFloat32(output, true), 21);
+    view.setUint32(buffers, second, true);
+    run();
+    assert.equal(view.getFloat32(output, true), 43);
+  }
+  }
+});
+
+test("mapped resource effects exclude unrelated interface descriptors", () => {
+  const mir = mappedBufferCollectionMir();
+  mir.functions[3].body.statements.splice(2, 0, statement("buffer_param_store", {
+    parameter: { kind: "array_element", data: { span: 1, selector: constant("i32", 1), bounds: "clamp" } },
+    channel: null, index: constant("i32", 0), value: constant("f32", 9), bounds: "clamp",
+  }));
+  assert.deepEqual(compileMir(mir).metadata.metadata.buffers.map((buffer) => buffer.may_write),
+    [true, false, false]);
+});
+
+test("local resource descriptors retain reachable write identities", () => {
+  const mir = localResourceDescriptorMir();
+  const child = mir.functions[3];
+  child.body.statements.splice(-1, 0, statement("buffer_param_store", {
+    parameter: { kind: "local", data: child.locals.length - 1 }, channel: null,
+    index: constant("i32", 0), value: constant("f32", 9), bounds: "clamp",
+  }));
+  assert.deepEqual(compileMir(mir).metadata.metadata.buffers.map((buffer) => buffer.may_write), [true, false, true]);
+});
+
+test("rejects invalid mapped resources, windows and permissions", () => {
+  for (const mutate of [
+    (mir) => { mir.buffer_maps[0].buffers[2] = 99; },
+    (mir) => { mir.buffer_maps[0].buffers[2] = 1; },
+    (mir) => { mir.interface.buffers[0].access = "read_only"; },
+    (mir) => { mir.functions[2].body.statements[1].kind.data.args[1].data.data.start = 2; },
+  ]) {
+    const mir = mappedBufferCollectionMir();
+    mutate(mir);
+    assert.throws(() => compileMir(mir), OndaBinaryenError);
+  }
+});
+
 test("keeps forwarded varying buffer descriptors inside sample loops", () => {
   const artifact = compileMir(forwardedBufferCollectionMir(true), {
     emitText: true,
