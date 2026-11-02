@@ -564,7 +564,10 @@ sample:
 fn joined_child_resources_keep_roots_coordinates_callbacks_and_rebinding() {
     let source = include_str!(
         "../../../../packages/onda_binaryen_web/test/fixtures/processor-view-joined-resources.onda"
-    );
+    )
+    // The parity daemon accepts f32 assets; native coverage also interleaves a
+    // different element type between the two mapped f32 resources.
+    .replace("  interleaved: f32", "  interleaved: f64");
     for (same_extent, different_owner) in [(false, false), (true, false), (false, true)] {
         let source = if same_extent {
             source.replace(

@@ -30,7 +30,7 @@ def exercise(banks, others, choose_first: bool, index: i32) -> f32:
   return step(selected)
 buffers:
   left: f32
-  interleaved: f64
+  interleaved: f32
   right: f32
 init:
   banks: Bank[2] = [Bank(source = left), Bank(source = right)]
