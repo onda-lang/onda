@@ -1585,7 +1585,7 @@ fn analyze_assign_init(
                     name,
                     expr,
                     &inferred_types,
-                    declared_tuple_types,
+                    declared_tuple_types.as_deref(),
                     existing_types,
                     false,
                     errors,

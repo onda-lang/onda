@@ -50,6 +50,8 @@ impl ScalarEncoding {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PayloadType {
     Scalar {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enumeration: Option<crate::EnumMetadata>,
         encoding: ScalarEncoding,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         integer_range: Option<crate::IntegerRangeMetadata>,
@@ -74,6 +76,7 @@ pub enum PayloadType {
 impl PayloadType {
     pub fn scalar(encoding: ScalarEncoding) -> Self {
         Self::Scalar {
+            enumeration: None,
             encoding,
             integer_range: None,
         }

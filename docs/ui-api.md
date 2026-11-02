@@ -157,7 +157,9 @@ rendering or later host updates.
 | `engineGeneration` | Host-defined string identifying the current event schema/engine; copied verbatim into `triggerEvent` commands, or `null` when absent. The host must reject stale generations if it uses this facility. |
 | `outputChannels` | Integer output count, 1–64; otherwise inferred from visualization data. |
 | `ondaVersion` | Optional version label. |
-| `themeMode` | `"dark"` or `"light"` in the core; the browser adapter also resolves `"auto"`. |
+| `themeMode` | `"dark"` or `"light"`. Omitted/null lets a browser host detect its appearance at startup. Native hosts resolve an unspecified choice when opening the window. |
+| `hostTheme` | Optional host appearance hint: `"dark"` or `"light"`. Browser adapters can resolve `"auto"` against VS Code or system appearance. |
+| `supportsThemeSelection` | Show the ◐ Dark / Light button unless false. Browser editors disable it and keep following the page's `hostTheme`. |
 | `supportsTransport` | Start/Stop actions; enabled unless explicitly false. |
 | `supportsScope` | Meter/waveform availability for a loaded source; enabled unless explicitly false. |
 | `supportsSourceSelection` | Source picker and Unload; enabled only by true. |
@@ -210,7 +212,8 @@ Each control requires `name`, `type` (`"bool"`, `"i32"`, `"i64"`, `"f32"`, or
 | `scale` | `"linear"` (default) or `"log"`; log requires a positive floating range. |
 | `curve` | Finite curvature for a linear range; cannot be combined with log. |
 | `unit` | Optional display-unit string. |
-| `step`, `stepCount` | Positive grid spacing and matching positive integer interval count; supply both or neither. Integer domains require both. |
+| `step`, `stepCount` | Positive grid spacing and matching interval count; supply both or neither. Integer domains require both. A one-member enum uses `step:1, stepCount:0`. |
+| `enumeration` | Optional `{name, members:[{name,label},...]}`. Member indices are `i32` values; render a dropdown independently of the knob/slider layout. |
 | `enabled` | False disables editing and labels numeric input controls as External input. |
 | `array` | `{name:string, length:integer, index:integer}` groups flattened array controls under one foldable heading. |
 | `normalizedValue` | Alternative initial value when `value` is omitted; converted through the numeric domain or the boolean 0.5 threshold. |
@@ -218,7 +221,8 @@ Each control requires `name`, `type` (`"bool"`, `"i32"`, `"i64"`, `"f32"`, or
 
 `ParamDomain` validates ranges and grids. Integer bounds must fit their scalar
 type; `i64` bounds and range width must also fit within ±(2^53−1) and 2^53−1,
-respectively. For example, an integer range 0–127 uses `step:1, stepCount:127`.
+respectively. The same `enumeration` object on a scalar leaf of an event argument `shape` selects a dropdown, including nested struct fields and array elements.
+For example, an integer range 0–127 uses `step:1, stepCount:127`.
 Without a valid domain, numeric text editing remains available but the knob/slider
 has no range gesture. Unranged `i64` text editing preserves the complete signed
 64-bit value. Step snapping and clamping use the declared domain.
@@ -326,8 +330,9 @@ acknowledges operations through state/value messages.
 | `resetParams`, `resetInputControls` | None | Restore the corresponding host-owned defaults. |
 | `setParamLayout`, `setInputControlLayout` | `layout:"knobs"|"sliders"` | Retain presentation; DSP is unaffected. |
 | `setParamSmoothing`, `setInputControlSmoothing` | `milliseconds:number` | Apply a nonnegative host smoothing duration. |
-| `setRunSettings` | `sampleRateHz:integer`, `blockSamples:integer` | Validate and apply compile settings; plugin block preference zero follows the host. |
-| `setFastMath` | `enabled:boolean` | Apply the compiler option. |
+| `setRunSettings` | `sampleRateHz:integer`, `blockSamples:integer` | Validate and recompile with the selected settings, preserving controls and playback intent; plugin block preference zero follows the host. |
+| `setFastMath` | `enabled:boolean` | Recompile with the selected floating-point optimization policy, preserving playback intent. |
+| `setTheme` | `mode:"dark"\|"light"` | Save the theme choice and publish it in state; requires no recompilation. |
 | `refreshDevices` | None | Refresh supported device lists. |
 | `setInputDevice`, `setOutputDevice`, `setMidiInputDevice` | `name:string|null` | Select a device; null selects the default audio device. Computer MIDI uses the explicit string `"Computer Keyboard"`. |
 | `chooseBufferFile`, `clearBuffer` | `name` | Pick/replace or clear a binding. |

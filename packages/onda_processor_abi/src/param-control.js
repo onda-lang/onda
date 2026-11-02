@@ -1,3 +1,4 @@
+import { enumMemberCount } from "./enum-metadata.js";
 (() => {
   const GLOBAL_NAME = "__ONDA_PARAM_CONTROL_V2__";
   if (globalThis[GLOBAL_NAME]) return;
@@ -91,6 +92,8 @@
 
   function numericDomain(param) {
     const scalar = scalarKind(param);
+    const enumCount = enumMemberCount(param.enumeration);
+    if (enumCount !== null && scalar !== "i32") fail(param, "enum storage must be i32");
     if (scalar === "bool") return null;
     const control = param.param_control;
     if (!control || typeof control !== "object" || Array.isArray(control)) {
@@ -113,9 +116,17 @@
       param.range_max_repr,
       "range maximum",
     );
+    if (enumCount !== null && (minimumValue !== 0n || maximumValue !== BigInt(enumCount - 1)
+      || control.scale !== "linear" || control.curve !== null || control.unit !== null
+      || control.step_repr !== "1" || control.step_count !== enumCount - 1)) {
+      fail(param, "enum control domain must match its members");
+    }
     const integerMinimum = integer ? minimumValue : null;
     const integerMaximum = integer ? maximumValue : null;
-    if (integer && integerMinimum >= integerMaximum) {
+    const constantDomain = scalar === "i32" && integerMinimum === integerMaximum
+      && control.scale === "linear" && control.curve === null
+      && control.step_repr === "1" && control.step_count === 0;
+    if (integer && (integerMinimum > integerMaximum || (integerMinimum === integerMaximum && !constantDomain))) {
       fail(param, "has invalid host-control range metadata");
     }
     if (
@@ -130,7 +141,7 @@
     }
     const minimum = integer ? Number(integerMinimum) : minimumValue;
     const maximum = integer ? Number(integerMaximum) : maximumValue;
-    if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum >= maximum) {
+    if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || (minimum > maximum || (minimum === maximum && !constantDomain))) {
       fail(param, "has invalid host-control range metadata");
     }
     if (!SCALES.includes(control.scale)) {
@@ -168,7 +179,7 @@
       }
       if (
         !Number.isSafeInteger(control.step_count)
-        || control.step_count <= 0
+        || control.step_count < (constantDomain ? 0 : 1)
         || control.step_count > 0xffff_ffff
       ) {
         fail(param, "has invalid host-control step_count metadata");
@@ -387,6 +398,8 @@
   function createParamControl(param, element) {
     if (element !== undefined) param = paramElementMetadata(param, element);
     const scalar = scalarKind(param);
+    const enumCount = enumMemberCount(param.enumeration);
+    if (enumCount !== null && scalar !== "i32") fail(param, "enum storage must be i32");
     if (scalar === "bool") {
       return Object.freeze({
         name: typeof param.name === "string" ? param.name : null,

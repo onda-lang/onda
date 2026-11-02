@@ -9,7 +9,7 @@ outs<f64> 1
 init:
   ramp = std::smoothing::Ramp<{width}>(
     time_s = {width}(4.0) / {width}(SR),
-    shape = std::smoothing::shape::{shape}
+    shape = std::smoothing::RampShape::{shape}
   )
   frame = 0
 sample:
@@ -57,8 +57,8 @@ fn render_schedule(
 fn ramps_reach_each_target_on_the_duration_sample_and_remain_there() {
     for width in ["f32", "f64"] {
         for (shape, rise) in [
-            ("LINEAR", [0.25, 0.5, 0.75, 1.0]),
-            ("S_CURVE", [0.15625, 0.5, 0.84375, 1.0]),
+            ("Linear", [0.25, 0.5, 0.75, 1.0]),
+            ("SCurve", [0.15625, 0.5, 0.84375, 1.0]),
         ] {
             let output = render(
                 &source(
@@ -83,8 +83,8 @@ fn ramps_reach_each_target_on_the_duration_sample_and_remain_there() {
 fn retargeting_starts_from_the_current_output_with_a_fresh_duration() {
     for width in ["f32", "f64"] {
         for (shape, weights) in [
-            ("LINEAR", [0.25, 0.5, 0.75, 1.0]),
-            ("S_CURVE", [0.15625, 0.5, 0.84375, 1.0]),
+            ("Linear", [0.25, 0.5, 0.75, 1.0]),
+            ("SCurve", [0.15625, 0.5, 0.84375, 1.0]),
         ] {
             let output = render(
                 &source(
@@ -106,7 +106,7 @@ fn retargeting_starts_from_the_current_output_with_a_fresh_duration() {
 #[test]
 fn durations_round_up_to_samples_and_short_or_invalid_durations_update_directly() {
     for width in ["f32", "f64"] {
-        for shape in ["LINEAR", "S_CURVE"] {
+        for shape in ["Linear", "SCurve"] {
             for seconds in ["-1.0", "0.0", "0.00025", "0.001", "0.0 / 0.0", "1.0 / 0.0"] {
                 let output = render(
                     &source(
@@ -128,7 +128,7 @@ fn durations_round_up_to_samples_and_short_or_invalid_durations_update_directly(
                 ),
                 7,
             );
-            let expected = if shape == "LINEAR" {
+            let expected = if shape == "Linear" {
                 [0.2, 0.4, 0.6, 0.8, 1.0]
             } else {
                 [0.104, 0.352, 0.648, 0.896, 1.0]
@@ -150,11 +150,11 @@ fn duration_and_shape_changes_apply_to_the_next_target() {
         let output = render(
             &source(
                 width,
-                "LINEAR",
+                "Linear",
                 &format!(
                     r#"  if frame == 1:
     ramp.time_s = {width}(8.0) / {width}(SR)
-    ramp.shape = std::smoothing::shape::S_CURVE
+    ramp.shape = std::smoothing::RampShape::SCurve
   target: {width} = 1.0
   if frame >= 5:
     target = 0.0
@@ -176,8 +176,8 @@ fn duration_and_shape_changes_apply_to_the_next_target() {
 fn reset_sets_the_current_value_immediately_and_cancels_the_transition() {
     for width in ["f32", "f64"] {
         for (shape, weights) in [
-            ("LINEAR", [0.25, 0.5, 0.75, 1.0]),
-            ("S_CURVE", [0.15625, 0.5, 0.84375, 1.0]),
+            ("Linear", [0.25, 0.5, 0.75, 1.0]),
+            ("SCurve", [0.15625, 0.5, 0.84375, 1.0]),
         ] {
             let output = render(
                 &source(
@@ -208,7 +208,7 @@ fn reset_sets_the_current_value_immediately_and_cancels_the_transition() {
 #[test]
 fn finite_extremes_stay_finite_and_tiny_targets_finish_exactly() {
     for (width, maximum) in [("f32", f64::from(f32::MAX)), ("f64", f64::MAX)] {
-        for shape in ["LINEAR", "S_CURVE"] {
+        for shape in ["Linear", "SCurve"] {
             let output = render(
                 &source(
                     width,
@@ -224,7 +224,7 @@ fn finite_extremes_stay_finite_and_tiny_targets_finish_exactly() {
                 ),
                 6,
             );
-            let expected = if shape == "LINEAR" {
+            let expected = if shape == "Linear" {
                 [1.0, 0.5, 0.0, -0.5, -1.0, -1.0]
             } else {
                 [1.0, 0.6875, 0.0, -0.6875, -1.0, -1.0]
@@ -260,7 +260,7 @@ fn finite_extremes_stay_finite_and_tiny_targets_finish_exactly() {
 #[test]
 fn non_finite_targets_update_directly_and_finite_targets_recover() {
     for width in ["f32", "f64"] {
-        for shape in ["LINEAR", "S_CURVE"] {
+        for shape in ["Linear", "SCurve"] {
             let output = render(
                 &source(
                     width,
@@ -289,8 +289,8 @@ fn non_finite_targets_update_directly_and_finite_targets_recover() {
 fn block_boundaries_and_zero_frame_segments_preserve_sample_deadlines() {
     for width in ["f32", "f64"] {
         for (shape, weights) in [
-            ("LINEAR", [0.25, 0.5, 0.75, 1.0]),
-            ("S_CURVE", [0.15625, 0.5, 0.84375, 1.0]),
+            ("Linear", [0.25, 0.5, 0.75, 1.0]),
+            ("SCurve", [0.15625, 0.5, 0.84375, 1.0]),
         ] {
             let output = render_schedule(
                 &source(
@@ -322,8 +322,8 @@ fn block_boundaries_and_zero_frame_segments_preserve_sample_deadlines() {
 fn oversampled_ramps_keep_the_duration_in_seconds() {
     for width in ["f32", "f64"] {
         for (shape, expected) in [
-            ("LINEAR", [0.25, 0.5, 0.75, 1.0, 1.0, 1.0]),
-            ("S_CURVE", [0.15625, 0.5, 0.84375, 1.0, 1.0, 1.0]),
+            ("Linear", [0.25, 0.5, 0.75, 1.0, 1.0, 1.0]),
+            ("SCurve", [0.15625, 0.5, 0.84375, 1.0, 1.0, 1.0]),
         ] {
             let output = render(
                 &format!(
@@ -332,7 +332,7 @@ import std/smoothing
 proc Voice:
   delegate progress(value: f64)
   init:
-    ramp = std::smoothing::Ramp<{width}>(time_s = 0.004, shape = std::smoothing::shape::{shape})
+    ramp = std::smoothing::Ramp<{width}>(time_s = 0.004, shape = std::smoothing::RampShape::{shape})
   sample 2:
     progress(f64(ramp({width}(1.0))))
     out1 = 0.0
@@ -362,7 +362,7 @@ import std/smoothing
 params:
   amplitude = 0.5 {0.0, 1.0}
 init:
-  amplitude_ramp = std::smoothing::Ramp(time_s = 0.02, shape = std::smoothing::shape::S_CURVE)
+  amplitude_ramp = std::smoothing::Ramp(time_s = 0.02, shape = std::smoothing::RampShape::SCurve)
   amplitude_ramp.reset(amplitude)
 sample:
   out1 = in1 * amplitude_ramp(amplitude)

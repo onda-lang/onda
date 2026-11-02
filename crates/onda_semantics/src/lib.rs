@@ -10,8 +10,8 @@ use onda_frontend::{
     inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
     BlockKind, BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
     CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DelegateDef, DiagCtx,
-    Diagnostic, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
-    FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
+    Diagnostic, EnumDef, EnumType, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
+    FnParamDecl, FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
     GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl,
     NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock, ParamDecl, ParamScale, PortBlock,
     PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, ScalarTypeRef, SourceLoc, Stmt,
@@ -86,6 +86,7 @@ mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
 mod diag_utils;
+mod enum_support;
 mod executable_data;
 mod executable_owner_analysis;
 mod expr_analysis;
@@ -151,6 +152,7 @@ use stmt_analysis::*;
 
 #[derive(Debug, Clone)]
 pub struct TypedProgram {
+    pub enums: Vec<EnumDef>,
     /// The compile-time host configuration used during semantic analysis.
     /// MIR construction consumes this exact configuration so contextual
     /// constants and loop bounds cannot drift between compiler stages.
@@ -347,8 +349,10 @@ fn compile_input_from_literal(
         }
     };
     let ty = match declared_ty {
-        ConstType::Array { elem, .. } => ConstType::Slice { elem: *elem },
-        other => other.clone(),
+        ConstType::Scalar(_) => ConstType::Scalar(declared_ty.storage_element().into()),
+        ConstType::Array { .. } | ConstType::Slice { .. } => ConstType::Slice {
+            elem: declared_ty.storage_element().into(),
+        },
     };
     let synthetic = Program {
         blocks: vec![Block::Const(ConstDecl {
@@ -384,6 +388,7 @@ pub struct CompileConstDescriptor {
     pub name: String,
     pub kind: CompileConstKind,
     pub value: ConstValue,
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -507,6 +512,11 @@ pub(crate) fn zero_expr(ty: PrimitiveType) -> Expr {
     match ty {
         PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
         PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
+        PrimitiveType::Enum(ty) => Expr::Int {
+            loc: Default::default(),
+            value: 0,
+            const_ty: Some(PrimitiveType::Enum(ty)),
+        },
         PrimitiveType::Bool => Expr::bool(false),
     }
 }
@@ -687,6 +697,7 @@ pub struct TypedValueRange {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TypedConstValue {
+    Enum { ty: EnumType, ordinal: i32 },
     F32(f32),
     F64(f64),
     I32(i32),
@@ -697,6 +708,7 @@ pub enum TypedConstValue {
 impl TypedConstValue {
     pub const fn primitive_type(self) -> PrimitiveType {
         match self {
+            Self::Enum { ty, .. } => PrimitiveType::Enum(ty),
             Self::F32(_) => PrimitiveType::F32,
             Self::F64(_) => PrimitiveType::F64,
             Self::I32(_) => PrimitiveType::I32,
@@ -707,6 +719,7 @@ impl TypedConstValue {
 
     pub fn to_f32(self) -> f32 {
         match self {
+            Self::Enum { ordinal, .. } => ordinal as f32,
             Self::F32(v) => v,
             Self::F64(v) => v as f32,
             Self::I32(v) => v as f32,
@@ -723,6 +736,7 @@ impl TypedConstValue {
 
     pub fn to_f64(self) -> f64 {
         match self {
+            Self::Enum { ordinal, .. } => ordinal as f64,
             Self::F32(v) => v as f64,
             Self::F64(v) => v,
             Self::I32(v) => v as f64,

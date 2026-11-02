@@ -18,6 +18,7 @@ pub(crate) enum Icon {
     More,
     Stop,
     Settings,
+    Theme,
     Sliders,
     Knob,
     Save,
@@ -71,6 +72,16 @@ impl Scene {
         let [x, y] = center;
         let p = |a, b| [x + a, y + b];
         match icon {
+            Icon::Theme => {
+                self.ring(center, 6.5, 1.2, color);
+                let point = |i: f32| {
+                    let angle = std::f32::consts::FRAC_PI_2 + i * std::f32::consts::PI / 16.0;
+                    p(angle.cos() * 6.5, angle.sin() * 6.5)
+                };
+                for i in 0..16 {
+                    self.triangle(center, point(i as f32), point((i + 1) as f32), color);
+                }
+            }
             Icon::Sliders => {
                 for (dx, dy) in [(-5.0, -2.0), (0.0, 3.0), (5.0, -3.0)] {
                     self.line(p(dx, -6.0), p(dx, 6.0), 1.0, color);

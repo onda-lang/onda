@@ -84,12 +84,30 @@ pub(super) fn compile_input_expr(
     decl: &ConstDecl,
 ) -> Option<Expr> {
     let location: SourceLoc = decl.loc.clone().into();
-    match (value, ty) {
-        (ConstValue::Scalar(value), ConstType::Scalar(expected))
-            if value.primitive_type() == *expected =>
-        {
-            Some(typed_const_expr_with_loc(*value, location))
+    let scalar = |value: TypedConstValue, expected: &ScalarTypeRef| -> Option<Expr> {
+        if expected.primitive() == Some(value.primitive_type()) {
+            return Some(typed_const_expr_with_loc(value, location.clone()));
         }
+        let ordinal = match value {
+            TypedConstValue::I32(value) | TypedConstValue::Enum { ordinal: value, .. } => value,
+            _ => return None,
+        };
+        let expr = typed_const_expr_with_loc(TypedConstValue::I32(ordinal), location.clone());
+        match expected {
+            ScalarTypeRef::Primitive(ty @ PrimitiveType::Enum(_)) => {
+                Some(cast_expr_to_primitive(expr, *ty))
+            }
+            ScalarTypeRef::Named(name) => Some(Expr::UserCall {
+                loc: location.span(),
+                name: name.clone(),
+                type_args: Vec::new(),
+                args: vec![CallArg { name: None, expr }],
+            }),
+            _ => None,
+        }
+    };
+    match (value, ty) {
+        (ConstValue::Scalar(value), ConstType::Scalar(expected)) => scalar(*value, expected),
         (
             ConstValue::Array {
                 elem_ty,
@@ -97,11 +115,19 @@ pub(super) fn compile_input_expr(
                 values,
             },
             ConstType::Array { elem, .. } | ConstType::Slice { elem },
-        ) if elem_ty == elem
-            && *len == values.len()
-            && values.iter().all(|value| value.primitive_type() == *elem) =>
+        ) if *len == values.len()
+            && values
+                .iter()
+                .all(|value| value.primitive_type() == *elem_ty) =>
         {
-            Some(const_array_literal_expr(values, location))
+            let elements = values
+                .iter()
+                .map(|value| scalar(*value, elem))
+                .collect::<Option<Vec<_>>>()?;
+            Some(Expr::ArrayLiteral {
+                loc: location.span(),
+                values: elements,
+            })
         }
         _ => None,
     }
@@ -113,7 +139,7 @@ pub(super) fn compile_input_type_diagnostic(
     decl: &ConstDecl,
 ) -> Diagnostic {
     let supplied = match value {
-        ConstValue::Scalar(value) => value.primitive_type().name().to_owned(),
+        ConstValue::Scalar(value) => value.primitive_type().name().into_owned(),
         ConstValue::Array {
             elem_ty,
             len,
@@ -128,7 +154,7 @@ pub(super) fn compile_input_type_diagnostic(
         ConstValue::Array { .. } => "malformed constant array".to_owned(),
     };
     let expected = match ty {
-        ConstType::Scalar(ty) => ty.name().to_owned(),
+        ConstType::Scalar(ty) => ty.name().into_owned(),
         ConstType::Array { elem, .. } => format!("{}[fixed]", elem.name()),
         ConstType::Slice { elem } => format!("{}[]", elem.name()),
     };
@@ -419,6 +445,7 @@ pub(super) fn fold_host_sr_namespace(
     }
     for item in &mut namespace.items {
         match item {
+            NamespaceItem::Enum(_) => {}
             NamespaceItem::Assert(assert_decl) => {
                 substitute_scalar_const_expr(&mut assert_decl.expr, consts);
             }
@@ -511,6 +538,7 @@ pub(super) fn fold_host_sr_proc(
 
 pub(super) fn fold_host_sr_block(block: &mut Block, consts: &HashMap<String, TypedConstValue>) {
     match block {
+        Block::Enum(_) => {}
         Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
             if let Some(count) = &mut ports.deferred_count {
                 substitute_scalar_const_expr(count, consts);
@@ -780,6 +808,7 @@ pub(super) fn zero_const_value(ty: PrimitiveType) -> TypedConstValue {
     match ty {
         PrimitiveType::F32 => TypedConstValue::F32(0.0),
         PrimitiveType::F64 => TypedConstValue::F64(0.0),
+        PrimitiveType::Enum(ty) => TypedConstValue::Enum { ty, ordinal: 0 },
         PrimitiveType::I32 => TypedConstValue::I32(0),
         PrimitiveType::I64 => TypedConstValue::I64(0),
         PrimitiveType::Bool => TypedConstValue::Bool(false),

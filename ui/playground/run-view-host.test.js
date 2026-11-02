@@ -220,6 +220,48 @@ test("preserves an edited value only while the artifact param shape matches", ()
   assert.equal(reset.value, 220);
 });
 
+test("enum label reloads preserve scalar and array choices while identity changes reset them", () => {
+  for (const arrayLength of [1, 2]) {
+    const param = scalarParam({
+      name: "mode",
+      type_repr: arrayLength === 1 ? "i32" : `i32[${arrayLength}]`,
+      scalar: "i32",
+      array_len: arrayLength,
+      default_reprs: Array(arrayLength).fill("0"),
+      range_min_repr: "0",
+      range_max_repr: "1",
+      param_control: {
+        scale: "linear", curve: null, unit: null, step_repr: "1", step_count: 1,
+      },
+      enumeration: {
+        name: "Mode",
+        members: [{ name: "A", label: "First" }, { name: "B", label: "Second" }],
+      },
+    });
+    const previous = mergeParams([param], []).map(value => ({ ...value, value: 1 }));
+    const renamed = structuredClone(param);
+    renamed.enumeration.members[1].label = "Updated";
+    const preserved = mergeParams([renamed], previous);
+    assert.deepEqual(preserved.map(param => param.value), Array(arrayLength).fill(1));
+    assert.ok(preserved.every(param => param.enumeration.members[1].label === "Updated"));
+
+    const otherType = structuredClone(param);
+    otherType.enumeration.name = "Other";
+    const otherMember = structuredClone(param);
+    otherMember.enumeration.members[1].name = "C";
+    const reordered = structuredClone(param);
+    reordered.enumeration.members.reverse();
+    const numeric = structuredClone(param);
+    delete numeric.enumeration;
+    for (const changed of [otherType, otherMember, reordered, numeric]) {
+      assert.deepEqual(
+        mergeParams([changed], previous).map(param => param.value),
+        Array(arrayLength).fill(0),
+      );
+    }
+  }
+});
+
 test("resets an edited value when parameter curvature changes", () => {
   const [initial] = mergeParams(
     [
@@ -711,6 +753,7 @@ test("allows browser playback while buffers are unbound", async () => {
   let paramResets = 0;
   const smoothingChanges = [];
   const runSettings = [];
+  const mathSettings = [];
   globalThis.window = {
     location: { href: "https://onda.test/play/" },
     addEventListener() {},
@@ -742,6 +785,7 @@ test("allows browser playback while buffers are unbound", async () => {
         smoothingChanges.push(milliseconds);
       },
       setRunSettings: async settings => runSettings.push(settings),
+      setFastMath: async enabled => mathSettings.push(enabled),
     });
     assert.deepEqual(
       {
@@ -758,6 +802,15 @@ test("allows browser playback while buffers are unbound", async () => {
       },
     );
     assert.equal(host.state.supportsParamSmoothing, true);
+    assert.equal(host.state.supportsFastMath, true);
+    assert.equal(host.state.supportsThemeSelection, false);
+    assert.equal(host.state.themeMode, null);
+    for (const enabled of [true, false, "false", null]) {
+      await host.handleMessage({ type: "setFastMath", enabled });
+    }
+    assert.deepEqual(mathSettings, [true, false]);
+    await host.handleMessage({ type: "setTheme", mode: "dark" });
+    assert.equal(host.state.themeMode, null, "page owns the theme");
     assert.equal(host.state.paramSmoothingMs, null);
     host.setState({ paramSmoothingMs: 50, paramSmoothingDefaultMs: 50 });
     for (const milliseconds of [15.5, 0]) {

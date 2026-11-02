@@ -7,10 +7,27 @@ pub(super) fn coerce_const_default_to_typed(
     match ty {
         PrimitiveType::F32 => TypedConstValue::F32(raw_default as f32),
         PrimitiveType::F64 => TypedConstValue::F64(raw_default),
+        PrimitiveType::Enum(ty) => TypedConstValue::Enum {
+            ty,
+            ordinal: (raw_default as i32).clamp(0, ty.count as i32 - 1),
+        },
         PrimitiveType::I32 => TypedConstValue::I32(raw_default as i32),
         PrimitiveType::I64 => TypedConstValue::I64(raw_default as i64),
         PrimitiveType::Bool => TypedConstValue::Bool(raw_default != 0.0),
     }
+}
+
+pub(crate) fn enum_value_range(ty: PrimitiveType) -> Option<TypedValueRange> {
+    let PrimitiveType::Enum(ty) = ty else {
+        return None;
+    };
+    Some(TypedValueRange {
+        min: TypedConstValue::Enum { ty, ordinal: 0 },
+        max: TypedConstValue::Enum {
+            ty,
+            ordinal: ty.count as i32 - 1,
+        },
+    })
 }
 
 pub(super) fn int_bounds_for_type(ty: PrimitiveType) -> Option<(f64, f64)> {
@@ -25,6 +42,7 @@ pub(super) fn primitive_type_label(ty: PrimitiveType) -> &'static str {
     match ty {
         PrimitiveType::F32 => "f32",
         PrimitiveType::F64 => "f64",
+        PrimitiveType::Enum(_) => "enum",
         PrimitiveType::I32 => "i32",
         PrimitiveType::I64 => "i64",
         PrimitiveType::Bool => "bool",
@@ -35,6 +53,7 @@ pub(super) fn typed_min_for_type(ty: PrimitiveType) -> TypedConstValue {
     match ty {
         PrimitiveType::F32 => TypedConstValue::F32(f32::MIN),
         PrimitiveType::F64 => TypedConstValue::F64(f64::MIN),
+        PrimitiveType::Enum(ty) => TypedConstValue::Enum { ty, ordinal: 0 },
         PrimitiveType::I32 => TypedConstValue::I32(i32::MIN),
         PrimitiveType::I64 => TypedConstValue::I64(i64::MIN),
         PrimitiveType::Bool => TypedConstValue::Bool(false),
@@ -106,6 +125,17 @@ pub(super) fn eval_typed_const_expr(
     errors: &mut Vec<Diagnostic>,
 ) -> Option<TypedConstValue> {
     let expr_diag = DiagCtx::new(expr.loc());
+    let source = infer_const_expr_type(expr, context, errors)?;
+    if source != ty
+        && (matches!(source, PrimitiveType::Enum(_)) || matches!(ty, PrimitiveType::Enum(_)))
+    {
+        push_semantic(
+            expr_diag,
+            errors,
+            format!("{context} requires a value of {ty:?}, got {source:?}"),
+        );
+        return None;
+    }
     match ty {
         PrimitiveType::F32 | PrimitiveType::F64 => {
             let value =
@@ -123,6 +153,9 @@ pub(super) fn eval_typed_const_expr(
         }
         PrimitiveType::I32 | PrimitiveType::I64 => {
             eval_typed_int_const_expr(expr, ty, options, context, errors)
+        }
+        PrimitiveType::Enum(_) => {
+            crate::const_scalar::eval_const_scalar(expr, Some(ty), options, context, errors)
         }
         PrimitiveType::Bool => Some(TypedConstValue::Bool(eval_const_bool_expr(
             expr, options, context, errors,
@@ -221,6 +254,11 @@ pub(super) fn contextual_const_expr(value: TypedConstValue) -> Expr {
     match value {
         TypedConstValue::F32(value) => Expr::number(f64::from(value)),
         TypedConstValue::F64(value) => Expr::number(value),
+        TypedConstValue::Enum { ty, ordinal } => Expr::Int {
+            loc: Default::default(),
+            value: i64::from(ordinal),
+            const_ty: Some(PrimitiveType::Enum(ty)),
+        },
         TypedConstValue::I32(value) => Expr::int(i64::from(value)),
         TypedConstValue::I64(value) => Expr::int(value),
         TypedConstValue::Bool(value) => Expr::bool(value),
@@ -239,6 +277,11 @@ pub(super) fn typed_const_expr(value: TypedConstValue) -> Expr {
     match value {
         TypedConstValue::F32(v) => typed_scalar_expr(PrimitiveType::F32, Expr::number(v as f64)),
         TypedConstValue::F64(v) => Expr::number(v),
+        TypedConstValue::Enum { ty, ordinal } => Expr::Int {
+            loc: Default::default(),
+            value: i64::from(ordinal),
+            const_ty: Some(PrimitiveType::Enum(ty)),
+        },
         TypedConstValue::I32(v) => typed_scalar_expr(PrimitiveType::I32, Expr::int(v as i64)),
         TypedConstValue::I64(value) => Expr::Int {
             loc: Default::default(),
@@ -258,6 +301,12 @@ pub(super) fn cast_expr_to_primitive(expr: Expr, ty: PrimitiveType) -> Expr {
 }
 
 pub(super) fn clamp_expr_to_range(expr: Expr, range: TypedValueRange) -> Expr {
+    if let TypedConstValue::Enum { ty, .. } = range.min {
+        return cast_expr_to_primitive(
+            cast_expr_to_primitive(expr, PrimitiveType::I32),
+            PrimitiveType::Enum(ty),
+        );
+    }
     let min_expr = typed_const_expr(range.min);
     let max_expr = typed_const_expr(range.max);
     Expr::Call {
@@ -610,6 +659,25 @@ type ExpandedPortDecls = (
     HashMap<String, TypedValueRange>,
 );
 
+pub(super) fn validate_audio_port_type(port: &PortDecl, errors: &mut Vec<Diagnostic>) -> bool {
+    let is_enum = matches!(
+        port.ty.as_ref(),
+        Some(DeclType::Scalar(PrimitiveType::Enum(_)))
+            | Some(DeclType::Array {
+                elem: PrimitiveType::Enum(_),
+                ..
+            })
+    );
+    if is_enum {
+        push_semantic(
+            DiagCtx::new(port.loc.as_ref()),
+            errors,
+            "audio ports cannot use enum types; use parameters or events for selections",
+        );
+    }
+    !is_enum
+}
+
 pub(super) fn expand_port_decls(
     ports: &[PortDecl],
     kind: &str,
@@ -624,6 +692,9 @@ pub(super) fn expand_port_decls(
 
     for port in ports {
         let port_loc = port.loc.as_ref();
+        if matches!(kind, "input" | "output") && !validate_audio_port_type(port, errors) {
+            continue;
+        }
         match port.ty.as_ref() {
             Some(DeclType::Slice(_)) => {
                 push_semantic(
@@ -663,6 +734,7 @@ pub(super) fn expand_port_decls(
                         )
                     })
                 });
+                let range = range.or_else(|| enum_value_range(ty));
                 if let Some(r) = range {
                     default = clamp_typed_const_to_range(raw_default, r);
                     ranges.insert(port.name.clone(), r);

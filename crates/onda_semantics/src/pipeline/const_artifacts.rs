@@ -259,14 +259,14 @@ pub(super) fn record_const_array_artifact(
                 errors,
             )
             .map(|len| TypedArrayInfo {
-                elem_ty: *elem,
+                elem_ty: elem.primitive().expect("resolved constant array element"),
                 len,
                 offset: 0,
             })
         }
         Some(ConstType::Slice { elem }) => infer_const_array_initializer_info(
             &decl.expr,
-            Some(*elem),
+            elem.primitive(),
             artifacts,
             options,
             &context,

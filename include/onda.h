@@ -294,6 +294,9 @@ typedef struct {
   /* One of ONDA_COMPILE_CONST_KIND_*. Fixed-array element_count is resolved
      under the supplied partial selection. */
   int kind;
+  /* Optional enum name/member metadata as UTF-8 JSON; NULL for ordinary scalars.
+     Enum inputs and selected values use ONDA_PRIMITIVE_I32 storage. */
+  const char* enumeration_json_utf8;
 } onda_compile_const_descriptor_t;
 
 /* Compile options shared by all source and project-image compile entry points. */
@@ -1419,6 +1422,13 @@ int onda_param_unit_copy(
   char* out_bytes,
   int out_capacity
 );
+/* Copies enum JSON {"name": qualified_type_name, "members": [{"name", "label"}, ...]}
+   including its trailing NUL. Member indices are the i32 ordinal values.
+   Returns 0 when absent, the required byte count when present, or -1 for invalid
+   arguments. A null or undersized output queries the required size without writing.
+   Fixed arrays share one enum descriptor for all elements. */
+int onda_param_enum_json_copy(const onda_program_t* program, int index, char* out_bytes, int out_capacity);
+int onda_control_output_enum_json_copy(const onda_program_t* program, int index, char* out_bytes, int out_capacity);
 /* Returns 1 when the parameter has a discrete step, 0 when absent, -1 if invalid. */
 int onda_param_has_step(const onda_program_t* program, int index);
 double onda_param_step_f64(const onda_program_t* program, int index);

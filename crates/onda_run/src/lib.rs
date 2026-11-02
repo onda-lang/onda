@@ -67,10 +67,9 @@ pub const VISUALIZATION_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 
 pub const DEFAULT_REALTIME_BLOCK_SAMPLES: usize = 512;
 pub const COMPUTER_KEYBOARD_MIDI_INPUT: &str = "Computer Keyboard";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RunThemeMode {
-    #[default]
-    Auto,
     Dark,
     Light,
 }
@@ -85,10 +84,11 @@ pub struct RunHostOptions {
     pub output_device: Option<String>,
     pub midi_input_device: Option<String>,
     pub fast_math: bool,
-    /// Offer the Fast Math control in the unloaded native UI.
+    /// Offer the Fast Math control in the native UI.
     pub show_fast_math: bool,
     pub show_meta: bool,
-    pub theme: RunThemeMode,
+    /// No explicit choice: detect the appearance when the window first opens.
+    pub theme: Option<RunThemeMode>,
     pub onda_bin: String,
 }
 
@@ -105,7 +105,7 @@ impl Default for RunHostOptions {
             fast_math: false,
             show_fast_math: true,
             show_meta: false,
-            theme: RunThemeMode::Auto,
+            theme: None,
             onda_bin: "onda".to_owned(),
         }
     }
@@ -299,6 +299,8 @@ struct RawReadyEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RunParamWire {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enumeration: Option<onda_processor_abi::EnumMetadata>,
     index: usize,
     name: String,
     #[serde(rename = "type")]
@@ -395,9 +397,14 @@ impl RunController {
             source_watch_revision.observe_change();
         }
         let child_generation = 1;
-        let child =
-            ChildSession::spawn(&launch_path, &options, child_generation, events_tx.clone())
-                .map_err(|e| format!("failed to start run subprocess: {e}"))?;
+        let child = ChildSession::spawn(
+            &launch_path,
+            &options,
+            true,
+            child_generation,
+            events_tx.clone(),
+        )
+        .map_err(|e| format!("failed to start run subprocess: {e}"))?;
 
         let mut controller = Self {
             launch_path,
@@ -516,6 +523,33 @@ impl RunController {
 
     pub fn options(&self) -> &RunHostOptions {
         &self.options
+    }
+
+    pub fn set_theme(&mut self, theme: RunThemeMode) {
+        self.options.theme = Some(theme);
+    }
+
+    /// Re-specialize the current source while retaining controls, bindings and
+    /// whether playback was requested, just as a source reload does.
+    pub fn set_compile_settings(
+        &mut self,
+        sample_rate_hz: u32,
+        block_samples: usize,
+        fast_math: bool,
+    ) -> Result<(), String> {
+        if !(1..=768000).contains(&sample_rate_hz) || !(1..=65536).contains(&block_samples) {
+            return Err("Invalid sample rate or block size".into());
+        }
+        if self.options.sample_rate_hz == sample_rate_hz
+            && self.options.block_samples == block_samples
+            && self.options.fast_math == fast_math
+        {
+            return Ok(());
+        }
+        self.options.sample_rate_hz = sample_rate_hz;
+        self.options.block_samples = block_samples;
+        self.options.fast_math = fast_math;
+        self.restart_with_status("Recompiling...")
     }
 
     pub fn path(&self) -> &Path {
@@ -839,6 +873,11 @@ impl RunController {
                     path: file_path.to_owned(),
                 },
             );
+        } else {
+            self.preserved_buffers.insert(
+                name.to_owned(),
+                PreservedBufferBinding::File(file_path.to_owned()),
+            );
         }
         self.state.error = None;
     }
@@ -854,6 +893,9 @@ impl RunController {
                     name: name.to_owned(),
                 },
             );
+        } else {
+            self.preserved_buffers
+                .insert(name.to_owned(), PreservedBufferBinding::Cleared);
         }
         self.state.error = None;
     }
@@ -868,7 +910,7 @@ impl RunController {
         };
         self.options.input_device = next;
         self.state.current_input_device = self.options.input_device.clone();
-        self.restart_with_status("Restarting...")
+        self.restart_with_status("Recompiling...")
     }
 
     pub fn set_output_device(&mut self, name: Option<&str>) -> Result<(), String> {
@@ -881,7 +923,7 @@ impl RunController {
         };
         self.options.output_device = next;
         self.state.current_output_device = self.options.output_device.clone();
-        self.restart_with_status("Restarting...")
+        self.restart_with_status("Recompiling...")
     }
 
     pub fn set_midi_input_device(&mut self, name: Option<&str>) -> Result<(), String> {
@@ -897,7 +939,7 @@ impl RunController {
         };
         self.options.midi_input_device = next;
         self.state.current_midi_input_device = self.options.midi_input_device.clone();
-        self.restart_with_status("Restarting...")
+        self.restart_with_status("Recompiling...")
     }
 
     fn restart_with_status(&mut self, status: &str) -> Result<(), String> {
@@ -918,6 +960,7 @@ impl RunController {
         self.meter_levels = onda_scope::Levels::default();
         self.source_compilation = SourceCompilationState::None;
         self.compiled_watch_revision = None;
+        self.preserve_pending_buffer_bindings();
         self.pending_commands.clear();
         self.scope_polling_active = false;
         self.sync_scope_capture();
@@ -934,6 +977,7 @@ impl RunController {
         match ChildSession::spawn(
             &self.launch_path,
             &self.options,
+            self.processing_requested,
             self.child_generation,
             self.events_tx.clone(),
         ) {
@@ -941,7 +985,7 @@ impl RunController {
                 self.child = child;
                 self.source_compilation = SourceCompilationState::Compiling(pending_sources);
                 self.compiled_watch_revision = Some(compiled_watch_revision);
-                self.state.running = true;
+                self.state.running = self.processing_requested;
                 Ok(())
             }
             Err(e) => {
@@ -961,6 +1005,29 @@ impl RunController {
                 .source_compilation
                 .ready()
                 .is_some_and(|snapshot| self.compiled_sources_are_current(snapshot))
+    }
+
+    fn preserve_pending_buffer_bindings(&mut self) {
+        let mut pending: Vec<_> = self.pending_commands.iter().collect();
+        pending.sort_unstable_by_key(|(id, _)| **id);
+        for (_, command) in pending {
+            let (name, binding) = match command {
+                PendingCommand::BindBuffer { name, path } => {
+                    (name, PreservedBufferBinding::File(path.clone()))
+                }
+                PendingCommand::ClearBuffer { name } => (name, PreservedBufferBinding::Cleared),
+                _ => continue,
+            };
+            self.preserved_buffers.insert(name.clone(), binding);
+        }
+    }
+
+    fn forget_older_buffer_requests(&mut self, name: &str, completed_id: u64) {
+        self.pending_commands.retain(|id, command| {
+            *id > completed_id || !matches!(command,
+                PendingCommand::BindBuffer { name: pending, .. } | PendingCommand::ClearBuffer { name: pending }
+                if pending == name)
+        });
     }
 
     fn sources_require_recompile(&self, changed_paths: &[PathBuf]) -> bool {
@@ -1015,7 +1082,7 @@ impl RunController {
 
     fn recompile_after_source_change(&mut self, changed_paths: &[PathBuf]) {
         if self.processing_requested {
-            let _ = self.restart_with_status_after_changes("Restarting...", changed_paths);
+            let _ = self.restart_with_status_after_changes("Recompiling...", changed_paths);
         } else {
             self.invalidate_compiled_child();
         }
@@ -1048,7 +1115,7 @@ impl RunController {
             | SourceCompilationState::Failed(_) => false,
         };
         if !compilation_is_current {
-            let _ = self.restart_with_status("Restarting...");
+            let _ = self.restart_with_status("Recompiling...");
             return;
         }
         let SourceCompilationState::Compiling(compiled_sources) =
@@ -1396,6 +1463,10 @@ impl RunController {
                     match command {
                         PendingCommand::BindBuffer { name, path } => {
                             poll.schema_changed = true;
+                            self.forget_older_buffer_requests(
+                                &name,
+                                id.expect("tracked command ID"),
+                            );
                             self.preserved_buffers
                                 .insert(name.clone(), PreservedBufferBinding::File(path.clone()));
                             update_buffer_loaded_path(&mut self.state.buffers, &name, Some(&path));
@@ -1404,6 +1475,10 @@ impl RunController {
                         }
                         PendingCommand::ClearBuffer { name } => {
                             poll.schema_changed = true;
+                            self.forget_older_buffer_requests(
+                                &name,
+                                id.expect("tracked command ID"),
+                            );
                             self.preserved_buffers
                                 .insert(name.clone(), PreservedBufferBinding::Cleared);
                             update_buffer_loaded_path(&mut self.state.buffers, &name, None);
@@ -1658,6 +1733,7 @@ impl From<&RunParamInfo> for RunParamWire {
     fn from(param: &RunParamInfo) -> Self {
         let scalar_repr = |value| run_param_scalar_repr(&param.type_repr, value);
         Self {
+            enumeration: param.enumeration.clone(),
             index: param.index,
             name: param.name.clone(),
             type_repr: param.type_repr.clone(),
@@ -1709,6 +1785,7 @@ impl RunParamWire {
             "unit": self.unit,
             "step": step,
             "stepCount": self.step_count,
+            "enumeration": self.enumeration,
             "scalar": self.scalar,
             "array": self.array,
         }))
@@ -2593,8 +2670,23 @@ fn params_are_compatible_for_preservation(old_param: &Value, new_param: &Value) 
         && old_param.get("unit") == new_param.get("unit")
         && old_param.get("step") == new_param.get("step")
         && old_param.get("stepCount") == new_param.get("stepCount")
+        && enum_choices_match(&old_param["enumeration"], &new_param["enumeration"])
         && old_param.get("scalar") == new_param.get("scalar")
         && old_param.get("array") == new_param.get("array")
+}
+
+fn enum_choices_match(left: &Value, right: &Value) -> bool {
+    if left.is_null() || right.is_null() {
+        return left == right;
+    }
+    left["name"] == right["name"]
+        && left["members"]
+            .as_array()
+            .zip(right["members"].as_array())
+            .is_some_and(|(left, right)| {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(a, b)| a["name"] == b["name"])
+            })
 }
 
 fn reconcile_preserved_events(
@@ -2781,6 +2873,108 @@ mod tests {
     #[test]
     fn realtime_host_defaults_to_512_frame_blocks() {
         assert_eq!(RunHostOptions::default().block_samples, 512);
+    }
+
+    #[test]
+    fn buffer_requests_survive_recompilation_in_user_order() {
+        let mut controller = controller_without_child();
+        controller.pending_commands.insert(
+            30,
+            PendingCommand::BindBuffer {
+                name: "clip".into(),
+                path: "latest.wav".into(),
+            },
+        );
+        controller.pending_commands.insert(
+            10,
+            PendingCommand::BindBuffer {
+                name: "clip".into(),
+                path: "old.wav".into(),
+            },
+        );
+        controller.pending_commands.insert(
+            20,
+            PendingCommand::ClearBuffer {
+                name: "clip".into(),
+            },
+        );
+        controller.preserve_pending_buffer_bindings();
+        assert_eq!(
+            controller.preserved_buffers["clip"],
+            PreservedBufferBinding::File("latest.wav".into())
+        );
+        controller.pending_commands.clear();
+        // The control socket is absent while the replacement child compiles.
+        controller.clear_buffer("clip");
+        assert_eq!(
+            controller.preserved_buffers["clip"],
+            PreservedBufferBinding::Cleared
+        );
+        controller.bind_buffer_file("clip", "replacement.wav");
+        assert_eq!(
+            controller.preserved_buffers["clip"],
+            PreservedBufferBinding::File("replacement.wav".into())
+        );
+    }
+
+    #[test]
+    fn completed_buffer_requests_supersede_slow_older_loads_before_restart() {
+        let mut controller = controller_without_child();
+        for replacement in [
+            PendingCommand::ClearBuffer {
+                name: "clip".into(),
+            },
+            PendingCommand::BindBuffer {
+                name: "clip".into(),
+                path: "new.wav".into(),
+            },
+        ] {
+            controller.pending_commands.insert(
+                10,
+                PendingCommand::BindBuffer {
+                    name: "clip".into(),
+                    path: "slow.wav".into(),
+                },
+            );
+            let expected = match &replacement {
+                PendingCommand::ClearBuffer { .. } => PreservedBufferBinding::Cleared,
+                _ => PreservedBufferBinding::File("new.wav".into()),
+            };
+            controller.pending_commands.insert(20, replacement);
+            controller.handle_tcp_response(r#"{"id":20,"ok":true,"result":{}}"#);
+            controller.preserve_pending_buffer_bindings();
+            assert_eq!(controller.preserved_buffers["clip"], expected);
+            assert!(!controller.pending_commands.contains_key(&10));
+        }
+    }
+
+    #[test]
+    fn invalid_or_unchanged_compile_settings_do_not_replace_the_child() {
+        let mut controller = controller_without_child();
+        let options = controller.options.clone();
+        controller
+            .set_compile_settings(
+                options.sample_rate_hz,
+                options.block_samples,
+                options.fast_math,
+            )
+            .unwrap();
+        assert!(controller.set_compile_settings(0, 512, true).is_err());
+        assert!(controller
+            .set_compile_settings(48_000, 65537, true)
+            .is_err());
+        assert_eq!(controller.child_generation, 1);
+        assert_eq!(controller.options.sample_rate_hz, options.sample_rate_hz);
+        assert_eq!(controller.options.block_samples, options.block_samples);
+        assert_eq!(controller.options.fast_math, options.fast_math);
+        controller.processing_requested = false;
+        controller.source_compilation =
+            SourceCompilationState::Compiling(source_snapshot(Path::new("scope.onda"), &[]));
+        let panel = super::host_panel_state(Some(&controller), None, &options, "light", 0.05);
+        assert_eq!(
+            panel["schemaReady"], false,
+            "paused recompiles also defer presentation restoration"
+        );
     }
 
     fn controller_without_child() -> super::RunController {
@@ -3228,6 +3422,7 @@ mod tests {
     #[test]
     fn control_json_dispatches_typed_parameter_values() {
         let coupling = RunParamInfo {
+            enumeration: None,
             index: 0,
             name: "coupling".to_owned(),
             type_repr: "f32".to_owned(),
@@ -3244,6 +3439,7 @@ mod tests {
             array: None,
         };
         let stepped = RunParamInfo {
+            enumeration: None,
             index: 1,
             name: "stepped".to_owned(),
             type_repr: "f32".to_owned(),
@@ -3260,6 +3456,7 @@ mod tests {
             array: None,
         };
         let gate = RunParamInfo {
+            enumeration: None,
             index: 2,
             name: "gate".to_owned(),
             type_repr: "bool".to_owned(),
@@ -3276,6 +3473,7 @@ mod tests {
             array: None,
         };
         let wide = RunParamInfo {
+            enumeration: None,
             index: 3,
             name: "wide".to_owned(),
             type_repr: "i64".to_owned(),
@@ -3284,6 +3482,7 @@ mod tests {
             ..gate.clone()
         };
         let ranged = RunParamInfo {
+            enumeration: None,
             index: 4,
             name: "ranged".to_owned(),
             value: Some(onda_daemon::RunParamValue::I64(4)),
@@ -4269,6 +4468,53 @@ mod tests {
             1,
             "unchanged param should keep preserved value"
         );
+    }
+
+    #[test]
+    fn preserved_enum_params_follow_member_identity_and_order_without_labels() {
+        for array in [false, true] {
+            let name = if array { "modes[1]" } else { "mode" };
+            let mut old = run_param(name, "i32", 0.0, Some(0.0), Some(1.0), true);
+            old["step"] = json!(1);
+            old["stepCount"] = json!(1);
+            old["enumeration"] = json!({"name":"Mode","members":[
+                {"name":"A","label":"First"}, {"name":"B","label":"Second"}
+            ]});
+            if array {
+                old["array"] = json!({"name":"modes","length":2,"index":1});
+            }
+            let mut renamed = old.clone();
+            renamed["enumeration"]["members"][1]["label"] = json!("Updated");
+            let mut preserved = vec![(name.to_owned(), json!(1))];
+            let mut new_params = vec![renamed];
+            reconcile_preserved_params(&mut preserved, std::slice::from_ref(&old), &new_params);
+            super::apply_preserved_param_state(&mut new_params, &preserved);
+            assert_eq!(new_params[0]["value"], 1);
+            assert_eq!(
+                new_params[0]["enumeration"]["members"][1]["label"],
+                "Updated"
+            );
+
+            let mut other_type = old.clone();
+            other_type["enumeration"]["name"] = json!("Other");
+            let mut other_member = old.clone();
+            other_member["enumeration"]["members"][1]["name"] = json!("C");
+            let mut reordered = old.clone();
+            reordered["enumeration"]["members"]
+                .as_array_mut()
+                .unwrap()
+                .swap(0, 1);
+            let mut numeric = old.clone();
+            numeric.as_object_mut().unwrap().remove("enumeration");
+            for changed in [other_type, other_member, reordered, numeric] {
+                let mut preserved = vec![(name.to_owned(), json!(1))];
+                reconcile_preserved_params(&mut preserved, std::slice::from_ref(&old), &[changed]);
+                assert!(
+                    preserved.is_empty(),
+                    "changed enum choices must reset {name}"
+                );
+            }
+        }
     }
 
     #[test]

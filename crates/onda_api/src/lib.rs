@@ -526,6 +526,7 @@ pub struct onda_compile_const_input_t {
 pub struct onda_compile_const_descriptor_t {
     pub input: onda_compile_const_input_t,
     pub kind: i32,
+    pub enumeration_json_utf8: *const c_char,
 }
 
 #[repr(C)]
@@ -622,6 +623,7 @@ pub struct onda_compile_constants {
 struct CCompileConstStorage {
     name: CString,
     values: CCompileConstValues,
+    enumeration: Option<CString>,
 }
 
 enum CCompileConstValues {
@@ -878,7 +880,9 @@ unsafe fn compile_inputs_from_options(
                         ))
                     }
                 },
-                PrimitiveType::I32 => TypedConstValue::I32(ptr::read_unaligned(element.cast())),
+                PrimitiveType::I32 | PrimitiveType::Enum(_) => {
+                    TypedConstValue::I32(ptr::read_unaligned(element.cast()))
+                }
                 PrimitiveType::I64 => TypedConstValue::I64(ptr::read_unaligned(element.cast())),
                 PrimitiveType::F32 => TypedConstValue::F32(ptr::read_unaligned(element.cast())),
                 PrimitiveType::F64 => TypedConstValue::F64(ptr::read_unaligned(element.cast())),
@@ -913,10 +917,12 @@ fn native_compile_const_values(
             })
             .collect::<Result<Vec<_>, _>>()
             .map(|values| CCompileConstValues::Bool(values.into_boxed_slice())),
-        PrimitiveType::I32 => values
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => values
             .into_iter()
             .map(|value| match value {
-                TypedConstValue::I32(value) => Ok(value),
+                TypedConstValue::I32(value) | TypedConstValue::Enum { ordinal: value, .. } => {
+                    Ok(value)
+                }
                 _ => Err(type_error()),
             })
             .collect::<Result<Vec<_>, _>>()
@@ -1001,6 +1007,18 @@ fn build_compile_constants(
             name: CString::new(descriptor.name)
                 .map_err(|_| Diagnostic::internal("compile constant name contains NUL"))?,
             values,
+            enumeration: descriptor
+                .enumeration
+                .as_ref()
+                .map(|metadata| {
+                    serde_json::to_string(metadata)
+                        .map_err(|error| Diagnostic::internal(error.to_string()))
+                        .and_then(|json| {
+                            CString::new(json)
+                                .map_err(|error| Diagnostic::internal(error.to_string()))
+                        })
+                })
+                .transpose()?,
         });
         metadata.push((
             kind,
@@ -1027,6 +1045,10 @@ fn build_compile_constants(
                     },
                 },
                 kind,
+                enumeration_json_utf8: storage
+                    .enumeration
+                    .as_ref()
+                    .map_or(ptr::null(), |json| json.as_ptr()),
             }
         })
         .collect();
@@ -1725,7 +1747,7 @@ unsafe fn compile_parsed_program(
                 element: match buffer.elem_ty {
                     PrimitiveType::F32 => BufferElement::F32,
                     PrimitiveType::F64 => BufferElement::F64,
-                    PrimitiveType::I32 => BufferElement::I32,
+                    PrimitiveType::I32 | PrimitiveType::Enum(_) => BufferElement::I32,
                     PrimitiveType::I64 => BufferElement::I64,
                     PrimitiveType::Bool => BufferElement::Bool,
                 },
@@ -4384,7 +4406,9 @@ mod event_dispatch;
 pub use event_dispatch::*;
 mod instance_operations;
 pub use instance_operations::*;
+mod enum_metadata;
 mod metadata;
+pub use enum_metadata::*;
 pub use metadata::*;
 use metadata::{
     build_event_tensor_info, primitive_type_bytes, primitive_type_from_i32, primitive_type_to_i32,

@@ -22,6 +22,49 @@
     results across processing-segment splits. Prepared mappings and exponential recurrences are
     possible optimizations to assess, not requirements for the current input implementation.
 
+- `match` statements and patterns
+  - Add a `match` statement for nominal enums, evaluating the subject once and executing one arm
+    without fallthrough. Require exhaustive coverage or an explicit wildcard arm; diagnose missing,
+    duplicate, and unreachable cases. Start with member patterns and alternatives. Proposed syntax:
+
+    ```onda
+    match mode:
+      case FilterMode::LowPass:
+        out1 = low
+      case FilterMode::HighPass | FilterMode::BandPass:
+        out1 = high
+    ```
+
+    The spelling is tentative; the existing [enum model](../syntax.md#enumerations) supplies the
+    finite set of cases.
+  - Reuse ordinary branch scopes, definite-assignment and return-flow analysis, and effect/rate
+    checking in init, event, block, and sample code. Support the same semantics in `const def`
+    evaluation. Lower through shared MIR control flow so LLVM and Wasm can select efficient
+    comparisons or switch dispatch without introducing a runtime matching engine.
+  - Evaluate guards and tuple/struct destructuring after exhaustive enum matching. Guarded arms
+    alone must not establish exhaustive coverage; define binding scopes and arm ordering before
+    admitting overlapping patterns. Consider integer and boolean subjects using the same model.
+  - Consider a `match` expression once statement semantics are settled, with exhaustive arms and
+    ordinary result type/shape unification, including aggregate values.
+
+- Enum follow-ups
+  - Add compile-time enum reflection for member count and ordered values, and evaluate constant
+    iteration over members for table generation. Keep names and labels as metadata rather than
+    implicitly adding runtime strings.
+  - Evaluate contextual member shorthand in typed assignments, call arguments, and match arms.
+    Require one unambiguous expected enum type and preserve qualified member lookup as the explicit
+    form; avoid global member-name injection.
+  - Allow CLI and host tools to select enum members by source name, using the exported metadata
+    to resolve names to ordinals. Evaluate optional member descriptions and grouping alongside
+    existing display labels, while keeping binary parameter and event values as integers.
+  - Evaluate enums with associated data as a separate extension: define a bounded tag/payload
+    layout, variant construction, exhaustive destructuring, aggregate copy semantics, and recursive
+    event/delegate schemas before implementation. Such values need more than the current `i32`
+    representation; host controls must account for variant fields as well as the selected tag.
+  - Evaluate explicit discriminants and flag sets separately if concrete use cases justify them.
+    Their domains and host metadata cannot assume the current dense `0..member_count - 1` model;
+    ordinary selection enums should retain their simple contiguous representation.
+
 - Structured-data follow-ups
   - Evaluate implicit struct-method receivers as a replacement for the current explicit `self`
     parameter. The proposed model makes fields and sibling methods available by bare name like
@@ -50,6 +93,31 @@
   - Evaluate reference fields and exclusive references only as part of a coherent lifetime and
     aliasing model. Struct fields currently own fixed data, and ordinary aggregate aliases remain
     writable and non-exclusive.
+
+- Public proc getters
+  - Add opt-in `pub def` proc getters, callable as expressions such as
+    `voice.get_phase()`. Reuse ordinary def arguments, returns, specialization, and proc-local
+    owner capture; unmarked proc-local defs remain private. For example:
+    ```onda
+    proc Voice:
+      init:
+        phase = 0.0
+
+      pub def get_phase() -> f32:
+        return phase
+    ```
+  - Require read-only behavior transitively through helper calls: getters must not mutate owner
+    state or caller storage, step processors, dispatch events/delegates, print, or advance tasks.
+    Keep events as the external mutation interface. Define legal call contexts using the existing
+    execution-rate and resource-access rules; reading a getter must not trigger processing hooks.
+  - Support getters on selected proc-array elements (`voices[i].get_phase()`) using the existing
+    selector normalization and single-evaluation rules. Allow getters to query child procs and
+    child proc arrays, for example `return voices[index].get_phase()`, without exposing those
+    internal instances. Direct nested calls such as `voice.osc.get_phase()` must respect the
+    visibility of the child instance; `pub def` alone does not make it public.
+  - Return aggregates as independent values under ordinary def return rules. Returning proc
+    instances, proc arrays, or borrowed internal storage is outside this extension and requires
+    a separate resource-reference/lifetime design. Defer property-style getter syntax.
 
 - Polymorph defs follow-ups
   - Improve overload diagnostics to show per-candidate ranking details.

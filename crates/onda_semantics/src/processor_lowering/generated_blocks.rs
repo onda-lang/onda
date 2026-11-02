@@ -195,7 +195,9 @@ fn proc_event_reference_param_fn_ty(param_ty: &ProcEventParamTypeSpec) -> Option
         ProcEventParamTypeSpec::StructSlice { name } => {
             Some(FnParamType::ArrayGeneric(name.clone()))
         }
-        ProcEventParamTypeSpec::Tuple(types) => Some(FnParamType::Tuple(types.clone())),
+        ProcEventParamTypeSpec::Tuple(types) => Some(FnParamType::Tuple(
+            types.iter().copied().map(Into::into).collect(),
+        )),
         ProcEventParamTypeSpec::Struct { name } => Some(FnParamType::Struct(name.clone())),
         ProcEventParamTypeSpec::StructArray { name, len } => Some(FnParamType::SizedArray {
             elem: None,

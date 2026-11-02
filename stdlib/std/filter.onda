@@ -1,14 +1,15 @@
 namespace std::filter:
-  namespace mode:
-    const ONE_POLE_LOWPASS = 0
-    const ONE_POLE_HIGHPASS = 1
+  enum OnePoleMode:
+    LowPass
+    HighPass
 
-    const SVF_LOWPASS = 0
-    const SVF_HIGHPASS = 1
-    const SVF_BANDPASS = 2
-    const SVF_NOTCH = 3
-    const SVF_PEAK = 4
-    const SVF_ALLPASS = 5
+  enum SvfMode:
+    LowPass
+    HighPass
+    BandPass
+    Notch
+    Peak
+    AllPass
 
   struct BiquadCoefficients<T>:
     b0: T = 1.0
@@ -85,7 +86,7 @@ namespace std::filter:
 
     params<T>:
       cutoff = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
-      mode: i32 = mode::ONE_POLE_LOWPASS {mode::ONE_POLE_LOWPASS, mode::ONE_POLE_HIGHPASS}
+      mode: OnePoleMode = OnePoleMode::LowPass
 
     init:
       z: T = 0.0
@@ -106,7 +107,7 @@ namespace std::filter:
       low = z
       high = in1 - low
 
-      if mode == mode::ONE_POLE_HIGHPASS:
+      if mode == OnePoleMode::HighPass:
         out1 = high
       else:
         out1 = low
@@ -160,7 +161,7 @@ namespace std::filter:
     params<T>:
       private cutoff = 1000.0 {0.0, T(SR * 0.48)}
       private q = 0.707107
-      mode: i32 = mode::SVF_LOWPASS {mode::SVF_LOWPASS, mode::SVF_ALLPASS}
+      mode: SvfMode = SvfMode::LowPass
 
     init<T>:
       z1 = 0.0
@@ -194,15 +195,15 @@ namespace std::filter:
       z1 = f * high + band
       z2 = f * band + low
 
-      if mode == mode::SVF_LOWPASS:
+      if mode == SvfMode::LowPass:
         out1 = low
-      elif mode == mode::SVF_HIGHPASS:
+      elif mode == SvfMode::HighPass:
         out1 = high
-      elif mode == mode::SVF_BANDPASS:
+      elif mode == SvfMode::BandPass:
         out1 = band
-      elif mode == mode::SVF_NOTCH:
+      elif mode == SvfMode::Notch:
         out1 = notch
-      elif mode == mode::SVF_PEAK:
+      elif mode == SvfMode::Peak:
         out1 = peak
       else:
         out1 = allpass

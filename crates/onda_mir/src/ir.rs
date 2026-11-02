@@ -323,6 +323,8 @@ pub struct Output {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
     pub name: String,
     pub ty: TypeId,
     /// Dedicated state slot containing the host-visible control value.
@@ -334,6 +336,8 @@ pub struct ControlOutput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
     pub name: String,
     pub ty: TypeId,
     pub default: ConstantValue,

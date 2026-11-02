@@ -34,9 +34,11 @@ Copy-Item (Join-Path $compilerPackage "dist") (Join-Path $compilerOut "dist") -R
 Copy-Item $binaryenJs (Join-Path $compilerOut "dist\backend\binaryen.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $compilerOut "src\processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $compilerOut "src\param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\enum-metadata.js") (Join-Path $compilerOut "src\enum-metadata.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $compilerOut "src\payload.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $compilerOut "dist\backend\processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $compilerOut "dist\backend\param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\enum-metadata.js") (Join-Path $compilerOut "dist\backend\enum-metadata.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $compilerOut "dist\backend\payload.js") -Force
 $compilerSource = Get-Content (Join-Path $compilerPackage "src\index.js") -Raw
 $compilerSource.Replace('from "#onda-frontend-loader"', 'from "./frontend-browser.js"').Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
@@ -53,6 +55,7 @@ Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAu
 Copy-Item (Join-Path $webAudioPackage "src\execution-output-ring.js") (Join-Path $webAudioOut "execution-output-ring.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $webAudioOut "processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $webAudioOut "param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\enum-metadata.js") (Join-Path $webAudioOut "enum-metadata.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $webAudioOut "payload.js") -Force
 $webAudioSource = Get-Content (Join-Path $webAudioPackage "src\index.js") -Raw
 $webAudioSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |

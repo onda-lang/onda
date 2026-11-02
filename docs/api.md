@@ -396,6 +396,7 @@ Input, output, and parameter ranges use `onda_*_has_range`, `onda_*_range_min_f6
 | `onda_param_scale` | `ONDA_PARAM_SCALE_NONE`, `ONDA_PARAM_SCALE_LINEAR`, `ONDA_PARAM_SCALE_LOG`, or `-1` for an invalid query. Values match the raw processor ABI. |
 | `onda_param_has_curve`, `onda_param_curve` | Optional finite lincurve shaping. |
 | `onda_param_unit_copy` | Optional NUL-terminated UTF-8 presentation unit. |
+| `onda_param_enum_json_copy`, `onda_control_output_enum_json_copy` | Optional enum type and ordered member names/labels as NUL-terminated JSON. |
 | `onda_param_has_step`, `onda_param_step_f64`, `onda_param_step_count` | Discrete host-control grid. |
 | `onda_param_normalized_to_plain` | Convert and constrain a normalized host value. |
 | `onda_param_plain_to_normalized` | Constrain and convert a plain host value. |
@@ -407,10 +408,20 @@ the write. Boolean controls are the exception: plain and normalized values use t
 threshold, including individual fixed-array elements.
 `onda_param_step_count` returns `0` when a valid parameter has no discrete step, including when it
 has no numeric domain, and `-1` for an invalid query; positive results are the number of intervals
-in the declared grid.
+in the declared grid. A one-member enum also has zero intervals and retains a discrete step of one.
 
 The shared `double` host-control surface exactly represents integers only through
 `ONDA_MAX_EXACT_HOST_CONTROL_INTEGER`. Raw parameter bytes retain full-width `i64` values.
+
+Enum metadata has the shape `{"name":"dsp::Mode","members":[{"name":"LowPass","label":"Low Pass"},...]}`.
+The member index is its `i32` value. The copy queries return `0` when absent, the required byte count
+including NUL when present, or `-1` for invalid arguments. A null or undersized output queries the
+size without writing. Fixed arrays share one descriptor. Event and delegate enum leaves carry the
+same `enumeration` object in their existing recursive JSON schemas; binary payloads remain integers.
+Configuration inspection exposes the same JSON object through
+`onda_compile_const_descriptor_t.enumeration_json_utf8` (null for ordinary scalar types).
+Enum configuration scalars and arrays use `ONDA_PRIMITIVE_I32` inputs and selected values;
+compilation clamps those ordinals to the declared member range.
 
 ### Buffers and buffer arrays
 
@@ -1055,6 +1066,8 @@ onda_param_range_max_f64
 onda_param_scale
 onda_param_has_curve
 onda_param_curve
+onda_param_enum_json_copy
+onda_control_output_enum_json_copy
 onda_param_unit_copy
 onda_param_has_step
 onda_param_step_f64

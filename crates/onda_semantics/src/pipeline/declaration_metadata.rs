@@ -158,7 +158,7 @@ impl Metadata<'_> {
             loc: loc.span(),
             name: name.clone(),
             ty: Some(ConstType::Array {
-                elem,
+                elem: elem.into(),
                 size: Expr::int(len as i64),
             }),
             expr: expr.clone(),
@@ -391,7 +391,10 @@ fn visit_event_param(param: &mut EventParamDecl, owner: &str, visitor: &mut Meta
         } else if let EventParamType::Tuple(types) = &param.ty {
             visitor.tuple_default(
                 default,
-                &types.iter().copied().map(Some).collect::<Vec<_>>(),
+                &types
+                    .iter()
+                    .map(ScalarTypeRef::primitive)
+                    .collect::<Vec<_>>(),
                 &format!("event '{owner}.{}'", param.name),
             );
         } else {
@@ -629,6 +632,15 @@ fn visit_block_metadata(block: &mut Block, visitor: &mut Metadata) {
                     visitor.dimension(&mut spec.size);
                 }
                 if let Some(default) = &mut field.default {
+                    // An enum default acquires its nominal type after name resolution.
+                    // The parser's scalar fallback is not an authored annotation.
+                    if field.ty_loc.is_zero() {
+                        if let Some(ty @ PrimitiveType::Enum(_)) =
+                            visitor.check(default).expression(default, &mut Vec::new())
+                        {
+                            field.ty = FieldType::Scalar(ty);
+                        }
+                    }
                     if let FieldType::Scalar(ty) = field.ty {
                         // The storage domain is required even when the initializer
                         // is unused or overridden by a constructor argument.
@@ -689,6 +701,10 @@ fn visit_block_metadata(block: &mut Block, visitor: &mut Metadata) {
             }
         }
         Block::Init(init) => visit_stmt_value_exprs(&mut init.body, visitor),
-        Block::Tasks(_) | Block::Namespace(_) | Block::NamespaceAlias(_) | Block::Use(_) => {}
+        Block::Tasks(_)
+        | Block::Namespace(_)
+        | Block::NamespaceAlias(_)
+        | Block::Enum(_)
+        | Block::Use(_) => {}
     }
 }

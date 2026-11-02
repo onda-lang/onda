@@ -190,7 +190,9 @@ impl Port {
         let data = match self.ty {
             PrimitiveType::F32 => x.to_le_bytes().to_vec(),
             PrimitiveType::F64 => f64::from(x).to_le_bytes().to_vec(),
-            PrimitiveType::I32 => ((x * 64.0) as i32).to_le_bytes().to_vec(),
+            PrimitiveType::I32 | PrimitiveType::Enum(_) => {
+                ((x * 64.0) as i32).to_le_bytes().to_vec()
+            }
             PrimitiveType::I64 => ((x * 64.0) as i64).to_le_bytes().to_vec(),
             PrimitiveType::Bool => vec![u8::from(x > 0.0)],
         };
@@ -212,7 +214,7 @@ impl Port {
                 f64::from(f32::from_le_bytes(b.try_into().expect("scalar width")))
             }
             PrimitiveType::F64 => f64::from_le_bytes(b.try_into().expect("scalar width")),
-            PrimitiveType::I32 => {
+            PrimitiveType::I32 | PrimitiveType::Enum(_) => {
                 f64::from(i32::from_le_bytes(b.try_into().expect("scalar width")))
             }
             PrimitiveType::I64 => i64::from_le_bytes(b.try_into().expect("scalar width")) as f64,
@@ -224,7 +226,7 @@ impl Port {
 fn width(ty: PrimitiveType) -> usize {
     match ty {
         PrimitiveType::Bool => 1,
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
     }
 }

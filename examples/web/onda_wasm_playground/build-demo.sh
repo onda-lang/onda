@@ -77,9 +77,11 @@ cp -R "$compiler_package/dist" "$compiler_out/dist"
 cp "$binaryen_js" "$compiler_out/dist/backend/binaryen.js"
 cp "$abi_package/src/index.js" "$compiler_out/src/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$compiler_out/src/param-control.js"
+cp "$abi_package/src/enum-metadata.js" "$compiler_out/src/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$compiler_out/src/payload.js"
 cp "$abi_package/src/index.js" "$compiler_out/dist/backend/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$compiler_out/dist/backend/param-control.js"
+cp "$abi_package/src/enum-metadata.js" "$compiler_out/dist/backend/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$compiler_out/dist/backend/payload.js"
 sed \
   -e 's/from "#onda-frontend-loader"/from ".\/frontend-browser.js"/' \
@@ -97,6 +99,7 @@ cp "$webaudio_package/src/execution-output-ring.js" \
   "$webaudio_out/execution-output-ring.js"
 cp "$abi_package/src/index.js" "$webaudio_out/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$webaudio_out/param-control.js"
+cp "$abi_package/src/enum-metadata.js" "$webaudio_out/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$webaudio_out/payload.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$webaudio_package/src/index.js" > "$webaudio_out/index.js"

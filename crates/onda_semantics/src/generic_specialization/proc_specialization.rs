@@ -6,40 +6,9 @@ fn parse_explicit_proc_array_elem_type_args(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<(String, Vec<PrimitiveType>)> {
-    let (base, suffix) = name.split_once('<')?;
-    let args_raw = suffix.strip_suffix('>')?;
-    let mut resolved = Vec::<PrimitiveType>::new();
-    for raw in args_raw.split(',') {
-        let ty = match raw.trim() {
-            "f32" => PrimitiveType::F32,
-            "f64" => PrimitiveType::F64,
-            "i32" => PrimitiveType::I32,
-            "i64" => PrimitiveType::I64,
-            "bool" => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "{context}: 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported"
-                    ),
-                );
-                return None;
-            }
-            other => {
-                push_semantic(
-                    diag,
-                    errors,
-                    format!(
-                        "{context}: generic type argument '{}' is not allowed here; expected concrete primitive type",
-                        other
-                    ),
-                );
-                return None;
-            }
-        };
-        resolved.push(ty);
-    }
-    Some((base.to_owned(), resolved))
+    let (base, args) = parse_array_struct_elem_with_type_args(name)?;
+    let resolved = resolve_explicit_call_type_args(&args, context, diag, errors)?;
+    Some((base, resolved))
 }
 
 pub(crate) fn specialize_generic_proc_event_param_type(
@@ -51,6 +20,12 @@ pub(crate) fn specialize_generic_proc_event_param_type(
 ) -> EventParamType {
     let scope = TypeSpecializationScope::new(type_bindings, context);
     match ty {
+        EventParamType::Tuple(types) => EventParamType::Tuple(
+            types
+                .iter()
+                .map(|ty| specialize_scalar_type_ref(ty, scope, diag.clone(), errors))
+                .collect(),
+        ),
         EventParamType::GenericScalar { name } => {
             match specialize_generic_type_name(name, scope, diag, errors) {
                 Some(SpecializedTypeName::Primitive(ty)) => EventParamType::Scalar(ty),

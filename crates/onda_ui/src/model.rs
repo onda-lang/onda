@@ -329,6 +329,9 @@ impl RunUi {
                 if source_changed {
                     self.publish_view_state(true);
                     self.drop_target = None;
+                    if self.interaction.settings_open() {
+                        self.toggle_settings();
+                    }
                 }
                 if source_changed || reset {
                     self.knobs = true;
@@ -479,7 +482,7 @@ impl RunUi {
                 for (key, value) in incoming {
                     self.state[key] = value.clone();
                 }
-                self.light = self.state["themeMode"] == "light";
+                self.resolve_theme();
                 if self.state["paramLayout"] == "knobs" {
                     self.knobs = true;
                 }

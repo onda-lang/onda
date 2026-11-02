@@ -1,6 +1,6 @@
 ---
 title: Standard library
-description: Generated reference for Onda's built-in standard-library modules, functions, structs, and processors.
+description: Generated reference for Onda's built-in standard-library modules, enums, functions, structs, and processors.
 permalink: /docs/stdlib/
 section: reference
 eyebrow: Language reference
@@ -19,8 +19,8 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/math`](#stdmath) | `ampdb`, `clamp`, `cpsmidi`, `cpsoct`, `cubic_interp`, `dbamp`, `expexp`, `explin`, `fract`, `inverse_lerp`, `lerp`, `linexp`, `linlin`, `map`, `midicps`, `midiratio`, `octcps`, `ratiomidi`, `sign`, `smoothstep`, `wrap` |
 | [`std/complex`](#stdcomplex) | `Complex`, `polar` |
 | [`std/osc`](#stdosc) | `KSine`, `Phasor`, `Pulse`, `Saw`, `SawDown`, `Sine`, `Square`, `Triangle`, `poly_blep` |
-| [`std/filter`](#stdfilter) | `Biquad`, `BiquadCoefficients`, `DCBlock`, `OnePole`, `Resonator`, `Svf`, `design_highpass`, `design_lowpass`, `mode` |
-| [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `decay_coefficient`, `stage` |
+| [`std/filter`](#stdfilter) | `Biquad`, `BiquadCoefficients`, `DCBlock`, `OnePole`, `OnePoleMode`, `Resonator`, `Svf`, `SvfMode`, `design_highpass`, `design_lowpass` |
+| [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `Stage`, `decay_coefficient` |
 | [`std/reverb`](#stdreverb) | `Schroeder` |
 | [`std/pitch_shift`](#stdpitch_shift) | `BufferSize`, `DualWindow` |
 | [`std/noise`](#stdnoise) | `Brown`, `Pink`, `White` |
@@ -28,12 +28,12 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
 | [`std/gain`](#stdgain) | `Constant`, `Db`, `Smoothed`, `SmoothedDb` |
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between`, `ratio_from_semitones`, `semitones_from_ratio` |
-| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Ramp`, `Slew`, `shape`, `time_coefficient` |
+| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Ramp`, `RampShape`, `Slew`, `time_coefficient` |
 | [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
 | [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
-| [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `RealTransform`, `Rectangular`, `STFT` |
+| [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `RealTransform`, `Rectangular`, `STFT`, `StreamingWindowKind`, `WindowKind` |
 | [`std/convolution`](#stdconvolution) | `BlockConvolver`, `DirectTaps`, `FinalStageCapacity`, `HeadFFTSize`, `HeadStageCapacity`, `HeadStageEnd`, `HopSize`, `LargeFFTSize`, `LargeStageCapacity`, `LargeStageEnd`, `MidFFTSize`, `MidStageCapacity`, `MidStageEnd`, `TailStart`, `TimeDomainConvolver`, `ZeroLatencyConvolver`, `impulse_window_count`, `impulse_window_end`, `stage_window_count` |
 | [`std/lookup`](#stdlookup) | `read`, `readC`, `readCW`, `readL`, `readLW`, `write` |
 | [`std/random`](#stdrandom) | `RNG_INC`, `RNG_MASK`, `RNG_MULT`, `Rng`, `seed_state`, `step_state` |
@@ -271,19 +271,24 @@ def design_lowpass<T>(cutoff: T, q: T) -> BiquadCoefficients<T>:
 def design_highpass<T>(cutoff: T, q: T) -> BiquadCoefficients<T>:
 ```
 
-### Namespace `mode`
-
-#### Constants
+### Enum `OnePoleMode`
 
 ```onda
-const ONE_POLE_LOWPASS = 0
-const ONE_POLE_HIGHPASS = 1
-const SVF_LOWPASS = 0
-const SVF_HIGHPASS = 1
-const SVF_BANDPASS = 2
-const SVF_NOTCH = 3
-const SVF_PEAK = 4
-const SVF_ALLPASS = 5
+enum OnePoleMode:
+  LowPass
+  HighPass
+```
+
+### Enum `SvfMode`
+
+```onda
+enum SvfMode:
+  LowPass
+  HighPass
+  BandPass
+  Notch
+  Peak
+  AllPass
 ```
 
 ### Struct `BiquadCoefficients<T>`
@@ -316,7 +321,7 @@ proc OnePole<T>:
   outs<T> 1
   params:
     cutoff: T = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
-    mode: i32 = mode::ONE_POLE_LOWPASS {mode::ONE_POLE_LOWPASS, mode::ONE_POLE_HIGHPASS}
+    mode: OnePoleMode = OnePoleMode::LowPass
 ```
 
 ### Processor `DCBlock<T>`
@@ -347,7 +352,7 @@ proc Svf<T>:
   params:
     private cutoff: T = 1000.0 {0.0, T(SR * 0.48)}
     private q: T = 0.707107
-    mode: i32 = mode::SVF_LOWPASS {mode::SVF_LOWPASS, mode::SVF_ALLPASS}
+    mode: SvfMode = SvfMode::LowPass
   events:
     update_coeffs(cutoff_v: T, q_v: T):
 ```
@@ -365,6 +370,17 @@ Namespace: `std::env`.
 
 ```onda
 def decay_coefficient<T>(time_s: T):
+```
+
+### Enum `Stage`
+
+```onda
+enum Stage:
+  Idle
+  Attack
+  Decay
+  Sustain
+  Release
 ```
 
 ### Processor `DecayEnv<T>`
@@ -415,18 +431,6 @@ proc ASR<T>:
     start():
     release():
     reset():
-```
-
-### Namespace `stage`
-
-#### Constants
-
-```onda
-const IDLE = 0
-const ATTACK = 1
-const DECAY = 2
-const SUSTAIN = 3
-const RELEASE = 4
 ```
 
 ### Processor `ADSR<T>`
@@ -788,13 +792,12 @@ Namespace: `std::smoothing`.
 def time_coefficient<T>(time_s: T):
 ```
 
-### Namespace `shape`
-
-#### Constants
+### Enum `RampShape`
 
 ```onda
-const LINEAR = 0
-const S_CURVE = 1
+enum RampShape:
+  Linear
+  SCurve {label = "S-curve"}
 ```
 
 ### Processor `Lag<T>`
@@ -837,7 +840,7 @@ proc Ramp<T>:
   outs<T> 1
   params:
     time_s: T = 0.05 => update_time
-    shape: i32 = shape::LINEAR {shape::LINEAR, shape::S_CURVE}
+    shape: RampShape = RampShape::Linear
   events:
     reset(value: T = 0.0):
 ```
@@ -941,7 +944,7 @@ Namespace: `std::delay<Capacity = SR * 2>`.
 ```onda
 struct Line<T>:
   data: std::data<Capacity>::Data<T>
-  write_index: i32 {Capacity, wrap}
+  write_index = 0 {Capacity, wrap}
   def read(self, delay_samples: i32):
   def readL(self, delay_samples: T):
   def readC(self, delay_samples: T):
@@ -1112,6 +1115,24 @@ const Hamming: f64[N] = _hamming_window()
 const Blackman: f64[N] = _blackman_window()
 ```
 
+### Enum `WindowKind`
+
+```onda
+enum WindowKind:
+  Hann
+  Rectangular
+  Hamming
+  Blackman
+```
+
+### Enum `StreamingWindowKind`
+
+```onda
+enum StreamingWindowKind:
+  Hann
+  Rectangular
+```
+
 ### Struct `FFT<T>`
 
 ```onda
@@ -1173,7 +1194,7 @@ struct RealTransform<T>:
 ```onda
 struct STFT<T>:
   fft: FFT<T>
-  window_kind: f32 = _WindowHann
+  window_kind = WindowKind::Hann
   def size(self):
   def real_bin_count(self):
   def set_hann(self):
@@ -1205,11 +1226,11 @@ struct STFT<T>:
 struct RealFFT<T>:
   fft: FFT<T>
   input: T[N]
-  window_kind: f32 = _WindowHann
-  write: i32 {N, wrap}
-  filled: i32 = 0
-  since_hop: i32 = 0
-  ready: bool = false
+  window_kind = StreamingWindowKind::Hann
+  write = 0 {N, wrap}
+  filled = 0
+  since_hop = 0
+  ready = false
   def size(self):
   def real_bin_count(self):
   def hop_size(self):
@@ -1234,10 +1255,10 @@ struct RealIFFT<T>:
   fft: FFT<T>
   output: T[N]
   norm: T[N]
-  window_kind: f32 = _WindowHann
-  frame: i32 {N, wrap}
-  pending: i32 = 0
-  overlap_frames: i32 = 0
+  window_kind = StreamingWindowKind::Hann
+  frame = 0 {N, wrap}
+  pending = 0
+  overlap_frames = 0
   def size(self):
   def hop_size(self):
   def set_hann(self):

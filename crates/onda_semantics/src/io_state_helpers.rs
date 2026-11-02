@@ -481,7 +481,10 @@ fn register_scope_stmt_state(
                         declared_symbols,
                     );
                     let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
-                    if let Some(types) = declared_tuple_types.or(inferred_tuple_types.as_deref()) {
+                    if let Some(types) = declared_tuple_types
+                        .as_deref()
+                        .or(inferred_tuple_types.as_deref())
+                    {
                         register_tuple_state(state_scalars, state_tuples, name, types);
                         registered_tuples.insert(name.clone(), target_loc.as_ref().into());
                         return;

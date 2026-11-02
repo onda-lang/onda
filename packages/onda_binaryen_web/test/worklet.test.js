@@ -885,3 +885,22 @@ test("AudioWorklet reports generated execution failures and remains silent", () 
   assert.equal(calls, 1);
   assert.equal(processor.initialized, false);
 });
+
+test("AudioWorklet restores every element of categorical integer state arrays", () => {
+  const mir = f64PassthroughMir();
+  const arrayTy = mir.types.length;
+  mir.types.push({ kind: "array", data: { element: 1, len: 2 } });
+  mir.state = [{ name: "modes", ty: arrayTy, persistence: "snapshot", authored: true,
+    integer_range: { min: { type: "i32", value: 0 }, max: { type: "i32", value: 2 }, mode: "clamp" } }];
+  const artifact = compileMir(mir);
+  const processor = new WorkletProcessor({ processorOptions: { wasmBytes: artifact.wasm, metadata: artifact.metadata } });
+  const snapshot = new Uint8Array(artifact.metadata.runtime.snapshot_size_bytes);
+  const view = new DataView(snapshot.buffer);
+  view.setInt32(0, 99, true);
+  view.setInt32(4, -99, true);
+  processor.restoreSnapshot(snapshot);
+  const entry = artifact.metadata.metadata.states[0];
+  const state = processor.memoryView();
+  assert.equal(state.getInt32(processor.statePtr + entry.physical_state_byte_offset, true), 2);
+  assert.equal(state.getInt32(processor.statePtr + entry.physical_state_byte_offset + 4, true), 0);
+});

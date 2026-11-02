@@ -4,6 +4,10 @@ use super::*;
 /// local declarations before the ordinary generic-struct pass can inspect them.
 pub(super) fn rewrite_source_task_and_when_generic_structs(
     program: &mut Program,
+    options: AnalysisOptions,
+    const_arrays: &HashMap<String, TypedArrayInfo>,
+    const_scalars: &HashMap<String, PrimitiveType>,
+    const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let templates = program
@@ -41,7 +45,8 @@ pub(super) fn rewrite_source_task_and_when_generic_structs(
             _ => None,
         }),
     );
-    let top_seed = generic_inference_seed_for_top_level(&program.blocks, facts.clone());
+    let mut top_seed = generic_inference_seed_for_top_level(&program.blocks, facts.clone());
+    top_seed.bind_constants(const_scalars, const_arrays, const_scope, options);
     let mut generated = HashMap::new();
     let top_runtime_seed = program
         .blocks
@@ -128,7 +133,8 @@ pub(super) fn rewrite_source_task_and_when_generic_structs(
                 );
             }
             Block::Proc(proc) => {
-                let proc_seed = generic_inference_seed_for_processor(proc, facts.clone());
+                let mut proc_seed = generic_inference_seed_for_processor(proc, facts.clone());
+                proc_seed.bind_constants(const_scalars, const_arrays, const_scope, options);
                 let runtime_seed = rewrite_generic_struct_ctor_stmt_list(
                     &mut proc.init,
                     &templates,
@@ -185,7 +191,7 @@ pub(super) fn rewrite_source_task_and_when_generic_structs(
         &templates,
         &mut generated,
         errors,
-        &GenericInferenceLocals::with_facts(facts),
+        &top_seed,
     );
     let mut generated = generated.into_values().collect::<Vec<_>>();
     generated.sort_by(|left, right| left.name.cmp(&right.name));

@@ -1066,9 +1066,10 @@ fn populate_interface(
                 persistence: onda_mir::StatePersistence::ControlMirror,
                 authored: true,
                 pinned: false,
-                integer_range: None,
+                integer_range: crate::enum_support::storage_range(info.elem_ty),
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
+                enumeration: crate::enum_support::for_type(program, info.elem_ty),
                 name: name.clone(),
                 ty: type_id,
                 mirror,
@@ -1097,9 +1098,10 @@ fn populate_interface(
             persistence: onda_mir::StatePersistence::ControlMirror,
             authored: true,
             pinned: false,
-            integer_range: None,
+            integer_range: crate::enum_support::storage_range(ty),
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
+            enumeration: crate::enum_support::for_type(program, ty),
             name: name.clone(),
             ty: type_id,
             mirror,
@@ -1119,6 +1121,7 @@ fn populate_interface(
                 .map(|param| mir_constant(param.default))
                 .collect::<Vec<_>>();
             mir.interface.params.push(onda_mir::Param {
+                enumeration: crate::enum_support::for_type(program, info.elem_ty),
                 name: name.clone(),
                 ty: type_id,
                 default: onda_mir::ConstantValue::Aggregate(defaults),
@@ -1135,6 +1138,7 @@ fn populate_interface(
         let id = onda_mir::ParamId::new(mir.interface.params.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, param.ty);
         mir.interface.params.push(onda_mir::Param {
+            enumeration: crate::enum_support::for_type(program, param.ty),
             name: param.name.clone(),
             ty: type_id,
             default: mir_constant(param.default),
@@ -1544,7 +1548,10 @@ fn populate_state(
             persistence,
             authored: !program.compiler_owned_state_roots.contains(name),
             pinned: program.pinned_state_roots.contains(name),
-            integer_range: state_integer_ranges.get(name.as_str()).copied(),
+            integer_range: state_integer_ranges
+                .get(name.as_str())
+                .copied()
+                .or_else(|| crate::enum_support::storage_range(ty)),
         });
         if let Some(range) = mir.state[id.index()].integer_range {
             globals.integer_ranges.insert(name.clone(), range);
@@ -1616,7 +1623,7 @@ fn populate_state(
             persistence,
             authored: !program.compiler_owned_state_roots.contains(&array.name),
             pinned: program.pinned_state_roots.contains(&array.name),
-            integer_range: None,
+            integer_range: crate::enum_support::storage_range(array.elem_ty),
         });
         globals
             .state_arrays
@@ -2500,7 +2507,7 @@ fn typed_integer_range_invariant(
     range: &crate::TypedIntegerRange,
 ) -> Option<onda_mir::IntegerRangeInvariant> {
     let (min, max) = match range.ty {
-        PrimitiveType::I32 => (
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => (
             ScalarValue::I32(i32::try_from(range.min).ok()?),
             ScalarValue::I32(i32::try_from(range.max).ok()?),
         ),
@@ -2928,7 +2935,7 @@ fn zero_value(ty: PrimitiveType) -> Value {
     Value::Constant(match ty {
         PrimitiveType::F32 => ScalarValue::F32(0.0),
         PrimitiveType::F64 => ScalarValue::F64(0.0),
-        PrimitiveType::I32 => ScalarValue::I32(0),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarValue::I32(0),
         PrimitiveType::I64 => ScalarValue::I64(0),
         PrimitiveType::Bool => ScalarValue::Bool(false),
     })
@@ -3049,7 +3056,7 @@ fn zero_scalar(ty: PrimitiveType) -> ScalarValue {
     match ty {
         PrimitiveType::F32 => ScalarValue::F32(0.0),
         PrimitiveType::F64 => ScalarValue::F64(0.0),
-        PrimitiveType::I32 => ScalarValue::I32(0),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarValue::I32(0),
         PrimitiveType::I64 => ScalarValue::I64(0),
         PrimitiveType::Bool => ScalarValue::Bool(false),
     }
@@ -3059,7 +3066,7 @@ fn scalar_from_f64(value: f64, ty: PrimitiveType) -> ScalarValue {
     match ty {
         PrimitiveType::F32 => ScalarValue::F32(value as f32),
         PrimitiveType::F64 => ScalarValue::F64(value),
-        PrimitiveType::I32 => ScalarValue::I32(value as i32),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarValue::I32(value as i32),
         PrimitiveType::I64 => ScalarValue::I64(value as i64),
         PrimitiveType::Bool => ScalarValue::Bool(value != 0.0),
     }

@@ -641,9 +641,9 @@ test("fallback font failures retry without blocking transport", { timeout: 30000
   await eventually(() => page.evaluate("fontAttempts===1 && (fontWarnings.length===1 || !document.getElementById('status').hidden)"), "failed font request", 5000);
   assert.equal(await page.evaluate("document.getElementById('status').hidden"), true,
     "an optional font failure must not replace the working UI with an error overlay");
-  assert.equal(await page.evaluate("document.elementFromPoint(656,48).id"), "onda-ui");
+  assert.equal(await page.evaluate("document.elementFromPoint(624,48).id"), "onda-ui");
   for (const type of ["mousePressed", "mouseReleased"])
-    await page.call("Input.dispatchMouseEvent", {type, x:656, y:48, button:"left", clickCount:1});
+    await page.call("Input.dispatchMouseEvent", {type, x:624, y:48, button:"left", clickCount:1});
   await eventually(() => page.evaluate("commands.some(c=>c.type==='start')"), "transport after font failure", 5000);
 
   await eventually(() => page.evaluate("fontAttempts===2 && fontWarnings.length===2"), "HTTP font failure", 5000);
@@ -679,6 +679,40 @@ test("automatic backend selection uses WebGL for software adapters", async t => 
   await eventually(() => page.evaluate("commands.some(c => c.type === 'uiReady')"), "automatic WebGL fallback");
   assert.equal(await page.evaluate("document.querySelector('canvas').dataset.backend"), "webgl");
 });
+
+for (const startup of ["dark", "light"]) {
+  test(`theme detects ${startup} once, toggles binary choices, and permits page-owned appearance`, { timeout:30000 }, async t => {
+    const origin = await serveGpuUi(t);
+    const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+    const page = await chrome.page({width:720, height:840, source:`
+      window.commands=[];
+      window.acquireVsCodeApi=()=>({postMessage:m=>commands.push(m),getState:()=>null,setState(){}});
+    `});
+    const opposite = startup === "dark" ? "light" : "dark";
+    await page.call("Emulation.setEmulatedMedia", {features:[{name:"prefers-color-scheme",value:opposite}]});
+    await page.navigate(origin + "/index.html?backend=webgl");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "theme renderer");
+    await page.evaluate(`document.body.className='vscode-${startup}';
+      _onHostMessage({type:'state',state:{path:'',themeMode:null,supportsSourceSelection:true}});`);
+    await eventually(() => page.evaluate(`document.documentElement.dataset.theme==='${startup}'`), "detected startup theme");
+    await page.evaluate(`document.body.className='vscode-${opposite}';
+      _onHostMessage({type:'state',state:{themeMode:null}});
+      new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+    assert.equal(await page.evaluate("document.documentElement.dataset.theme"), startup, "later host changes do not replace the startup choice");
+    for (const expected of [opposite, startup]) {
+      for (const type of ["mousePressed", "mouseReleased"])
+        await page.call("Input.dispatchMouseEvent", {type,x:682,y:38,button:"left",clickCount:1});
+      await eventually(() => page.evaluate(`commands.findLast(c=>c.type==='setTheme')?.mode==='${expected}'`), "binary theme toggle");
+      assert.equal(await page.evaluate("document.documentElement.dataset.theme"), expected);
+      await page.evaluate("_onHostMessage({type:'state',state:{themeMode:null}})");
+      assert.equal(await page.evaluate("document.documentElement.dataset.theme"), expected);
+    }
+    for (const expected of [opposite, startup]) {
+      await page.evaluate(`_onHostMessage({type:'state',state:{themeMode:null,hostTheme:'${expected}',supportsThemeSelection:false}})`);
+      assert.equal(await page.evaluate("document.documentElement.dataset.theme"), expected, "embedded editors follow the page");
+    }
+  });
+}
 
 // Real canvas, Wasm, text, shader pipelines, and pointer/keyboard events. CDP
 // uses Node's WebSocket so this test needs only a Chromium executable.
@@ -979,6 +1013,10 @@ for (const backend of ["webgpu", "webgl"])
     for (const themeMode of ["light","dark"]) {
       await evaluate(`_onHostMessage({type:'state',state:{themeMode:'${themeMode}'}});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
       assert.equal(await evaluate(`document.getElementById('status').hidden`),true);
+    }
+    for (const [themeMode, hostTheme, expected] of [[null, "light", "dark"], ["light", "dark", "light"]]) {
+      await evaluate(`_onHostMessage({type:'state',state:{themeMode:${JSON.stringify(themeMode)},hostTheme:'${hostTheme}'}});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))`);
+      assert.equal(await evaluate("document.documentElement.dataset.theme"), expected);
     }
     // Real pointer input must scrub numbers and update hover without a held button.
     await section("params");

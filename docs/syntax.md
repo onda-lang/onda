@@ -722,6 +722,71 @@ still require ordinary runtime normalization unless the compiler can establish t
 other means. The physical representation and snapshot layout
 of a ranged binding remain the underlying integer type.
 
+### Enumerations
+
+A fieldless enum names a finite set of distinct values:
+
+```onda
+enum FilterMode:
+  LowPass
+  HighPass
+  BandPass {label = "Band-pass"}
+
+const DefaultMode: FilterMode = FilterMode::LowPass
+
+params:
+  mode = DefaultMode
+
+struct FilterSettings:
+  mode: FilterMode = FilterMode::HighPass
+
+init:
+  current: FilterSettings
+
+event configure(settings: FilterSettings):
+  current = settings
+
+sample:
+  if mode == FilterMode::BandPass:
+    out1 = 1.0
+  else:
+    out1 = 0.0
+```
+
+Enums may be declared at the top level or inside namespaces, including namespace templates.
+They follow ordinary declaration order, imports, aliases, and `use` lookup. Each enum requires
+at least one uniquely named member. Members have dense, zero-based ordinals in declaration order;
+explicit ordinals and associated data are not supported.
+
+Enum types are nominal: values from different enums cannot be assigned or compared to one another.
+They support assignment, `==`, `!=`, inferred or explicitly typed constants, function arguments and returns, state,
+fixed arrays, slices, struct fields, and event/delegate payloads. Numeric operators, ordering
+comparisons, and numeric builtins require an explicit ordinal conversion. `i32(mode)` extracts the
+ordinal. `FilterMode(index)` accepts an `i32` or `i64` and clamps it to the enum's valid range before
+narrowing to `i32`. `FilterMode()` and an omitted scalar initializer select the first member.
+A field default such as `window_kind = WindowKind::Hann` infers its enum type without an annotation.
+Scalar tuple annotations such as `(FilterMode, i32)` also preserve enum identity in locals,
+function arguments and returns, struct fields, and event/delegate payloads.
+
+Enum `config const` declarations use the same constant evaluation and `i32` host transport as
+integer configuration values. For example, `config const SelectedMode: FilterMode = DefaultMode`
+selects an enum at compile time. Fixed and inferred-length enum arrays are also supported.
+Host overrides supply integer ordinals, clamped to the member range; configuration inspection
+exports the enum name and ordered member names/labels alongside the selected integer values.
+
+A top-level enum parameter automatically gets an ordinal range, unit step, and dropdown control,
+including each element of a fixed parameter array. These controls derive their domain from the enum
+and cannot declare a separate range, scale, curve, unit, or step. Display labels separate identifier
+words automatically (`LowPass` becomes `Low Pass`); an optional member `label` overrides the display
+text. Labels are compile-time metadata and do not introduce runtime string values.
+
+External enum values occupy ordinary `i32` storage. Parameter reads, event
+preparation, and state snapshot restoration enforce `0 <= ordinal < member_count`, including nested
+message fields and array elements. Hosts receive the enum's qualified name and ordered member
+names/labels in interface or recursive payload metadata. Neither names nor labels enter the binary
+payload. Audio ports (`ins` and `outs`) do not accept enum types. A one-member enum has the fixed
+ordinal `0` and a disabled dropdown.
+
 ### Operators
 
 Supported operators:
@@ -1027,7 +1092,7 @@ Other hosts choose their own policy. Use `std/smoothing` or the smoothed gain pr
 
 `std::smoothing::Ramp<T>` provides sample-rate, fixed-duration transitions for `f32` and `f64`.
 Its `time_s` is the time to reach a new target, independent of the distance travelled. Choose
-`std::smoothing::shape::LINEAR` (the default) or `std::smoothing::shape::S_CURVE`, which uses cubic
+`std::smoothing::RampShape::Linear` (the default) or `std::smoothing::RampShape::SCurve`, which uses cubic
 smoothstep `p * p * (3 - 2 * p)` with zero slope at both endpoints:
 
 ```onda
@@ -1039,7 +1104,7 @@ params:
 init:
   amplitude_ramp = std::smoothing::Ramp(
     time_s = 0.02,
-    shape = std::smoothing::shape::S_CURVE
+    shape = std::smoothing::RampShape::SCurve
   )
   amplitude_ramp.reset(amplitude)
 
@@ -1058,7 +1123,7 @@ endpoints also update directly so later finite targets can recover.
 
 The initial output is zero. `reset(value)` sets the current value immediately and cancels any
 transition; its default value is zero. The example resets to the initial amplitude to avoid a
-startup fade. Use `shape::LINEAR` for a straight ramp or `Lag` for an exponential response.
+startup fade. Use `RampShape::Linear` for a straight ramp or `Lag` for an exponential response.
 
 `onda run` groups array elements under their logical name, with addresses such as `offsets[0]`.
 Each element can be edited, automated, and reset independently; **Reset** restores all declared
@@ -2642,8 +2707,8 @@ const SampleCount: i32 = Channels * BLOCK_SIZE
 ```
 
 - Every `config const` requires an explicit type. It supports exactly the same value types as a
-  typed ordinary const: `bool`, `i32`, `i64`, `f32`, or `f64`, and fixed or inferred-length
-  primitive const arrays.
+  typed ordinary const: `bool`, `i32`, `i64`, `f32`, `f64`, or an enum, and fixed or inferred-length
+  arrays of those types. Enum overrides use `i32` ordinals and clamp to the member range.
 - Configuration constants are allowed only at the executable root. The entry file and its
   `include` files share that root; declaration modules loaded with `import` cannot declare them.
 - A host override replaces only that declaration's initializer for one compilation. Derived
@@ -2745,8 +2810,10 @@ sample:
 
 Rules:
 
-- Generic def type args are restricted to `f32`, `f64`, `i32`, and `i64`.
+- Generic def type args accept `f32`, `f64`, `i32`, `i64`, and enum types.
 - `bool` is not allowed as a generic def type arg.
+- Enum arguments infer their exact nominal type. Distinct enums, or an enum and a numeric type,
+  cannot share one type argument; ordinal conversions remain explicit.
 - A type param not constrained by any call argument defaults to `f32`; for example, `zero<T>()`
   called as `zero()` specializes `T` to `f32`.
 - Scalar inference collects every concrete argument for a type parameter before adapting
@@ -2804,11 +2871,11 @@ init:
 
 Rules:
 
-- Generic type args are restricted to `f32`, `f64`, `i32`, and `i64`.
+- Generic type args accept `f32`, `f64`, `i32`, `i64`, and enum types.
 - `bool` is not allowed as a generic type arg.
 - Unresolved generic type params in declaration and type positions are errors.
 - For untyped constructor assignments only, unresolved constructor type params default to `f32`.
-- `T(expr)` rewrites to the bound primitive cast.
+- `T(expr)` rewrites to the bound scalar conversion, including clamped enum construction.
 - `T[]` is valid for method and `def` array params where a primitive slice is valid.
 - Typed generic locals such as `x: T = ...` are supported in executable scopes.
 
@@ -3051,6 +3118,7 @@ Rules:
 | `const`, `config const`, `const def` | Compile-time values, host-selected compile inputs, and helpers. |
 | `def` | Runtime helper functions. |
 | `struct` | Nominal data types. |
+| `enum` | Nominal scalar choices with dense `i32` ordinals. |
 | `proc`, `processor` | Reusable DSP processors. |
 | top-level `proc Main` | Optional non-generic wrapper for the entry file's top-level program. |
 | `namespace` | Qualified declaration groups and integer templates. |
@@ -3257,7 +3325,7 @@ remain writable by their owning proc according to the processor rules.
 - Top-level `kins` aliases `params`.
 - Control-flow keywords are reserved: `if`, `elif`, `else`, `for`, `in`, `while`, `loop`, `break`, `continue`, `return`, and `assert`.
 - `in` separates the loop variable from its range in `for i in A..B`; use names such as `input` for ports and variables.
-- `import`, `include`, `use`, `as`, `pub`, `private`, `pin`, and `config` are reserved for their declaration and modifier syntax.
+- `import`, `include`, `use`, `as`, `pub`, `private`, `pin`, `enum`, and `config` are reserved for their declaration and modifier syntax.
 - `true` and `false` are reserved boolean literals.
 - Identifiers beginning with `__onda_` are reserved for compiler-generated symbols.
 - Numbered `outN` names are audio outputs; use `koutN` for numbered control outputs.

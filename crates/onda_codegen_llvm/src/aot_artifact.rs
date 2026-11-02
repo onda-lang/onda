@@ -266,6 +266,7 @@ fn build_aot_metadata_from_descriptors(
 #[cfg(feature = "llvm-orc")]
 fn map_io_metadata(io: &crate::DeclaredIo) -> AotIoMetadata {
     AotIoMetadata {
+        enumeration: io.enumeration().cloned(),
         name: io.name().to_owned(),
         type_repr: io.type_repr(),
         scalar: primitive_type_name(io.elem_ty()).to_owned(),
@@ -427,7 +428,7 @@ fn primitive_type_name(ty: onda_frontend::PrimitiveType) -> &'static str {
     match ty {
         onda_frontend::PrimitiveType::F32 => "f32",
         onda_frontend::PrimitiveType::F64 => "f64",
-        onda_frontend::PrimitiveType::I32 => "i32",
+        onda_frontend::PrimitiveType::I32 | onda_frontend::PrimitiveType::Enum(_) => "i32",
         onda_frontend::PrimitiveType::I64 => "i64",
         onda_frontend::PrimitiveType::Bool => "bool",
     }

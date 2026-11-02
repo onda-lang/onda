@@ -209,6 +209,7 @@ fn normalization_preserves_input_and_handles_full_width_integer_domains() {
         params: vec![field(
             "count",
             PayloadType::Scalar {
+                enumeration: None,
                 encoding: ScalarEncoding::I64,
                 integer_range: Some(domain),
             },

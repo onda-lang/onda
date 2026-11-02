@@ -178,6 +178,7 @@ fn build_inputs(program: &Program, bases: &[usize]) -> Result<Vec<DeclaredIo>, M
             )));
         }
         let descriptor = build_io_descriptor(
+            None,
             program,
             &input.name,
             input.ty,
@@ -207,6 +208,7 @@ fn build_outputs(program: &Program, bases: &[usize]) -> Result<Vec<DeclaredIo>, 
             )));
         }
         let descriptor = build_io_descriptor(
+            None,
             program,
             &output.name,
             output.ty,
@@ -233,6 +235,7 @@ fn build_control_outputs(
     let mut byte_offset = 0usize;
     for (index, output) in program.interface.control_outputs.iter().enumerate() {
         let descriptor = build_io_descriptor(
+            output.enumeration.clone(),
             program,
             &output.name,
             output.ty,
@@ -263,6 +266,7 @@ fn build_params(program: &Program, offsets: &[usize]) -> Result<Vec<DeclaredIo>,
     let mut slot_offset = 0usize;
     for (index, param) in program.interface.params.iter().enumerate() {
         let descriptor = build_io_descriptor(
+            param.enumeration.clone(),
             program,
             &param.name,
             param.ty,
@@ -281,6 +285,7 @@ fn build_params(program: &Program, offsets: &[usize]) -> Result<Vec<DeclaredIo>,
 
 #[allow(clippy::too_many_arguments)]
 fn build_io_descriptor(
+    enumeration: Option<onda_processor_abi::EnumMetadata>,
     program: &Program,
     name: &str,
     ty: onda_mir::TypeId,
@@ -304,6 +309,7 @@ fn build_io_descriptor(
         .transpose()?;
 
     Ok(DeclaredIo {
+        enumeration,
         name: name.to_owned(),
         elem_ty: shape.element,
         array_len: shape.len,
@@ -850,12 +856,14 @@ mod tests {
                     },
                 ],
                 control_outputs: vec![onda_mir::ControlOutput {
+                    enumeration: None,
                     name: "meter".to_owned(),
                     ty: onda_mir::TypeId::new(0),
                     mirror: onda_mir::StateId::new(1),
                 }],
                 params: vec![
                     Param {
+                        enumeration: None,
                         name: "mode".to_owned(),
                         ty: onda_mir::TypeId::new(2),
                         default: ConstantValue::Scalar(ScalarValue::I32(2)),
@@ -870,6 +878,7 @@ mod tests {
                         },
                     },
                     Param {
+                        enumeration: None,
                         name: "mix".to_owned(),
                         ty: onda_mir::TypeId::new(6),
                         default: ConstantValue::Aggregate(vec![

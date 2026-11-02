@@ -323,7 +323,7 @@ pub(crate) fn infer_const_expr_type(
             };
             let ty = match node {
                 Expr::Number { .. } => PrimitiveType::F64,
-                Expr::Int { .. } => PrimitiveType::I64,
+                Expr::Int { const_ty, .. } => const_ty.unwrap_or(PrimitiveType::I64),
                 Expr::Bool { .. } => PrimitiveType::Bool,
                 Expr::Var { name, .. } => builtin_constant_type(name).ok_or_else(|| {
                     errors.push(Diagnostic::semantic_span(
@@ -728,7 +728,7 @@ pub(crate) fn eval_array_size_expr(
 
 pub(crate) const fn primitive_storage_bytes(ty: PrimitiveType) -> usize {
     match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }

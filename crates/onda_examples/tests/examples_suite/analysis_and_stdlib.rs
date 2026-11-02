@@ -36,6 +36,7 @@ fn representative_checked_in_onda_examples_analyze_and_lower() {
         "buffers/sample_player.onda",
         "effects/schroeder_reverb.onda",
         "feedback/cybernetic_feedback_graph.onda",
+        "feedback/benjolin.onda",
         "instruments/drum_machine.onda",
         "plugins/effects/tempo_ping_pong.onda",
         "plugins/instruments/fm_bells.onda",

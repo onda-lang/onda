@@ -476,10 +476,10 @@ pub(crate) fn infer_def_param_kinds(
             if let Some(FnParamType::Tuple(elem_tys)) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
             {
-                typed.push(TypedFnParam::Tuple {
-                    elem_tys: elem_tys.clone(),
-                });
-                continue;
+                if let Some(elem_tys) = onda_frontend::ScalarTypeRef::primitives(elem_tys) {
+                    typed.push(TypedFnParam::Tuple { elem_tys });
+                    continue;
+                }
             }
             if let Some(FnParamType::Primitive(ty)) =
                 def.params.get(idx).and_then(|p| p.ty.as_ref())
@@ -1346,13 +1346,7 @@ fn collect_declared_buffer_param_types(
 }
 
 fn format_buffer_type_name(elem_ty: PrimitiveType, channels: &TypedBufferChannels) -> String {
-    let elem = match elem_ty {
-        PrimitiveType::F32 => "f32",
-        PrimitiveType::F64 => "f64",
-        PrimitiveType::I32 => "i32",
-        PrimitiveType::I64 => "i64",
-        PrimitiveType::Bool => "bool",
-    };
+    let elem = elem_ty.name();
     match channels {
         TypedBufferChannels::Mono => format!("buffer<{elem}>"),
         TypedBufferChannels::Static(ch) => format!("buffer<{elem}[{ch}]>"),

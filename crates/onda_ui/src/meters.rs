@@ -60,10 +60,34 @@ impl Meters {
 
 fn level(peak: f32) -> f32 {
     if peak > 0.0 {
-        ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+        db_position(20.0 * peak.log10())
     } else {
         0.0
     }
+}
+
+// IEC-style digital peak scale: quiet signals occupy less space, leaving half
+// the display for -20..0 dBFS. Ticks, colors and peak holds use the same mapping.
+fn db_position(db: f32) -> f32 {
+    const SCALE: [(f32, f32); 7] = [
+        (-70.0, 0.0),
+        (-60.0, 0.025),
+        (-50.0, 0.075),
+        (-40.0, 0.15),
+        (-30.0, 0.3),
+        (-20.0, 0.5),
+        (0.0, 1.0),
+    ];
+    if db <= SCALE[0].0 || db.is_nan() {
+        return 0.0;
+    }
+    for points in SCALE.windows(2) {
+        let [(lo, start), (hi, end)] = [points[0], points[1]];
+        if db <= hi {
+            return start + (db - lo) / (hi - lo) * (end - start);
+        }
+    }
+    1.0
 }
 
 pub(crate) fn horizontal(
@@ -106,14 +130,9 @@ pub(crate) fn horizontal(
             },
             1.0,
         );
-        for db in [-48, -36, -24, -12, -6] {
+        for db in [-60.0, -40.0, -20.0, -12.0, -6.0] {
             s.shape(
-                [
-                    left + (db + 60) as f32 / 60.0 * length,
-                    row,
-                    1.0,
-                    row_height,
-                ],
+                [left + db_position(db) * length, row, 1.0, row_height],
                 p.border,
                 0.0,
             );
@@ -162,9 +181,9 @@ pub(crate) fn shapes(ui: &RunUi, out: &mut Vec<Shape>) {
             })
         };
         for (start, end, color) in [
-            (0.0, 0.8, p.meter_active),
-            (0.8, 0.95, p.meter_warning),
-            (0.95, 1.0, p.danger),
+            (0.0, db_position(-12.0), p.meter_active),
+            (db_position(-12.0), db_position(-3.0), p.meter_warning),
+            (db_position(-3.0), 1.0, p.danger),
         ] {
             if level > start {
                 push(start, level.min(end), color);
@@ -184,6 +203,25 @@ pub(crate) fn shapes(ui: &RunUi, out: &mut Vec<Shape>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digital_peak_taper_expands_the_upper_range_and_preserves_full_scale() {
+        for (db, position) in [
+            (-70.0, 0.0),
+            (-40.0, 0.15),
+            (-20.0, 0.5),
+            (-12.0, 0.7),
+            (-6.0, 0.85),
+            (0.0, 1.0),
+        ] {
+            assert!((level(10.0_f32.powf(db / 20.0)) - position).abs() < 1.0e-6);
+        }
+        assert_eq!(level(0.0), 0.0);
+        assert_eq!(level(2.0), 1.0);
+        for db in -100..6 {
+            assert!(db_position(db as f32) <= db_position(db as f32 + 0.5));
+        }
+    }
 
     #[test]
     fn peaks_hold_transients_and_clipping_then_expire_on_the_shared_stream() {

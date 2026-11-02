@@ -125,29 +125,39 @@ fn score_contextual_array_literal(
 fn score_tuple_match(
     arg_expr: &Expr,
     actual: &[PrimitiveType],
-    expected: &[PrimitiveType],
+    expected: &[ScalarTypeRef],
+    type_params: &[String],
     env: &CallTypeEnv,
-) -> Option<i32> {
+) -> Option<OverloadParamMatch> {
     if actual.len() != expected.len() {
         return None;
-    }
-    if actual == expected {
-        return Some(0);
     }
     let literal_values = match arg_expr {
         Expr::Tuple { values, .. } if values.len() == expected.len() => Some(values.as_slice()),
         _ => None,
     };
-    actual
-        .iter()
-        .zip(expected)
-        .enumerate()
-        .try_fold(0, |score, (index, (actual, expected))| {
-            let assignable = literal_values.is_some_and(|values| {
-                can_assign_expr_to_type(&values[index], *actual, *expected, &env.const_symbols)
-            }) || can_implicitly_assign(*actual, *expected);
-            assignable.then_some(score.max(i32::from(actual != expected)))
-        })
+    let mut result = plain_match(0);
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        match expected {
+            ScalarTypeRef::Named(name) if type_params.contains(name) => {
+                result
+                    .generic_constraints
+                    .push((name.clone(), *actual, true));
+                result.score = result.score.max(2);
+            }
+            ScalarTypeRef::Primitive(expected) => {
+                let assignable = literal_values.is_some_and(|values| {
+                    can_assign_expr_to_type(&values[index], *actual, *expected, &env.const_symbols)
+                }) || can_implicitly_assign(*actual, *expected);
+                if !assignable {
+                    return None;
+                }
+                result.score = result.score.max(i32::from(actual != expected));
+            }
+            ScalarTypeRef::Named(_) => return None,
+        }
+    }
+    Some(result)
 }
 
 #[derive(Debug)]
@@ -370,7 +380,7 @@ fn score_overload_param_match(
         },
         Some(FnParamType::Tuple(expected)) => match arg_shape {
             OverloadArgShape::Tuple(actual) => {
-                score_tuple_match(arg_expr, actual, expected, env).map(plain_match)
+                score_tuple_match(arg_expr, actual, expected, def_type_params, env)
             }
             OverloadArgShape::Unknown => Some(plain_match(2)),
             _ => None,
@@ -426,7 +436,7 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
         Some(FnParamType::Tuple(elems)) => {
             let inner = elems
                 .iter()
-                .map(|p| format!("{p:?}").to_lowercase())
+                .map(|p| p.name().into_owned())
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{name}: ({inner})")
@@ -442,7 +452,7 @@ fn format_fn_param_for_overload(name: &str, ty: Option<&FnParamType>, has_defaul
 
 fn format_buffer_type(buffer: &BufferType) -> String {
     let elem = match &buffer.elem {
-        BufferElemType::Primitive(elem) => elem.name().to_owned(),
+        BufferElemType::Primitive(elem) => elem.name().into_owned(),
         BufferElemType::Generic(name) => name.clone(),
     };
     let channels = match &buffer.channels {

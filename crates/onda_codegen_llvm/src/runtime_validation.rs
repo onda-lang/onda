@@ -475,10 +475,11 @@ impl JitProgram {
                 segment.element_size,
             );
             if let Some(range) = segment.integer_range {
-                normalize_integer_snapshot_value(
-                    &mut state_bytes[segment.state_offset..state_end],
-                    range,
-                );
+                for element in state_bytes[segment.state_offset..state_end]
+                    .chunks_exact_mut(segment.element_size)
+                {
+                    normalize_integer_snapshot_value(element, range);
+                }
             }
         }
         Ok(())

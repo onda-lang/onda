@@ -18,14 +18,18 @@ use crate::{AnalysisOptions, TypedConstValue};
 
 #[derive(Clone, Copy)]
 enum Value<'a> {
-    Scalar(ScalarValue),
+    Scalar(ScalarValue, PrimitiveType),
     Literal(&'a Expr, PrimitiveType),
 }
 
 impl Value<'_> {
+    fn scalar(value: ScalarValue) -> Self {
+        Self::Scalar(value, source_scalar_type(value.ty()))
+    }
+
     fn ty(self) -> PrimitiveType {
         match self {
-            Self::Scalar(scalar) => source_scalar_type(scalar.ty()),
+            Self::Scalar(_, ty) => ty,
             Self::Literal(_, ty) => ty,
         }
     }
@@ -41,7 +45,7 @@ impl Value<'_> {
         context: &str,
     ) -> Result<ScalarValue, Diagnostic> {
         let value = match self {
-            Self::Scalar(scalar) => scalar,
+            Self::Scalar(scalar, _) => scalar,
             Self::Literal(expr, _) => evaluate(expr, target, options, context)?,
         };
         Ok(target.map_or(value, |ty| cast(value, ty).expect("numeric operand cast")))
@@ -51,6 +55,14 @@ impl Value<'_> {
 // MIR represents casts involving bool with comparisons/selects. Source const
 // evaluation uses their scalar equivalents while sharing all numeric casts.
 fn cast(value: ScalarValue, to: PrimitiveType) -> Option<ScalarValue> {
+    if let PrimitiveType::Enum(ty) = to {
+        let ScalarValue::I64(value) = constant_eval::cast(value, onda_mir::ScalarType::I64)? else {
+            return None;
+        };
+        return Some(ScalarValue::I32(
+            value.clamp(0, i64::from(ty.count) - 1) as i32
+        ));
+    }
     if to == PrimitiveType::Bool {
         return Some(ScalarValue::Bool(match value {
             ScalarValue::F32(value) => value != 0.0,
@@ -84,7 +96,22 @@ pub(crate) fn eval_const_scalar(
     debug_assert!(numeric_context.is_none_or(|ty| ty != PrimitiveType::Bool));
     let result = evaluate(expr, numeric_context, options, context);
     match result {
-        Ok(value) => Some(typed_scalar(value)),
+        Ok(value) => {
+            let ty = match expr {
+                Expr::Int {
+                    const_ty: Some(ty), ..
+                }
+                | Expr::Cast { to: ty, .. } => Some(*ty),
+                _ => numeric_context,
+            };
+            Some(match ty {
+                Some(PrimitiveType::Enum(ty)) => TypedConstValue::Enum {
+                    ty,
+                    ordinal: value.as_f64() as i32,
+                },
+                _ => typed_scalar(value),
+            })
+        }
         Err(error) => {
             errors.push(error);
             None
@@ -201,7 +228,17 @@ fn evaluate(
                 } else {
                     scalar
                 };
-                values.push(Value::Scalar(scalar));
+                if let Expr::Int {
+                    const_ty: Some(ty), ..
+                } = node
+                {
+                    values.push(Value::Scalar(
+                        cast(scalar, *ty).expect("typed literal"),
+                        *ty,
+                    ));
+                } else {
+                    values.push(Value::scalar(scalar));
+                }
             }
             Frame::Logical(op, rhs) => {
                 let lhs = values.pop().expect("left logical operand");
@@ -257,22 +294,35 @@ fn evaluate(
                             node.loc(),
                         )
                     })?;
-                values.push(Value::Scalar(scalar));
+                values.push(Value::scalar(scalar));
             }
             Frame::Finish(node) => {
                 let diagnostic = |message| Diagnostic::semantic_span(message, node.loc());
                 let rhs = values.pop().expect("constant operand");
                 let value = match node {
-                    Expr::Cast { to, .. } => Value::Scalar(
-                        cast(rhs.resolve(None, options, context)?, *to).expect("scalar cast"),
-                    ),
+                    Expr::Cast { to, .. } => {
+                        if !crate::enum_support::valid_cast(rhs.ty(), *to) {
+                            return Err(diagnostic(format!(
+                                "{context}: enum conversion requires an integer ordinal; use i32(value) to extract it"
+                            )));
+                        }
+                        Value::Scalar(
+                            cast(rhs.resolve(None, options, context)?, *to).expect("scalar cast"),
+                            *to,
+                        )
+                    }
                     Expr::UnaryNot { .. } | Expr::UnaryBitNot { .. } => {
+                        if matches!(rhs.ty(), PrimitiveType::Enum(_)) {
+                            return Err(diagnostic(format!(
+                                "{context} has an invalid enum operand"
+                            )));
+                        }
                         let op = if matches!(node, Expr::UnaryNot { .. }) {
                             UnaryOp::LogicalNot
                         } else {
                             UnaryOp::BitNot
                         };
-                        Value::Scalar(
+                        Value::scalar(
                             constant_eval::unary(op, rhs.resolve(None, options, context)?)
                                 .ok_or_else(|| {
                                     diagnostic(format!("{context} has an invalid unary operand"))
@@ -281,6 +331,13 @@ fn evaluate(
                     }
                     Expr::Binary { .. } | Expr::Compare { .. } => {
                         let lhs = values.pop().expect("left constant operand");
+                        if matches!(lhs.ty(), PrimitiveType::Enum(_))
+                            && matches!(node, Expr::Compare { op, .. } if !matches!(op, onda_frontend::CmpOp::Eq | onda_frontend::CmpOp::Ne))
+                        {
+                            return Err(diagnostic(format!(
+                                "{context}: enums only support == and != comparisons"
+                            )));
+                        }
                         let (lhs_ty, rhs_ty) = adapt_binary_types_from_purity(
                             lhs.ty(),
                             rhs.ty(),
@@ -288,10 +345,10 @@ fn evaluate(
                             rhs.pure(),
                         );
                         let ty = if matches!(node, Expr::Compare { .. })
-                            && lhs_ty == PrimitiveType::Bool
-                            && rhs_ty == PrimitiveType::Bool
+                            && lhs_ty == rhs_ty
+                            && matches!(lhs_ty, PrimitiveType::Bool | PrimitiveType::Enum(_))
                         {
-                            PrimitiveType::Bool
+                            lhs_ty
                         } else if let Some(ty) = numeric_context.filter(|ty| {
                             is_float_type(*ty) && literal_type(node).is_some_and(is_float_type)
                         }) {
@@ -346,7 +403,7 @@ fn evaluate(
                             ),
                             _ => unreachable!(),
                         };
-                        Value::Scalar(scalar)
+                        Value::scalar(scalar)
                     }
                     _ => unreachable!(),
                 };

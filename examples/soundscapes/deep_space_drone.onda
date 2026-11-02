@@ -40,8 +40,8 @@ params:
 init:
   voices: DroneVoice[VoiceCount] = DroneVoice()
   noise = std::noise::Pink(amp = 1.0)
-  noise_bp_l = std::filter::Svf(cutoff = 720.0, q = 2.4, mode = std::filter::mode::SVF_BANDPASS)
-  noise_bp_r = std::filter::Svf(cutoff = 970.0, q = 2.8, mode = std::filter::mode::SVF_BANDPASS)
+  noise_bp_l = std::filter::Svf(cutoff = 720.0, q = 2.4, mode = std::filter::SvfMode::BandPass)
+  noise_bp_r = std::filter::Svf(cutoff = 970.0, q = 2.8, mode = std::filter::SvfMode::BandPass)
   drift_l = std::osc::Sine(freq = 0.009)
   drift_r = std::osc::Sine(freq = 0.013)
   delay_l = std::delay::Delay(delay_s = 0.73, feedback = 0.62, mix = 1.0)

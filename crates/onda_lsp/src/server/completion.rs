@@ -1,3 +1,4 @@
+mod declarations;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -478,6 +479,8 @@ struct SymbolInfo {
 
 #[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum SymbolKind {
+    Enum,
+    EnumMember,
     Const,
     Def,
     Proc,
@@ -534,9 +537,9 @@ fn qualified_declaration_sort_text(kind: SymbolKind, label: &str) -> String {
     let prefix = match kind {
         SymbolKind::Namespace => "00_00",
         SymbolKind::Proc => "00_01",
-        SymbolKind::Struct => "00_02",
+        SymbolKind::Enum | SymbolKind::Struct => "00_02",
         SymbolKind::Def => "00_10",
-        SymbolKind::Const => "00_11",
+        SymbolKind::Const | SymbolKind::EnumMember => "00_11",
     };
     format!("{prefix}_{label}")
 }
@@ -544,10 +547,10 @@ fn qualified_declaration_sort_text(kind: SymbolKind, label: &str) -> String {
 fn declaration_sort_group(kind: SymbolKind) -> CompletionSortGroup {
     match kind {
         SymbolKind::Namespace => CompletionSortGroup::Namespace,
-        SymbolKind::Struct => CompletionSortGroup::Struct,
+        SymbolKind::Enum | SymbolKind::Struct => CompletionSortGroup::Struct,
         SymbolKind::Proc => CompletionSortGroup::Proc,
         SymbolKind::Def => CompletionSortGroup::Def,
-        SymbolKind::Const => CompletionSortGroup::Const,
+        SymbolKind::Const | SymbolKind::EnumMember => CompletionSortGroup::Const,
     }
 }
 
@@ -787,197 +790,6 @@ impl CompletionIndex {
                 )),
             });
         }
-    }
-
-    fn collect_block(&mut self, block: &Block, namespace: &str) {
-        match block {
-            Block::Const(decl) => self.collect_const(namespace, decl),
-            Block::Def(def) => self.collect_def(namespace, def),
-            Block::Proc(proc_def) => self.collect_proc(namespace, proc_def),
-            Block::Struct(struct_def) => self.collect_struct(namespace, struct_def),
-            Block::Namespace(ns) => self.collect_namespace(namespace, ns),
-            Block::NamespaceAlias(alias) => self.collect_namespace_alias(namespace, alias),
-            Block::Use(use_decl) => self.collect_use(namespace, use_decl),
-            _ => {}
-        }
-    }
-
-    fn collect_const(&mut self, namespace: &str, decl: &ConstDecl) {
-        let full_name = namespace_join(namespace, &decl.name);
-        self.push_symbol(SymbolInfo {
-            label: decl.name.clone(),
-            full_name,
-            namespace: namespace.to_owned(),
-            kind: SymbolKind::Const,
-            type_params: Vec::new(),
-            label_detail: None,
-            detail: Some("const".to_owned()),
-        });
-    }
-
-    fn collect_def(&mut self, namespace: &str, def: &FunctionDef) {
-        let full_name = namespace_join(namespace, &def.name);
-        let info = FunctionInfo {
-            name: def.name.clone(),
-            type_params: def.type_params.clone(),
-            params: def.params.iter().map(|p| p.name.clone()).collect(),
-            signature: function_signature(def),
-            is_const: def.is_const,
-        };
-        self.functions.insert(full_name.clone(), info.clone());
-        self.push_symbol(SymbolInfo {
-            label: def.name.clone(),
-            full_name,
-            namespace: namespace.to_owned(),
-            kind: SymbolKind::Def,
-            type_params: info.type_params.clone(),
-            label_detail: Some(callable_label_detail(&info.type_params, &info.signature)),
-            detail: Some(format_function_detail("def", &info)),
-        });
-    }
-
-    fn collect_proc(&mut self, namespace: &str, proc_def: &ProcessorDef) {
-        let full_name = namespace_join(namespace, &proc_def.name);
-        let info = ProcInfo {
-            name: full_name.clone(),
-            type_params: proc_def.type_params.clone(),
-            ins: proc_port_names(&proc_def.ins, proc_def.ins_deferred_count.as_ref(), "in"),
-            outs: proc_port_names(
-                &proc_def.outs,
-                proc_def.outs_deferred_count.as_ref(),
-                proc_output_prefix(proc_def),
-            ),
-            params: proc_def
-                .params
-                .iter()
-                .map(|decl| ProcParamInfo {
-                    name: decl.name.clone(),
-                    private: decl.private,
-                    signature: format_proc_param_signature(decl),
-                })
-                .chain(proc_deferred_param_infos(
-                    &proc_def.params,
-                    proc_def.params_deferred_count.as_ref(),
-                ))
-                .collect(),
-            events: proc_def.events.iter().map(event_info_from_def).collect(),
-            delegates: proc_def
-                .delegates
-                .iter()
-                .map(delegate_info_from_def)
-                .collect(),
-            buffers: proc_def
-                .buffers
-                .iter()
-                .map(|decl| ProcBufferInfo {
-                    name: decl.name.clone(),
-                    signature: format_buffer_arg_signature(decl),
-                })
-                .chain(proc_deferred_buffer_infos(
-                    &proc_def.buffers,
-                    proc_def.buffers_deferred_count.as_ref(),
-                ))
-                .collect(),
-        };
-        self.procs.insert(full_name.clone(), info.clone());
-        self.push_symbol(SymbolInfo {
-            label: proc_def.name.clone(),
-            full_name,
-            namespace: namespace.to_owned(),
-            kind: SymbolKind::Proc,
-            type_params: info.type_params.clone(),
-            label_detail: Some(callable_label_detail(
-                &info.type_params,
-                &proc_signature(&info),
-            )),
-            detail: Some(format_proc_detail(&info)),
-        });
-    }
-
-    fn collect_struct(&mut self, namespace: &str, struct_def: &StructDef) {
-        let full_name = namespace_join(namespace, &struct_def.name);
-        let info = StructInfo {
-            name: full_name.clone(),
-            type_params: struct_def.type_params.clone(),
-            fields: struct_def
-                .fields
-                .iter()
-                .map(|field| field.name.clone())
-                .collect(),
-            methods: struct_def
-                .methods
-                .iter()
-                .map(function_info_from_def)
-                .collect(),
-        };
-        self.structs.insert(full_name.clone(), info.clone());
-        self.push_symbol(SymbolInfo {
-            label: struct_def.name.clone(),
-            full_name,
-            namespace: namespace.to_owned(),
-            kind: SymbolKind::Struct,
-            type_params: info.type_params.clone(),
-            label_detail: generic_label_detail(&info.type_params),
-            detail: Some(format_struct_detail(&info)),
-        });
-    }
-
-    fn collect_namespace(&mut self, parent: &str, ns: &NamespaceDecl) {
-        let full_name = namespace_join(parent, &ns.name);
-        self.push_namespace(
-            parent,
-            &ns.name,
-            &format_namespace_detail(&full_name, &ns.params),
-            namespace_type_param_names(&ns.params),
-        );
-        for item in &ns.items {
-            match item {
-                NamespaceItem::Const(decl) => self.collect_const(&full_name, decl),
-                NamespaceItem::Def(def) => self.collect_def(&full_name, def),
-                NamespaceItem::Proc(proc_def) => self.collect_proc(&full_name, proc_def),
-                NamespaceItem::Struct(struct_def) => self.collect_struct(&full_name, struct_def),
-                NamespaceItem::Namespace(child) => self.collect_namespace(&full_name, child),
-                NamespaceItem::Alias(alias) => self.collect_namespace_alias(&full_name, alias),
-                NamespaceItem::Use(use_decl) => self.collect_use(&full_name, use_decl),
-                NamespaceItem::Assert(_) => {}
-            }
-        }
-    }
-
-    fn collect_namespace_alias(&mut self, namespace: &str, alias: &NamespaceAliasDecl) {
-        let full_name = namespace_join(namespace, &alias.name);
-        let target = namespace_segments_key(&alias.target);
-        self.namespace_aliases.insert(
-            full_name.clone(),
-            NamespaceAliasInfo {
-                namespace: namespace.to_owned(),
-                target,
-            },
-        );
-        self.push_namespace(namespace, &alias.name, "namespace alias", Vec::new());
-    }
-
-    fn collect_use(&mut self, namespace: &str, use_decl: &UseDecl) {
-        self.uses.push(use_info_from_decl(namespace, use_decl));
-    }
-
-    fn push_namespace(&mut self, parent: &str, name: &str, detail: &str, type_params: Vec<String>) {
-        let full_name = namespace_join(parent, name);
-        let leaf = name.rsplit("::").next().unwrap_or(name).to_owned();
-        let namespace_parent = namespace_parent_of(&full_name);
-        self.namespaces_by_parent
-            .entry(namespace_parent.clone())
-            .or_default()
-            .insert(leaf.clone());
-        self.push_symbol(SymbolInfo {
-            label: leaf,
-            full_name,
-            namespace: namespace_parent,
-            kind: SymbolKind::Namespace,
-            label_detail: generic_label_detail(&type_params),
-            type_params,
-            detail: Some(detail.to_owned()),
-        });
     }
 
     fn push_symbol(&mut self, symbol: SymbolInfo) {
@@ -1518,6 +1330,9 @@ impl CompletionIndex {
         }
         for item in &ns.items {
             match item {
+                NamespaceItem::Enum(def) => items.push(
+                    CompletionItem::new(def.name.clone(), 13).detail(format!("enum {}", def.name)),
+                ),
                 NamespaceItem::Const(decl) => items.push(const_item(&decl.name)),
                 NamespaceItem::Def(def) => {
                     let info = function_info_from_def(def);
@@ -1595,7 +1410,8 @@ impl CompletionIndex {
                 NamespaceItem::Namespace(child) => {
                     self.collect_namespace_scope(Some(ns_idx), &full_name, child);
                 }
-                NamespaceItem::Const(_)
+                NamespaceItem::Enum(_)
+                | NamespaceItem::Const(_)
                 | NamespaceItem::Alias(_)
                 | NamespaceItem::Use(_)
                 | NamespaceItem::Assert(_) => {}
@@ -2648,7 +2464,7 @@ impl CompletionIndex {
         let use_info = use_info_from_decl(namespace, use_decl);
         let target = self.resolve_use_target(&use_info);
         if let Some(alias) = &use_decl.alias {
-            if self.namespace_exists(&target) {
+            if self.use_target_is_namespace(&target) {
                 return vec![
                     CompletionItem::new(alias.clone(), COMPLETION_ITEM_KIND_MODULE)
                         .detail(format!("namespace alias for {target}"))
@@ -2670,7 +2486,7 @@ impl CompletionIndex {
             return Vec::new();
         }
 
-        if self.namespace_exists(&target) {
+        if self.use_target_is_namespace(&target) {
             let mut items = self
                 .members_by_namespace
                 .get(&target)
@@ -2700,7 +2516,7 @@ impl CompletionIndex {
         for use_info in visible_uses_in_namespace(self, current_namespace) {
             let target = self.resolve_use_target(use_info);
             if let Some(alias) = &use_info.alias {
-                if self.namespace_exists(&target) {
+                if self.use_target_is_namespace(&target) {
                     out.push(
                         CompletionItem::new(alias.clone(), COMPLETION_ITEM_KIND_MODULE)
                             .detail(format!("namespace alias for {target}"))
@@ -2720,7 +2536,7 @@ impl CompletionIndex {
                 }
                 continue;
             }
-            if self.namespace_exists(&target) {
+            if self.use_target_is_namespace(&target) {
                 if let Some(members) = self.members_by_namespace.get(&target) {
                     for symbol in members {
                         if symbol.kind != SymbolKind::Namespace {
@@ -2742,6 +2558,13 @@ impl CompletionIndex {
             }
         }
         out
+    }
+
+    fn use_target_is_namespace(&self, target: &str) -> bool {
+        self.namespace_exists(target)
+            && self
+                .symbol_by_full_name(target)
+                .is_none_or(|symbol| symbol.kind == SymbolKind::Namespace)
     }
 
     fn use_visible(&self, use_info: &UseInfo) -> bool {
@@ -3708,6 +3531,7 @@ fn span_for_namespace_scope(ns: &NamespaceDecl) -> Span {
     for item in &ns.items {
         let item_span = match item {
             NamespaceItem::Assert(decl) => decl.loc.clone(),
+            NamespaceItem::Enum(def) => def.loc.clone(),
             NamespaceItem::Const(decl) => decl.loc.clone(),
             NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
             NamespaceItem::Def(decl) => span_for_function_scope(decl),
@@ -3730,9 +3554,11 @@ fn extend_span(span: &mut Option<Span>, next: Span) {
 
 fn symbol_completion_item(symbol: &SymbolInfo, qualified_member: bool) -> CompletionItem {
     let kind = match symbol.kind {
+        SymbolKind::EnumMember => 20,
         SymbolKind::Const => COMPLETION_ITEM_KIND_CONSTANT,
         SymbolKind::Def => COMPLETION_ITEM_KIND_FUNCTION,
         SymbolKind::Proc => COMPLETION_ITEM_KIND_CONSTRUCTOR,
+        SymbolKind::Enum => 13,
         SymbolKind::Struct => COMPLETION_ITEM_KIND_STRUCT,
         SymbolKind::Namespace => COMPLETION_ITEM_KIND_MODULE,
     };
@@ -3754,7 +3580,10 @@ fn symbol_completion_item(symbol: &SymbolInfo, qualified_member: bool) -> Comple
         item = item
             .insert_text(callable_insert_text(&symbol.label, &symbol.type_params))
             .snippet(callable_snippet(&symbol.label, &symbol.type_params));
-    } else if matches!(symbol.kind, SymbolKind::Struct | SymbolKind::Namespace) {
+    } else if matches!(
+        symbol.kind,
+        SymbolKind::Enum | SymbolKind::Struct | SymbolKind::Namespace
+    ) {
         item = item.maybe_snippet(type_completion_snippet(&symbol.label, &symbol.type_params));
         if let Some(insert_text) = type_insert_text(&symbol.label, &symbol.type_params) {
             item = item.insert_text(insert_text);
@@ -4561,9 +4390,11 @@ fn generic_snippet_suffix(type_params: &[String], first_tabstop: usize) -> Optio
 
 fn symbol_kind_detail(kind: SymbolKind) -> &'static str {
     match kind {
+        SymbolKind::EnumMember => "enum member",
         SymbolKind::Const => "const",
         SymbolKind::Def => "def",
         SymbolKind::Proc => "proc",
+        SymbolKind::Enum => "enum",
         SymbolKind::Struct => "struct",
         SymbolKind::Namespace => "namespace",
     }

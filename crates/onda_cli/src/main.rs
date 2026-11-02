@@ -42,7 +42,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math] 
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
-    [--theme <auto|dark|light>] [--meta]
+    [--theme <dark|light>] [--meta]
   
   onda run play <input>              Run realtime playback without the UI
     
@@ -50,7 +50,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--sample-rate <hz>] [--block-size <frames>]
     [--opt-level <0|1|2|3>] [--fast-math]
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
-    [--set <name=value>] [--buffer <name=path>] [--control-json] [--report-sources] [--meta]
+    [--set <name=value>] [--buffer <name=path>] [--control-json] [--start-paused] [--report-sources] [--meta]
   
   onda run render <input>            Render offline through the run pipeline
     
@@ -112,8 +112,9 @@ Run Options:
   --set                  Override a scalar run param with `name=value`
   --buffer               Bind a declared buffer to a WAV or .ondabuffer file with `name=path`
   --control-json         Emit run control handshake on stdout and serve param control over localhost
+  --start-paused         Compile without starting audio processing (requires --control-json)
   --report-sources       Include source graphs and hashes in startup output (requires --control-json)
-  --theme                Run window theme: `auto`, `dark`, or `light` (default: auto)
+  --theme                Run window theme: `dark` or `light` (default: detected at startup)
 
 Project Options:
 
@@ -188,6 +189,7 @@ enum RunCommand {
         fast_math: bool,
         show_meta: bool,
         control_json: bool,
+        start_paused: bool,
         report_sources: bool,
         param_sets: Vec<(String, onda_daemon::RunParamValue)>,
         buffer_bindings: Vec<(String, PathBuf)>,
@@ -216,7 +218,7 @@ enum RunCommand {
         midi_input_device: Option<String>,
         fast_math: bool,
         show_meta: bool,
-        theme: RunThemeMode,
+        theme: Option<RunThemeMode>,
     },
 }
 

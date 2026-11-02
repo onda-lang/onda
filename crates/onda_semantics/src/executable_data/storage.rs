@@ -50,7 +50,9 @@ impl BindingStorage {
                 },
             ),
             Self::Tuple(types) => (
-                Some(DeclType::Tuple(types.clone())),
+                Some(DeclType::Tuple(
+                    types.iter().copied().map(Into::into).collect(),
+                )),
                 true,
                 Self::tuple_zero_expr(types),
             ),

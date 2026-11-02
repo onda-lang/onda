@@ -33,13 +33,16 @@ pub(super) fn scalarize_tuple_assignments(
                 output.push(statement);
                 continue;
             };
+            let types = ScalarTypeRef::primitives(types).expect("checked tuple assignment");
             let name = format!("__onda_tuple_assignment_{}", *counter);
             *counter += 1;
             let capture = Stmt::Assign {
                 loc: loc.clone(),
                 target_loc: target_loc.clone(),
                 target: AssignTarget::Var(name.clone()),
-                decl_ty: Some(DeclType::Tuple(types.clone())),
+                decl_ty: Some(DeclType::Tuple(
+                    types.iter().copied().map(Into::into).collect(),
+                )),
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
@@ -47,7 +50,7 @@ pub(super) fn scalarize_tuple_assignments(
             };
             let mut stores = Vec::new();
             output.push(capture);
-            for (index, (target, ty)) in targets.iter().zip(types).enumerate() {
+            for (index, (target, ty)) in targets.iter().zip(&types).enumerate() {
                 let Some(target) = target.binding() else {
                     continue;
                 };

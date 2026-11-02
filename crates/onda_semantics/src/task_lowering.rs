@@ -542,6 +542,7 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
             | Block::Assert(_)
             | Block::Namespace(_)
             | Block::NamespaceAlias(_)
+            | Block::Enum(_)
             | Block::Use(_)
             | Block::Proc(_)
             | Block::Graph(_) => {}
@@ -924,7 +925,9 @@ fn record_task_owner_decl_type(types: &mut TaskOwnerTypes, name: &str, ty: Optio
             }
         }
         Some(DeclType::Tuple(elements)) => {
-            types.tuples.insert(name.to_owned(), elements.clone());
+            if let Some(elements) = ScalarTypeRef::primitives(elements) {
+                types.tuples.insert(name.to_owned(), elements);
+            }
         }
         None => {
             types.scalars.insert(name.to_owned(), PrimitiveType::F32);

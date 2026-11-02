@@ -1,0 +1,71 @@
+enum Mode:
+  LowPass
+  HighPass
+  BandPass {label = "Band-pass"}
+
+enum Only:
+  One
+
+# A concrete enum must not capture generic parameters with the same name.
+enum T:
+  One
+
+struct Box<T>:
+  value: T
+
+def identity<T>(value: T) -> T:
+  return value
+
+def boxed(value: Mode) -> Box<Mode>:
+  return Box<Mode>(value)
+
+def unbox(value: Box<Mode>) -> Mode:
+  return value.value
+
+namespace Choices<N = 0>:
+  enum Choice:
+    Zero
+    One
+  const def select(value: Choice) -> Choice:
+    return value
+  const Selected: Choice = select(Choice(N))
+
+namespace Zero = Choices<0>
+
+struct Settings:
+  mode: Mode = Mode::HighPass
+  modes: Mode[2]
+
+struct Packet:
+  settings: Settings
+
+params:
+  mode = Mode::HighPass
+  only: Only
+  ordinal: i64 = 0
+  modes: Mode[2] = Mode::LowPass
+
+init:
+  current: Packet
+  selected: Mode = Mode::LowPass
+
+delegate configured(packet: Packet)
+
+event configure(packet: Packet):
+  current = packet
+  configured(current)
+
+event set_mode(mode: Mode):
+  selected = mode
+
+sample:
+  box: Box<Mode> = boxed(identity(mode))
+  out1 = i32(unbox(box)) + i32(identity<Zero::Choice>(Zero::Selected))
+  out2 = i32(current.settings.mode)
+  out3 = i32(current.settings.modes[0])
+  out4 = i32(current.settings.modes[1])
+  out5 = i32(selected)
+  out6 = i32(only)
+  out7 = i32(Mode(ordinal))
+  out8 = i32(modes[0])
+  out9 = i32(modes[1])

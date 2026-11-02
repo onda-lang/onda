@@ -593,6 +593,11 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<LoweredValue, MirLoweringError> {
+        // Authored enum assignments are already nominally checked. External
+        // parameters, events and restored snapshots normalize at their entry.
+        if matches!(value.ty, PrimitiveType::Enum(_)) {
+            return Ok(value);
+        }
         let range = self
             .function
             .integer_range_params

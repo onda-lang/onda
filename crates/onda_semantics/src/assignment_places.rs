@@ -71,6 +71,7 @@ pub(crate) fn normalize_indexed_member_assignments(program: &mut Program) -> Has
             | Block::Graph(_)
             | Block::Namespace(_)
             | Block::NamespaceAlias(_)
+            | Block::Enum(_)
             | Block::Use(_) => {}
         }
     }

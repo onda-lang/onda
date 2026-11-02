@@ -280,8 +280,11 @@ impl CallTypeEnv {
                 }
             }
             Some(FnParamType::Tuple(elem_types)) => {
-                self.tuple_elem_types
-                    .insert(name.to_owned(), elem_types.clone());
+                if let Some(types) = ScalarTypeRef::primitives(elem_types) {
+                    self.tuple_elem_types.insert(name.to_owned(), types);
+                } else {
+                    self.unresolved_bindings.insert(name.to_owned());
+                }
             }
             Some(FnParamType::Struct(_))
             | Some(FnParamType::ArrayGeneric(_))
@@ -469,14 +472,7 @@ pub(crate) fn declared_call_return_type(def: &FunctionDef) -> Option<ReturnType>
             },
             len: const_positive_usize_for_call_type(size)?,
         })),
-        FnReturnType::Tuple(elements) => elements
-            .iter()
-            .map(|element| match element {
-                FnReturnScalarType::Primitive(ty) => Some(*ty),
-                FnReturnScalarType::Named(_) => None,
-            })
-            .collect::<Option<Vec<_>>>()
-            .map(ReturnType::Tuple),
+        FnReturnType::Tuple(elements) => ScalarTypeRef::primitives(elements).map(ReturnType::Tuple),
         FnReturnType::Scalar(FnReturnScalarType::Named(_)) => None,
     }
 }
@@ -1035,7 +1031,11 @@ pub(crate) fn update_call_type_env_after_assign(
             }
             DeclType::Tuple(types) => {
                 env.shadow_binding(name);
-                env.tuple_elem_types.insert(name.clone(), types.clone());
+                if let Some(types) = ScalarTypeRef::primitives(types) {
+                    env.tuple_elem_types.insert(name.clone(), types);
+                } else {
+                    env.unresolved_bindings.insert(name.clone());
+                }
                 return;
             }
             DeclType::Generic(_) | DeclType::ArrayGeneric { .. } | DeclType::Array { .. } => {}

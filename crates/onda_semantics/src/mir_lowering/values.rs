@@ -302,6 +302,28 @@ impl<'a> FunctionLowerer<'a> {
         if value.ty == to {
             return Ok(value);
         }
+        if let PrimitiveType::Enum(enum_ty) = to {
+            let integer = value.ty.storage_type();
+            let value = LoweredValue {
+                ty: integer,
+                ..value
+            };
+            let low = scalar_from_f64(0.0, integer);
+            let high = scalar_from_f64(f64::from(enum_ty.count - 1), integer);
+            let value = self.emit_temp(
+                block,
+                integer,
+                Rvalue::Intrinsic {
+                    intrinsic: onda_mir::Intrinsic::RangeClamp,
+                    args: vec![value.value, Value::Constant(low), Value::Constant(high)],
+                },
+                location.clone(),
+            );
+            return self.coerce(value, to, block, location);
+        }
+        if matches!(value.ty, PrimitiveType::Enum(_)) {
+            return Ok(LoweredValue { ty: to, ..value });
+        }
         if value.ty == PrimitiveType::Bool {
             let result = self.new_local(None, to);
             self.assign_value(block, result, zero_value(to), location.clone());

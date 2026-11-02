@@ -103,11 +103,16 @@ passes may promote or fold them without changing the semantic contract.
 - functions
 - init and process entry points
 
-MIR schema version 7 carries a recursive message schema alongside flattened event/delegate
+MIR schema version 8 carries a recursive message schema alongside flattened event/delegate
 parameters. One scalar or primitive tensor represents each leaf, independent of array extent.
 Struct slices retain one explicit logical `i32` length followed by read-only leaf slices; fixed
 shapes remain checked contracts. Both backends use the compiler-free ABI payload planner for
-host layout, preparation, and publication. The processor ABI is version 6.
+host layout, preparation, and publication. The processor ABI is version 7.
+
+Enum values lower to ordinary `i32` executable types. Parameters, control outputs, and scalar leaves of recursive
+message schemas retain optional `enumeration` metadata with the qualified type name and ordered
+member names/labels. Validation checks that enum storage, bounds, and members agree. Enum state
+scalars and arrays retain the derived integer invariant so snapshot restoration preserves validity.
 
 Events name their handler function directly. Functions have one of four capability roles: init,
 process, event, or user function. Each function also carries backend-neutral origin and inline
@@ -362,8 +367,8 @@ interface parameters, audio I/O, external buffers, constant data, event payloads
 descriptors, and per-reference reads/writes without encoding a target ABI. Range facts include the
 segmented-process contract, interface declarations, constants, ranged `i32`/`i64` parameters,
 locals and state, and operations that cannot overflow. A ranged storage declaration is represented
-as an optional inclusive `integer_range` invariant while retaining its ordinary scalar physical
-type. Source `[begin, end)` domains lower this invariant to `begin..=end - 1`. State promotion and
+as an optional inclusive `integer_range` invariant while retaining its ordinary physical
+type. On a fixed integer array, the invariant applies to every element. Source `[begin, end)` domains lower this invariant to `begin..=end - 1`. State promotion and
 call lowering preserve those facts. A whole-program fixed point joins every statically resolved
 call site, propagating proven facts through value and read-only-reference parameters and back
 through scalar results, including forwarding chains. Any unknown call site makes the corresponding

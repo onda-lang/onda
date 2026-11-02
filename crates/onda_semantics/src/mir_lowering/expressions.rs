@@ -1344,8 +1344,10 @@ impl<'a> FunctionLowerer<'a> {
         let [left, right] = operands;
         let (left_ty, right_ty) =
             adapt_binary_types_from_purity(left.ty(), right.ty(), left.pure(), right.pure());
-        let operand_ty = if left_ty == PrimitiveType::Bool && right_ty == PrimitiveType::Bool {
-            PrimitiveType::Bool
+        let operand_ty = if left_ty == right_ty
+            && matches!(left_ty, PrimitiveType::Bool | PrimitiveType::Enum(_))
+        {
+            left_ty
         } else {
             self.merge_numeric(left_ty, right_ty, "comparison", location.clone())?
         };

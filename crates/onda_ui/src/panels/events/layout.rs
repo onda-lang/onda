@@ -162,7 +162,14 @@ impl Builder<'_> {
             } else {
                 editor
             };
-            self.focus(focus, Target::Field(field.clone()));
+            self.focus(
+                focus,
+                if self.ui.field_enumeration(&field).is_some() {
+                    Target::Choose(crate::interaction::SelectId::Field(field.clone()))
+                } else {
+                    Target::Field(field.clone())
+                },
+            );
             self.push(
                 [x, self.y, width, 32.0],
                 WidgetKind::Scalar {

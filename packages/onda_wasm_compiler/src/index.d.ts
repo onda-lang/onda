@@ -102,6 +102,7 @@ export interface OndaCompileConstDescriptor {
   /** One for scalars; the resolved length for either array kind. */
   elementCount: number;
   value: OndaResolvedCompileConstValue;
+  enumeration?: import("@onda-lang/processor-abi").OndaEnumMetadata;
 }
 
 /** Project-manifest values; i64 values use decimal strings. */

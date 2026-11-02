@@ -325,7 +325,7 @@ pub(super) fn primitive_type_to_i32(value: PrimitiveType) -> i32 {
     match value {
         PrimitiveType::F32 => 0,
         PrimitiveType::F64 => 1,
-        PrimitiveType::I32 => 2,
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => 2,
         PrimitiveType::I64 => 3,
         PrimitiveType::Bool => 4,
     }
@@ -333,7 +333,7 @@ pub(super) fn primitive_type_to_i32(value: PrimitiveType) -> i32 {
 
 pub(super) fn primitive_type_bytes(value: PrimitiveType) -> usize {
     match value {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }

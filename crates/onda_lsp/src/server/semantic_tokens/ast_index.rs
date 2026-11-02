@@ -88,6 +88,9 @@ fn build_namespace_scope(
                 NamespaceItem::Alias(alias) => {
                     owner.namespaces.insert(alias.name.clone());
                 }
+                NamespaceItem::Enum(def) => {
+                    owner.types.insert(def.name.clone());
+                }
                 NamespaceItem::Use(_) | NamespaceItem::Assert(_) => {}
             }
         }
@@ -104,6 +107,7 @@ fn build_namespace_scope(
                 build_namespace_scope(index, Some(owner_idx), child);
             }
             NamespaceItem::Assert(_)
+            | NamespaceItem::Enum(_)
             | NamespaceItem::Const(_)
             | NamespaceItem::Alias(_)
             | NamespaceItem::Use(_) => {}
@@ -174,6 +178,9 @@ pub(super) fn collect_document_scope_symbols(block: &Block, scope: &mut Semantic
         }
         Block::Proc(proc_def) => {
             scope.types.insert(proc_def.name.clone());
+        }
+        Block::Enum(def) => {
+            scope.types.insert(def.name.clone());
         }
         Block::Struct(struct_def) => {
             scope.types.insert(struct_def.name.clone());
@@ -692,6 +699,7 @@ fn span_for_namespace_scope(namespace: &NamespaceDecl) -> Span {
     for item in &namespace.items {
         let item_span = match item {
             NamespaceItem::Assert(decl) => decl.loc.clone(),
+            NamespaceItem::Enum(def) => def.loc.clone(),
             NamespaceItem::Const(decl) => decl.loc.clone(),
             NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
             NamespaceItem::Def(decl) => span_for_function_scope(decl),

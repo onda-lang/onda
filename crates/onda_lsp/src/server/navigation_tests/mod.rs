@@ -1,3 +1,5 @@
+mod enums;
+
 use super::*;
 
 fn position_at(source: &str, needle: &str, token_offset: usize) -> NavigationPosition {
@@ -655,4 +657,16 @@ sample:
     assert!(proc_children
         .iter()
         .any(|symbol| symbol["name"] == "when ready"));
+}
+
+#[test]
+fn enum_members_have_hover_and_definitions() {
+    let source = "enum Mode:\n  LowPass\n  HighPass\nparams:\n  mode: Mode = Mode::HighPass\n";
+    let hover = hover_at(source, "Mode::HighPass", "Mode::High".len()).expect("enum member hover");
+    assert!(hover["contents"]["value"]
+        .as_str()
+        .unwrap()
+        .contains("HighPass"));
+    assert!(definition_at(source, "Mode::HighPass", "Mode::High".len()).is_some());
+    assert!(hover_at(source, "mode: Mode", "mode: Mo".len()).is_some());
 }

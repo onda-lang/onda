@@ -54,6 +54,7 @@ pub(crate) enum Target {
     Field(Field),
     Section(Section),
     Devices,
+    Theme,
     FastMath,
     Fold(String),
     Trigger(usize),

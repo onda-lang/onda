@@ -2,14 +2,15 @@
 use crate::{
     editing::{Field, Setting},
     icons::Icon,
-    model::RunUi,
+    model::{number, RunUi},
     scene::{Palette, Rect, Scene, Target, TextStyle},
     Key,
 };
 use serde_json::{json, Value};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SelectId {
+    Field(Field),
     SampleRate,
     BlockSize,
     AudioInput,
@@ -33,10 +34,42 @@ pub(crate) struct Menu {
     search: String,
 }
 impl SelectId {
-    pub fn spec(self, ui: &RunUi) -> SelectSpec {
+    fn display(&self, ui: &RunUi) -> (String, bool) {
+        let Self::Field(field) = self else {
+            let spec = self.spec(ui);
+            return (spec.label, spec.enabled);
+        };
+        let members = enum_members(ui, field);
+        let label = enum_ordinal(ui, field)
+            .and_then(|ordinal| members.get(ordinal))
+            .map(enum_member_label)
+            .unwrap_or("")
+            .to_owned();
+        (label, ui.field_enabled(field) && members.len() > 1)
+    }
+
+    pub fn spec(&self, ui: &RunUi) -> SelectSpec {
+        if let Self::Field(field) = self {
+            let choices = enum_members(ui, field)
+                .iter()
+                .enumerate()
+                .map(|(ordinal, member)| Choice {
+                    label: enum_member_label(member).to_owned(),
+                    value: json!(ordinal),
+                })
+                .collect();
+            let value = enum_ordinal(ui, field).map_or(Value::Null, |ordinal| json!(ordinal));
+            let (label, enabled) = self.display(ui);
+            return SelectSpec {
+                choices,
+                value,
+                label,
+                enabled,
+            };
+        }
         let (choices, value, enabled) = match self {
             Self::SampleRate | Self::BlockSize => {
-                let rate = self == Self::SampleRate;
+                let rate = *self == Self::SampleRate;
                 let field = Field::Setting(if rate {
                     Setting::SampleRate
                 } else {
@@ -137,7 +170,7 @@ impl SelectId {
                         ui.state["supportsMidiInputSelection"] == true,
                     ),
                 };
-                let default_value = if self == Self::MidiInput {
+                let default_value = if *self == Self::MidiInput {
                     json!(default)
                 } else {
                     Value::Null
@@ -187,15 +220,36 @@ impl SelectId {
         }
     }
 }
+
+fn enum_members<'a>(ui: &'a RunUi, field: &Field) -> &'a [Value] {
+    ui.field_enumeration(field)
+        .and_then(|enumeration| enumeration["members"].as_array())
+        .map_or(&[], Vec::as_slice)
+}
+
+fn enum_ordinal(ui: &RunUi, field: &Field) -> Option<usize> {
+    // Hosts may encode an i32 ordinal as either an integer or a float in JSON.
+    let value = number(&ui.field_value(field))?;
+    (value >= 0.0 && value.fract() == 0.0 && value < enum_members(ui, field).len() as f64)
+        .then_some(value as usize)
+}
+
+fn enum_member_label(member: &Value) -> &str {
+    member["label"]
+        .as_str()
+        .or_else(|| member["name"].as_str())
+        .unwrap_or("")
+}
+
 impl Scene {
     pub fn select(&mut self, ui: &RunUi, id: SelectId, rect: [f32; 4], p: Palette) {
-        let spec = id.spec(ui);
+        let (label, enabled) = id.display(ui);
         let active = ui.interaction.chooser.as_ref().is_some_and(|m| m.id == id)
-            || ui.focused(&Target::Choose(id));
+            || ui.focused(&Target::Choose(id.clone()));
         self.panel(
             rect,
             p.field,
-            if spec.enabled && (active || self.hovered(ui, rect)) {
+            if enabled && (active || self.hovered(ui, rect)) {
                 p.accent
             } else {
                 p.border
@@ -203,10 +257,10 @@ impl Scene {
             5.0,
         );
         self.styled(
-            spec.label,
+            label,
             [rect[0] + 9.0, rect[1], rect[2] - 32.0, rect[3]],
             12.0,
-            if spec.enabled { p.ink } else { p.muted },
+            if enabled { p.ink } else { p.muted },
             TextStyle::default(),
         );
         self.icon(
@@ -214,9 +268,9 @@ impl Scene {
             [rect[0] + rect[2] - 13.0, rect[1] + rect[3] * 0.5],
             p.ink_color(),
         );
-        if spec.enabled {
-            self.selects.push((id, Rect(rect)));
-            self.hit(rect, Target::Choose(id));
+        if enabled {
+            self.selects.push((id.clone(), Rect(rect)));
+            self.hit(rect, Target::Choose(id.clone()));
         }
     }
 }
@@ -227,9 +281,9 @@ impl RunUi {
             return;
         }
         self.cancel_number();
-        self.interaction.focus = Some(Target::Choose(id));
+        self.interaction.focus = Some(Target::Choose(id.clone()));
         self.interaction.chooser = Some(Menu {
-            id,
+            id: id.clone(),
             highlighted: spec
                 .choices
                 .iter()
@@ -269,7 +323,13 @@ impl RunUi {
             return;
         }
         if let Some(choice) = spec.choices.get(index) {
-            match id {
+            match &id {
+                SelectId::Field(field) => {
+                    self.set_field(field, choice.value.clone(), true);
+                    if let Field::Control(index) = field {
+                        self.commands.push(self.controls[*index].end_command());
+                    }
+                }
                 SelectId::SampleRate | SelectId::BlockSize => self.set_field(
                     &Field::Setting(if id == SelectId::SampleRate {
                         Setting::SampleRate
@@ -295,13 +355,13 @@ impl RunUi {
                 }
             }
         }
-        self.interaction.focus = Some(Target::Choose(id));
+        self.interaction.focus = Some(Target::Choose(id.clone()));
         self.invalidate();
     }
     pub(crate) fn select_key(&mut self, key: &Key) -> bool {
         if self.interaction.chooser.is_none() {
             if matches!(key, Key::ArrowUp | Key::ArrowDown | Key::Enter) {
-                if let Some(Target::Choose(id)) = self.interaction.focus {
+                if let Some(Target::Choose(id)) = self.interaction.focus.clone() {
                     self.open_select(id);
                     return true;
                 }
@@ -431,6 +491,119 @@ pub(crate) fn build_menu(ui: &RunUi, s: &mut Scene, p: Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enum_controls_display_selected_labels_and_keep_menu_ordinals() {
+        let mut ui = RunUi::default();
+        let mut state = json!({
+            "path":"enum.onda", "supportsScope":false,
+            "params":[{"name":"mode","type":"i32","value":2,
+                "rangeMin":0,"rangeMax":2,"step":1,"stepCount":2,
+                "enumeration":{"name":"Mode","members":[
+                    {"name":"LowPass","label":"Low Pass"},
+                    {"name":"HighPass"},
+                    {"name":"BandPass","label":"Band-pass"}
+                ]}}]
+        });
+        ui.message(json!({"type":"state","state":state}));
+        let id = SelectId::Field(Field::Control(0));
+        for (ordinal, expected) in [(0, "Low Pass"), (1, "HighPass"), (2, "Band-pass")] {
+            ui.message(json!({"type":"parameterValues","state":{
+                "params":[{"name":"mode","value":ordinal}]
+            }}));
+            ui.prepare_scene();
+            assert!(ui.scene.labels.iter().any(|label| label.text == expected));
+            assert!(ui.scene.selects.iter().any(|(select, _)| select == &id));
+        }
+        ui.open_select(id.clone());
+        assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 2);
+        ui.select_text("Low");
+        assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 0);
+        ui.select_key(&Key::Enter);
+        assert_eq!(ui.controls[0].value, 0);
+
+        state["params"][0]["value"] = json!(2);
+        state["params"][0]["enumeration"]["members"][2]["label"] = json!("Updated");
+        ui.message(json!({"type":"state","state":state}));
+        ui.prepare_scene();
+        assert!(ui.scene.labels.iter().any(|label| label.text == "Updated"));
+        ui.open_select(id);
+        ui.prepare_scene();
+        assert!(ui.scene.labels.iter().any(|label| label.text == "Updated"));
+        assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 2);
+    }
+
+    #[test]
+    fn enum_controls_accept_numeric_ordinals_on_load_and_reset() {
+        for value in [json!(1), json!(1.0)] {
+            let mut ui = RunUi::default();
+            ui.message(json!({"type":"state","state":{
+                "path":"enum.onda", "supportsScope":false,
+                "params":[{"name":"mode","type":"i32","value":value,"default":value,
+                    "rangeMin":0,"rangeMax":2,"step":1,"stepCount":2,
+                    "enumeration":{"name":"Mode","members":[
+                        {"name":"LowPass","label":"Low Pass"},
+                        {"name":"HighPass","label":"High Pass"},
+                        {"name":"BandPass","label":"Band-pass"}
+                    ]}}]
+            }}));
+            let id = SelectId::Field(Field::Control(0));
+            for phase in ["load", "reset"] {
+                if phase == "reset" {
+                    ui.open_select(id.clone());
+                    ui.choose_option(0);
+                    ui.take_commands();
+                    ui.message(json!({"type":"parameterValues","state":{
+                        "params":[{"name":"mode","value":value}]
+                    }}));
+                }
+                ui.prepare_scene();
+                assert!(
+                    ui.scene
+                        .labels
+                        .iter()
+                        .any(|label| label.text == "High Pass"),
+                    "{phase}: {value:?}"
+                );
+                ui.open_select(id.clone());
+                assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 1);
+                ui.select_key(&Key::Enter);
+                assert!(ui
+                    .take_commands()
+                    .iter()
+                    .any(|command| { command["type"] == "setParam" && command["value"] == 1 }));
+            }
+        }
+    }
+
+    #[test]
+    fn singleton_and_readonly_enum_controls_keep_their_labels_without_opening() {
+        for (members, maximum, enabled) in [
+            (json!([{"name":"Only","label":"Only choice"}]), 0, true),
+            (
+                json!([{"name":"Only","label":"Only choice"}, {"name":"Other"}]),
+                1,
+                false,
+            ),
+        ] {
+            let mut ui = RunUi::default();
+            ui.message(json!({"type":"state","state":{
+                "path":"enum.onda", "params":[{"name":"mode","type":"i32","value":0,
+                    "rangeMin":0,"rangeMax":maximum,"step":1,"stepCount":maximum,
+                    "enabled":enabled,"enumeration":{"name":"Mode","members":members}}]
+            }}));
+            ui.prepare_scene();
+            let id = SelectId::Field(Field::Control(0));
+            assert!(ui
+                .scene
+                .labels
+                .iter()
+                .any(|label| label.text == "Only choice"));
+            assert!(!ui.scene.selects.iter().any(|(select, _)| select == &id));
+            ui.open_select(id);
+            assert!(ui.interaction.chooser.is_none());
+        }
+    }
 
     #[test]
     fn midi_choices_default_to_computer_keyboard_without_a_null_option() {

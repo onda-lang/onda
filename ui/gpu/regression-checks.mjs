@@ -45,7 +45,7 @@ export async function checkRegressions(page, evaluate) {
 
   await evaluate("commands=[]");
   await key("a","KeyA");
-  for (let i=0;i<2;i++) {
+  for (let i=0;i<3;i++) {
     await key("Tab","Tab");await key("Tab","Tab",false);
   }
   await key("Enter","Enter");await key("Enter","Enter",false);

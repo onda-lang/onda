@@ -695,8 +695,8 @@ import std/filter
 outs 2
 
 init {
-  lp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::mode::ONE_POLE_LOWPASS)
-  hp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+  lp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::OnePoleMode::LowPass)
+  hp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::OnePoleMode::HighPass)
 }
 
 sample {
@@ -779,9 +779,9 @@ outs 3
 
 init {
   src = std::osc::Saw(freq = 220.0, amp = 0.25)
-  notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_NOTCH)
-  peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_PEAK)
-  allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_ALLPASS)
+  notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::SvfMode::Notch)
+  peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::SvfMode::Peak)
+  allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::SvfMode::AllPass)
 }
 
 sample {

@@ -604,6 +604,7 @@ pub(crate) fn coerce_params(
                         )
                     })
                 });
+                let range = range.or_else(|| enum_value_range(ty));
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
@@ -651,6 +652,7 @@ pub(crate) fn coerce_params(
                         )
                     })
                 });
+                let range = range.or_else(|| enum_value_range(ty));
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
@@ -828,6 +830,24 @@ fn coerce_top_level_param_control(
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> TypedParamControl {
+    if let PrimitiveType::Enum(enum_ty) = ty {
+        if param.range.is_some()
+            || param.control.scale != ParamScale::Linear
+            || param.control.curve.is_some()
+            || param.control.unit.is_some()
+            || param.control.step.is_some()
+        {
+            errors.push(Diagnostic::semantic_span(
+                "enum controls derive their range and steps from their members",
+                &param.loc,
+            ));
+        }
+        return TypedParamControl {
+            step: Some(TypedConstValue::I32(1)),
+            step_count: Some(enum_ty.count - 1),
+            ..TypedParamControl::default()
+        };
+    }
     let context = format!("param '{}.{}'", "<top-level>", param.name);
     let mut control = TypedParamControl {
         scale: param.control.scale,
@@ -904,7 +924,7 @@ fn coerce_top_level_param_control(
         })
     });
     let step = explicit_step.or(match ty {
-        PrimitiveType::I32 => Some(TypedConstValue::I32(1)),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => Some(TypedConstValue::I32(1)),
         PrimitiveType::I64 => Some(TypedConstValue::I64(1)),
         PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Bool => None,
     });

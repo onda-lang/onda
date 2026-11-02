@@ -15,16 +15,13 @@ pub fn host_panel_state(
             theme_mode,
             default_param_smoothing_seconds,
         );
-        state["schemaReady"] = serde_json::json!(
-            !controller.state().running
-                || !matches!(
-                    controller.source_compilation,
-                    crate::SourceCompilationState::Compiling(_)
-                )
-        );
+        state["schemaReady"] = serde_json::json!(!matches!(
+            controller.source_compilation,
+            crate::SourceCompilationState::Compiling(_)
+        ));
         return state;
     }
-    serde_json::json!({
+    let mut panel = serde_json::json!({
         "running": false,
         "connected": false,
         "schemaReady": true,
@@ -53,19 +50,15 @@ pub fn host_panel_state(
         "supportsTransport": true,
         "supportsDeviceSelection": true,
         "supportsMidiInputSelection": true,
-        "supportsRunSettings": true,
-        "supportsFastMath": options.show_fast_math,
-        "fastMath": options.fast_math,
         "supportsParamSmoothing": true,
         "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
         "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
         "supportsScope": true,
         "supportsProjectExport": false,
         "canExportProject": false,
-        "sampleRateHz": options.sample_rate_hz,
-        "blockSamples": options.block_samples,
-        "themeMode": theme_mode,
-    })
+    });
+    apply_run_settings(&mut panel, options, theme_mode);
+    panel
 }
 
 fn loaded_panel_state(
@@ -96,23 +89,35 @@ fn loaded_panel_state(
         "supportsTransport": true,
         "supportsDeviceSelection": true,
         "supportsMidiInputSelection": true,
-        "supportsRunSettings": true,
-        "supportsFastMath": options.show_fast_math,
-        "fastMath": options.fast_math,
         "supportsParamSmoothing": true,
         "paramSmoothingMs": options.param_smoothing_seconds * 1000.0,
         "paramSmoothingDefaultMs": default_param_smoothing_seconds * 1000.0,
         "supportsScope": true,
         "supportsProjectExport": true,
         "canExportProject": true,
-        "sampleRateHz": options.sample_rate_hz,
-        "blockSamples": options.block_samples,
-        "themeMode": theme_mode,
     });
+    apply_run_settings(&mut panel, options, theme_mode);
     if let serde_json::Value::Object(log) = log_panel_state(state) {
         panel.as_object_mut().unwrap().extend(log);
     }
     panel
+}
+
+fn apply_run_settings(panel: &mut serde_json::Value, options: &RunHostOptions, host_theme: &str) {
+    let serde_json::Value::Object(settings) = serde_json::json!({
+        "supportsRunSettings": true,
+        "canSetSampleRate": true,
+        "canSetBlockSize": true,
+        "supportsFastMath": options.show_fast_math,
+        "fastMath": options.fast_math,
+        "sampleRateHz": options.sample_rate_hz,
+        "blockSamples": options.block_samples,
+        "themeMode": options.theme,
+        "hostTheme": host_theme,
+    }) else {
+        unreachable!()
+    };
+    panel.as_object_mut().unwrap().extend(settings);
 }
 
 /// Log-only publications retain control schemas, drafts, and cached layout.

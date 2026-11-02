@@ -510,6 +510,7 @@ impl Validator<'_> {
         }
         self.validate_fixed_aggregate_types();
         self.validate_interface_names();
+        self.validate_enum_interfaces();
         self.validate_message_schemas();
         for input in &self.program.interface.inputs {
             self.require_type(input.ty, None, SourceSpan::UNKNOWN);
@@ -4132,6 +4133,10 @@ impl Validator<'_> {
         range: crate::IntegerRangeInvariant,
         ty: crate::TypeId,
     ) -> Option<String> {
+        let ty = match self.program.types.get(ty.index()) {
+            Some(Type::Array { element, .. }) => *element,
+            _ => ty,
+        };
         if let Some(reason) = self.value_range_validation_error(
             crate::ValueRange {
                 min: range.min,
@@ -4147,6 +4152,44 @@ impl Validator<'_> {
         }
     }
 
+    fn validate_enum_interfaces(&mut self) {
+        let interface = &self.program.interface;
+        let entries = interface
+            .params
+            .iter()
+            .map(|v| (&v.name, v.ty, &v.enumeration, v.range, true))
+            .chain(
+                interface
+                    .control_outputs
+                    .iter()
+                    .map(|v| (&v.name, v.ty, &v.enumeration, None, false)),
+            );
+        for (name, ty, enumeration, range, requires_range) in entries {
+            let Some(enumeration) = enumeration else {
+                continue;
+            };
+            let element = match self.program.types.get(ty.index()) {
+                Some(Type::Array { element, .. }) => *element,
+                _ => ty,
+            };
+            let valid_range = !requires_range
+                || range.is_some_and(|range| {
+                    range.min == crate::ScalarValue::I32(0)
+                        && range.max
+                            == crate::ScalarValue::I32(enumeration.members.len() as i32 - 1)
+                });
+            if !enumeration.is_valid()
+                || self.program.types.get(element.index())
+                    != Some(&Type::Scalar(crate::ScalarType::I32))
+                || !valid_range
+            {
+                self.program_error(format!(
+                    "interface '{name}' enum storage and range must match its members"
+                ));
+            }
+        }
+    }
+
     fn param_control_validation_error(
         &self,
         param: &crate::Param,
@@ -4154,23 +4197,15 @@ impl Validator<'_> {
     ) -> Option<String> {
         use crate::{ParamScale, ScalarType, ScalarValue, Type};
 
-        if let Some(Type::Array { element, .. }) = self.program.types.get(param.ty.index()) {
-            let crate::ConstantValue::Aggregate(defaults) = &param.default else {
-                return Some("requires array defaults".to_owned());
+        let (ty, defaults) =
+            if let Some(Type::Array { element, .. }) = self.program.types.get(param.ty.index()) {
+                let crate::ConstantValue::Aggregate(defaults) = &param.default else {
+                    return Some("requires array defaults".to_owned());
+                };
+                (*element, defaults.as_slice())
+            } else {
+                (param.ty, std::slice::from_ref(&param.default))
             };
-            return defaults.iter().find_map(|default| {
-                self.param_control_validation_error(
-                    &crate::Param {
-                        ty: *element,
-                        default: default.clone(),
-                        name: param.name.clone(),
-                        range: param.range,
-                        control: param.control.clone(),
-                    },
-                    range,
-                )
-            });
-        }
 
         if param
             .control
@@ -4180,9 +4215,20 @@ impl Validator<'_> {
         {
             return Some("unit must not contain a NUL character".to_owned());
         }
-        let Some(Type::Scalar(ty)) = self.program.types.get(param.ty.index()) else {
+        let Some(Type::Scalar(ty)) = self.program.types.get(ty.index()) else {
             return Some("requires a scalar parameter".to_owned());
         };
+        if let Some(enumeration) = &param.enumeration {
+            if param.control.scale != ParamScale::Linear
+                || param.control.curve.is_some()
+                || param.control.unit.is_some()
+                || param.control.step != Some(ScalarValue::I32(1))
+                || param.control.step_count
+                    != enumeration.members.len().checked_sub(1).map(|n| n as u32)
+            {
+                return Some("enum control domain must match its members".to_owned());
+            }
+        }
         if let (ScalarValue::I64(min), ScalarValue::I64(max)) = (range.min, range.max) {
             let exact_limit = i128::from(crate::MAX_EXACT_HOST_CONTROL_INTEGER);
             let width = i128::from(max) - i128::from(min);
@@ -4197,7 +4243,13 @@ impl Validator<'_> {
         }
         let min = range.min.as_f64();
         let max = range.max.as_f64();
-        if min >= max {
+        if min >= max
+            && !(min == max
+                && param
+                    .enumeration
+                    .as_ref()
+                    .is_some_and(|e| e.members.len() == 1))
+        {
             return Some("range requires min < max".to_owned());
         }
         if param.control.curve.is_some_and(|curve| !curve.is_finite()) {
@@ -4232,84 +4284,95 @@ impl Validator<'_> {
         if step.ty() != *ty {
             return Some("step does not match the parameter scalar type".to_owned());
         }
-        if step_count == 0 {
+        if step_count == 0
+            && !param
+                .enumeration
+                .as_ref()
+                .is_some_and(|e| e.members.len() == 1)
+        {
             return Some("step_count must be greater than zero".to_owned());
         }
 
-        let default = match &param.default {
-            crate::ConstantValue::Scalar(value) => *value,
-            crate::ConstantValue::Aggregate(_) => {
-                return Some("requires a scalar default".to_owned())
+        for default in defaults {
+            let default = match default {
+                crate::ConstantValue::Scalar(value) => *value,
+                crate::ConstantValue::Aggregate(_) => {
+                    return Some("requires a scalar default".to_owned())
+                }
+            };
+            match (range.min, range.max, default, step) {
+                (
+                    ScalarValue::I32(min),
+                    ScalarValue::I32(max),
+                    ScalarValue::I32(default),
+                    ScalarValue::I32(step),
+                ) => {
+                    if step <= 0 {
+                        return Some("step must be greater than zero".to_owned());
+                    }
+                    let width = i64::from(max) - i64::from(min);
+                    let step = i64::from(step);
+                    if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
+                        return Some("step_count does not match the range and step".to_owned());
+                    }
+                    if (i64::from(default) - i64::from(min)) % step != 0 {
+                        return Some("default is not on the step grid".to_owned());
+                    }
+                }
+                (
+                    ScalarValue::I64(min),
+                    ScalarValue::I64(max),
+                    ScalarValue::I64(default),
+                    ScalarValue::I64(step),
+                ) => {
+                    let width = i128::from(max) - i128::from(min);
+                    if step <= 0 {
+                        return Some("step must be greater than zero".to_owned());
+                    }
+                    let step = i128::from(step);
+                    if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
+                        return Some("step_count does not match the range and step".to_owned());
+                    }
+                    if (i128::from(default) - i128::from(min)) % step != 0 {
+                        return Some("default is not on the step grid".to_owned());
+                    }
+                }
+                (
+                    ScalarValue::F32(min),
+                    ScalarValue::F32(max),
+                    ScalarValue::F32(default),
+                    ScalarValue::F32(step),
+                ) => {
+                    if let Some(error) = validate_float_param_control_grid(
+                        ScalarType::F32,
+                        min as f64,
+                        max as f64,
+                        default as f64,
+                        step as f64,
+                        step_count,
+                    ) {
+                        return Some(error);
+                    }
+                }
+                (
+                    ScalarValue::F64(min),
+                    ScalarValue::F64(max),
+                    ScalarValue::F64(default),
+                    ScalarValue::F64(step),
+                ) => {
+                    if let Some(error) = validate_float_param_control_grid(
+                        ScalarType::F64,
+                        min,
+                        max,
+                        default,
+                        step,
+                        step_count,
+                    ) {
+                        return Some(error);
+                    }
+                }
+                _ => return Some("step requires a numeric scalar parameter".to_owned()),
             }
-        };
-        match (range.min, range.max, default, step) {
-            (
-                ScalarValue::I32(min),
-                ScalarValue::I32(max),
-                ScalarValue::I32(default),
-                ScalarValue::I32(step),
-            ) => {
-                if step <= 0 {
-                    return Some("step must be greater than zero".to_owned());
-                }
-                let width = i64::from(max) - i64::from(min);
-                let step = i64::from(step);
-                if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
-                    return Some("step_count does not match the range and step".to_owned());
-                }
-                if (i64::from(default) - i64::from(min)) % step != 0 {
-                    return Some("default is not on the step grid".to_owned());
-                }
-            }
-            (
-                ScalarValue::I64(min),
-                ScalarValue::I64(max),
-                ScalarValue::I64(default),
-                ScalarValue::I64(step),
-            ) => {
-                let width = i128::from(max) - i128::from(min);
-                if step <= 0 {
-                    return Some("step must be greater than zero".to_owned());
-                }
-                let step = i128::from(step);
-                if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
-                    return Some("step_count does not match the range and step".to_owned());
-                }
-                if (i128::from(default) - i128::from(min)) % step != 0 {
-                    return Some("default is not on the step grid".to_owned());
-                }
-            }
-            (
-                ScalarValue::F32(min),
-                ScalarValue::F32(max),
-                ScalarValue::F32(default),
-                ScalarValue::F32(step),
-            ) => {
-                return validate_float_param_control_grid(
-                    ScalarType::F32,
-                    min as f64,
-                    max as f64,
-                    default as f64,
-                    step as f64,
-                    step_count,
-                );
-            }
-            (
-                ScalarValue::F64(min),
-                ScalarValue::F64(max),
-                ScalarValue::F64(default),
-                ScalarValue::F64(step),
-            ) => {
-                return validate_float_param_control_grid(
-                    ScalarType::F64,
-                    min,
-                    max,
-                    default,
-                    step,
-                    step_count,
-                );
-            }
-            _ => return Some("step requires a numeric scalar parameter".to_owned()),
         }
         None
     }

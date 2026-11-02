@@ -77,7 +77,7 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
         let name = c.display_name();
         let ty = c.metadata["type"].as_str().unwrap_or("");
         let head_width = card_width - 18.0;
-        let centered_heading = knobs || c.boolean();
+        let centered_heading = knobs || c.boolean() || c.metadata["enumeration"].is_object();
         let heading_size = if centered_heading && ui.size[0] <= 400.0 {
             13.0
         } else {
@@ -141,6 +141,15 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4], input
                     ..Default::default()
                 },
             );
+        }
+        if c.metadata["enumeration"].is_object() {
+            s.select(
+                ui,
+                crate::interaction::SelectId::Field(Field::Control(index)),
+                field,
+                p,
+            );
+            continue;
         }
         if c.boolean() {
             s.checkbox(ui, Field::Control(index), field, c.value == true, p);

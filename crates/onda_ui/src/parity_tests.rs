@@ -49,6 +49,65 @@ fn control_field(t: &Target) -> bool {
 }
 
 #[test]
+fn theme_button_toggles_the_detected_appearance_without_an_auto_choice() {
+    for startup in ["dark", "light"] {
+        let mut ui = fixture();
+        ui.message(json!({"type":"state","state":{"hostTheme":startup}}));
+        assert_eq!(ui.light, startup == "light");
+        click(&mut ui, |t| *t == Target::Devices);
+        let opposite = if startup == "light" { "dark" } else { "light" };
+        for mode in [opposite, startup, opposite] {
+            click(&mut ui, |t| *t == Target::Theme);
+            assert_eq!(ui.state["themeMode"], mode);
+            assert_eq!(ui.light, mode == "light");
+            assert!(ui
+                .take_commands()
+                .iter()
+                .any(|c| c == &json!({"type":"setTheme","mode":mode})));
+        }
+        ui.message(json!({"type":"state","state":{"hostTheme":startup}}));
+        assert_eq!(
+            ui.light,
+            opposite == "light",
+            "explicit choice survives host changes"
+        );
+        ui.message(json!({"type":"state","state":{"supportsThemeSelection":false}}));
+        ui.prepare_scene();
+        assert!(!ui.scene.hits.iter().any(|h| h.target == Target::Theme));
+    }
+}
+
+#[test]
+fn unloaded_views_offer_theme_before_a_source_is_selected() {
+    for source_picker in [false, true] {
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{"path":"","supportsSourceSelection":source_picker,"hostTheme":"light"}}));
+        ui.prepare_scene();
+        assert!(!ui.scene.hits.iter().any(|h| h.target == Target::Devices));
+        click(&mut ui, |t| *t == Target::Theme);
+        assert!(!ui.light);
+        assert!(ui
+            .take_commands()
+            .iter()
+            .any(|c| c == &json!({"type":"setTheme","mode":"dark"})));
+    }
+}
+
+#[test]
+fn unloading_closes_settings_and_keeps_only_the_theme_action() {
+    let mut ui = fixture();
+    click(&mut ui, |t| *t == Target::Devices);
+    assert!(ui.interaction.settings_open());
+    ui.message(
+        json!({"type":"state","state":{"path":"","params":[],"supportsSourceSelection":true}}),
+    );
+    ui.prepare_scene();
+    assert!(!ui.interaction.settings_open());
+    assert!(!ui.scene.hits.iter().any(|h| h.target == Target::Devices));
+    assert!(ui.scene.hits.iter().any(|h| h.target == Target::Theme));
+}
+
+#[test]
 fn midi_velocity_defaults_and_resets_to_one_without_overriding_saved_values() {
     use crate::editing::Setting;
     for view in [
@@ -602,6 +661,7 @@ fn settings_hover_does_not_highlight_controls_beneath_the_popup() {
         assert!(ui.interaction.settings_open());
         key(&mut ui, Key::Escape);
         assert!(!ui.interaction.settings_open());
+        ui.input(Input::PointerLeave);
         ui.prepare_scene();
         let normal = document(&ui);
         ui.input(Input::PointerMove { x, y, fine: false });
@@ -671,8 +731,15 @@ fn unloaded_screen_requires_source_selection() {
     ui.prepare_scene();
     assert!(ui.scene.source_picker.is_none());
     assert!(ui.scene.labels.is_empty());
-    assert!(ui.scene.hits.is_empty());
-    assert!(ui.scene.shapes.is_empty());
+    assert!(ui
+        .scene
+        .hits
+        .iter()
+        .all(|h| matches!(h.target, Target::Theme)));
+    assert!(
+        !ui.scene.shapes.is_empty(),
+        "unloaded appearance controls remain visible"
+    );
 
     ui.message(json!({"type":"state","state":{"supportsSourceSelection":true}}));
     ui.prepare_scene();

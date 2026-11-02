@@ -405,5 +405,5 @@ fn plugin_picker_centers_editable_settings_and_tracks_host_block_size() {
         "path":"plugin.onda","supportsRunSettings":false,"supportsTransport":false
     }}));
     ui.prepare_scene();
-    assert!(!ui.scene.hits.iter().any(|h| h.target == Target::Devices));
+    assert!(ui.scene.hits.iter().any(|h| h.target == Target::Devices));
 }

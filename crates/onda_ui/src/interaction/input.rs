@@ -431,6 +431,12 @@ impl RunUi {
                 self.commands.push(json!({"type":if input {"setInputControlLayout"}else{"setParamLayout"},"layout":if knobs {"knobs"}else{"sliders"}}));
             }
             Target::Devices => self.toggle_settings(),
+            Target::Theme => {
+                let mode = if self.light { "dark" } else { "light" };
+                self.state["themeMode"] = json!(mode);
+                self.resolve_theme();
+                self.commands.push(json!({"type":"setTheme","mode":mode}));
+            }
             Target::FastMath => {
                 let enabled = self.state["fastMath"] != true;
                 self.state["fastMath"] = json!(enabled);

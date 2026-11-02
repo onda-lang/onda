@@ -1,3 +1,5 @@
+mod enums;
+
 use super::*;
 
 #[test]
@@ -982,5 +984,35 @@ sample:
     assert!(
         external_index.member_items("loader", "pre").is_empty(),
         "proc tasks are owner-private control symbols"
+    );
+}
+
+#[test]
+fn enum_types_and_members_are_completed() {
+    let source = "enum Mode:\n  LowPass\n  HighPass\nparams:\n  mode = Mode::HighPass\n";
+    let parsed = parse_program(source).unwrap();
+    let result = completion_items_for_document_with_index(
+        source,
+        None,
+        &HashMap::new(),
+        Some(&parsed),
+        None,
+        position_at(source, "Mode::HighPass", "Mode::".len()),
+        true,
+    );
+    assert!(
+        result.items.iter().any(|item| item["label"] == "LowPass"),
+        "{:?}",
+        result.items
+    );
+    assert!(
+        result.items.iter().any(|item| item["label"] == "HighPass"),
+        "{:?}",
+        result.items
+    );
+    let formatted = crate::formatting::format_program(&parsed);
+    assert_eq!(
+        crate::formatting::format_program(&parse_program(&formatted).unwrap()),
+        formatted
     );
 }

@@ -357,24 +357,18 @@ pub(crate) fn infer_known_def_return_type(
     infer_def_return_type(def, sig, env_seed, return_types, struct_defs, true)
 }
 
-fn format_primitive_type(ty: PrimitiveType) -> &'static str {
-    match ty {
-        PrimitiveType::F32 => "f32",
-        PrimitiveType::F64 => "f64",
-        PrimitiveType::I32 => "i32",
-        PrimitiveType::I64 => "i64",
-        PrimitiveType::Bool => "bool",
-    }
+fn format_primitive_type(ty: PrimitiveType) -> std::borrow::Cow<'static, str> {
+    ty.name()
 }
 
 fn format_return_type(ty: &ReturnType) -> String {
     match ty {
-        ReturnType::Scalar(ty) => format_primitive_type(*ty).to_owned(),
+        ReturnType::Scalar(ty) => format_primitive_type(*ty).into_owned(),
         ReturnType::Data(DataType::Struct(name)) => name.clone(),
         ReturnType::Data(DataType::Array { element, len }) => {
             let name = match element {
                 ArrayElemType::Primitive(ty) => ty.name(),
-                ArrayElemType::Struct(name) => name.as_str(),
+                ArrayElemType::Struct(name) => name.as_str().into(),
             };
             format!("{name}[{len}]")
         }

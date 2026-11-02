@@ -643,7 +643,10 @@ sample {
 }
 "#;
     let result = parse_program(src);
-    assert!(result.is_ok(), "fixed array declarations accept data expressions");
+    assert!(
+        result.is_ok(),
+        "fixed array declarations accept data expressions"
+    );
 }
 
 #[test]
@@ -970,9 +973,9 @@ fn typed_tuple_assignments_retain_the_declared_element_types() {
     assert_eq!(
         decl_ty,
         &Some(DeclType::Tuple(vec![
-            PrimitiveType::F64,
-            PrimitiveType::I32,
-            PrimitiveType::Bool,
+            PrimitiveType::F64.into(),
+            PrimitiveType::I32.into(),
+            PrimitiveType::Bool.into(),
         ]))
     );
     assert!(*is_typed_decl);
@@ -1067,9 +1070,12 @@ fn rejects_incomplete_and_duplicate_named_binding_ranges() {
 
 #[test]
 fn smoothing_is_not_parameter_domain_metadata() {
-    let errors = parse_program("params:\n  gain = 0.5 {0, 1, smooth = 0.03}\nsample:\n  out1 = gain\n")
-        .expect_err("smoothing is a host policy");
-    assert!(errors.iter().any(|error| error.message.contains("unknown parameter domain field 'smooth'")));
+    let errors =
+        parse_program("params:\n  gain = 0.5 {0, 1, smooth = 0.03}\nsample:\n  out1 = gain\n")
+            .expect_err("smoothing is a host policy");
+    assert!(errors.iter().any(|error| error
+        .message
+        .contains("unknown parameter domain field 'smooth'")));
 }
 
 #[test]
@@ -3334,12 +3340,10 @@ sample {
             _ => None,
         })
         .expect("sample block");
-    assert_eq!(
-        sample.body.len(),
-        2,
-        "local assignments should be retained"
+    assert_eq!(sample.body.len(), 2, "local assignments should be retained");
+    assert!(
+        matches!(&sample.body[0], Stmt::Assign { target: AssignTarget::Var(name), expr: Expr::Var { name: value, .. }, .. } if name == "X" && value == "N")
     );
-    assert!(matches!(&sample.body[0], Stmt::Assign { target: AssignTarget::Var(name), expr: Expr::Var { name: value, .. }, .. } if name == "X" && value == "N"));
     assert!(matches!(
         &sample.body[1],
         Stmt::Assign {
@@ -3372,12 +3376,14 @@ fn parses_explicit_top_level_config_constants() {
     assert_eq!(declarations[0].name, "Size");
     assert!(matches!(
         declarations[0].ty,
-        Some(ConstType::Scalar(PrimitiveType::I32))
+        Some(ConstType::Scalar(ScalarTypeRef::Primitive(
+            PrimitiveType::I32
+        )))
     ));
     assert!(matches!(
         declarations[1].ty,
         Some(ConstType::Array {
-            elem: PrimitiveType::F32,
+            elem: ScalarTypeRef::Primitive(PrimitiveType::F32),
             ..
         })
     ));
@@ -3444,7 +3450,7 @@ const Table: f32[N] = [0.25, 0.5, 1.0]
         .expect("const array declaration should be retained");
     match &table.ty {
         Some(ConstType::Array { elem, size }) => {
-            assert_eq!(*elem, PrimitiveType::F32);
+            assert_eq!(elem.primitive(), Some(PrimitiveType::F32));
             assert!(matches!(size, Expr::Var { name, .. } if name == "N"));
         }
         other => panic!("expected typed const array, got {other:?}"),
@@ -3475,7 +3481,7 @@ namespace NS:
         .expect("top-level const array");
     assert!(matches!(
         &table.ty,
-        Some(ConstType::Slice { elem }) if *elem == PrimitiveType::F32
+        Some(ConstType::Slice { elem }) if elem.primitive() == Some(PrimitiveType::F32)
     ));
 
     let flags = program
@@ -3493,7 +3499,7 @@ namespace NS:
         .expect("namespace const array");
     assert!(matches!(
         &flags.ty,
-        Some(ConstType::Slice { elem }) if *elem == PrimitiveType::Bool
+        Some(ConstType::Slice { elem }) if elem.primitive() == Some(PrimitiveType::Bool)
     ));
 }
 

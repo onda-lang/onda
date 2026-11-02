@@ -545,6 +545,7 @@ pub(super) fn reject_forward_const_refs_in_block(
         | Block::Def(_)
         | Block::Namespace(_)
         | Block::NamespaceAlias(_)
+        | Block::Enum(_)
         | Block::Use(_) => {}
     }
 }
@@ -876,6 +877,7 @@ pub(super) fn reject_const_shadowing_in_program(
             | Block::Assert(_)
             | Block::Namespace(_)
             | Block::NamespaceAlias(_)
+            | Block::Enum(_)
             | Block::Use(_) => {}
         }
     }
@@ -1034,6 +1036,7 @@ pub(super) fn reject_const_assignments_in_program(
             | Block::Assert(_)
             | Block::Namespace(_)
             | Block::NamespaceAlias(_)
+            | Block::Enum(_)
             | Block::Use(_) => {}
         }
     }
@@ -1659,6 +1662,19 @@ pub(super) fn compile_const_descriptors(
             Some(CompileConstDescriptor {
                 name: decl.name.clone(),
                 kind,
+                enumeration: match &value {
+                    ConstValue::Scalar(value) => value.primitive_type(),
+                    ConstValue::Array { elem_ty, .. } => *elem_ty,
+                }
+                .into_enum()
+                .and_then(|ty| {
+                    program.blocks.iter().find_map(|block| match block {
+                        Block::Enum(def) if def.resolved == Some(ty) => {
+                            Some(crate::enum_support::metadata(def))
+                        }
+                        _ => None,
+                    })
+                }),
                 value,
             })
         })

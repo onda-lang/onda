@@ -269,7 +269,9 @@ pub fn project_buffer_declarations(
         .map(|buffer| {
             let element = match buffer.elem_ty {
                 onda_frontend::PrimitiveType::Bool => BufferElement::Bool,
-                onda_frontend::PrimitiveType::I32 => BufferElement::I32,
+                onda_frontend::PrimitiveType::I32 | onda_frontend::PrimitiveType::Enum(_) => {
+                    BufferElement::I32
+                }
                 onda_frontend::PrimitiveType::I64 => BufferElement::I64,
                 onda_frontend::PrimitiveType::F32 => BufferElement::F32,
                 onda_frontend::PrimitiveType::F64 => BufferElement::F64,

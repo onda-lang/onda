@@ -43,6 +43,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             control_json,
+            start_paused,
             report_sources,
             param_sets,
             buffer_bindings,
@@ -83,6 +84,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 fast_math,
                 show_meta,
                 control_json,
+                start_paused,
                 param_sets,
                 buffer_bindings,
                 project_buffer_bindings: project

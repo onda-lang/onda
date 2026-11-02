@@ -1360,6 +1360,31 @@ fn source_reporting_requires_explicit_control_opt_in() {
 }
 
 #[test]
+fn paused_playback_requires_a_control_client() {
+    for control in [false, true] {
+        let mut args = vec!["onda", "run", "play", "x.onda", "--start-paused"];
+        if control {
+            args.push("--control-json");
+        }
+        let result = parse_args(args.into_iter().map(str::to_owned));
+        if control {
+            assert!(matches!(
+                result,
+                Ok(Command::Run(RunCommand::Play {
+                    start_paused: true,
+                    ..
+                }))
+            ));
+        } else {
+            assert_eq!(
+                result.err().unwrap(),
+                "--start-paused requires --control-json"
+            );
+        }
+    }
+}
+
+#[test]
 fn parse_run_command_alias_accepts_window_play_and_render() {
     let window = parse_args(["onda", "run", "x.onda"].into_iter().map(str::to_owned))
         .expect("run window args should parse");
@@ -1438,7 +1463,7 @@ fn parse_run_window_accepts_options_before_input_file() {
     match cmd {
         Command::Run(RunCommand::Window { input, theme, .. }) => {
             assert_eq!(input, Some(PathBuf::from("x.onda")));
-            assert_eq!(theme, RunThemeMode::Light);
+            assert_eq!(theme, Some(RunThemeMode::Light));
         }
         _ => panic!("expected run window command"),
     }
@@ -1756,10 +1781,25 @@ fn parse_run_window_accepts_theme_flag() {
     .expect("run window args should parse");
     match cmd {
         Command::Run(RunCommand::Window { theme, .. }) => {
-            assert_eq!(theme, RunThemeMode::Dark);
+            assert_eq!(theme, Some(RunThemeMode::Dark));
         }
         _ => panic!("expected run window command"),
     }
+}
+
+#[test]
+fn run_window_detects_an_unspecified_theme_and_only_accepts_binary_choices() {
+    let cmd = parse_args(["onda", "run"].into_iter().map(str::to_owned)).unwrap();
+    assert!(matches!(
+        cmd,
+        Command::Run(RunCommand::Window { theme: None, .. })
+    ));
+    assert!(parse_args(
+        ["onda", "run", "--theme", "auto"]
+            .into_iter()
+            .map(str::to_owned)
+    )
+    .is_err());
 }
 
 #[test]

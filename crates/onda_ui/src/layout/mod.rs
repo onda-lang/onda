@@ -37,7 +37,7 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
     s.viewport_height = viewport;
     let width = (w - GUTTER * 2.0).max(1.0);
     let mut y = GUTTER - ui.scroll;
-    let mut header_bottom = y;
+    let header_bottom;
     let loaded = ui.loaded();
     if loaded {
         header_bottom = y + header::build(ui, &mut s, p, [GUTTER, y, width, 0.0]);
@@ -60,8 +60,13 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
             .max(header::picker_content_height(ui) + 24.0)
             .max(300.0);
         header::picker(ui, &mut s, p, [GUTTER, y, width, height]);
+        header_bottom = y + 44.0;
         y += height + GAP;
         s.scope_shape_end = s.shapes.len();
+    } else {
+        header::empty_actions(ui, &mut s, p, [GUTTER, y, width, 44.0]);
+        header_bottom = y + 44.0;
+        y = header_bottom + GAP;
     }
     s.content_height = y + ui.scroll;
     s.scrollbar(

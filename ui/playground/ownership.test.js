@@ -42,7 +42,7 @@ test("browser compile settings live in the shared run UI and recompile on change
   assert.match(runViewHost, /blockSamples: 512/);
   assert.match(
     playground,
-    /async function applyCompileOptions\(settings\)[\s\S]*?setAnalysisOptions\(options\)[\s\S]*?compiler \? runProject\(\) : null/,
+    /async function applyCompileOptions\(settings\)[\s\S]*?setAnalysisOptions\(analysisOptions\(options\)\)[\s\S]*?compiler \? runProject\(\{ play: false \}\) : null/,
   );
   assert.match(
     playground,

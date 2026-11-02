@@ -37,7 +37,13 @@ impl Layout {
                             return None;
                         }
                         (
-                            Target::Field(Field::Control(*index)),
+                            if c.metadata["enumeration"].is_object() {
+                                Target::Choose(crate::interaction::SelectId::Field(Field::Control(
+                                    *index,
+                                )))
+                            } else {
+                                Target::Field(Field::Control(*index))
+                            },
                             field_rect(
                                 c,
                                 knobs,
@@ -96,9 +102,15 @@ pub(super) fn field_rect(c: &Control, knobs: bool, [x, y, w, h]: [f32; 4]) -> [f
     if c.boolean() {
         return [x + (w - 24.0) * 0.5, y + h * 0.5, 24.0, 24.0];
     }
-    if knobs {
+    let enumeration = c.metadata["enumeration"].is_object();
+    if knobs || enumeration {
         let width = 104.0_f32.min(w - 18.0);
-        [x + (w - width) * 0.5, y + 101.0, width, 26.0]
+        [
+            x + (w - width) * 0.5,
+            y + if enumeration { h * 0.5 } else { 101.0 },
+            width,
+            26.0,
+        ]
     } else {
         let width = 104.0_f32
             .min(((w - 26.0) * 0.5).max(40.0))

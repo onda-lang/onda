@@ -466,8 +466,8 @@ impl<'a, 'e> Interpreter<'a, 'e> {
                 let value = match self.stack.pop()? {
                     Value::Array(array) => ResolvedConstValue::Array(array.materialize()?),
                     Value::Expr(expr, _) => {
-                        let ty = match entry.decl.ty {
-                            Some(ConstType::Scalar(ty)) => ty,
+                        let ty = match &entry.decl.ty {
+                            Some(ConstType::Scalar(ty)) => ty.primitive()?,
                             _ => entry.scalar_type?,
                         };
                         ResolvedConstValue::Scalar(self.typed(&expr, ty)?)

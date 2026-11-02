@@ -213,6 +213,10 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     differences without duplicating typing, assignment, or control-flow semantics.
   - `index_access.rs` — canonical source indexing access modes and unsafe receiver-call rewriting.
   - `port_coercion.rs` — port and parameter coercion.
+  - `enum_support.rs` — enum display metadata and shared ordinal/storage domains. Enum identities remain
+    nominal scalar types through checking and specialization; executable MIR uses `i32`.
+  - `pipeline/namespace_flattening/{enums,type_rewriting}.rs` — enum registration, member constants, and
+    named type resolution across namespaces, aliases, templates, and executable declarations.
   - `declaration_coercion.rs` — struct field, param, and buffer coercion.
   - `namespacing.rs` — namespace, `use`, and qualified-path resolution.
   - `io_state_helpers.rs` — input/output/state surface helpers.

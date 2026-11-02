@@ -867,9 +867,8 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let source_types = values.iter().map(|value| value.ty).collect::<Vec<_>>();
-        let target_types = declared_ty
-            .and_then(onda_frontend::DeclType::tuple)
-            .unwrap_or(&source_types);
+        let declared_types = declared_ty.and_then(onda_frontend::DeclType::tuple);
+        let target_types = declared_types.as_deref().unwrap_or(&source_types);
         if values.len() != target_types.len() {
             return Err(self.error(
                 format!(

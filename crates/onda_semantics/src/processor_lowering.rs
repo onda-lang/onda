@@ -527,7 +527,17 @@ pub(crate) fn coerce_typed_events(
                 continue;
             }
             let typed = match &param.ty {
-                EventParamType::Tuple(types) => TypedEventParamType::Tuple(types.clone()),
+                EventParamType::Tuple(types) => {
+                    let Some(types) = ScalarTypeRef::primitives(types) else {
+                        push_semantic(
+                            param_diag,
+                            errors,
+                            "event tuple element types must resolve to scalar types",
+                        );
+                        continue;
+                    };
+                    TypedEventParamType::Tuple(types)
+                }
                 EventParamType::Scalar(ty) => TypedEventParamType::Scalar(*ty),
                 EventParamType::GenericScalar { name } if structs.contains_key(name) => {
                     TypedEventParamType::Data(DataType::Struct(name.clone()))
@@ -760,12 +770,22 @@ fn expand_proc_event_specs(
         for param in &event.params {
             let param_diag = DiagCtx::new(param.ty_loc.or(param.loc.clone()));
             match &param.ty {
-                EventParamType::Tuple(types) => params.push(ProcEventParamSpec {
-                    name: param.name.clone(),
-                    slots: Vec::new(),
-                    ty: ProcEventParamTypeSpec::Tuple(types.clone()),
-                    default: param.default.clone(),
-                }),
+                EventParamType::Tuple(types) => {
+                    let Some(types) = ScalarTypeRef::primitives(types) else {
+                        push_semantic(
+                            param_diag,
+                            errors,
+                            "event tuple element types must resolve to scalar types",
+                        );
+                        continue;
+                    };
+                    params.push(ProcEventParamSpec {
+                        name: param.name.clone(),
+                        slots: Vec::new(),
+                        ty: ProcEventParamTypeSpec::Tuple(types),
+                        default: param.default.clone(),
+                    });
+                }
                 EventParamType::Scalar(ty) => params.push(ProcEventParamSpec {
                     name: param.name.clone(),
                     slots: vec![ProcEventParamSlotSpec {
@@ -947,9 +967,11 @@ fn build_proc_lowering_env(
                 .chain(proc_defs.iter().flat_map(|proc| proc.local_defs.iter())),
             raw_struct_defs_by_name.values(),
         );
-        let finalizer_seed = GenericInferenceLocals::with_facts(inference_facts.clone());
+        let mut finalizer_seed = GenericInferenceLocals::with_facts(inference_facts.clone());
+        finalizer_seed.bind_constants(const_scalars, const_arrays, const_scope, options);
         for proc in &mut proc_defs {
-            let proc_seed = generic_inference_seed_for_processor(proc, inference_facts.clone());
+            let mut proc_seed = generic_inference_seed_for_processor(proc, inference_facts.clone());
+            proc_seed.bind_constants(const_scalars, const_arrays, const_scope, options);
             let runtime_seed = rewrite_generic_struct_ctor_stmt_list(
                 &mut proc.init,
                 &generic_struct_templates,
@@ -1507,7 +1529,14 @@ fn desugar_processors_impl(
     if materialize_generics {
         materialize_generic_processors(&mut program, errors);
     }
-    rewrite_source_task_and_when_generic_structs(&mut program, errors);
+    rewrite_source_task_and_when_generic_structs(
+        &mut program,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+        errors,
+    );
     inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(
         &mut program,

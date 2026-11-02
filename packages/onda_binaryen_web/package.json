@@ -38,7 +38,7 @@
     "prepack": "node ../../scripts/stage-web-api-docs.mjs",
     "build:math-kernel": "node ./scripts/build-math-kernel.mjs",
     "test": "node --test",
-    "test:onda": "node ./scripts/verify-language-slice.mjs && node ./scripts/verify-backend-parity.mjs && node ./scripts/verify-fma-oracle.mjs",
+    "test:onda": "node ./scripts/verify-language-slice.mjs && node ./scripts/verify-enums.mjs && node ./scripts/verify-backend-parity.mjs && node ./scripts/verify-fma-oracle.mjs",
     "test:corpus": "node ./scripts/verify-source-corpus.mjs",
     "test:fma-oracle": "node ./scripts/verify-fma-oracle.mjs",
     "test:parity": "node ./scripts/verify-backend-parity.mjs",

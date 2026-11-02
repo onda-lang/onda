@@ -1,0 +1,22 @@
+enum Mode:
+  A
+  B
+  C
+
+def identity(pair: (Mode, i32)) -> (Mode, i32):
+  local: (Mode, i32) = pair
+  return local
+
+init:
+  current: (Mode, i32) = (Mode::A, 0)
+
+delegate changed(pair: (Mode, i32))
+
+when changed(pair):
+  current = identity(pair)
+
+event configure(pair: (Mode, i32) = (Mode::B, 1)):
+  changed(pair)
+
+sample:
+  out1 = i32(current[0]) + current[1]

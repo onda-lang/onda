@@ -1,4 +1,13 @@
 //! Shared run-view colors and dimensions.
+impl crate::RunUi {
+    pub(crate) fn resolve_theme(&mut self) {
+        self.light = match self.state["themeMode"].as_str() {
+            Some("light") => true,
+            Some("dark") => false,
+            _ => self.state["hostTheme"] == "light",
+        };
+    }
+}
 pub(crate) const GUTTER: f32 = 12.0;
 pub(crate) const GAP: f32 = 12.0;
 pub(crate) const SECTION_HEADER_HEIGHT: f32 = 40.0;
@@ -63,8 +72,8 @@ impl Palette {
                 accent_strong: rgb(0x0a213b),
                 accent_soft: rgb(0xdbe8f7),
                 success: rgb(0x136c4c),
-                meter_active: rgb(0x00a862),
-                meter_warning: rgb(0xb57b1b),
+                meter_active: rgb(0x5ed2ad),
+                meter_warning: rgb(0xe4b34a),
                 meter_track: rgb(0xd5e0eb),
                 meter_stopped: rgb(0xe7edf4),
                 danger: rgb(0xb53333),

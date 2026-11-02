@@ -30,7 +30,7 @@ proc BellVoice:
     modulation = std::env::DecayEnv()
     strike_envelope = std::env::DecayEnv(decay_s = 0.024)
     noise = std::noise::White()
-    strike_filter = std::filter::OnePole(mode = std::filter::mode::ONE_POLE_HIGHPASS)
+    strike_filter = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass)
 
   def update_pitch():
     frequency = std::pitch::note_to_hz(note)

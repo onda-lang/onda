@@ -1894,7 +1894,7 @@ fn set_param_control_f64(
             bytes.copy_from_slice(&value.to_ne_bytes());
             8
         }
-        PrimitiveType::I32 => {
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => {
             bytes[..4].copy_from_slice(&(value.round() as i32).to_ne_bytes());
             4
         }
@@ -2795,7 +2795,7 @@ fn fallback_channels(buffer: &onda_codegen_llvm::DeclaredBuffer) -> Result<i32, 
 
 fn primitive_type_bytes(ty: PrimitiveType) -> usize {
     match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }
@@ -2805,7 +2805,7 @@ fn primitive_type_alignment(ty: PrimitiveType) -> usize {
     match ty {
         PrimitiveType::F32 => std::mem::align_of::<f32>(),
         PrimitiveType::F64 => std::mem::align_of::<f64>(),
-        PrimitiveType::I32 => std::mem::align_of::<i32>(),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => std::mem::align_of::<i32>(),
         PrimitiveType::I64 => std::mem::align_of::<i64>(),
         PrimitiveType::Bool => std::mem::align_of::<u8>(),
     }

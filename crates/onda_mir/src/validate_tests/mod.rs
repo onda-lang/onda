@@ -1,3 +1,5 @@
+mod enums;
+
 use crate::{
     AccessMode, Buffer, BufferChannels, BufferId, BufferRef, CallArgument, CompareOp,
     CompileConfig, ConstantValue, Delegate, DelegateParam, Event, EventId, EventParam, FieldId,
@@ -453,6 +455,7 @@ fn validates_numeric_interface_ranges_and_defaults() {
     });
     invalid.interface.params.extend([
         Param {
+            enumeration: None,
             name: "non_finite".to_owned(),
             ty: test_type(0),
             default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
@@ -463,6 +466,7 @@ fn validates_numeric_interface_ranges_and_defaults() {
             control: crate::ParamControl::default(),
         },
         Param {
+            enumeration: None,
             name: "boolean".to_owned(),
             ty: test_type(1),
             default: ConstantValue::Scalar(ScalarValue::Bool(false)),
@@ -473,6 +477,7 @@ fn validates_numeric_interface_ranges_and_defaults() {
             control: crate::ParamControl::default(),
         },
         Param {
+            enumeration: None,
             name: "outside".to_owned(),
             ty: TypeId::new(0),
             default: ConstantValue::Scalar(ScalarValue::I32(3)),
@@ -504,6 +509,7 @@ fn validates_parameter_control_metadata() {
     let mut valid = empty_program();
     valid.types.push(Type::Scalar(ScalarType::F32));
     valid.interface.params.push(Param {
+        enumeration: None,
         name: "cutoff".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::F32(440.0)),
@@ -541,6 +547,7 @@ fn validates_parameter_control_metadata() {
     let mut invalid = empty_program();
     invalid.types.push(Type::Scalar(ScalarType::I32));
     invalid.interface.params.push(Param {
+        enumeration: None,
         name: "mode".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::I32(4)),
@@ -562,6 +569,7 @@ fn validates_parameter_control_metadata() {
     let mut inexact_i64 = empty_program();
     inexact_i64.types.push(Type::Scalar(ScalarType::I64));
     inexact_i64.interface.params.push(Param {
+        enumeration: None,
         name: "wide".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::I64(9_007_199_254_740_992)),
@@ -590,6 +598,53 @@ fn rejects_noncanonical_process_parameter_count() {
     assert!(errors.iter().any(|error| error
         .message
         .contains("exactly 3 parameters (start_frame, frames, flags)")));
+}
+
+#[test]
+fn array_parameter_domains_validate_shared_controls_and_every_default() {
+    for scalar in [ScalarType::I32, ScalarType::F32, ScalarType::F64] {
+        let mut program = empty_program();
+        let scalar_id = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Scalar(scalar));
+        let array_id = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Array {
+            element: scalar_id,
+            len: 2,
+        });
+        let value = |n| match scalar {
+            ScalarType::I32 => ScalarValue::I32(n),
+            ScalarType::F32 => ScalarValue::F32(n as f32),
+            ScalarType::F64 => ScalarValue::F64(n as f64),
+            _ => unreachable!(),
+        };
+        program.interface.params.push(Param {
+            name: "choices".into(),
+            ty: array_id,
+            default: ConstantValue::Aggregate(vec![ConstantValue::Scalar(value(0)); 2]),
+            range: Some(crate::ValueRange {
+                min: value(0),
+                max: value(4),
+            }),
+            control: crate::ParamControl {
+                step: Some(value(2)),
+                step_count: Some(2),
+                ..Default::default()
+            },
+            enumeration: None,
+        });
+        super::validate(&program).unwrap();
+        program.interface.params[0].default = ConstantValue::Aggregate(vec![
+            ConstantValue::Scalar(value(0)),
+            ConstantValue::Scalar(value(1)),
+        ]);
+        let errors = super::validate(&program).expect_err("later off-grid defaults must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("default is not on the step grid")),
+            "{scalar:?}: {errors:?}"
+        );
+    }
 }
 
 #[test]
@@ -1376,6 +1431,7 @@ fn rejects_runtime_handles_nested_in_interface_storage() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "control_resource".to_owned(),
             ty: test_type(3),
             mirror: crate::StateId::new(0),
@@ -1389,6 +1445,7 @@ fn rejects_runtime_handles_nested_in_interface_storage() {
         pinned: false,
     });
     program.interface.params.push(Param {
+        enumeration: None,
         name: "parameter_view".to_owned(),
         ty: test_type(4),
         default: ConstantValue::Aggregate(Vec::new()),
@@ -1832,6 +1889,7 @@ fn rejects_readwrite_reference_to_a_readonly_place() {
     let mut program = empty_program();
     program.types.push(Type::Scalar(ScalarType::F32));
     program.interface.params.push(Param {
+        enumeration: None,
         name: "gain".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::F32(1.0)),
@@ -2681,6 +2739,7 @@ fn control_outputs_use_explicit_one_to_one_mirror_identity() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),
@@ -2691,6 +2750,7 @@ fn control_outputs_use_explicit_one_to_one_mirror_identity() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "other_meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),
@@ -2712,6 +2772,7 @@ fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
         range: None,
     });
     program.interface.params.push(Param {
+        enumeration: None,
         name: "shared".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
@@ -2885,6 +2946,7 @@ fn rejects_control_output_store_from_event_handler() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),
@@ -2929,6 +2991,7 @@ fn control_mirrors_are_readable_but_only_control_stores_can_mutate_them() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),

@@ -795,6 +795,7 @@ function decodeCompileConstDescriptors(encoded) {
     kind: descriptor.kind,
     elementCount: descriptor.element_count,
     value: decodeCompileConstValue(descriptor.element, descriptor.kind, descriptor.values),
+    ...(descriptor.enumeration ? { enumeration: descriptor.enumeration } : {}),
   }));
 }
 

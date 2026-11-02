@@ -10,7 +10,7 @@ use onda_frontend::{
     SourceManifest,
 };
 #[cfg(target_arch = "wasm32")]
-use onda_frontend::{Block, ConstType, PrimitiveType};
+use onda_frontend::{Block, PrimitiveType};
 #[cfg(target_arch = "wasm32")]
 use onda_project::{
     decode_buffer_bytes, decode_ondabuffer, encode_ondabuffer, validate_ondabuffer, AssetId,
@@ -149,11 +149,7 @@ fn resolve_web_compile_inputs(
                 ),
             )]);
         };
-        let expected_elem = match declared_ty {
-            ConstType::Scalar(ty)
-            | ConstType::Array { elem: ty, .. }
-            | ConstType::Slice { elem: ty } => *ty,
-        };
+        let expected_elem = declared_ty.storage_element();
         if entry.element != "number" && web_element_type(&entry.element).is_none() {
             return Err(vec![CompilerDiagnostic::configuration(format!(
                 "configuration constant '{}' has unknown element type '{}'",
@@ -250,7 +246,7 @@ fn web_typed_const_value(
         "number" => {
             let number = web_number(value, "number")?;
             match expected {
-                PrimitiveType::I32 => {
+                PrimitiveType::I32 | PrimitiveType::Enum(_) => {
                     if number.fract() != 0.0
                         || number < f64::from(i32::MIN)
                         || number > f64::from(i32::MAX)
@@ -1131,6 +1127,8 @@ struct WebCompileConstDescriptor {
     kind: &'static str,
     element_count: usize,
     values: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enumeration: Option<onda_processor_abi::EnumMetadata>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1159,6 +1157,7 @@ fn encode_web_compile_const_descriptors(
             };
             WebCompileConstDescriptor {
                 name: descriptor.name,
+                enumeration: descriptor.enumeration,
                 element,
                 kind,
                 element_count: values.len(),
@@ -1174,7 +1173,7 @@ fn encode_web_compile_const_descriptors(
 fn web_primitive_type(ty: PrimitiveType) -> &'static str {
     match ty {
         PrimitiveType::Bool => "bool",
-        PrimitiveType::I32 => "i32",
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => "i32",
         PrimitiveType::I64 => "i64",
         PrimitiveType::F32 => "f32",
         PrimitiveType::F64 => "f64",
@@ -1185,7 +1184,7 @@ fn web_primitive_type(ty: PrimitiveType) -> &'static str {
 fn web_compile_const_value(value: TypedConstValue) -> serde_json::Value {
     match value {
         TypedConstValue::Bool(value) => serde_json::Value::Bool(value),
-        TypedConstValue::I32(value) => value.into(),
+        TypedConstValue::I32(value) | TypedConstValue::Enum { ordinal: value, .. } => value.into(),
         TypedConstValue::I64(value) => value.to_string().into(),
         TypedConstValue::F32(value) => web_compile_float_value(value as f64),
         TypedConstValue::F64(value) => web_compile_float_value(value),

@@ -113,6 +113,22 @@ impl Editor {
 }
 
 impl RunUi {
+    pub(crate) fn field_enumeration(&self, field: &Field) -> Option<&Value> {
+        let metadata = match field {
+            Field::Control(index) => &self.controls.get(*index)?.metadata,
+            Field::Event(field) => {
+                let arg = self.events.get(field.event)?.args.get(field.arg)?;
+                events::shape_at(&arg.shape, &field.path)?
+            }
+            Field::Setting(_) => return None,
+        };
+        metadata.get("enumeration").filter(|value| {
+            value["members"]
+                .as_array()
+                .is_some_and(|members| !members.is_empty())
+        })
+    }
+
     pub(crate) fn setting_bounds(&self, setting: Setting) -> (f64, f64, bool) {
         match setting {
             Setting::SampleRate => (1.0, 768000.0, true),

@@ -30,7 +30,7 @@ impl<'a> FunctionLowerer<'a> {
                         // their concrete type.
                         let lowered = self.lower_untyped_expr(expression, block)?;
                         payload_size += match lowered.ty {
-                            PrimitiveType::F32 | PrimitiveType::I32 => 4,
+                            PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
                             PrimitiveType::F64 | PrimitiveType::I64 => 8,
                             PrimitiveType::Bool => 1,
                         };

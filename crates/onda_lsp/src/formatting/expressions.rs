@@ -85,9 +85,14 @@ pub(super) fn format(expr: &Expr) -> String {
             Expr::ArrayCtor { spec, init, .. } => {
                 let elem = match &spec.elem {
                     ArrayElemType::Primitive(ty) => primitive_type_name(*ty),
-                    ArrayElemType::Struct(name) => name,
+                    ArrayElemType::Struct(name) => std::borrow::Cow::Borrowed(name.as_str()),
                 };
-                pending.extend([text(elem), text("["), Item::Expr(&spec.size, 0), text("](")]);
+                pending.extend([
+                    Item::Text(elem),
+                    text("["),
+                    Item::Expr(&spec.size, 0),
+                    text("]("),
+                ]);
                 if let Some(init) = init {
                     expressions(&mut pending, init);
                 }
@@ -120,7 +125,7 @@ pub(super) fn format(expr: &Expr) -> String {
             }
             Expr::Cast { to, expr, .. } => {
                 pending.extend([
-                    text(primitive_type_name(*to)),
+                    Item::Text(primitive_type_name(*to)),
                     text("("),
                     Item::Expr(expr, 0),
                     text(")"),

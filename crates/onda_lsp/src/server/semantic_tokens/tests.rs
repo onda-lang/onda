@@ -745,55 +745,36 @@ fn semantic_tokens_mark_onda_params_as_ports() {
 }
 
 #[test]
-fn semantic_tokens_runtime_symbols_shadow_namespace_names_in_std_filter() {
+fn semantic_tokens_distinguish_filter_mode_params_from_enum_types() {
     let (path, source) = repo_source("stdlib/std/filter.onda");
     let tokens = semantic_tokens_for_document(&source, Some(&path));
-    let mode_namespace = line_containing(&source, "  namespace mode:");
-    let one_pole_param = line_containing(&source, "mode: i32 = mode::ONE_POLE_LOWPASS");
-    let one_pole_read = line_containing(&source, "mode == mode::ONE_POLE_HIGHPASS");
-    let svf_param = line_containing(&source, "mode: i32 = mode::SVF_LOWPASS");
-    let svf_read = line_containing(&source, "mode == mode::SVF_LOWPASS");
-
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, mode_namespace, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
-        "mode namespace declaration should remain a namespace"
-    );
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, one_pole_param, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "OnePole param declaration should be a port"
-    );
-    assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, one_pole_param, "mode", 1),
-        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
-        "OnePole default should keep mode:: as namespace"
-    );
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, one_pole_read, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "OnePole mode read should be a port"
-    );
-    assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, one_pole_read, "mode", 1),
-        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
-        "OnePole qualified mode:: use should be namespace"
-    );
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, svf_param, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "Svf param declaration should be a port"
-    );
-    assert_eq!(
-        token_type_at_text_on_line(&tokens, &source, svf_read, "mode"),
-        Some(SEMANTIC_TOKEN_TYPE_PORT),
-        "Svf mode read should be a port"
-    );
-    assert_eq!(
-        token_type_at_nth_text_on_line(&tokens, &source, svf_read, "mode", 1),
-        Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
-        "Svf qualified mode:: use should be namespace"
-    );
+    for (ty, selected) in [("OnePoleMode", "HighPass"), ("SvfMode", "LowPass")] {
+        let declaration = line_containing(&source, &format!("enum {ty}:"));
+        let parameter = line_containing(&source, &format!("mode: {ty} = {ty}::LowPass"));
+        let read = line_containing(&source, &format!("mode == {ty}::{selected}"));
+        assert_eq!(
+            token_type_at_text_on_line(&tokens, &source, declaration, ty),
+            Some(SEMANTIC_TOKEN_TYPE_TYPE),
+            "{ty} declaration should be a type"
+        );
+        for line in [parameter, read] {
+            assert_eq!(
+                token_type_at_text_on_line(&tokens, &source, line, "mode"),
+                Some(SEMANTIC_TOKEN_TYPE_PORT),
+                "mode should be a processor parameter"
+            );
+            assert_eq!(
+                token_type_at_text_on_line(&tokens, &source, line, ty),
+                Some(SEMANTIC_TOKEN_TYPE_TYPE),
+                "{ty} references should remain types"
+            );
+        }
+        assert_eq!(
+            token_type_at_nth_text_on_line(&tokens, &source, parameter, ty, 1),
+            Some(SEMANTIC_TOKEN_TYPE_TYPE),
+            "the default's qualifier should remain an enum type"
+        );
+    }
 }
 
 #[test]
@@ -2070,5 +2051,42 @@ task standalone():
     assert_eq!(
         fallback.token_type_for("standalone_local", 7, 4),
         Some(SEMANTIC_TOKEN_TYPE_VARIABLE)
+    );
+}
+
+#[test]
+fn enum_declarations_members_aliases_and_qualifiers_keep_their_symbol_kinds() {
+    let source = "namespace DSP:\n  enum Mode:\n    LowPass\n    HighPass {label = \"High-pass\"}\nuse DSP::Mode as Choice\nparams:\n  mode: Choice = Choice::HighPass\n";
+    let tokens = semantic_tokens_for_document(source, None);
+    for (line, text, occurrence, expected) in [
+        (1, "enum", 0, SEMANTIC_TOKEN_TYPE_KEYWORD),
+        (1, "Mode", 0, SEMANTIC_TOKEN_TYPE_TYPE),
+        (2, "LowPass", 0, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+        (3, "HighPass", 0, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+        (4, "DSP", 0, SEMANTIC_TOKEN_TYPE_NAMESPACE),
+        (4, "Mode", 0, SEMANTIC_TOKEN_TYPE_TYPE),
+        (4, "Choice", 0, SEMANTIC_TOKEN_TYPE_TYPE),
+        (6, "Choice", 0, SEMANTIC_TOKEN_TYPE_TYPE),
+        (6, "Choice", 1, SEMANTIC_TOKEN_TYPE_TYPE),
+        (6, "HighPass", 0, SEMANTIC_TOKEN_TYPE_ENUM_MEMBER),
+    ] {
+        assert_eq!(
+            token_type_at_nth_text_on_line(&tokens, source, line, text, occurrence),
+            Some(expected),
+            "line {line}: {text}"
+        );
+    }
+    assert!(tokens.iter().any(|token| token.line == 3
+        && token.token_type == SEMANTIC_TOKEN_TYPE_ENUM_MEMBER
+        && token.token_modifiers == SEMANTIC_TOKEN_MODIFIER_DECLARATION));
+}
+
+#[test]
+fn enum_types_remain_highlighted_in_incomplete_source() {
+    let source = "enum Mode:\n  A\n  B\nparams:\n  mode = Mode::\n";
+    let tokens = semantic_tokens_for_document(source, None);
+    assert_eq!(
+        token_type_at_text_on_line(&tokens, source, 0, "Mode"),
+        Some(SEMANTIC_TOKEN_TYPE_TYPE)
     );
 }

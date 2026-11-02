@@ -422,6 +422,7 @@ fn block_decl_name(block: &Block) -> Option<&str> {
         Block::NamespaceAlias(alias) => Some(alias.name.as_str()),
         Block::Use(_) => None,
         Block::Struct(s) => Some(s.name.as_str()),
+        Block::Enum(s) => Some(s.name.as_str()),
         Block::Def(d) => Some(d.name.as_str()),
         Block::Proc(p) => Some(p.name.as_str()),
         _ => None,
@@ -852,6 +853,7 @@ fn parse_program_item(
             }
             blocks.push(Block::Proc(proc_def));
         }
+        Rule::enum_block => blocks.push(Block::Enum(parse_enum_block(pair)?)),
         Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),
         Rule::def_block => blocks.push(Block::Def(parse_def_block(pair)?)),
         Rule::namespace_block => blocks.push(Block::Namespace(parse_namespace_decl_ast(pair)?)),
@@ -1135,6 +1137,7 @@ fn validate_imported_blocks(blocks: &[Block], canonical: &Path) -> Result<(), Ve
         if !matches!(
             block,
             Block::Const(_)
+                | Block::Enum(_)
                 | Block::Struct(_)
                 | Block::Def(_)
                 | Block::Proc(_)
@@ -1816,6 +1819,7 @@ fn load_builtin_module_blocks(
                 if !matches!(
                     block,
                     Block::Const(_)
+                        | Block::Enum(_)
                         | Block::Struct(_)
                         | Block::Def(_)
                         | Block::Proc(_)

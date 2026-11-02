@@ -278,7 +278,10 @@ mod tests {
         for _ in 0..8 {
             tab(&mut ui, false);
             let target = ui.interaction.focus.as_ref().unwrap();
-            assert!(matches!(target, Target::Choose(_) | Target::Command(_)));
+            assert!(matches!(
+                target,
+                Target::Theme | Target::Choose(_) | Target::Command(_)
+            ));
         }
         assert!(ui.interaction.popup_scroll > 0.0);
         assert_eq!(ui.scroll, 0.0);

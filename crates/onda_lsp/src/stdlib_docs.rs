@@ -1,18 +1,18 @@
 use onda_frontend::{
-    stdlib_module_names, stdlib_module_source, Block, ConstDecl, DeclType, Expr, FunctionDef,
-    NamespaceDecl, NamespaceItem, OutputTiming, ProcessorDef, Program, StructDef,
+    stdlib_module_names, stdlib_module_source, Block, ConstDecl, DeclType, EnumDef, Expr,
+    FunctionDef, NamespaceDecl, NamespaceItem, OutputTiming, ProcessorDef, Program, StructDef,
 };
 
 use crate::formatting::{
     format_buffer_decl, format_buffer_section_default_type, format_const_decl, format_decl_type,
-    format_delegate_signature, format_event_signature, format_expr, format_function_signature,
-    format_param_decl, format_port_decl, format_proc_header, format_struct_field,
-    format_struct_header,
+    format_delegate_signature, format_enum, format_event_signature, format_expr,
+    format_function_signature, format_param_decl, format_port_decl, format_proc_header,
+    format_struct_field, format_struct_header,
 };
 
 const FRONT_MATTER: &str = r#"---
 title: Standard library
-description: Generated reference for Onda's built-in standard-library modules, functions, structs, and processors.
+description: Generated reference for Onda's built-in standard-library modules, enums, functions, structs, and processors.
 permalink: /docs/stdlib/
 section: reference
 eyebrow: Language reference
@@ -120,6 +120,7 @@ fn public_surface_names(program: &Program) -> Vec<String> {
             Block::Const(decl) if is_public(&decl.name) => names.push(decl.name.clone()),
             Block::Def(def) if is_public(&def.name) => names.push(def.name.clone()),
             Block::Struct(def) if is_public(&def.name) => names.push(def.name.clone()),
+            Block::Enum(def) if is_public(&def.name) => names.push(def.name.clone()),
             Block::Proc(def) if is_public(&def.name) => names.push(def.name.clone()),
             Block::Namespace(namespace) if is_public(&namespace.name) => {
                 names.extend(public_namespace_item_names(&namespace.items));
@@ -139,6 +140,7 @@ fn public_namespace_item_names(items: &[NamespaceItem]) -> Vec<String> {
             NamespaceItem::Const(decl) if is_public(&decl.name) => Some(decl.name.clone()),
             NamespaceItem::Def(def) if is_public(&def.name) => Some(def.name.clone()),
             NamespaceItem::Struct(def) if is_public(&def.name) => Some(def.name.clone()),
+            NamespaceItem::Enum(def) if is_public(&def.name) => Some(def.name.clone()),
             NamespaceItem::Proc(def) if is_public(&def.name) => Some(def.name.clone()),
             NamespaceItem::Namespace(namespace) if is_public(&namespace.name) => {
                 Some(namespace.name.clone())
@@ -172,6 +174,7 @@ fn render_program_surface(out: &mut String, program: &Program) {
 
     for block in &program.blocks {
         match block {
+            Block::Enum(def) if is_public(&def.name) => render_enum(out, 3, def),
             Block::Struct(def) if is_public(&def.name) => render_struct(out, 3, def),
             Block::Proc(def) if is_public(&def.name) => render_proc(out, 3, def),
             Block::Namespace(namespace) if is_public(&namespace.name) => {
@@ -207,6 +210,7 @@ fn render_namespace_items(out: &mut String, level: usize, items: &[NamespaceItem
 
     for item in items {
         match item {
+            NamespaceItem::Enum(def) if is_public(&def.name) => render_enum(out, level, def),
             NamespaceItem::Struct(def) if is_public(&def.name) => render_struct(out, level, def),
             NamespaceItem::Proc(def) if is_public(&def.name) => render_proc(out, level, def),
             NamespaceItem::Namespace(namespace) if is_public(&namespace.name) => {
@@ -248,6 +252,13 @@ fn render_functions(out: &mut String, level: usize, title: &str, functions: &[&F
             .map(|def| format_function_signature(def))
             .collect::<Vec<_>>(),
     );
+}
+
+fn render_enum(out: &mut String, level: usize, def: &EnumDef) {
+    heading(out, level, &format!("Enum `{}`", def.name));
+    let mut source = String::new();
+    format_enum(def, 0, &mut source);
+    onda_block(out, source.lines().map(str::to_owned).collect());
 }
 
 fn render_struct(out: &mut String, level: usize, def: &StructDef) {
@@ -476,6 +487,8 @@ mod tests {
         let docs = generate_stdlib_reference().expect("stdlib reference should generate");
         assert!(docs.contains("## `std/osc`"));
         assert!(docs.contains("proc Saw<T>:"));
+        assert!(docs.contains("### Enum `OnePoleMode`"));
+        assert!(docs.contains("enum RampShape:\n  Linear\n  SCurve {label = \"S-curve\"}"));
         assert!(docs.contains("freq: T = 440.0 => update_freq"));
         assert!(docs.contains("    finished()"));
         assert!(docs.contains("## `std/prelude`"));

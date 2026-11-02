@@ -381,3 +381,29 @@ sample:
         near(*output[1].last().unwrap(), 0.0, 1e-6);
     }
 }
+
+#[test]
+fn stdlib_selection_domains_are_nominal_enums() {
+    let source = r#"
+import std/filter
+import std/smoothing
+params:
+  mode: std::filter::SvfMode = std::filter::SvfMode::BandPass
+  shape: std::smoothing::RampShape = std::smoothing::RampShape::SCurve
+init:
+  filter = std::filter::Svf(mode = mode)
+  ramp = std::smoothing::Ramp(shape = shape)
+sample:
+  out1 = ramp(filter(0.0))
+"#;
+    let typed = analyze(parse_program(source).unwrap()).unwrap();
+    let mir = onda_semantics::lower_program_to_optimized_mir(&typed).unwrap();
+    let modes = mir.interface.params[0].enumeration.as_ref().unwrap();
+    assert_eq!(modes.members.len(), 6);
+    assert_eq!(modes.members[2].label, "Band Pass");
+    let shapes = mir.interface.params[1].enumeration.as_ref().unwrap();
+    assert_eq!(shapes.members[1].label, "S-curve");
+
+    let invalid = "import std/filter\ninit:\n  filter = std::filter::Svf(mode = std::filter::OnePoleMode::LowPass)\nsample:\n  out1 = filter(0.0)\n";
+    assert!(analyze(parse_program(invalid).unwrap()).is_err());
+}

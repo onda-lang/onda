@@ -176,14 +176,18 @@ impl AggregateLayout {
 /// Backend-facing table of all aggregate layouts in a typed program.
 #[derive(Debug, Clone, Default)]
 pub struct AggregateLayoutTable {
+    enums: HashMap<u32, onda_processor_abi::EnumMetadata>,
     layouts: Vec<AggregateLayout>,
     ids_by_struct_name: HashMap<String, AggregateLayoutId>,
 }
 
 impl AggregateLayoutTable {
-    pub fn build(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
+    pub fn build(
+        structs: &[TypedStruct],
+        enums: &[crate::EnumDef],
+    ) -> Result<Self, Vec<AggregateLayoutError>> {
         validate_aggregate_structure(structs).map_err(|error| vec![error])?;
-        LayoutBuilder::new(structs)?.build()
+        LayoutBuilder::new(structs, enums)?.build()
     }
 
     pub(crate) fn populate_message_defaults<'a>(
@@ -215,6 +219,10 @@ impl AggregateLayoutTable {
                 );
             }
         }
+    }
+
+    pub(crate) fn payload_scalar(&self, ty: PrimitiveType) -> PayloadType {
+        crate::enum_support::payload_scalar(ty, &self.enums)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -516,6 +524,8 @@ enum VisitState {
 }
 
 struct LayoutBuilder {
+    enum_types: HashMap<String, onda_frontend::EnumType>,
+    enums: HashMap<u32, onda_processor_abi::EnumMetadata>,
     definitions: HashMap<String, TypedStruct>,
     ids: HashMap<String, AggregateLayoutId>,
     sorted_names: Vec<String>,
@@ -525,7 +535,10 @@ struct LayoutBuilder {
 }
 
 impl LayoutBuilder {
-    fn new(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
+    fn new(
+        structs: &[TypedStruct],
+        enums: &[crate::EnumDef],
+    ) -> Result<Self, Vec<AggregateLayoutError>> {
         if u32::try_from(structs.len()).is_err() {
             return Err(vec![AggregateLayoutError::TooManyLayouts {
                 count: structs.len(),
@@ -562,6 +575,17 @@ impl LayoutBuilder {
             .collect();
 
         Ok(Self {
+            enum_types: enums
+                .iter()
+                .filter_map(|def| def.resolved.map(|ty| (def.name.clone(), ty)))
+                .collect(),
+            enums: enums
+                .iter()
+                .filter_map(|def| {
+                    def.resolved
+                        .map(|ty| (ty.id, crate::enum_support::metadata(def)))
+                })
+                .collect(),
             definitions,
             ids,
             sorted_names,
@@ -592,6 +616,7 @@ impl LayoutBuilder {
             })
             .collect();
         Ok(AggregateLayoutTable {
+            enums: self.enums,
             layouts,
             ids_by_struct_name: self.ids,
         })
@@ -698,7 +723,10 @@ impl LayoutBuilder {
             let mut leaf = self.scalar_leaf(
                 path,
                 tensor.path,
-                primitive_encoding(tensor.encoding),
+                tensor.enumeration.map_or_else(
+                    || primitive_encoding(tensor.encoding),
+                    |enumeration| PrimitiveType::Enum(self.enum_types[&enumeration.name]),
+                ),
                 tensor.shape,
                 definition,
             )?;
@@ -720,26 +748,32 @@ impl LayoutBuilder {
         owner: &TypedStruct,
         field: &TypedStructField,
     ) -> Result<PayloadType, AggregateLayoutError> {
-        let scalar = |ty| PayloadType::Scalar {
-            encoding: scalar_encoding(ty),
-            integer_range: field.integer_range.map(|range| {
-                let scalar = match range.ty {
-                    PrimitiveType::I32 => "i32",
-                    PrimitiveType::I64 => "i64",
-                    _ => unreachable!("integer domain"),
-                };
-                onda_processor_abi::IntegerRangeMetadata {
-                    min: onda_processor_abi::IntegerRangeEndpoint {
-                        scalar: scalar.to_owned(),
-                        value: range.min.to_string(),
-                    },
-                    max: onda_processor_abi::IntegerRangeEndpoint {
-                        scalar: scalar.to_owned(),
-                        value: range.max.to_string(),
-                    },
-                    mode: if range.wrap { "wrap" } else { "clamp" }.to_owned(),
-                }
-            }),
+        let scalar = |ty| {
+            let mut scalar = crate::enum_support::payload_scalar(ty, &self.enums);
+            let PayloadType::Scalar { integer_range, .. } = &mut scalar else {
+                unreachable!()
+            };
+            *integer_range = integer_range.take().or_else(|| {
+                field.integer_range.map(|range| {
+                    let scalar = match range.ty {
+                        PrimitiveType::I32 => "i32",
+                        PrimitiveType::I64 => "i64",
+                        _ => unreachable!("integer domain"),
+                    };
+                    onda_processor_abi::IntegerRangeMetadata {
+                        min: onda_processor_abi::IntegerRangeEndpoint {
+                            scalar: scalar.to_owned(),
+                            value: range.min.to_string(),
+                        },
+                        max: onda_processor_abi::IntegerRangeEndpoint {
+                            scalar: scalar.to_owned(),
+                            value: range.max.to_string(),
+                        },
+                        mode: if range.wrap { "wrap" } else { "clamp" }.to_owned(),
+                    }
+                })
+            });
+            scalar
         };
         match &field.ty {
             TypedFieldType::Scalar(ty) => {
@@ -901,7 +935,7 @@ pub(crate) fn scalar_encoding(ty: PrimitiveType) -> ScalarEncoding {
     match ty {
         PrimitiveType::F32 => ScalarEncoding::F32,
         PrimitiveType::F64 => ScalarEncoding::F64,
-        PrimitiveType::I32 => ScalarEncoding::I32,
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarEncoding::I32,
         PrimitiveType::I64 => ScalarEncoding::I64,
         PrimitiveType::Bool => ScalarEncoding::Bool,
     }
@@ -968,8 +1002,8 @@ mod tests {
             name: "Alpha".to_owned(),
             fields: vec![scalar_field("value", PrimitiveType::F64)],
         };
-        let forward = AggregateLayoutTable::build(&[zed.clone(), alpha.clone()]).unwrap();
-        let reverse = AggregateLayoutTable::build(&[alpha, zed]).unwrap();
+        let forward = AggregateLayoutTable::build(&[zed.clone(), alpha.clone()], &[]).unwrap();
+        let reverse = AggregateLayoutTable::build(&[alpha, zed], &[]).unwrap();
 
         assert_eq!(
             forward.id_for_struct("Alpha"),
@@ -986,7 +1020,7 @@ mod tests {
             name: "Direct".to_owned(),
             fields: vec![struct_field("next", "Direct")],
         };
-        let direct_error = AggregateLayoutTable::build(&[direct]).unwrap_err();
+        let direct_error = AggregateLayoutTable::build(&[direct], &[]).unwrap_err();
         assert!(matches!(
             &direct_error[0],
             AggregateLayoutError::RecursiveAggregate { cycle }
@@ -1001,7 +1035,7 @@ mod tests {
             name: "B".to_owned(),
             fields: vec![struct_array_field("as", "A", 3)],
         };
-        let errors = AggregateLayoutTable::build(&[a, b]).unwrap_err();
+        let errors = AggregateLayoutTable::build(&[a, b], &[]).unwrap_err();
         assert!(errors.iter().any(|error| matches!(
             error,
             AggregateLayoutError::RecursiveAggregate { cycle }
@@ -1078,7 +1112,7 @@ mod tests {
             fields: vec![struct_array_field("items", "Leaf", extent)],
         };
 
-        let layouts = AggregateLayoutTable::build(&[leaf, batch]).unwrap();
+        let layouts = AggregateLayoutTable::build(&[leaf, batch], &[]).unwrap();
         let batch = layouts.layout_for_struct("Batch").unwrap();
         assert_eq!(batch.leaves.len(), 1);
         assert_eq!(batch.scalar_width, extent);
@@ -1122,7 +1156,7 @@ mod tests {
             name: "Outer".to_owned(),
             fields: vec![struct_array_field("inners", "Inner", usize::MAX)],
         };
-        let errors = AggregateLayoutTable::build(&[leaf, inner, outer]).unwrap_err();
+        let errors = AggregateLayoutTable::build(&[leaf, inner, outer], &[]).unwrap_err();
         assert!(errors.iter().any(|error| matches!(
             error,
             AggregateLayoutError::SizeOverflow {

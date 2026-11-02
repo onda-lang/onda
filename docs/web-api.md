@@ -83,6 +83,10 @@ The returned instance provides:
 - `sendLspMessage(message)` and `setLspAnalysisOptions(options?)` for the embedded language server.
 - `dispose()`, an idempotent terminal release of compiler and worker resources.
 
+Enum configuration inspection returns optional `enumeration` metadata on `OndaCompileConstDescriptor`.
+Its `element` is `i32`; scalar values and `Int32Array` selections use ordinary integer configuration
+transport and are clamped to the member range during compilation.
+
 Compile options accept `sampleRate`, `blockSize`, typed compile-constant overrides, and `codegen`.
 Workspaces may carry `constants` in project-manifest form (numbers, booleans, decimal strings for
 `i64`, and primitive arrays). These are project defaults; explicit `options.constants` take
@@ -309,6 +313,7 @@ OndaDelegateParamMetadata
 OndaEventMetadata
 OndaEventParamMetadata
 OndaIntegrationProfile
+OndaEnumMetadata
 OndaIoMetadata
 OndaLogSiteMetadata
 OndaParamControlMetadata

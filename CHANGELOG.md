@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Fieldless nominal enums with dense `i32` ordinals, explicit ordinal conversions, and support
+  in state, functions, arrays, slices, and nested event/delegate payloads. External enum values
+  are clamped to the member range.
+- Automatic dropdowns for enum parameters and event fields, with inferred display labels,
+  optional member label overrides, and exported enum metadata for native and WebAssembly hosts.
+- Enum completion, hover, navigation, constructor signature help, highlighting, document symbols,
+  and source formatting in the language server.
+- Explicit enum constant annotations and enum `config const` scalars/arrays, with `i32` host
+  overrides and choice metadata in native and browser configuration inspection.
 - One GPU-accelerated run UI for standalone Onda, VS Code, the VST3 plugin, and
   both browser editors. It includes parameters, input controls, buffers, typed
   events, logs, scope/meters, MIDI, and run settings.
@@ -19,6 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Standard-library filter modes, ramp shapes, envelope stages, and FFT window selections use
+  enums. Examples use the new types, including dropdowns for Benjolin's filter and output selectors.
+- MIR schema version 8 and processor descriptor version 7 carry enum metadata. The executable
+  processor ABI remains version 7.
 - Run views retain control layouts, section folds, scrolling, and schema-matched
   event arguments. Hidden views suspend drawing and visualization capture.
 
@@ -1405,6 +1418,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.9.0]: https://github.com/onda-lang/onda/compare/0.8.40...0.9.0
 [0.8.40]: https://github.com/onda-lang/onda/compare/0.8.39...0.8.40
 [0.8.39]: https://github.com/onda-lang/onda/compare/0.8.38...0.8.39
 [0.8.38]: https://github.com/onda-lang/onda/compare/0.8.37...0.8.38

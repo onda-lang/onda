@@ -278,7 +278,7 @@ pub(crate) fn adapt_contextual_numeric_type(
     contextual: PrimitiveType,
     concrete: PrimitiveType,
 ) -> PrimitiveType {
-    if contextual == PrimitiveType::Bool || concrete == PrimitiveType::Bool {
+    if !contextual.is_numeric() || !concrete.is_numeric() {
         contextual
     } else if is_float_type(contextual) && !is_float_type(concrete) {
         PrimitiveType::F32
@@ -354,9 +354,9 @@ pub(crate) fn merge_numeric_types_without_diagnostics(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
 ) -> Option<PrimitiveType> {
-    use PrimitiveType::{Bool, F32, F64, I32, I64};
+    use PrimitiveType::{Bool, Enum, F32, F64, I32, I64};
     match (lhs, rhs) {
-        (Bool, _) | (_, Bool) => None,
+        (Bool, _) | (_, Bool) | (Enum(_), _) | (_, Enum(_)) => None,
         (F64, _) | (_, F64) => Some(F64),
         (F32, I64) | (I64, F32) => Some(F64),
         (F32, _) | (_, F32) => Some(F32),
@@ -373,7 +373,7 @@ pub(crate) fn intrinsic_result_type(
         BuiltinFn::Abs => adapted_arg_types
             .first()
             .copied()
-            .filter(|ty| *ty != PrimitiveType::Bool),
+            .filter(|ty| ty.is_numeric()),
         BuiltinFn::Min | BuiltinFn::Max => merge_numeric_types_without_diagnostics(
             *adapted_arg_types.first()?,
             *adapted_arg_types.get(1)?,
@@ -498,7 +498,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
         |expr: &Expr, children: &mut std::vec::Drain<'_, Option<PrimitiveType>>| {
             match expr {
                 Expr::Number { .. } => Some(PrimitiveType::F64),
-                Expr::Int { .. } => Some(PrimitiveType::I64),
+                Expr::Int { const_ty, .. } => Some(const_ty.unwrap_or(PrimitiveType::I64)),
                 Expr::Bool { .. } => Some(PrimitiveType::Bool),
                 Expr::ArrayLiteral { .. } => None,
                 Expr::Tuple { .. } => None,
@@ -700,7 +700,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     match func {
                         BuiltinFn::Abs => {
                             let ty = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
-                            if ty == PrimitiveType::Bool {
+                            if !ty.is_numeric() {
                                 errors.push(Diagnostic::semantic_span(
                             "builtin 'abs' requires numeric argument (bool is not supported)",
                             expr.loc(),
@@ -759,7 +759,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         }
                         BuiltinFn::Pow => {
                             for ty in &arg_types {
-                                if *ty == PrimitiveType::Bool {
+                                if !ty.is_numeric() {
                                     errors.push(Diagnostic::semantic_span(
                                 "builtin 'pow' requires numeric arguments (bool is not supported)",
                                 expr.loc(),
@@ -1164,9 +1164,7 @@ pub(crate) fn can_assign_expr_to_type(
     // Const conversion checks the computed value's range in the interpreter.
     // Checking its numeric family does not require computing that value.
     if constants.constant_context || constants.constant_expression(expr) {
-        return src != PrimitiveType::Bool
-            && dst != PrimitiveType::Bool
-            && (is_float_type(dst) || !is_float_type(src));
+        return src.is_numeric() && dst.is_numeric() && (is_float_type(dst) || !is_float_type(src));
     }
     false
 }

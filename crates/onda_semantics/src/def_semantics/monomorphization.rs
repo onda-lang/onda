@@ -581,10 +581,14 @@ fn generate_mono_def(
             }
             MonoParamKey::ResolvedTuple(elem_tys) => {
                 if let Some(param) = new_def.params.get_mut(idx) {
-                    param.ty = Some(FnParamType::Tuple(elem_tys.clone()));
+                    param.ty = Some(FnParamType::Tuple(
+                        elem_tys.iter().copied().map(Into::into).collect(),
+                    ));
                 }
                 if let Some(pt) = new_sig.param_types.get_mut(idx) {
-                    *pt = Some(FnParamType::Tuple(elem_tys.clone()));
+                    *pt = Some(FnParamType::Tuple(
+                        elem_tys.iter().copied().map(Into::into).collect(),
+                    ));
                 }
             }
             MonoParamKey::ResolvedScalar(prim) => {
@@ -803,6 +807,36 @@ fn resolve_generic_def_type_bindings(
             let Some(arg_expr) = arg_expr else {
                 continue;
             };
+
+            if let Some(FnParamType::Tuple(elements)) = param_ty {
+                let generic_elements = elements.iter().enumerate().filter_map(|(index, ty)| {
+                    if let ScalarTypeRef::Named(name) = ty {
+                        sig.type_params.contains(name).then_some((index, name))
+                    } else {
+                        None
+                    }
+                });
+                let actual = infer_tuple_arg_types(
+                    arg_expr,
+                    env,
+                    CallTypeContext {
+                        return_types,
+                        struct_defs,
+                    },
+                );
+                for (index, name) in generic_elements {
+                    if let Some(actual) = actual.as_ref().and_then(|types| types.get(index)) {
+                        constraints
+                            .entry(name.clone())
+                            .or_default()
+                            .push((*actual, true, arg_expr));
+                    } else if supplied_arg.is_some() || !expr_references_type_param(arg_expr, name)
+                    {
+                        has_dependent_argument = true;
+                    }
+                }
+                continue;
+            }
 
             if let Some(name) = direct_type_param {
                 // For array/buffer params, infer from the arg's element type.

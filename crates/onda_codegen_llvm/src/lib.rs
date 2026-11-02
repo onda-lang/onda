@@ -617,6 +617,7 @@ pub struct DeclaredState {
 
 #[derive(Debug, Clone)]
 pub struct DeclaredIo {
+    enumeration: Option<onda_processor_abi::EnumMetadata>,
     name: String,
     elem_ty: PrimitiveType,
     array_len: usize,

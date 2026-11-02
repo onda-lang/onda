@@ -295,6 +295,7 @@ mod tests {
             .interface
             .control_outputs
             .push(crate::ControlOutput {
+                enumeration: None,
                 name: "meter".to_owned(),
                 ty: TypeId::new(1),
                 mirror: StateId::new(0),

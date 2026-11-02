@@ -8,6 +8,10 @@ const status = document.getElementById("status");
 const vscode =
   typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
 const send = (message) => {
+  if (message.type === "setTheme" && (message.mode === "dark" || message.mode === "light")) {
+    themeMode = message.mode;
+    document.documentElement.dataset.theme = themeMode;
+  }
   if (message.type === "copyText") {
     copyText(message.text);
     return;
@@ -46,10 +50,12 @@ const editor = createTextInput(canvas, {
   input,
   gesture: (event, stop = false) => browser?.gesture(event, stop),
 });
-let themeMode = "auto";
+let themeMode;
+let hostThemeMode;
+let followsHostTheme = false;
 const mediaTheme = matchMedia("(prefers-color-scheme: dark)");
 function resolvedTheme(mode) {
-  if (mode !== "auto") return mode;
+  if (mode === "dark" || mode === "light") return mode;
   if (vscode) {
     if (document.body.classList.contains("vscode-light") || document.body.classList.contains("vscode-high-contrast-light")) return "light";
     if (document.body.classList.contains("vscode-dark") || document.body.classList.contains("vscode-high-contrast")) return "dark";
@@ -57,7 +63,7 @@ function resolvedTheme(mode) {
   return mediaTheme.matches ? "dark" : "light";
 }
 function refreshTheme() {
-  if (ui && themeMode === "auto") receive({ type:"state", state:{themeMode:"auto"} });
+  if (ui && followsHostTheme) receive({ type:"state", state:{hostTheme:hostThemeMode} });
 }
 mediaTheme.addEventListener("change", refreshTheme);
 new MutationObserver(refreshTheme).observe(document.body, {attributes:true, attributeFilter:["class"]});
@@ -280,11 +286,13 @@ function receive(message) {
         message = { ...message, state };
       }
       const state = message.state;
-      if (state?.themeMode) {
-        themeMode = state.themeMode;
-        const theme = resolvedTheme(themeMode);
-        document.documentElement.dataset.theme = theme;
-        message = { ...message, state: { ...state, themeMode: theme } };
+      if (state && (themeMode === undefined || Object.hasOwn(state, "themeMode") || Object.hasOwn(state, "hostTheme") || Object.hasOwn(state, "supportsThemeSelection"))) {
+        if (Object.hasOwn(state, "supportsThemeSelection")) followsHostTheme = state.supportsThemeSelection === false;
+        hostThemeMode = state.hostTheme ?? hostThemeMode;
+        if (state.themeMode === "dark" || state.themeMode === "light") themeMode = state.themeMode;
+        else if (themeMode === undefined || followsHostTheme) themeMode = resolvedTheme(hostThemeMode);
+        document.documentElement.dataset.theme = themeMode;
+        message = { ...message, state: { ...state, themeMode } };
       }
       if (
         state?.viewState?.reset ||

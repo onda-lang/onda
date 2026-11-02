@@ -59,19 +59,32 @@ impl App {
                 }
                 self.path = None;
             }
-            "setRunSettings" if self.controller.is_none() => {
-                if let Some(rate) = v["sampleRateHz"]
+            "setRunSettings" => {
+                let rate = v["sampleRateHz"]
                     .as_u64()
-                    .filter(|v| *v > 0 && *v <= 768000)
-                {
-                    self.options.sample_rate_hz = rate as u32;
-                }
-                if let Some(block) = v["blockSamples"].as_u64().filter(|v| *v > 0 && *v <= 65536) {
-                    self.options.block_samples = block as usize;
-                }
+                    .filter(|n| (1..=768000).contains(n))
+                    .ok_or("Invalid sample rate")? as u32;
+                let block = v["blockSamples"]
+                    .as_u64()
+                    .filter(|n| (1..=65536).contains(n))
+                    .ok_or("Invalid block size")? as usize;
+                self.set_compile_settings(rate, block, self.options.fast_math)?;
             }
-            "setFastMath" if self.controller.is_none() => {
-                self.options.fast_math = v["enabled"] == true
+            "setFastMath" => {
+                let enabled = v["enabled"].as_bool().ok_or("Invalid Fast Math setting")?;
+                self.set_compile_settings(
+                    self.options.sample_rate_hz,
+                    self.options.block_samples,
+                    enabled,
+                )?;
+            }
+            "setTheme" => {
+                let theme =
+                    serde_json::from_value(v["mode"].clone()).map_err(|_| "Invalid theme")?;
+                self.options.theme = Some(theme);
+                if let Some(controller) = &mut self.controller {
+                    controller.set_theme(theme);
+                }
             }
             "setParamSmoothing" => {
                 if let Some(ms) = v["milliseconds"]
@@ -186,5 +199,23 @@ impl App {
             }
         }
         Ok(true)
+    }
+
+    fn set_compile_settings(
+        &mut self,
+        rate: u32,
+        block: usize,
+        fast_math: bool,
+    ) -> Result<(), String> {
+        self.options.sample_rate_hz = rate;
+        self.options.block_samples = block;
+        self.options.fast_math = fast_math;
+        if let Some(controller) = &mut self.controller {
+            let result = controller.set_compile_settings(rate, block, fast_math);
+            self.options = controller.options().clone();
+            self.controller_woken = true;
+            result?;
+        }
+        Ok(())
     }
 }

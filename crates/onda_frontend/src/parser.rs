@@ -13,10 +13,10 @@ use crate::ast::{
     ArrayElemType, ArrayTypeSpec, AssertDecl, AssignTarget, BinaryOp, Block, BlockExec,
     BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn, CallArg,
     CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DelegateBlock, DelegateDef,
-    EventBlock, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
-    FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate, InitBlock,
-    LogicalOp, OutputTiming, ParamBlock, ParamControl, ParamDecl, ParamScale, PortBlock, PortDecl,
-    PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
+    EnumDef, EnumMember, EventBlock, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
+    FnParamDecl, FnParamType, FunctionDef, GraphBlock, GraphEdge, GraphEndpoint, GraphRate,
+    InitBlock, LogicalOp, OutputTiming, ParamBlock, ParamControl, ParamDecl, ParamScale, PortBlock,
+    PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, SourceLoc, Span, Stmt, StructDef,
     StructField, TaskBlock, TaskDef, TupleAssignTarget, WhenBinding, WhenDef, WhenTarget,
     INTERNAL_BARE_RETURN_FN, INTERNAL_BUFFER_READ2_FN, INTERNAL_BUFFER_READ3_FN,
     INTERNAL_BUFFER_READ_CHANNEL_FN, INTERNAL_BUFFER_WRITE2_FN, INTERNAL_BUFFER_WRITE3_FN,
@@ -66,6 +66,7 @@ pub const LANGUAGE_KEYWORDS: &[&str] = &[
     "const",
     "def",
     "struct",
+    "enum",
     "proc",
     "processor",
     "namespace",
@@ -119,6 +120,21 @@ pub use module_loading::{
 };
 use type_helpers::*;
 
+/// Parse source scalar type arguments, including qualified namespace-template types.
+pub fn parse_type_arguments_text_ast(text: &str) -> Result<Vec<CallTypeArg>, Vec<Diagnostic>> {
+    let text = text.trim();
+    let mut pairs = OndaParser::parse(Rule::generic_type_arg_list, text)
+        .map_err(|error| vec![diag_from_pest_error(error)])?;
+    let pair = pairs.next().expect("generic type argument list");
+    if pair.as_span().end() != text.len() {
+        return Err(vec![syntax_at_pair(
+            &pair,
+            "unexpected text after type arguments",
+        )]);
+    }
+    expr_stmt::parse_generic_type_arg_list(pair)
+}
+
 pub fn stdlib_module_source(module: &str) -> Option<&'static str> {
     loading_support::builtin_std_module_source(module)
 }
@@ -134,7 +150,10 @@ pub fn is_language_keyword(name: &str) -> bool {
 pub fn language_type_names() -> impl Iterator<Item = &'static str> {
     PrimitiveType::ALL
         .into_iter()
-        .map(PrimitiveType::name)
+        .map(|ty| match ty.name() {
+            std::borrow::Cow::Borrowed(name) => name,
+            _ => unreachable!(),
+        })
         .chain(std::iter::once("buffer"))
 }
 

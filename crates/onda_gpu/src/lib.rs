@@ -97,17 +97,10 @@ impl App {
         app
     }
     fn theme(&self) -> &'static str {
-        match self.options.theme {
-            RunThemeMode::Light => "light",
-            RunThemeMode::Dark => "dark",
-            RunThemeMode::Auto => {
-                if self.window.as_ref().and_then(|w| w.theme()) == Some(winit::window::Theme::Light)
-                {
-                    "light"
-                } else {
-                    "dark"
-                }
-            }
+        if self.window.as_ref().and_then(|w| w.theme()) == Some(winit::window::Theme::Light) {
+            "light"
+        } else {
+            "dark"
         }
     }
     fn panel_state(&self) -> serde_json::Value {
@@ -346,6 +339,13 @@ impl ApplicationHandler for App {
             ))?);
             let scale = window.scale_factor() as f32;
             self.resize_surface(size.width, size.height, scale);
+            self.options.theme.get_or_insert(
+                if window.theme() == Some(winit::window::Theme::Light) {
+                    RunThemeMode::Light
+                } else {
+                    RunThemeMode::Dark
+                },
+            );
             self.window = Some(window);
             self.publish();
             if let Some(path) = self.path.clone() {

@@ -3,6 +3,7 @@ mod const_arrays;
 mod const_dependencies;
 mod const_validation;
 mod contextual_consts;
+mod enums;
 mod runtime_defaults;
 
 fn analyze_source(source: &str) -> TypedProgram {

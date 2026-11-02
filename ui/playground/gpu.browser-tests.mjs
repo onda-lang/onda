@@ -301,7 +301,7 @@ async function openEditor(t, url, autoplay = true) {
       const toolbar=40;
       sections[name]={y,open:view.sections?.[name]!==false,toolbar};y+=toolbar+12;
     }
-    const actions=Number(state.supportsDeviceSelection===true||state.supportsMidiInputSelection===true||state.supportsRunSettings===true)+Number(state.supportsProjectExport===true&&state.canExportProject===true)+Number(state.supportsSourceSelection===true);
+    const actions=1+Number(state.supportsProjectExport===true&&state.canExportProject===true)+Number(state.supportsSourceSelection===true);
     const knobs=(view.paramLayout??state.paramLayout??"knobs")==="knobs";
     const minimum=knobs?(width<=358?80:140):200;
     const cols=Math.min(knobs&&width<=358?2:8,Math.max(1,Math.floor((width+8)/(minimum+8)))),card=(width-(cols-1)*8)/cols;
@@ -1078,7 +1078,29 @@ for (const host of ["example", "website"]) {
     await key("ArrowDown", "ArrowDown");
     await key("Enter", "Enter");
     await eventually(() => frame("probe.state.blockSamples===256 && probe.state.connected===true"), "block-size recompilation");
-    assert.deepEqual(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1'))"), { sampleRate: 44100, blockSize: 256 });
+    assert.deepEqual(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1'))"), { sampleRate: 44100, blockSize: 256, codegen: { fastMath: false } });
+
+    assert.equal(await frame("probe.state.supportsThemeSelection"), false);
+    await click(g.width - 150, 230);
+    await eventually(() => frame("probe.state.fastMath===true && probe.state.connected===true"), "Fast Math recompilation");
+    assert.equal(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1')).codegen.fastMath"), true);
+
+    await key("Escape", "Escape");
+    g = await geometry();
+    await click(g.stopX, g.stopY);
+    await eventually(() => frame("probe.state.running===false"), "paused transport");
+    const contexts = await page.evaluate("testAudioContexts.length");
+    const previousGeneration = await frame("probe.state.engineGeneration");
+    await section("settings");
+    await click(g.width - 150, 230);
+    await eventually(() => frame(`probe.state.fastMath===false && probe.state.schemaReady===true && probe.state.engineGeneration!==${JSON.stringify(previousGeneration)}`), "paused Fast Math recompilation");
+    assert.equal(await frame("probe.state.running"), false);
+    assert.equal(await page.evaluate("testAudioContexts.length"), contexts, "paused recompilation must not create an audio context");
+    await click(g.width - 150, 230);
+    await eventually(() => frame("probe.state.fastMath===true && probe.state.schemaReady===true"), "restore Fast Math before playing");
+    await key("Escape", "Escape");
+    await click(g.stopX, g.stopY);
+    await eventually(() => frame("probe.state.connected===true"), "resume after paused recompilation");
 
     // Removing note_on must remove keyboard support from the newly compiled UI.
     await page.evaluate("document.querySelector('.cm-content').focus()");
@@ -1090,6 +1112,15 @@ for (const host of ["example", "website"]) {
     g = await geometry();
     await click(50, g.height - 20);
     assert.equal(await page.evaluate("testCommands.filter(c=>c.type==='midiNote').length"), notes);
+    await page.evaluate("document.documentElement.dataset.theme='light'");
+    await eventually(() => frame("document.documentElement.dataset.theme==='light'"), "page-owned light theme");
+    assert.deepEqual(await page.evaluate("testErrors"), []);
+    await page.call("Page.reload");
+    await eventually(() => page.evaluate(`(()=>{
+      if(!globalThis.testIncoming)return false;
+      const state=Object.assign({},...testIncoming.filter(m=>m.type==='state').map(m=>m.state));
+      return state.fastMath===true && state.schemaReady===true && state.sampleRateHz===44100 && state.blockSamples===256;
+    })()`), "restored compile settings after reload", 60000);
     assert.deepEqual(await page.evaluate("testErrors"), []);
   });
 }

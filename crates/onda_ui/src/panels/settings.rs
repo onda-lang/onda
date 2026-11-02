@@ -1,4 +1,5 @@
 use crate::{
+    icons::Icon,
     interaction::SelectId,
     model::RunUi,
     scene::{Palette, Scene, Target},
@@ -8,6 +9,15 @@ use serde_json::json;
 pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32 {
     let [x, top, w, _] = rect;
     let mut y = top;
+    if ui.state["supportsThemeSelection"] != false {
+        let mode = if ui.light { "Light" } else { "Dark" };
+        s.text_row(format!("Theme: {mode}"), [x, y + 6.0, w - 38.0, 20.0], p);
+        let button = [x + w - 32.0, y, 32.0, 32.0];
+        s.button(ui, "", button, Target::Theme, p);
+        s.icon(Icon::Theme, [button[0] + 16.0, y + 16.0], p.ink_color());
+        s.tooltip(button, "Toggle dark / light theme".into());
+        y += 44.0;
+    }
     for (label, id, key) in [
         ("Sample rate", SelectId::SampleRate, "sampleRateHz"),
         ("Block size", SelectId::BlockSize, "blockSamples"),
@@ -22,12 +32,19 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         s.select(ui, id, [x, y, w, 32.0], p);
         y += 44.0;
     }
-    if ui.loaded()
-        && ui.state["supportsRunSettings"] == true
-        && ui.state["canSetSampleRate"] != true
-    {
-        s.text_row("Unload to change run settings.", [x, y, w, 24.0], p);
-        y += 36.0;
+    if ui.state["supportsFastMath"] == true {
+        s.button(
+            ui,
+            if ui.state["fastMath"] == true {
+                "Fast Math: On"
+            } else {
+                "Fast Math: Off"
+            },
+            [x, y, w, 32.0],
+            Target::FastMath,
+            p,
+        );
+        y += 44.0;
     }
     for (label, id, supported) in [
         (

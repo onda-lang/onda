@@ -14,7 +14,10 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
             .as_nanos()
     ));
     fs::create_dir(&directory).unwrap();
-    for channels in [2, 30, 32, 33, 64] {
+    for (channels, start_paused) in [2, 30, 32, 33, 64]
+        .into_iter()
+        .flat_map(|channels| [(channels, false), (channels, true)])
+    {
         let path = directory.join(format!("{channels}.onda"));
         fs::write(
             &path,
@@ -28,6 +31,7 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
         scope.set_mode("waveform").unwrap();
         let (_midi, midi_rx) = mpsc::sync_channel(1);
         let (startup_tx, startup_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::channel();
         let (prints, _print_rx) = mpsc::sync_channel(1);
         let thread = spawn_run_render_thread(
             PlaybackLaunch {
@@ -45,6 +49,7 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
                 fast_math: Default::default(),
                 show_meta: false,
                 control_json: false,
+                start_paused,
                 param_sets: Vec::new(),
                 buffer_bindings: Vec::new(),
                 project_buffer_bindings: Vec::new(),
@@ -58,7 +63,7 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
                 stop_flag: Arc::clone(&stop),
                 render_error: Arc::clone(&error),
                 startup_tx,
-                control_rx: None,
+                control_rx: Some(control_rx),
                 output_transport: None,
                 print_transport: PrintTransport {
                     sender: prints,
@@ -73,6 +78,27 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
             .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(started.metadata.input_channels, channels);
         assert_eq!(started.metadata.output_channels, channels);
+        if start_paused {
+            // A control reply is a render-thread barrier: initialization finished,
+            // but no DSP samples may be produced until the host asks to play.
+            let (reply, response) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::GetParams { reply })
+                .unwrap();
+            response
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert!(started.samples.is_empty());
+            let (reply, response) = mpsc::channel();
+            control_tx
+                .send(PlaybackControlCommand::Play { reply })
+                .unwrap();
+            response
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+        }
         wait_for_prefill(
             &started.samples,
             render_ahead_samples(block_samples, channels, started.samples.capacity()),

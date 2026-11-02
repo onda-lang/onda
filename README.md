@@ -124,10 +124,6 @@ onda compile examples/basic/sine.onda --target-spec ./targets/arm64.toml --emit 
 Opens the standalone UI window.
 This can be used to interactively play with the live-running code.
 Running `onda` without a command opens the same window with its file picker.
-The empty view lets you choose the sample rate and compile block size before loading a file. Use
-**Unload** to return there and recompile with different settings.
-Loaded filesystem sources and projects reload when their entry, transitive source dependencies,
-manifest, or file-backed assets change; unresolved and temporarily missing paths remain watchable.
 
 ```bash
 onda run examples/basic/sine.onda
@@ -147,6 +143,7 @@ onda run play examples/basic/sine.onda --forever --set freq=220
 ```
 
 With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
+Add `--start-paused` to compile and initialize without processing audio until a control client sends `play`.
 
 ### `onda run render`
 

@@ -1083,9 +1083,21 @@ fn validate_expr_node<'a>(
                 }
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            children.push(expr);
+        Expr::Cast {
+            to, expr: inner, ..
+        } => {
+            if let Some(source) = infer_call_argument_scalar_type(inner, env) {
+                if !crate::enum_support::valid_cast(source, *to) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        "enum conversion requires an integer ordinal; use i32(value) to extract it",
+                    );
+                }
+            }
+            children.push(inner);
         }
+        Expr::UnaryBitNot { expr, .. } => children.push(expr),
         Expr::UnaryNot { expr, .. } => {
             require_expr_bool_type(
                 expr,
@@ -1115,7 +1127,10 @@ fn validate_expr_node<'a>(
                         PrimitiveType::Bool,
                         PrimitiveType::Bool
                     )
-                ) {
+                ) && !(matches!(op, CmpOp::Eq | CmpOp::Ne)
+                    && lhs_ty == rhs_ty
+                    && matches!(lhs_ty, PrimitiveType::Enum(_)))
+                {
                     merge_numeric_types(lhs_ty, rhs_ty, "comparison", expr.loc(), errors);
                 }
             }
@@ -1565,14 +1580,16 @@ fn validate_expr_node<'a>(
                             continue;
                         }
                         if let Some(FnParamType::Tuple(expected)) = param_ty {
-                            validate_tuple_param_call_arg(
-                                display_name,
-                                &sig.params[idx],
-                                expected,
-                                arg,
-                                env,
-                                errors,
-                            );
+                            if let Some(expected) = ScalarTypeRef::primitives(expected) {
+                                validate_tuple_param_call_arg(
+                                    display_name,
+                                    &sig.params[idx],
+                                    &expected,
+                                    arg,
+                                    env,
+                                    errors,
+                                );
+                            }
                         }
                         if let Some(FnParamType::Primitive(expected)) = param_ty {
                             if infer_call_argument_tuple_types(arg, env).is_some()
@@ -1631,14 +1648,16 @@ fn validate_expr_node<'a>(
                                 );
                             }
                             Some(FnParamType::Tuple(expected)) => {
-                                validate_tuple_param_call_arg(
-                                    display_name,
-                                    &sig.params[idx],
-                                    expected,
-                                    default,
-                                    env,
-                                    errors,
-                                );
+                                if let Some(expected) = ScalarTypeRef::primitives(expected) {
+                                    validate_tuple_param_call_arg(
+                                        display_name,
+                                        &sig.params[idx],
+                                        &expected,
+                                        default,
+                                        env,
+                                        errors,
+                                    );
+                                }
                             }
                             Some(param_ty) if is_function_array_param(Some(param_ty)) => {
                                 validate_array_param_call_arg(
@@ -3014,11 +3033,11 @@ pub(crate) fn validate_array_value_type(
             && matches!(expected_elem, Some(ArrayElemType::Primitive(_))))
     {
         let expected = match expected_elem.expect("mismatched typed array element") {
-            ArrayElemType::Primitive(elem) => elem.name().to_owned(),
+            ArrayElemType::Primitive(elem) => elem.name().into_owned(),
             ArrayElemType::Struct(name) => name,
         };
         let actual = match &actual.elem {
-            CallArrayArgElem::Primitive(elem) => elem.name().to_owned(),
+            CallArrayArgElem::Primitive(elem) => elem.name().into_owned(),
             CallArrayArgElem::Nominal(name) => name.clone(),
             CallArrayArgElem::Unknown => "unknown".to_owned(),
             CallArrayArgElem::NominalUnknown => "nominal".to_owned(),

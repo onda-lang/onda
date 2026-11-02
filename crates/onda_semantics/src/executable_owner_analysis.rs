@@ -535,12 +535,15 @@ pub(crate) fn analyze_owner_runtime_scopes<'a>(
             bindings.to_mut().shadow_binding(&param.name);
             match param.ty.as_ref() {
                 Some(FnParamType::Tuple(types)) => {
+                    let Some(types) = ScalarTypeRef::primitives(types) else {
+                        continue;
+                    };
                     let bindings = bindings.to_mut();
                     set_tracked_tuple_types(
                         &mut bindings.tuple_vars,
                         &mut bindings.local_aliases,
                         &param.name,
-                        types,
+                        &types,
                     );
                 }
                 Some(FnParamType::Struct(name)) => {

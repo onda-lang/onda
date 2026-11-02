@@ -30,13 +30,7 @@ pub(super) fn icon_button(
     s.hit(rect, target);
 }
 fn actions(ui: &RunUi) -> Vec<(Icon, &'static str, Target)> {
-    let mut actions = Vec::new();
-    if ui.state["supportsDeviceSelection"] == true
-        || ui.state["supportsMidiInputSelection"] == true
-        || ui.state["supportsRunSettings"] == true
-    {
-        actions.push((Icon::Settings, "Settings", Target::Devices));
-    }
+    let mut actions = vec![(Icon::Settings, "Settings", Target::Devices)];
     if ui.state["supportsProjectExport"] == true && ui.state["canExportProject"] == true {
         actions.push((
             Icon::Save,
@@ -558,6 +552,21 @@ pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
                 p,
             );
         }
+    }
+    empty_actions(ui, s, p, rect);
+}
+
+pub(super) fn empty_actions(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
+    let [x, y, w, _] = rect;
+    if ui.state["supportsThemeSelection"] != false {
+        icon_button(
+            ui,
+            s,
+            p,
+            [x + w - 40.0, y + 12.0, 28.0, 28.0],
+            (Icon::Theme, "Toggle dark / light theme", Target::Theme),
+            false,
+        );
     }
 }
 

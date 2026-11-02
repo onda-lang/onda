@@ -7,7 +7,9 @@ pub(crate) fn mir_scalar(value: TypedConstValue) -> ScalarValue {
     match value {
         TypedConstValue::F32(value) => ScalarValue::F32(value),
         TypedConstValue::F64(value) => ScalarValue::F64(value),
-        TypedConstValue::I32(value) => ScalarValue::I32(value),
+        TypedConstValue::I32(value) | TypedConstValue::Enum { ordinal: value, .. } => {
+            ScalarValue::I32(value)
+        }
         TypedConstValue::I64(value) => ScalarValue::I64(value),
         TypedConstValue::Bool(value) => ScalarValue::Bool(value),
     }
@@ -17,7 +19,7 @@ pub(crate) fn scalar_type(ty: PrimitiveType) -> ScalarType {
     match ty {
         PrimitiveType::F32 => ScalarType::F32,
         PrimitiveType::F64 => ScalarType::F64,
-        PrimitiveType::I32 => ScalarType::I32,
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarType::I32,
         PrimitiveType::I64 => ScalarType::I64,
         PrimitiveType::Bool => ScalarType::Bool,
     }

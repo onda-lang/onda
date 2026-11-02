@@ -154,8 +154,17 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
                         },
                     );
                 }
-                let text = ui.field_text(field);
-                s.field(ui, field.clone(), editor, text, p);
+                if ui.field_enumeration(field).is_some() {
+                    s.select(
+                        ui,
+                        crate::interaction::SelectId::Field(field.clone()),
+                        editor,
+                        p,
+                    );
+                } else {
+                    let text = ui.field_text(field);
+                    s.field(ui, field.clone(), editor, text, p);
+                }
             }
         }
     }

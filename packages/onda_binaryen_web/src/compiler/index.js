@@ -1709,6 +1709,7 @@ export class MirCompiler extends MirCompilerLowering {
         outputs: this.portMetadata(this.mir.interface.outputs, this.outputLayout),
         control_outputs: this.mir.interface.control_outputs.map((output, id) => ({
           name: output.name,
+          ...(output.enumeration ? { enumeration: output.enumeration } : {}),
           type_repr: typeName(this.type(output.ty), this),
           scalar: this.storageShape(output.ty).scalar,
           array_len: this.storageShape(output.ty).length,
@@ -1727,6 +1728,7 @@ export class MirCompiler extends MirCompilerLowering {
         })),
         params: this.mir.interface.params.map((param, id) => ({
           name: param.name,
+          ...(param.enumeration ? { enumeration: param.enumeration } : {}),
           type_repr: typeName(this.type(param.ty), this),
           scalar: this.storageShape(param.ty).scalar,
           array_len: this.storageShape(param.ty).length,

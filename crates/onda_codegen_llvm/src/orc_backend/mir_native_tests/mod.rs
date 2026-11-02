@@ -3446,6 +3446,7 @@ fn aot_snapshot_manifest_maps_persistent_segments_only() {
         },
     ];
     mir.interface.control_outputs.push(onda_mir::ControlOutput {
+        enumeration: None,
         name: "meter".to_owned(),
         ty: f64_ty,
         mirror: onda_mir::StateId::new(1),

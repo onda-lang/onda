@@ -65,6 +65,7 @@ impl RunOptions {
 
 #[derive(Debug, Clone)]
 pub struct RunParamInfo {
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
     pub index: usize,
     pub name: String,
     pub type_repr: String,
@@ -581,6 +582,7 @@ impl RunSession {
                 let default = default_run_param_element(desc, element);
                 let domain = desc.param_domain();
                 params.push(RunParamInfo {
+                    enumeration: desc.enumeration().cloned(),
                     index,
                     value: Some(self.param_values.get(&name).copied().unwrap_or(default)),
                     name,
@@ -750,7 +752,9 @@ impl RunSession {
             match desc.elem_ty() {
                 PrimitiveType::F32 => crate::RunParamValue::F32(numeric as f32),
                 PrimitiveType::F64 => crate::RunParamValue::F64(numeric),
-                PrimitiveType::I32 => crate::RunParamValue::I32(numeric as i32),
+                PrimitiveType::I32 | PrimitiveType::Enum(_) => {
+                    crate::RunParamValue::I32(numeric as i32)
+                }
                 PrimitiveType::I64 => crate::RunParamValue::I64(numeric as i64),
                 PrimitiveType::Bool => unreachable!(),
             }
@@ -2017,7 +2021,7 @@ fn scalar_param_bytes(
             out.bytes.copy_from_slice(&value.to_ne_bytes());
             8
         }
-        onda_frontend::PrimitiveType::I32 => {
+        onda_frontend::PrimitiveType::I32 | PrimitiveType::Enum(_) => {
             out.bytes[..4].copy_from_slice(&(value as i32).to_ne_bytes());
             4
         }

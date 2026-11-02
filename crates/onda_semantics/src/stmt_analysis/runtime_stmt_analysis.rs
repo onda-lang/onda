@@ -2384,7 +2384,7 @@ fn analyze_flow_assignment(
                     proc_array_roots,
                     errors,
                 )
-                .map_or_else(|| "non-struct".to_owned(), |ty| ty.name().to_owned());
+                .map_or_else(|| "non-struct".to_owned(), |ty| ty.name().into_owned());
                 if policy == ScopePolicy::Event {
                     if let Expr::Var { name: source, .. } = expr {
                         if param_names.contains(source) {
@@ -2515,7 +2515,7 @@ fn analyze_flow_assignment(
                     name,
                     &expr_for_validation,
                     tuple_types,
-                    declared_tuple_types,
+                    declared_tuple_types.as_deref(),
                     existing_tuple_types.as_deref(),
                     registered_state_tuples
                         .get(name)
@@ -2530,7 +2530,9 @@ fn analyze_flow_assignment(
                     set_tracked_tuple_types(tuple_vars, local_aliases, name, &target_types);
                     known_scalars.insert(name.clone());
                 }
-                *assignment_type = Some(DeclType::Tuple(target_types));
+                *assignment_type = Some(DeclType::Tuple(
+                    target_types.into_iter().map(Into::into).collect(),
+                ));
                 return;
             }
             if existing_tuple_types.is_some() {
@@ -2671,7 +2673,9 @@ fn analyze_flow_assignment(
                     .entry(target_name.to_owned())
                     .or_insert(target_ty);
             }
-            *assignment_type = Some(DeclType::Tuple(target_types));
+            *assignment_type = Some(DeclType::Tuple(
+                target_types.into_iter().map(Into::into).collect(),
+            ));
         }
         AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }

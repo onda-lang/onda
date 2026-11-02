@@ -49,6 +49,7 @@ export class BrowserRunViewHost {
       printOverflowCount: 0,
       printTransportDropCount: 0,
       supportsRunSettings: typeof handlers.setRunSettings === "function",
+      supportsFastMath: typeof handlers.setFastMath === "function",
       canSetSampleRate: typeof handlers.setRunSettings === "function",
       canSetBlockSize: typeof handlers.setRunSettings === "function",
       supportsParamSmoothing: typeof handlers.setParamSmoothing === "function",
@@ -58,7 +59,9 @@ export class BrowserRunViewHost {
       sampleRateHz: 48_000,
       blockSamples: 512,
       fastMath: false,
-      themeMode: document.documentElement.dataset.theme || "auto",
+      supportsThemeSelection: false,
+      themeMode: null,
+      hostTheme: document.documentElement.dataset.theme || "auto",
     };
     this.onWindowMessage = (event) => {
       if (
@@ -72,7 +75,7 @@ export class BrowserRunViewHost {
     window.addEventListener("message", this.onWindowMessage);
     this.themeObserver = new MutationObserver(() => {
       this.setState({
-        themeMode: document.documentElement.dataset.theme || "auto",
+        hostTheme: document.documentElement.dataset.theme || "auto",
       });
     });
     this.themeObserver.observe(document.documentElement, {
@@ -184,7 +187,6 @@ export class BrowserRunViewHost {
         error: "",
         sourceDirty: false,
         outputChannels: 0,
-        fastMath: false,
         buffers: [],
         events: [],
         midi: { available: false, noteOn: false, noteOff: false },
@@ -348,10 +350,10 @@ export class BrowserRunViewHost {
         saved.args.length === event.args.length &&
         event.args.every((arg, i) =>
           arg.name === saved.args[i]?.name &&
-          eventDefaultsMatch(arg.shape, saved.args[i].shape) &&
+          metadataValuesMatch(arg.shape, saved.args[i].shape) &&
           Object.hasOwn(arg, "default") &&
           Object.hasOwn(saved.args[i], "default") &&
-          eventDefaultsMatch(
+          metadataValuesMatch(
             JSON.parse(wireJson(arg.default)),
             JSON.parse(wireJson(saved.args[i].default)),
           ),
@@ -513,6 +515,10 @@ export class BrowserRunViewHost {
             });
           }
           break;
+        case "setFastMath":
+          if (this.state.supportsFastMath && typeof message.enabled === "boolean")
+            await this.handlers.setFastMath(message.enabled);
+          break;
         case "setParamSmoothing": {
           const milliseconds = message.milliseconds;
           if (!this.state.supportsParamSmoothing) break;
@@ -643,6 +649,7 @@ export function mergeParams(params, existing) {
         unit: control?.unit ?? null,
         step: decodeScalarRepr(param.scalar, control?.step_repr),
         stepCount: control?.step_count ?? null,
+        ...(param.enumeration ? { enumeration: param.enumeration } : {}),
         scalar: true,
         array: isArray
           ? { name: root.name, length: root.array_len, index: element }
@@ -724,28 +731,36 @@ function paramShapeMatches(left, right) {
     left.curve === right.curve &&
     left.unit === right.unit &&
     left.step === right.step &&
-    left.stepCount === right.stepCount
+    left.stepCount === right.stepCount &&
+    enumChoicesMatch(left.enumeration ?? null, right.enumeration ?? null)
   );
+}
+
+function enumChoicesMatch(left, right) {
+  return left === right || left !== null && right !== null
+    && left.name === right.name
+    && left.members.length === right.members.length
+    && left.members.every((member, index) => member.name === right.members[index].name);
 }
 
 function eventArgShapeMatches(left, right) {
   return (
     left.type === right.type &&
-    eventDefaultsMatch(left.shape, right.shape) &&
+    metadataValuesMatch(left.shape, right.shape) &&
     left.scalar === right.scalar &&
     left.arrayLength === right.arrayLength &&
     left.isSlice === right.isSlice &&
-    eventDefaultsMatch(left.default, right.default)
+    metadataValuesMatch(left.default, right.default)
   );
 }
 
-function eventDefaultsMatch(left, right) {
+function metadataValuesMatch(left, right) {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left)) {
     return (
       Array.isArray(right) &&
       left.length === right.length &&
-      left.every((value, index) => eventDefaultsMatch(value, right[index]))
+      left.every((value, index) => metadataValuesMatch(value, right[index]))
     );
   }
   if (
@@ -763,7 +778,7 @@ function eventDefaultsMatch(left, right) {
     leftKeys.length === rightKeys.length &&
     leftKeys.every(
       (key) =>
-        Object.hasOwn(right, key) && eventDefaultsMatch(left[key], right[key]),
+        Object.hasOwn(right, key) && metadataValuesMatch(left[key], right[key]),
     )
   );
 }

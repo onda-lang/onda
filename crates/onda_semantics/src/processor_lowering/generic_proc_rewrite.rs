@@ -687,7 +687,7 @@ fn validate_call_type_args(
             CallTypeArg::Primitive(PrimitiveType::Bool) => {
                 errors.push(Diagnostic::semantic_span(
                     format!(
-                        "processor '{}' {context}: 'bool' is not allowed as a generic type argument in call to '{}'; only numeric types (f32, f64, i32, i64) are supported",
+                        "processor '{}' {context}: 'bool' is not allowed as a generic type argument in call to '{}'; numeric types (f32, f64, i32, i64) and enums are supported",
                         proc.name, callee
                     ),
                     span.clone(),
@@ -719,7 +719,7 @@ fn validate_raw_type_arg(
         }
         errors.push(Diagnostic::semantic_span(
             format!(
-                "processor '{}' {context}: 'bool' is not allowed as a generic type argument in call to '{}'; only numeric types (f32, f64, i32, i64) are supported",
+                "processor '{}' {context}: 'bool' is not allowed as a generic type argument in call to '{}'; numeric types (f32, f64, i32, i64) and enums are supported",
                 proc.name, callee
             ),
             span,

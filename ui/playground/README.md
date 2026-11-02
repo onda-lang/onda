@@ -24,6 +24,9 @@ Hosts supply the DOM and `globalThis.__ONDA_PLAYGROUND_ASSETS__`.
 
 - Compilation and LSP work run in a module worker. Play creates a fresh processor
   and reuses the artifact only when source and compile settings are unchanged.
+- Settings changes sample rate, block size, or Fast Math through recompilation,
+  retaining playback intent. All three compile choices persist locally. Theme
+  belongs to the enclosing page; the run view follows it and hides its theme button.
 - The run view stays behind loading feedback until its current state is rendered.
   Initialization failures remain visible and iframe reload retries the renderer.
 - Autoplay recovery uses trusted gestures from both documents. Stop cancels pending

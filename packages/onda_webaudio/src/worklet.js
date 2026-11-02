@@ -663,7 +663,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   normalizeSnapshotIntegerRange(entry, state, offset, byteSize) {
     const range = entry.integer_range;
     if (range === null || range === undefined) return;
-    if (entry.array_len !== 1 || (entry.scalar !== "i32" && entry.scalar !== "i64")) {
+    if (entry.scalar !== "i32" && entry.scalar !== "i64") {
       throw new Error(`state '${String(entry.name)}' has an invalid integer range`);
     }
     const mode = range.mode;
@@ -674,14 +674,16 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (entry.scalar === "i32") {
       const min = Number(range.min?.value);
       const max = Number(range.max?.value);
-      if (!Number.isInteger(min) || !Number.isInteger(max) || min > max || byteSize !== 4) {
+      if (!Number.isInteger(min) || !Number.isInteger(max) || min > max || byteSize !== entry.array_len * 4) {
         throw new Error(`state '${String(entry.name)}' has invalid i32 range bounds`);
       }
-      const value = view.getInt32(0, true);
-      const normalized = mode === "clamp"
-        ? Math.min(Math.max(value, min), max)
-        : min + (((value - min) % (max - min + 1)) + (max - min + 1)) % (max - min + 1);
-      view.setInt32(0, normalized, true);
+      for (let element = 0; element < byteSize; element += 4) {
+        const value = view.getInt32(element, true);
+        const normalized = mode === "clamp"
+          ? Math.min(Math.max(value, min), max)
+          : min + (((value - min) % (max - min + 1)) + (max - min + 1)) % (max - min + 1);
+        view.setInt32(element, normalized, true);
+      }
       return;
     }
     let min;
@@ -692,15 +694,17 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     } catch {
       throw new Error(`state '${String(entry.name)}' has invalid i64 range bounds`);
     }
-    if (min > max || byteSize !== 8) {
+    if (min > max || byteSize !== entry.array_len * 8) {
       throw new Error(`state '${String(entry.name)}' has invalid i64 range bounds`);
     }
-    const value = view.getBigInt64(0, true);
     const width = max - min + 1n;
-    const normalized = mode === "clamp"
-      ? (value < min ? min : (value > max ? max : value))
-      : min + ((value - min) % width + width) % width;
-    view.setBigInt64(0, normalized, true);
+    for (let element = 0; element < byteSize; element += 8) {
+      const value = view.getBigInt64(element, true);
+      const normalized = mode === "clamp"
+        ? (value < min ? min : (value > max ? max : value))
+        : min + ((value - min) % width + width) % width;
+      view.setBigInt64(element, normalized, true);
+    }
   }
 
   snapshotBytes(value) {

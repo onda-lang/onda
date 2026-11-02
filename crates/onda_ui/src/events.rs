@@ -154,7 +154,15 @@ pub(crate) fn valid(shape: &Value, value: &Value) -> bool {
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| value.to_string());
-            scalar_value(ty, &text).is_some()
+            let Some(value) = scalar_value(ty, &text) else {
+                return false;
+            };
+            if let Some(members) = shape["enumeration"]["members"].as_array() {
+                return value
+                    .as_i64()
+                    .is_some_and(|ordinal| ordinal >= 0 && (ordinal as usize) < members.len());
+            }
+            true
         }
         Some("struct") => shape["fields"].as_array().is_some_and(|fields| {
             value.as_object().is_some_and(|object| {
@@ -234,4 +242,27 @@ impl Event {
 
 pub(crate) fn child_path(parent: &str, field: &str) -> String {
     format!("{parent}/{}", field.replace('~', "~0").replace('/', "~1"))
+}
+
+/// Resolve a value's JSON pointer through its recursive payload shape.
+pub(crate) fn shape_at<'a>(mut shape: &'a Value, path: &str) -> Option<&'a Value> {
+    if !path.is_empty() && !path.starts_with('/') {
+        return None;
+    }
+    for part in path.split('/').skip(1) {
+        let part = part.replace("~1", "/").replace("~0", "~");
+        shape = match shape["kind"].as_str()? {
+            "struct" => &shape["fields"]
+                .as_array()?
+                .iter()
+                .find(|field| field["name"] == part)?["ty"],
+            "array" | "slice" => {
+                part.parse::<usize>().ok()?;
+                &shape["element"]
+            }
+            "tuple" => shape["elements"].get(part.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(shape)
 }

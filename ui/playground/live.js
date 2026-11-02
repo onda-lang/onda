@@ -59,7 +59,7 @@ const compileOptionsStorageKey = "onda.browser-ide.compile-options.v1";
 const hostedAssets = globalThis.__ONDA_PLAYGROUND_ASSETS__ ?? {};
 const supportedSampleRates = new Set([44_100, 48_000]);
 const supportedBlockSizes = new Set([128, 256, 512, 1024, 2048]);
-let compileSettings = { sampleRate: 48_000, blockSize: 512 };
+let compileSettings = { sampleRate: 48_000, blockSize: 512, codegen: { fastMath: false } };
 const paramSmoothing = new BrowserParamSmoothing(Math.max(...supportedSampleRates),
   () => audioProcessor, error => runView.showError(error));
 
@@ -103,7 +103,8 @@ const runView = new BrowserRunViewHost(runViewFrame, {
   setParam: (name, value) => audioProcessor?.setParam(name, value),
   setParamSmoothing: milliseconds => paramSmoothing.set(milliseconds),
   setRunSettings: ({ sampleRateHz, blockSamples }) =>
-    applyCompileOptions({ sampleRate: sampleRateHz, blockSize: blockSamples }),
+    applyCompileOptions({ ...compileSettings, sampleRate: sampleRateHz, blockSize: blockSamples }),
+  setFastMath: enabled => applyCompileOptions({ ...compileSettings, codegen: { fastMath: enabled } }),
   triggerEvent: (name, values) => audioProcessor?.trigger(name, values),
   midiEventsChanged: (events) => midiInputs?.setDeclared(events),
   refreshMidiInputs: async () => {
@@ -198,6 +199,10 @@ function compileOptions(settings = compileSettings) {
   if (!supportedBlockSizes.has(blockSize)) {
     throw new Error("block size must be 128, 256, 512, 1024, or 2048 samples");
   }
+  return { sampleRate, blockSize, codegen: { fastMath: settings.codegen?.fastMath === true } };
+}
+
+function analysisOptions({ sampleRate, blockSize } = compileSettings) {
   return { sampleRate, blockSize };
 }
 
@@ -212,6 +217,7 @@ function restoreCompileOptions() {
     if (supportedBlockSizes.has(blockSize)) {
       compileSettings.blockSize = blockSize;
     }
+    compileSettings.codegen.fastMath = stored?.codegen?.fastMath === true;
   } catch {
     // Use the default settings when storage is disabled or malformed.
   }
@@ -236,20 +242,20 @@ function handlePlaygroundShortcut(event) {
   else void stopExecution();
 }
 
-async function runProject() {
+async function runProject({ play = true } = {}) {
   if (!compiler) return;
+  processingRequested ||= play;
   if (compiling) {
     rerunRequested = true;
     runGeneration += 1;
     return;
   }
   rerunRequested = false;
-  processingRequested = true;
   let options;
   const generation = ++runGeneration;
   try {
     options = compileOptions();
-    reserveAudioContext(options.sampleRate);
+    if (processingRequested) reserveAudioContext(options.sampleRate);
   } catch (error) {
     runView.setError(error);
     setErrorStatus();
@@ -279,8 +285,13 @@ async function runProject() {
     }
     localStorage.setItem(projectStorageKey, JSON.stringify(projectEditor.project()));
     runView.setArtifact(artifact, bufferFiles);
-    setStatus("Preparing controls...", true);
-    await startAudio();
+    if (processingRequested) {
+      setStatus("Preparing controls...", true);
+      await startAudio();
+    } else {
+      runView.setStopped();
+      setStatus("Ready");
+    }
     if (generation !== runGeneration) return;
     const runViewDocument = runViewFrame.contentDocument;
     const editorBindings = smokeMode ? await smokeEditorBindings() : {};
@@ -330,7 +341,7 @@ async function runProject() {
     reportSmokeResult({ ok: false, error: errorMessage(error) });
   } finally {
     compiling = false;
-    if (rerunRequested && processingRequested) void runProject();
+    if (rerunRequested) void runProject({ play: false });
   }
 }
 
@@ -339,9 +350,9 @@ async function applyCompileOptions(settings) {
     const options = compileOptions(settings);
     compileSettings = options;
     saveCompileOptions(options);
-    runView.setState({ sampleRateHz: options.sampleRate, blockSamples: options.blockSize });
-    const analysisUpdate = languageServer?.setAnalysisOptions(options);
-    const compilation = compiler ? runProject() : null;
+    runView.setState({ sampleRateHz: options.sampleRate, blockSamples: options.blockSize, fastMath: options.codegen.fastMath });
+    const analysisUpdate = languageServer?.setAnalysisOptions(analysisOptions(options));
+    const compilation = compiler ? runProject({ play: false }) : null;
     await analysisUpdate;
     await compilation;
   } catch (error) {
@@ -776,10 +787,11 @@ async function startAudio() {
       compileSettings.sampleRate = context.sampleRate;
       saveCompileOptions(compileSettings);
       const options = {
+        ...compileOptions(),
         sampleRate: context.sampleRate,
         blockSize: Number(metadata.compile.block_size),
       };
-      await languageServer.setAnalysisOptions(options);
+      await languageServer.setAnalysisOptions(analysisOptions(options));
       const project = projectEditor.compilerProject();
       const { artifact: compiledArtifact } = await compiler.compileWorkspace(project, options);
       const nextCompiledModule = await compileOndaProcessorModule(compiledArtifact);
@@ -973,7 +985,7 @@ async function loadToolchain() {
     onDiagnostics: (path, diagnostics) => projectEditor.setDocumentDiagnostics(path, diagnostics),
     onError: () => setErrorStatus(),
   });
-  const capabilities = await languageServer.initialize(compileOptions());
+  const capabilities = await languageServer.initialize(analysisOptions());
   projectEditor.connectLanguageServer(languageServer, capabilities);
   await languageServer.syncProject(projectEditor.compilerProject());
   const initialProjectError = sharedSessionError ?? requestedExampleError;
@@ -999,6 +1011,7 @@ function initializeEditor(initialSharedSession, initialExampleProject) {
   runView.setState({
     sampleRateHz: compileSettings.sampleRate,
     blockSamples: compileSettings.blockSize,
+    fastMath: compileSettings.codegen.fastMath,
   });
   let storedProject = normalizeStoredProject(initialSharedSession ?? initialExampleProject);
   if (!storedProject && !smokeMode && !requestedExample) {

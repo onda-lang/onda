@@ -5,7 +5,7 @@ pub(super) fn message_schema(
     params: &[crate::TypedEventParam],
     layouts: &AggregateLayoutTable,
 ) -> Result<PayloadSchema, MirLoweringError> {
-    let scalar = |ty| PayloadType::scalar(crate::aggregate_layout::scalar_encoding(ty));
+    let scalar = |ty| layouts.payload_scalar(ty);
     let structure = |name: &str| {
         layouts
             .layout_for_struct(name)
@@ -325,7 +325,7 @@ impl FunctionLowerer<'_> {
         else {
             return Err(self.error("message array window source is not a slice", loc));
         };
-        if source_scalar_type(actual) != element {
+        if source_scalar_type(actual) != element.storage_type() {
             return Err(self.error("message array changed element type", loc));
         }
         Ok(CallArgument::Value(

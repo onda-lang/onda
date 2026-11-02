@@ -1284,6 +1284,11 @@ pub(crate) fn expand_proc_port_specs(
     const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> ExpandedProcPortSpecs {
+    if kind == "input" {
+        for port in ports {
+            validate_audio_port_type(port, errors);
+        }
+    }
     let params = ports
         .iter()
         .map(|port| ParamDecl {

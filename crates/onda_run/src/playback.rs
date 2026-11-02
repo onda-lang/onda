@@ -73,6 +73,8 @@ pub struct PlaybackLaunch {
     pub fast_math: bool,
     pub show_meta: bool,
     pub control_json: bool,
+    /// Compile and initialize, then wait for a control `play` command.
+    pub start_paused: bool,
     pub param_sets: Vec<(String, RunParamValue)>,
     pub buffer_bindings: Vec<(String, PathBuf)>,
     pub project_buffer_bindings: Vec<ProjectBufferBinding>,
@@ -1009,8 +1011,8 @@ fn spawn_run_render_thread(
         let mut midi_timeline = MidiTimeline::default();
         let mut rendered_frame = 0_u64;
         let mut delegate_subscription_id = 0_u64;
-        let mut play_requested = true;
-        let mut playing = session.run(&launch.input).is_some();
+        let mut play_requested = !launch.start_paused;
+        let mut playing = play_requested && session.run(&launch.input).is_some();
         let mut captured =
             vec![0.0_f32; launch.block_samples.saturating_mul(render_input_channels)];
         let mut interleaved =
@@ -2602,6 +2604,7 @@ mod tests {
                         fast_math: false,
                         show_meta: false,
                         control_json: true,
+                        start_paused: false,
                         param_sets: param_sets.iter().map(|(name, value)| (name.clone(), onda_daemon::RunParamValue::F64(*value))).collect(),
                         buffer_bindings: Vec::new(),
                         project_buffer_bindings: Vec::new(),

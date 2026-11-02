@@ -649,3 +649,75 @@ fn schema_replacement_ends_a_numeric_drag_and_releases_owned_notes_once() {
     ui.input(Input::PointerUp);
     assert!(ui.take_commands().is_empty());
 }
+
+#[test]
+fn enum_dropdowns_edit_controls_and_nested_event_fields() {
+    use crate::{events::EventField, interaction::SelectId};
+    let enumeration = json!({"name":"Mode","members":[
+        {"name":"LowPass","label":"Low Pass"}, {"name":"HighPass","label":"High Pass"}
+    ]});
+    let mut ui = RunUi::default();
+    ui.message(json!({"type":"state","state":{
+        "path":"enum.onda","running":true,"connected":true,"supportsScope":false,
+        "params":[{"name":"mode","type":"i32","rangeMin":0,"rangeMax":1,"step":1,"stepCount":1,
+            "value":0,"default":0,"enumeration":enumeration}],
+        "events":[{"name":"configure","args":[{"name":"settings","shape":{"kind":"struct","name":"Settings","fields":[
+            {"name":"modes","ty":{"kind":"array","len":2,"element":{
+                "kind":"scalar","encoding":"i32","enumeration":enumeration}}}
+        ]}}]}]
+    }}));
+    ui.resize(720.0, 840.0, 1.0);
+    ui.prepare_scene();
+    let control = SelectId::Field(Field::Control(0));
+    assert!(ui.scene.selects.iter().any(|(id, _)| id == &control));
+    assert!(!ui
+        .scene
+        .hits
+        .iter()
+        .any(|hit| hit.target == Target::Control(0)));
+    ui.open_select(control);
+    ui.choose_option(1);
+    assert_eq!(ui.controls[0].value, 1);
+    let commands = ui.take_commands();
+    assert!(commands
+        .iter()
+        .any(|command| command["type"] == "setParam" && command["value"] == 1));
+    assert!(commands
+        .iter()
+        .any(|command| command["type"] == "endParamGesture"));
+
+    let field = Field::Event(EventField {
+        event: 0,
+        arg: 0,
+        path: "/modes/1".into(),
+        scalar: "i32".into(),
+    });
+    let select = SelectId::Field(field.clone());
+    assert_eq!(select.spec(&ui).choices[1].label, "High Pass");
+    ui.open_select(select);
+    ui.choose_option(1);
+    assert_eq!(ui.field_value(&field), 1);
+    assert!(ui
+        .take_commands()
+        .iter()
+        .all(|command| command["type"] != "setParam"));
+    ui.prepare_scene();
+    let trigger = ui
+        .scene
+        .hits
+        .iter()
+        .find(|hit| hit.target == Target::Trigger(0))
+        .unwrap()
+        .rect
+        .0;
+    ui.input(Input::PointerDown {
+        x: trigger[0] + 4.0,
+        y: trigger[1] + 4.0,
+        clicks: 1,
+    });
+    ui.input(Input::PointerUp);
+    assert!(ui
+        .take_commands()
+        .iter()
+        .any(|command| command["type"] == "triggerEvent" && command["values"][0]["modes"][1] == 1));
+}

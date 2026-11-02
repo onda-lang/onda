@@ -945,6 +945,14 @@ pub fn analyze_with_options_and_inputs(
         .find(|loc| !loc.is_zero());
     let (mut program, artifacts) =
         preprocess_program_for_analysis_with_inputs(program, options, inputs)?;
+    let enums = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Enum(def) => Some(def.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     annotate_print_origins(&mut program);
 
     let mut errors = Vec::new();
@@ -1070,7 +1078,11 @@ pub fn analyze_with_options_and_inputs(
         let kind = block.kind();
         if matches!(
             kind,
-            BlockKind::Def | BlockKind::Struct | BlockKind::Proc | BlockKind::Const
+            BlockKind::Enum
+                | BlockKind::Def
+                | BlockKind::Struct
+                | BlockKind::Proc
+                | BlockKind::Const
         ) {
             continue;
         }
@@ -1530,12 +1542,18 @@ pub fn analyze_with_options_and_inputs(
                 .iter()
                 .chain(generated_specializations.values()),
         );
-        let top_level_inference = generic_inference_seed_for_top_level_decls(
+        let mut top_level_inference = generic_inference_seed_for_top_level_decls(
             &raw_ins,
             &raw_outs,
             &raw_kouts,
             &raw_params,
             inference_facts,
+        );
+        top_level_inference.bind_constants(
+            &const_scalar_types,
+            &const_artifacts.const_array_infos,
+            Some(&const_scope),
+            options,
         );
         for s in &mut concrete_structs {
             rewrite_generic_struct_field_types(
@@ -3751,7 +3769,7 @@ pub fn analyze_with_options_and_inputs(
             fields: fields.clone(),
         });
     }
-    let mut aggregate_layouts = match AggregateLayoutTable::build(&typed_structs) {
+    let mut aggregate_layouts = match AggregateLayoutTable::build(&typed_structs, &enums) {
         Ok(layouts) => layouts,
         Err(layout_errors) => {
             errors.extend(
@@ -4586,6 +4604,7 @@ pub fn analyze_with_options_and_inputs(
         }
 
         Ok(TypedProgram {
+            enums,
             analysis_options: options,
             ins,
             outs,

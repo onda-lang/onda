@@ -177,7 +177,7 @@ typedef enum onda_processor_param_scalar {
  * Decoded host-control metadata for one scalar numeric parameter.
  *
  * A descriptor without a numeric host-control domain uses scale NONE.
- * step_count == 0 means continuous. has_curve distinguishes an absent curve
+ * step_count == 0 means continuous, or a fixed i32 choice when min == max. has_curve distinguishes an absent curve
  * from curve == 0. scalar is the parameter's declared storage scalar. The
  * descriptor contract guarantees finite values and the additional scale/step
  * invariants checked by onda_processor_param_domain_is_valid().
@@ -483,7 +483,7 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
     domain->scale == ONDA_PROCESSOR_PARAM_SCALE_NONE ||
     !isfinite(domain->minimum) ||
     !isfinite(domain->maximum) ||
-    domain->minimum >= domain->maximum
+    domain->minimum > domain->maximum
   ) {
     return 0;
   }
@@ -558,6 +558,11 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
     )
   ) {
     return 0;
+  }
+  if (domain->minimum == domain->maximum) {
+    return domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I32 &&
+      domain->scale == ONDA_PROCESSOR_PARAM_SCALE_LINEAR &&
+      !domain->has_curve && domain->step == 1.0 && domain->step_count == 0;
   }
   if (domain->step_count == 0) {
     return domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32 ||

@@ -599,7 +599,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut midi_input_device = None;
     let mut fast_math = false;
     let mut show_meta = false;
-    let mut theme = RunThemeMode::Auto;
+    let mut theme = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -647,9 +647,9 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             }
             "--theme" => {
                 let Some(value) = args.next() else {
-                    return Err("--theme requires one of: auto, dark, light".to_owned());
+                    return Err("--theme requires one of: dark, light".to_owned());
                 };
-                theme = parse_run_theme_mode(&value)?;
+                theme = Some(parse_run_theme_mode(&value)?);
             }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
@@ -680,7 +680,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 midi_input_device = Some(arg["--midi-input-device=".len()..].to_owned());
             }
             _ if arg.starts_with("--theme=") => {
-                theme = parse_run_theme_mode(&arg["--theme=".len()..])?;
+                theme = Some(parse_run_theme_mode(&arg["--theme=".len()..])?);
             }
             _ if arg.starts_with('-') => {
                 return Err(format!("unknown option '{arg}'\n\n{}", usage()));
@@ -707,11 +707,10 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
 
 fn parse_run_theme_mode(value: &str) -> Result<RunThemeMode, String> {
     match value {
-        "auto" => Ok(RunThemeMode::Auto),
         "dark" => Ok(RunThemeMode::Dark),
         "light" => Ok(RunThemeMode::Light),
         _ => Err(format!(
-            "invalid --theme value '{value}'; expected auto, dark, or light"
+            "invalid --theme value '{value}'; expected dark or light"
         )),
     }
 }
@@ -732,6 +731,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut fast_math = false;
     let mut show_meta = false;
     let mut control_json = false;
+    let mut start_paused = false;
     let mut report_sources = false;
     let mut param_sets = Vec::new();
     let mut buffer_bindings = Vec::new();
@@ -811,6 +811,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--control-json" => control_json = true,
+            "--start-paused" => start_paused = true,
             "--report-sources" => report_sources = true,
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--dur=") => {
@@ -857,6 +858,9 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     if report_sources && !control_json {
         return Err("--report-sources requires --control-json".to_owned());
     }
+    if start_paused && !control_json {
+        return Err("--start-paused requires --control-json".to_owned());
+    }
 
     Ok(RunCommand::Play {
         input: PathBuf::from(input),
@@ -875,6 +879,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         fast_math,
         show_meta,
         control_json,
+        start_paused,
         report_sources,
         param_sets,
         buffer_bindings,
