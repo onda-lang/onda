@@ -1785,8 +1785,40 @@ pub(super) fn fold_expression(
     })
 }
 
-/// Substitute actual constant reads in an already typed executable expression.
-/// Runtime operands remain expressions; constant calls use the same interpreter.
+/// Evaluate an exported fixed-array default into the host declaration form.
+pub(super) fn materialize_array_literal(
+    expr: &Expr,
+    elem_ty: PrimitiveType,
+    len: usize,
+    artifacts: &SemanticConstArtifacts,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Expr> {
+    with_diagnostics(errors, |diagnostics| {
+        let mut interpreter = Interpreter::new(
+            &artifacts.const_values,
+            const_def_registry(artifacts),
+            options,
+            "exported array default",
+            &HashMap::new(),
+            &HashMap::new(),
+            &[],
+            diagnostics,
+        );
+        interpreter.frames.push(Frame::DemandArray);
+        interpreter.frames.push(Frame::Array(
+            expr,
+            ConstArrayExpectation::fixed(elem_ty, len),
+        ));
+        let Value::Array(array) = interpreter.run()? else {
+            return None;
+        };
+        let value = array.materialize()?;
+        Some(const_array_literal_expr(&value.values, expr.loc()))
+    })
+}
+
+/// Substitute actual constant reads while retaining runtime expression structure.
 pub(super) fn materialize_expression(
     expr: &Expr,
     artifacts: &SemanticConstArtifacts,

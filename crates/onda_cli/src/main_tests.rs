@@ -110,7 +110,7 @@ fn project_creates_a_resolvable_runnable_project() {
 }
 
 #[test]
-fn project_packages_an_existing_source_and_typed_buffer() {
+fn project_packages_a_main_source_and_typed_buffer() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after unix epoch")
@@ -123,7 +123,7 @@ fn project_packages_an_existing_source_and_typed_buffer() {
     std::fs::create_dir_all(&root).expect("create package test directory");
     std::fs::write(
         &source,
-        "buffers:\n  values: buffer<i32>\nouts:\n  out1\nsample:\n  out1 = 0.0\n",
+        "proc Main:\n  buffers:\n    values: buffer<i32>\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
     )
     .expect("write package source");
     let asset = onda_project::BufferAsset::new(
@@ -393,7 +393,7 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
     std::fs::create_dir_all(&root).expect("create compile project test directory");
     std::fs::write(
         root.join("main.onda"),
-        "buffers:\n  values: buffer<i32>\nouts:\n  out1\nsample:\n  out1 = 0.0\n",
+        "proc Main:\n  buffers:\n    values: buffer<i32>\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
     )
     .expect("write project entry source");
     std::fs::write(

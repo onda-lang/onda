@@ -903,7 +903,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
 }
 
 #[test]
-fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
+fn c_file_compile_accepts_main_projects_with_defaults_and_watch_paths() {
     unsafe {
         let dir = temp_source_dir("filesystem_project");
         let code_dir = dir.join("code");
@@ -925,7 +925,7 @@ fn c_file_compile_accepts_filesystem_projects_with_defaults_and_watch_paths() {
         .expect("write project manifest");
         fs::write(
             &main,
-            "import voice\nouts { out1 }\nbuffers { samples: buffer<f32> }\nsample { out1 = samples[0] * VOICE }\n",
+            "import voice\nproc Main {\nouts { out1 }\nbuffers { samples: buffer<f32> }\nsample { out1 = samples[0] * VOICE }\n}\n",
         )
         .expect("write project entry");
         fs::write(&voice, "const VOICE = 1.0\n").expect("write project dependency");
@@ -1642,7 +1642,7 @@ fn project_buffer_updates_preserve_the_checkpoint_and_fail_atomically() {
 }
 
 #[test]
-fn project_instances_share_immutable_defaults_and_allow_host_overrides() {
+fn main_project_instances_share_immutable_defaults_and_allow_host_overrides() {
     unsafe {
         let paths = [
             CString::new("project.ondaproject").unwrap(),
@@ -1664,10 +1664,11 @@ fn project_instances_share_immutable_defaults_and_allow_host_overrides() {
             }"#
             .to_vec(),
             br#"
-outs { out1 }
-buffers { samples: buffer<f32> }
-init { value = samples[0] }
-sample { out1 = value }
+proc Main:
+  outs { out1 }
+  buffers { samples: buffer<f32> }
+  init { value = samples[0] }
+  sample { out1 = value }
 "#
             .to_vec(),
         ];

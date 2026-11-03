@@ -39,6 +39,43 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "Main inputs use ordinary proc names, array shapes and ranges",
+    source: join(packageDir, "test/fixtures/main-entry-inputs.onda"),
+    blocks: 1,
+    expectedChannels: [Array(4).fill(0.125), Array(4).fill(0.5), Array(4).fill(0.5)],
+  },
+  {
+    name: "Main preserves interface hygiene, typed arrays and array message defaults",
+    source: join(packageDir, "test/fixtures/main-entry-arrays.onda"),
+    expectedChannels: [
+      Array(8).fill(2),
+      Array(8).fill(2),
+      Array(8).fill(1),
+      Array(8).fill(2),
+      [...Array(4).fill(0), ...Array(4).fill(3)],
+    ],
+    expectedDelegateNames: ["changed"],
+    actions: [
+      { kind: "render" },
+      { kind: "event", name: "set", values: [["9007199254740993", "9007199254740995"]] },
+      { kind: "render" },
+    ],
+  },
+  {
+    name: "Main entry preserves owner state, control hooks and event forwarding",
+    source: join(packageDir, "test/fixtures/main-entry.onda"),
+    expectedChannels: [
+      [0.25, 0.5, 0.75, 1, 2.25, 2.5, 2.75, 3],
+      [2, 2, 2, 2, 4, 4, 4, 4],
+    ],
+    expectedDelegateNames: ["updated"],
+    actions: [
+      { kind: "render" },
+      { kind: "event", name: "reset", values: [2] },
+      { kind: "render" },
+    ],
+  },
+  {
     name: "mixed state and local storage preserves in-place dependencies",
     source: join(packageDir, "test/fixtures/mixed-storage-origins.onda"),
     blocks: 3,

@@ -4,6 +4,7 @@ use crate::*;
 use onda_frontend::{EventParamDecl, LogicalOp};
 
 mod delegate_lowering;
+mod entry_adapter;
 mod generated_blocks;
 mod generic_proc_rewrite;
 mod generic_struct_source_rewrite;
@@ -264,6 +265,7 @@ struct ProcBaseShape {
     ins: Vec<String>,
     outs: Vec<String>,
     in_ports: Vec<ProcPortSpec>,
+    out_ports: Vec<ProcPortSpec>,
     param_specs: Vec<ProcParamSpec>,
     buffer_specs: Vec<ProcBufferSpec>,
     in_types: HashMap<String, PrimitiveType>,
@@ -282,6 +284,7 @@ pub(crate) struct ProcLoweringShape {
     pub(crate) ins: Vec<String>,
     pub(crate) outs: Vec<String>,
     pub(crate) in_ports: Vec<ProcPortSpec>,
+    pub(crate) out_ports: Vec<ProcPortSpec>,
     pub(crate) param_specs: Vec<ProcParamSpec>,
     pub(crate) buffer_specs: Vec<ProcBufferSpec>,
     pub(crate) in_types: HashMap<String, PrimitiveType>,
@@ -324,6 +327,8 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) compiler_owned_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) compiler_scratch_proc_fields: HashMap<String, HashSet<String>>,
     pub(crate) top_level_delegates: Vec<DelegateDef>,
+    pub(crate) authored_instance_roots: HashSet<String>,
+    pub(crate) interface_names: HashMap<String, String>,
 }
 
 fn collect_flattened_proc_field_metadata(
@@ -683,7 +688,7 @@ fn builtin_proc_init_event_spec(param_specs: &[ProcParamSpec]) -> ProcEventSpec 
         param_specs
             .iter()
             .map(|param| {
-                if param.slots.len() == 1 && param.slots[0].name == param.name {
+                if !param.is_array {
                     let slot = &param.slots[0];
                     ProcEventParamSpec {
                         name: param.name.clone(),
@@ -1562,7 +1567,9 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
-    let prepared_delegates = prepare_delegate_source(&mut program, errors);
+    let mut entry =
+        entry_adapter::EntryAdapter::prepare(&mut program, options, const_scope, errors);
+    let mut prepared_delegates = prepare_delegate_source(&mut program, errors);
     runtime_def_names.extend(prepared_delegates.runtime_defs.iter().cloned());
     if let Some(Block::Init(init)) = program
         .blocks
@@ -1607,6 +1614,8 @@ fn desugar_processors_impl(
             compiler_owned_proc_fields: HashMap::new(),
             compiler_scratch_proc_fields: HashMap::new(),
             top_level_delegates: prepared_delegates.top_level,
+            authored_instance_roots: HashSet::new(),
+            interface_names: HashMap::new(),
         };
     };
     let existing_struct_names = program
@@ -1624,6 +1633,19 @@ fn desugar_processors_impl(
         .collect::<Vec<_>>();
     proc_specialized_structs.sort_by(|a, b| a.name.cmp(&b.name));
 
+    if let Some(entry) = &mut entry {
+        if let (Some(shape), Some(api)) = (lowering_shapes.get("Main"), proc_api.get("Main")) {
+            entry.connect(
+                &mut program,
+                shape,
+                api,
+                options,
+                const_scope,
+                &mut runtime_def_names,
+                errors,
+            );
+        }
+    }
     let top_level_proc_rewrite = rewrite_top_level_proc_calls(
         &mut program,
         &runtime_def_names,
@@ -1633,6 +1655,9 @@ fn desugar_processors_impl(
         &proc_api,
         errors,
     );
+    let entry_exports = entry
+        .map(|entry| entry.finish(&mut program, &mut prepared_delegates.top_level))
+        .unwrap_or_default();
     lower_top_level_child_whens(
         &mut program,
         &top_level_proc_rewrite,
@@ -1702,6 +1727,8 @@ fn desugar_processors_impl(
         compiler_owned_proc_fields,
         compiler_scratch_proc_fields,
         top_level_delegates: prepared_delegates.top_level,
+        authored_instance_roots: entry_exports.authored_instance_roots,
+        interface_names: entry_exports.interface_names,
     }
 }
 

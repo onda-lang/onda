@@ -1452,7 +1452,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
     for (idx, param) in callee_param_specs.iter().enumerate() {
         let values = match resolved.get(idx).copied().flatten() {
             Some(expr) => {
-                let expr = if param.slots.len() == 1 {
+                let expr = if !param.is_array {
                     if let Some((array_slot_idx, array_len)) = proc_array_slot {
                         select_proc_array_initializer_expr_for_slot(
                             expr,
@@ -1471,9 +1471,9 @@ pub(super) fn expand_nested_proc_ctor_assign(
                 } else {
                     expr.clone()
                 };
-                expand_expr_to_slots(
+                expand_proc_param_to_slots(
                     &expr,
-                    param.slots.len(),
+                    param,
                     &format!(
                         "processor constructor '{}(...)' argument '{}'",
                         ctor_name, param.name
@@ -1618,7 +1618,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
     for (idx, param) in param_specs.iter().enumerate() {
         let values = match resolved.get(idx).copied().flatten() {
             Some(expr) => {
-                let expr = if param.slots.len() == 1 {
+                let expr = if !param.is_array {
                     if let Some((array_slot_idx, array_len)) = proc_array_slot {
                         select_proc_array_initializer_expr_for_slot(
                             expr,
@@ -1637,9 +1637,9 @@ pub(super) fn expand_proc_instance_ctor_assign(
                 } else {
                     expr.clone()
                 };
-                expand_expr_to_slots(
+                expand_proc_param_to_slots(
                     &expr,
-                    param.slots.len(),
+                    param,
                     &format!(
                         "processor constructor '{}(...)' argument '{}'",
                         ctor_name, param.name

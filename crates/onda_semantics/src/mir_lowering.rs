@@ -994,7 +994,7 @@ fn populate_interface(
             let default = (defaults.len() == info.len)
                 .then_some(onda_mir::ConstantValue::Aggregate(defaults));
             mir.interface.inputs.push(onda_mir::Input {
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 default,
                 range: None,
@@ -1014,7 +1014,7 @@ fn populate_interface(
         let id = onda_mir::InputId::new(mir.interface.inputs.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, ty);
         mir.interface.inputs.push(onda_mir::Input {
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
             default: program.in_defaults.get(name).copied().map(mir_constant),
             range: program.in_ranges.get(name).copied().map(mir_range),
@@ -1029,7 +1029,7 @@ fn populate_interface(
             let len = info.len as u32;
             let type_id = intern_array_type(&mut mir.types, info.elem_ty, len);
             mir.interface.outputs.push(onda_mir::Output {
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
             });
             globals
@@ -1047,7 +1047,7 @@ fn populate_interface(
         let id = onda_mir::OutputId::new(mir.interface.outputs.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, ty);
         mir.interface.outputs.push(onda_mir::Output {
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
         });
         globals.outputs.insert(name.clone(), (id, ty));
@@ -1061,7 +1061,7 @@ fn populate_interface(
             let type_id = intern_array_type(&mut mir.types, info.elem_ty, len);
             let mirror = onda_mir::StateId::new(mir.state.len() as u32);
             mir.state.push(onda_mir::StateSlot {
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 persistence: onda_mir::StatePersistence::ControlMirror,
                 authored: true,
@@ -1070,7 +1070,7 @@ fn populate_interface(
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
                 enumeration: crate::enum_support::for_type(program, info.elem_ty),
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 mirror,
             });
@@ -1093,7 +1093,7 @@ fn populate_interface(
         let type_id = intern_scalar_type(&mut mir.types, ty);
         let mirror = onda_mir::StateId::new(mir.state.len() as u32);
         mir.state.push(onda_mir::StateSlot {
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::ControlMirror,
             authored: true,
@@ -1102,7 +1102,7 @@ fn populate_interface(
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
             enumeration: crate::enum_support::for_type(program, ty),
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
             mirror,
         });
@@ -1122,7 +1122,7 @@ fn populate_interface(
                 .collect::<Vec<_>>();
             mir.interface.params.push(onda_mir::Param {
                 enumeration: crate::enum_support::for_type(program, info.elem_ty),
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 default: onda_mir::ConstantValue::Aggregate(defaults),
                 range: program.params[index].range.map(mir_range),
@@ -1139,7 +1139,7 @@ fn populate_interface(
         let type_id = intern_scalar_type(&mut mir.types, param.ty);
         mir.interface.params.push(onda_mir::Param {
             enumeration: crate::enum_support::for_type(program, param.ty),
-            name: param.name.clone(),
+            name: program.interface_name(&param.name).to_owned(),
             ty: type_id,
             default: mir_constant(param.default),
             range: param.range.map(mir_range),
@@ -1174,9 +1174,11 @@ fn populate_interface(
         for index in 0..array_len {
             mir.interface.buffers.push(onda_mir::Buffer {
                 name: if buffer.is_array {
-                    format!("{}[{index}]", buffer.name)
+                    program
+                        .interface_name(&format!("{}[{index}]", buffer.name))
+                        .to_owned()
                 } else {
-                    buffer.name.clone()
+                    program.interface_name(&buffer.name).to_owned()
                 },
                 element: scalar_type(buffer.elem_ty),
                 channels,
@@ -1189,7 +1191,7 @@ fn populate_interface(
                 .insert(buffer.name.clone(), (first, buffer.elem_ty));
         } else {
             mir.interface.buffer_arrays.push(onda_mir::BufferArray {
-                name: buffer.name.clone(),
+                name: program.interface_name(&buffer.name).to_owned(),
                 first,
                 len: array_len,
             });

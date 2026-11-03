@@ -239,6 +239,17 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     next start.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
+- `processor_lowering/entry_adapter.rs` — automatic construction and host-interface
+  projection of an ordinary `Main` proc. Delegate exports are prepared before
+  delegate lowering; other bindings use resolved proc shapes. Parameter refresh
+  is scheduled before automatic block-pre hooks. Host controls stay separate
+  from mutable proc state. The adapter emits ordinary construction, positional
+  input calls, and stores; proc lowering owns execution rules, including input
+  clamping and oversampling. Generated entry ownership preserves authored-state
+  metadata. `TypedProgram::interface_name` supplies authored names to native
+  project validation, CLI metadata, and MIR descriptors while executable module
+  bindings retain their own scope. MIR and backends see the ordinary lowered
+  program.
 - `proc_call_rewrite.rs`, `proc_call_rewrite/call_arguments.rs`, `proc_call_support.rs`,
   `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, named-argument and call-surface
   expansion, aliasing, and state symbol rewriting.

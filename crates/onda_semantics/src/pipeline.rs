@@ -1027,6 +1027,8 @@ pub fn analyze_with_options_and_inputs(
         compiler_owned_proc_fields,
         compiler_scratch_proc_fields,
         mut top_level_delegates,
+        authored_instance_roots,
+        interface_names,
     } = desugar_materialized_processors(
         program,
         options,
@@ -4302,9 +4304,9 @@ pub fn analyze_with_options_and_inputs(
                 .iter()
                 .chain(typed_data.iter().map(|array| &array.name))
                 .filter(|name| {
-                    crate::internal_names::is_reserved_internal_identifier(runtime_symbol_root(
-                        name,
-                    ))
+                    let root = runtime_symbol_root(name);
+                    crate::internal_names::is_reserved_internal_identifier(root)
+                        && !authored_instance_roots.contains(root)
                 })
                 .cloned(),
         );
@@ -4606,6 +4608,7 @@ pub fn analyze_with_options_and_inputs(
         Ok(TypedProgram {
             enums,
             analysis_options: options,
+            interface_names,
             ins,
             outs,
             control_outs,

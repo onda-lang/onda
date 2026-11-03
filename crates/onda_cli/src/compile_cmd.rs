@@ -252,6 +252,7 @@ fn declared_type_repr(elem: PrimitiveType, len: usize) -> String {
 }
 
 fn build_declared_ports(
+    typed: &TypedProgram,
     flat: &[String],
     types: &HashMap<String, PrimitiveType>,
     arrays: &HashMap<String, TypedArrayInfo>,
@@ -265,7 +266,7 @@ fn build_declared_ports(
     while slot < flat.len() {
         if let Some((name, info)) = arrays_by_offset.get(&slot) {
             out.push(CliDeclaredIo {
-                name: (*name).clone(),
+                name: typed.interface_name(name).to_owned(),
                 elem_ty: info.elem_ty,
                 array_len: info.len,
                 offset: slot,
@@ -273,10 +274,10 @@ fn build_declared_ports(
             slot += info.len;
             continue;
         }
-        let name = flat[slot].clone();
-        let ty = *types.get(&name).unwrap_or(&PrimitiveType::F32);
+        let name = &flat[slot];
+        let ty = *types.get(name).unwrap_or(&PrimitiveType::F32);
         out.push(CliDeclaredIo {
-            name,
+            name: typed.interface_name(name).to_owned(),
             elem_ty: ty,
             array_len: 1,
             offset: slot,
@@ -297,7 +298,7 @@ fn build_declared_params(typed: &TypedProgram) -> Vec<CliDeclaredIo> {
     while slot < typed.params.len() {
         if let Some((name, info)) = arrays_by_offset.get(&slot) {
             out.push(CliDeclaredIo {
-                name: (*name).clone(),
+                name: typed.interface_name(name).to_owned(),
                 elem_ty: info.elem_ty,
                 array_len: info.len,
                 offset: slot,
@@ -307,7 +308,7 @@ fn build_declared_params(typed: &TypedProgram) -> Vec<CliDeclaredIo> {
         }
         let p = &typed.params[slot];
         out.push(CliDeclaredIo {
-            name: p.name.clone(),
+            name: typed.interface_name(&p.name).to_owned(),
             elem_ty: p.ty,
             array_len: 1,
             offset: slot,
@@ -334,8 +335,8 @@ fn print_declared_table(label: &str, entries: &[CliDeclaredIo]) {
 }
 
 fn print_program_meta(typed: &TypedProgram) {
-    let ins = build_declared_ports(&typed.ins, &typed.in_types, &typed.in_arrays);
-    let outs = build_declared_ports(&typed.outs, &typed.out_types, &typed.out_arrays);
+    let ins = build_declared_ports(typed, &typed.ins, &typed.in_types, &typed.in_arrays);
+    let outs = build_declared_ports(typed, &typed.outs, &typed.out_types, &typed.out_arrays);
     let params = build_declared_params(typed);
     print_declared_table("ins", &ins);
     print_declared_table("outs", &outs);

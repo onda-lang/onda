@@ -1734,7 +1734,7 @@ unsafe fn compile_parsed_program(
                             out_diag,
                             project_error_diag(format!(
                                 "buffer '{}' channel count does not fit the project format",
-                                buffer.name
+                                typed.interface_name(&buffer.name)
                             )),
                         );
                         return ptr::null_mut();
@@ -1743,7 +1743,7 @@ unsafe fn compile_parsed_program(
                 TypedBufferChannels::Dynamic => ProjectBufferChannels::Dynamic,
             };
             declarations.push(ProjectBufferDeclaration {
-                name: buffer.name.clone(),
+                name: typed.interface_name(&buffer.name).to_owned(),
                 element: match buffer.elem_ty {
                     PrimitiveType::F32 => BufferElement::F32,
                     PrimitiveType::F64 => BufferElement::F64,

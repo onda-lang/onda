@@ -34,6 +34,33 @@ pub(crate) struct ConstScope {
 }
 
 impl ConstScope {
+    pub(crate) fn array_literal(
+        &self,
+        expr: &Expr,
+        elem_ty: PrimitiveType,
+        len: usize,
+        options: AnalysisOptions,
+        errors: &mut Vec<Diagnostic>,
+    ) -> Option<Expr> {
+        const_interpreter::materialize_array_literal(
+            expr,
+            elem_ty,
+            len,
+            &self.artifacts,
+            options,
+            errors,
+        )
+    }
+
+    pub(crate) fn materialize(
+        &self,
+        expr: &mut Expr,
+        options: AnalysisOptions,
+        errors: &mut Vec<Diagnostic>,
+    ) {
+        materialize_const_expr(expr, &self.artifacts, options, errors);
+    }
+
     pub(crate) fn contextual_numeric(&self, name: &str) -> bool {
         self.artifacts
             .const_values

@@ -1447,6 +1447,7 @@ fn expand_proc_value_specs(
                 );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_array: false,
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
                         private: param.private,
@@ -1538,6 +1539,7 @@ fn expand_proc_value_specs(
                 field_array_slots.insert(param.name.clone(), slot_names);
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_array: true,
                     slots,
                 });
             }
@@ -1622,6 +1624,7 @@ fn expand_proc_value_specs(
                 );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_array: true,
                     slots,
                 });
             }

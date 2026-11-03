@@ -3,8 +3,7 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ main_block | program_item }
-main_block = { proc_kw ~ "Main" ~ !ident_char ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ program_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
+block = _{ program_item }
 program_item = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | proc_block | enum_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
@@ -156,7 +155,7 @@ proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_end_
 param_private = @{ "private" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 param_bind = { "=>" ~ ident }
 param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
-proc_param_decl = { param_private? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
+proc_param_decl = { param_private? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
 buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_end_sep* }
 buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? ~ (NEWLINE* ~ buffer_count)? }
 buffer_decl_type = { buffer_type | buffer_inner }

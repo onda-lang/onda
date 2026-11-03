@@ -323,8 +323,15 @@ fn is_param_domain_open(source: &str, open: usize, parent_braces: &[usize]) -> b
 
     if let Some(parent) = parent_braces.last() {
         let parent_line_start = source[..*parent].rfind('\n').map_or(0, |index| index + 1);
-        let parent_prefix = source[parent_line_start..*parent].trim();
-        return parent_braces.len() == 1 && is_domain_section_header(parent_prefix);
+        let parent_start = parent_braces
+            .iter()
+            .rev()
+            .nth(1)
+            .map_or(parent_line_start, |ancestor| {
+                parent_line_start.max(ancestor + 1)
+            });
+        let parent_prefix = source[parent_start..*parent].trim();
+        return is_domain_section_header(parent_prefix);
     }
 
     let declaration_line = &source[line_start..open];
@@ -341,7 +348,7 @@ fn is_param_domain_open(source: &str, open: usize, parent_braces: &[usize]) -> b
                 && !trimmed.starts_with('#')
                 && leading_indent_len(line) < declaration_indent
         })
-        .is_some_and(|line| leading_indent_len(line) == 0 && is_domain_section_header(line.trim()))
+        .is_some_and(|line| is_domain_section_header(line.trim()))
 }
 
 fn is_buffer_count_open(source: &str, open: usize, parent_braces: &[usize]) -> bool {
@@ -705,9 +712,17 @@ mod tests {
     }
 
     #[test]
-    fn ignores_processor_local_parameter_ranges() {
-        let source = "proc Voice:\n  params:\n    cutoff = 440.0 {sc";
-        assert!(completion_context_at(source, source.len()).is_none());
+    fn recognizes_processor_parameter_domains() {
+        for source in [
+            "proc Voice:\n  params:\n    cutoff = 440.0 {sc",
+            "proc Main { params { cutoff = 440.0 {sc",
+            "namespace DSP { proc Voice { params { cutoff = 440.0 {sc",
+        ] {
+            assert!(
+                completion_context_at(source, source.len()).is_some(),
+                "{source}"
+            );
+        }
     }
 
     #[test]

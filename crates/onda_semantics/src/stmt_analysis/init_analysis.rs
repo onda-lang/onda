@@ -2767,17 +2767,20 @@ fn analyze_struct_field_init_assign(
                 return;
             }
             validate_expr(expr, init_expr_env!(), errors);
-            let expr_ty = infer_expr_type_for_semantics(
+            let expr_ty = infer_expr_type_for_semantics_with_local_data_and_proc_arrays(
                 expr,
                 state_scalars,
                 declared_symbols,
                 None,
+                local_aliases,
+                local_array_aliases,
                 locals,
-                &HashSet::new(),
+                common.input_names,
                 outputs,
-                &HashSet::new(),
+                common.param_names,
                 &visible_structs,
                 struct_defs,
+                nested_proc_arrays,
                 errors,
             );
             require_expr_assignable_type(

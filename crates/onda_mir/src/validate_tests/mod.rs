@@ -2762,7 +2762,7 @@ fn control_outputs_use_explicit_one_to_one_mirror_identity() {
 }
 
 #[test]
-fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
+fn accepts_interface_names_shared_between_kinds() {
     let mut program = empty_program();
     program.types.push(Type::Scalar(ScalarType::F32));
     program.interface.inputs.push(crate::Input {
@@ -2771,6 +2771,35 @@ fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
         default: None,
         range: None,
     });
+    program.interface.outputs.push(Output {
+        name: "shared".to_owned(),
+        ty: test_type(0),
+    });
+    program.interface.params.push(Param {
+        enumeration: None,
+        name: "shared".to_owned(),
+        ty: test_type(0),
+        default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
+        range: None,
+        control: crate::ParamControl::default(),
+    });
+    super::validate(&program).expect("interface kinds have separate lookup tables");
+}
+
+#[test]
+fn rejects_duplicate_names_within_an_interface_kind_and_event_parameters() {
+    let mut program = empty_program();
+    program.types.push(Type::Scalar(ScalarType::F32));
+    program.interface.inputs.push(crate::Input {
+        name: "shared".to_owned(),
+        ty: test_type(0),
+        default: None,
+        range: None,
+    });
+    program
+        .interface
+        .inputs
+        .push(program.interface.inputs[0].clone());
     program.interface.params.push(Param {
         enumeration: None,
         name: "shared".to_owned(),

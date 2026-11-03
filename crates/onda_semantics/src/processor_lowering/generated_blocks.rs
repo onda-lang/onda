@@ -252,7 +252,7 @@ fn after_init_bind_hook_stmts_for_receiver(
     param_specs
         .iter()
         .filter_map(|param| {
-            if param.slots.len() == 1 && param.slots[0].name == param.name {
+            if !param.is_array {
                 param.slots[0]
                     .bind
                     .as_ref()
@@ -272,7 +272,7 @@ fn after_init_nested_bind_hook_stmts(
     param_specs
         .iter()
         .filter_map(|spec| {
-            if spec.slots.len() == 1 && spec.slots[0].name == spec.name {
+            if !spec.is_array {
                 spec.slots[0]
                     .bind
                     .as_ref()
@@ -454,7 +454,7 @@ where
 
     let mut event_body = Vec::<Stmt>::new();
     for param in param_specs {
-        if param.slots.len() == 1 && param.slots[0].name == param.name {
+        if !param.is_array {
             let slot = &param.slots[0];
             event_params.push(onda_frontend::FnParamDecl {
                 readonly: false,
@@ -2004,6 +2004,7 @@ fn generate_nested_wrapper_defs(
                             &mut nested_event_params,
                             &callee_shape.buffer_specs,
                         );
+                        let callee_shape = callee_shape.without_parameters(&nested_event_params);
                         let mut nested_event_body = lower_callee_stmts_for_nested_wrapper(
                             event.body.clone(),
                             &proc.name,
@@ -3193,6 +3194,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         }
                     }
                     extend_proc_buffer_fn_params(&mut event_params, &shape.buffer_specs);
+                    let shape = shape.without_parameters(&event_params);
                     let mut event_body = rewrite_owner_proc_stmts(
                         event.body.clone(),
                         &proc.name,

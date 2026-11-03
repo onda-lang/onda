@@ -1,0 +1,32 @@
+enum Mode:
+  Off
+  On
+
+const Initial: i64[2] = [9007199254740993, 9007199254740995]
+const def initial() -> i64[2]:
+  return Initial
+
+def values(value):
+  return value * 2.0
+def apply(value):
+  return values(value)
+
+proc Main:
+  params:
+    values: i32[2] = [16777217, 16777219]
+    wide: i64[1] = [9007199254740993]
+    flags: bool[2] = [true, false]
+    modes: Mode[2] = [Mode::Off, Mode::On]
+  init:
+    saved = f32(wide[0] - 9007199254740992)
+    received = 0.0
+  delegate changed(values: i64[2] = initial())
+  event set(values: i64[2] = Initial):
+    received = f32(values[1] - 9007199254740992)
+    changed()
+  sample:
+    out1 = apply(f32(values[0] - 16777216))
+    out2 = f32(wide[0] - 9007199254740992) + saved
+    out3 = f32(flags[0]) + 2.0 * f32(flags[1])
+    out4 = f32(i32(modes[0])) + 2.0 * f32(i32(modes[1]))
+    out5 = received

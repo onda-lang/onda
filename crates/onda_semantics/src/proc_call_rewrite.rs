@@ -752,6 +752,19 @@ pub(super) fn expand_expr_to_slots(
     expand_array_expr_to_slots(expr, slot_count, context, errors)
 }
 
+pub(super) fn expand_proc_param_to_slots(
+    expr: &Expr,
+    param: &ProcParamSpec,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<Expr> {
+    if param.is_array {
+        expand_array_expr_to_slots(expr, param.slots.len(), context, errors)
+    } else {
+        expand_expr_to_slots(expr, param.slots.len(), context, errors)
+    }
+}
+
 fn expand_array_expr_to_slots(
     expr: &Expr,
     slot_count: usize,

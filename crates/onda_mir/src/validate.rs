@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::ops::Deref;
 
@@ -793,38 +793,38 @@ impl Validator<'_> {
     }
 
     fn validate_interface_names(&mut self) {
-        let mut names = HashMap::<String, &str>::new();
+        // Host lookup tables are separate for each interface kind. Scalar
+        // buffers and logical buffer arrays share the buffer binding namespace.
+        let mut names = HashSet::<(&'static str, String)>::new();
         let mut insert = |name: &str, kind: &'static str, errors: &mut Vec<ValidationError>| {
-            if let Some(previous) = names.insert(name.to_owned(), kind) {
+            if !names.insert((kind, name.to_owned())) {
                 errors.push(ValidationError {
-                    message: format!(
-                        "interface name '{name}' is used by both {previous} and {kind}"
-                    ),
+                    message: format!("duplicate {kind} interface name '{name}'"),
                     function: None,
                     source: SourceSpan::UNKNOWN,
                 });
             }
         };
         for input in &self.program.interface.inputs {
-            insert(&input.name, "an input", &mut self.errors);
+            insert(&input.name, "input", &mut self.errors);
         }
         for output in &self.program.interface.outputs {
-            insert(&output.name, "an audio output", &mut self.errors);
+            insert(&output.name, "audio output", &mut self.errors);
         }
         for output in &self.program.interface.control_outputs {
-            insert(&output.name, "a control output", &mut self.errors);
+            insert(&output.name, "control output", &mut self.errors);
         }
         for param in &self.program.interface.params {
-            insert(&param.name, "a parameter", &mut self.errors);
+            insert(&param.name, "parameter", &mut self.errors);
         }
         for buffer in &self.program.interface.buffers {
-            insert(&buffer.name, "a buffer", &mut self.errors);
+            insert(&buffer.name, "buffer", &mut self.errors);
         }
         for array in &self.program.interface.buffer_arrays {
-            insert(&array.name, "a buffer array", &mut self.errors);
+            insert(&array.name, "buffer", &mut self.errors);
         }
         for event in &self.program.interface.events {
-            insert(&event.name, "an event", &mut self.errors);
+            insert(&event.name, "event", &mut self.errors);
             let mut event_params = HashSet::new();
             for param in &event.params {
                 if !event_params.insert(param.name.as_str()) {
@@ -836,7 +836,7 @@ impl Validator<'_> {
             }
         }
         for delegate in &self.program.interface.delegates {
-            insert(&delegate.name, "a delegate", &mut self.errors);
+            insert(&delegate.name, "delegate", &mut self.errors);
             let mut delegate_params = HashSet::new();
             for param in &delegate.params {
                 if !delegate_params.insert(param.name.as_str()) {

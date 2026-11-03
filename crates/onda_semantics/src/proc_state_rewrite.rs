@@ -61,6 +61,7 @@ pub(crate) struct ProcParamSlotSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSpec {
     pub(crate) name: String,
+    pub(crate) is_array: bool,
     pub(crate) slots: Vec<ProcParamSlotSpec>,
 }
 

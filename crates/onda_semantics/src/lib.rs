@@ -157,6 +157,8 @@ pub struct TypedProgram {
     /// MIR construction consumes this exact configuration so contextual
     /// constants and loop bounds cannot drift between compiler stages.
     pub analysis_options: AnalysisOptions,
+    /// Optional public names for compiler-private host interface bindings.
+    pub(crate) interface_names: HashMap<String, String>,
     pub ins: Vec<String>,
     pub outs: Vec<String>,
     pub control_outs: Vec<String>,
@@ -871,10 +873,19 @@ impl Default for AnalysisOptions {
 }
 
 impl TypedProgram {
+    /// Host-visible name of a logical interface binding or flattened array slot.
+    /// Interface collections use internal bindings; use this name for external
+    /// metadata, project bindings, and diagnostics.
+    pub fn interface_name<'a>(&'a self, binding: &'a str) -> &'a str {
+        self.interface_names
+            .get(binding)
+            .map_or(binding, String::as_str)
+    }
+
     pub fn param_default(&self, name: &str) -> Option<f32> {
         self.params
             .iter()
-            .find(|p| p.name == name)
+            .find(|p| self.interface_name(&p.name) == name)
             .map(|p| p.default.to_f32())
     }
 }

@@ -83,6 +83,8 @@ mod fft_accuracy;
 mod generic_defs;
 #[path = "examples_suite/language_core.rs"]
 mod language_core;
+#[path = "examples_suite/main_entry.rs"]
+mod main_entry;
 #[path = "examples_suite/proc_local_defs.rs"]
 mod proc_local_defs;
 #[path = "examples_suite/slices_and_ports.rs"]

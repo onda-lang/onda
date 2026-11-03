@@ -1,0 +1,11 @@
+proc Main:
+  ins:
+    gain = 0.25 {0.25, 1.0}
+    values: f32[2] = [0.25, 0.75] {0.25, 1.0}
+    single: f32[1] = 0.5 {0.5, 1.0}
+  params:
+    gain = 0.5 {0.0, 1.0, unit = "x"}
+  sample:
+    out1 = gain * ins[0]
+    out2 = values[0] + values[1]
+    out3 = single[0]

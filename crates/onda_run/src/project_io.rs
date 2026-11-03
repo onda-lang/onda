@@ -282,14 +282,14 @@ pub fn project_buffer_declarations(
                     ProjectBufferChannels::Static(u32::try_from(*channels).map_err(|_| {
                         format!(
                             "buffer '{}' channel count does not fit the project format",
-                            buffer.name
+                            typed.interface_name(&buffer.name)
                         )
                     })?)
                 }
                 onda_semantics::TypedBufferChannels::Dynamic => ProjectBufferChannels::Dynamic,
             };
             Ok(ProjectBufferDeclaration {
-                name: buffer.name.clone(),
+                name: typed.interface_name(&buffer.name).to_owned(),
                 element,
                 channels,
                 array_len: buffer.array_len,

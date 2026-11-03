@@ -89,28 +89,52 @@ contain only declarations. The next chapter covers the source notation;
 [Execution and State](#3-execution-and-state) defines precisely when `init`,
 `block`, and `sample` run and how values move between them.
 
-An entry file may alternatively wrap its top-level program in a non-generic
-`proc Main`:
+An entry file may declare a non-generic `proc Main`. The compiler automatically
+constructs one ordinary Main instance per host instance and connects its public
+interface to the host:
 
 ```onda
 proc Main:
   params:
-    gain = 0.5 {0.0, 1.0}
+    gain = 0.5 {0.0, 1.0, unit = "x"}
+
+  init:
+    state = 1.0
+
+  def next():
+    state = state * 0.999
+    return state * gain
 
   sample:
-    out1 = gain
+    out1 = next()
 ```
 
-This is only an entry wrapper, not a reusable processor declaration. Its contents use the exact
-top-level grammar and semantics, including `kins`, host parameter domains, `config const`, defs,
-structs, processors, and namespaces. The parser removes the wrapper, so later compiler stages see
-the same program as if its contents had been written directly at top level.
+Main follows ordinary processor grammar and semantics. Its local defs capture
+its state; private params, children, tasks, events, delegates, initialization,
+arrays, buffers, and oversampling follow the processor rules. It declares either
+`outs` or `kouts`. Imports, constants, configuration constants, structs, and
+namespaces remain outside Main.
 
-Only one top-level `proc Main` may occur across the entry and its included files, it cannot have
-generic parameters, and wrapped and unwrapped host-facing or executable sections cannot be mixed.
-Imports and reusable declarations may remain outside the wrapper. An imported declaration module
-cannot supply the entry wrapper. A `proc Main` declared inside a namespace remains an ordinary
-reusable processor and has no special entry behavior.
+Public params become host controls with their declared defaults and metadata.
+Private params remain internal. Host values initialize the instance and refresh
+its public params before each logical block's block-pre and before each exported
+event. These are ordinary proc writes: they clamp and run bound hooks, including
+for equal values. Intermediate process segments do not refresh the params. Main
+may write its own params; those writes last until the next host refresh and do
+not update host controls. Use init state or private params for persistent
+internal decisions.
+
+Input/output arrays, buffers, authored events, and delegates retain their public
+names and shapes. Host initialization uses the ordinary proc construction path;
+the builtin proc `init` event is not an additional exported event. An event-only
+Main is constructed without being stepped, and any declared audio outputs remain
+zero. Its normal proc output-rate restrictions still apply.
+
+Only one unqualified Main may occur across the entry and its included files.
+It cannot be mixed with bare top-level host-facing or executable sections.
+Imports and reusable declarations may remain outside Main. Imported modules
+cannot supply an entry. A Main inside a namespace remains an ordinary reusable
+processor with no automatic entry behavior.
 
 ## 2. Source Files
 
@@ -1017,7 +1041,8 @@ Rules:
 - Scalar params and fixed-size top-level parameter arrays can have host-control domains.
 - Proc parameter arrays support per-element numeric ranges and scalar or list defaults,
   using the same clamp-on-store rules as scalar proc params. Host-control attributes
-  such as scale, curve, unit, and step remain top-level only.
+  such as scale, curve, unit, and step describe external controls and are used
+  when the processor is exposed as the entry.
 - An array's range, scale, curve, unit, and step apply independently to every element.
   A scalar default fills the array; a list supplies one default per element and must match its length.
   Arrays support `f32`, `f64`, `i32`, `i64`, and `bool`. Boolean arrays use toggles without numeric ranges.
@@ -1050,10 +1075,11 @@ Positional fields must precede named fields, fields cannot be repeated, and
 `{max}` retains the existing maximum-only shorthand. `scale` defaults to
 `linear`; the other optional fields default to absent.
 
-`scale`, `curve`, `unit`, and `step` describe external control of explicit
-top-level `params` (and their top-level `kins` alias). They are not available
-on inputs or processor-local params, and do not change the Onda DSP
-calculation:
+`scale`, `curve`, `unit`, and `step` describe external control of `params`
+(and their top-level `kins` alias). Processor params can carry the same
+attributes; entry exposure applies host domain and descriptor requirements.
+They are not available on inputs and do not change ordinary proc stores or
+the Onda DSP calculation:
 
 - `linear` maps normalized `n` to `min + n * (max - min)`.
 - `log` maps it in logarithmic space to
@@ -1920,6 +1946,8 @@ differences:
 - A processor declares either `outs` or `kouts`, not both.
 - `kouts` processors use `block` with no nested `sample`, cannot declare `ins`, and cannot declare `graph`.
 - Proc constructor arguments for params and buffers are named-only.
+- Array parameter arguments retain their array shape, including length one:
+  pass `gain = [0.5]` or an array binding for a `gain: f32[1]` parameter.
 - Proc inputs are bound by positional proc call args or named input args.
 - Undeclared `paramN` and `koutN` uses infer numbered proc params and control outputs respectively;
   procs do not infer `kinN`.
@@ -3129,7 +3157,7 @@ Rules:
 | `struct` | Nominal data types. |
 | `enum` | Nominal scalar choices with dense `i32` ordinals. |
 | `proc`, `processor` | Reusable DSP processors. |
-| top-level `proc Main` | Optional non-generic wrapper for the entry file's top-level program. |
+| top-level `proc Main` | Ordinary non-generic processor automatically instantiated and connected to the host. |
 | `namespace` | Qualified declaration groups and integer templates. |
 | `use`, `pub use` | Unqualified lookup imports and re-exports. |
 

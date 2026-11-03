@@ -281,7 +281,8 @@ capabilities, canonical checked audio frames, return arity and types, boolean br
 integer indices, writable places, projection validity, resource access modes, intrinsic domains and
 arity, structured loop control, reachable fallthrough from result-bearing functions, structured
 definite assignment, process-frame dominance, finite ordered numeric interface ranges containing
-their defaults, interface-name uniqueness, explicit one-to-one control mirrors, complete checked
+their defaults, name uniqueness within each host interface kind (buffers and buffer arrays
+share one binding namespace), explicit one-to-one control mirrors, complete checked
 slice/window contracts, fixed-array and aggregate signed-i32 size limits, recursive aggregate
 rejection, function parameter/local resource limits, constant-data element-count and
 logical-byte-size limits, and acyclic realtime call graphs.

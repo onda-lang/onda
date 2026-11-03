@@ -2007,6 +2007,21 @@ mod tests {
     }
 
     #[test]
+    fn compiles_an_ordinary_main_entry_without_filesystem_state() {
+        let source = "proc Main:\n  params:\n    gain = 0.5 {0.0, 1.0, unit = \"x\"}\n  init:\n    state = 1.0\n  def advance():\n    state = state + gain\n    return state\n  sample:\n    out1 = advance()\n";
+        let packed = compile_source_to_mir_messagepack(source, 48_000.0, 4)
+            .expect("Main should compile through the browser interface");
+        let mir = unsafe { onda_mir::from_messagepack_with_producer_proofs(&packed) }
+            .expect("valid producer MIR");
+        assert_eq!(mir.interface.params[0].name, "gain");
+        assert_eq!(mir.interface.params[0].control.unit.as_deref(), Some("x"));
+        assert!(mir
+            .state
+            .iter()
+            .any(|state| state.name.ends_with(".state") && state.authored));
+    }
+
+    #[test]
     fn compiles_in_memory_source_to_valid_deterministic_mir() {
         let source = r#"
 params:

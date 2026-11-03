@@ -1105,7 +1105,7 @@ pub(super) fn array_infos_from_param_specs(
 ) -> HashMap<String, TypedArrayInfo> {
     param_specs
         .iter()
-        .filter(|spec| spec.slots.len() > 1)
+        .filter(|spec| spec.is_array)
         .map(|spec| {
             let elem_ty = spec
                 .slots
@@ -1136,7 +1136,7 @@ fn proc_bound_param_hook_calls(param_specs: &[ProcParamSpec]) -> Vec<String> {
     param_specs
         .iter()
         .filter_map(|spec| {
-            if spec.slots.len() == 1 && spec.slots[0].name == spec.name {
+            if !spec.is_array {
                 spec.slots[0].bind.clone()
             } else {
                 None
@@ -1339,7 +1339,7 @@ fn build_child_proc_surfaces(
             surface
                 .params
                 .extend(spec.slots.iter().map(|slot| slot.name.clone()));
-            if spec.slots.len() > 1 {
+            if spec.is_array {
                 surface.param_arrays.insert(spec.name.clone());
             }
         }
@@ -2597,7 +2597,7 @@ pub(super) fn compute_proc_shape(
         const_arrays,
         errors,
     );
-    let (outs, out_types, _out_ports, out_array_slots) = expand_proc_port_specs(
+    let (outs, out_types, out_ports, out_array_slots) = expand_proc_port_specs(
         &proc.name,
         &out_ports,
         "output",
@@ -2607,6 +2607,13 @@ pub(super) fn compute_proc_shape(
     );
     let (param_specs, mut field_array_slots) =
         expand_proc_param_specs(&proc.name, &params, proc_options, const_arrays, errors);
+    crate::declaration_coercion::validate_proc_param_attributes(
+        &params,
+        &param_specs,
+        proc_options,
+        const_scope,
+        errors,
+    );
     let port_index_params = uniform_port_index_info_from_types(
         true,
         param_specs.iter().map(|spec| spec.slots.len()).sum(),
@@ -3159,7 +3166,7 @@ pub(super) fn compute_proc_shape(
 
             for spec in nested_param_specs {
                 let flat_base = format!("{instance_name}.{}", spec.name);
-                if spec.slots.len() <= 1 {
+                if !spec.is_array {
                     if let Some(slot) = spec.slots.first() {
                         proc_state_scalars.entry(flat_base).or_insert(slot.ty);
                     }
@@ -3604,6 +3611,7 @@ pub(super) fn compute_proc_shape(
         ins,
         outs,
         in_ports,
+        out_ports,
         param_specs,
         buffer_specs,
         in_types,
@@ -3811,6 +3819,7 @@ pub(super) fn build_proc_lowering_shape(
         ins: base.ins,
         outs: base.outs,
         in_ports: base.in_ports,
+        out_ports: base.out_ports,
         param_specs: base.param_specs,
         buffer_specs: base.buffer_specs,
         in_types: base.in_types,
