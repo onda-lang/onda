@@ -316,6 +316,7 @@ pub(crate) struct TopLevelProcRewriteMeta {
 
 pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
+    pub(crate) input_smoothing_aliases: HashMap<String, String>,
     pub(crate) runtime_def_names: HashSet<String>,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
@@ -1524,6 +1525,7 @@ pub(crate) fn materialize_generic_processors(program: &mut Program, errors: &mut
 
 fn desugar_processors_impl(
     mut program: Program,
+    smoothing_templates: &[ProcessorDef],
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
     const_scalars: &HashMap<String, PrimitiveType>,
@@ -1542,7 +1544,6 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
-    inject_builtin_proc_init_events(&mut program, errors);
     lower_graph_blocks(
         &mut program,
         options,
@@ -1551,6 +1552,14 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
+    let input_smoothing_aliases = crate::input_smoothing::prepare(
+        &mut program,
+        smoothing_templates,
+        options,
+        const_arrays,
+        errors,
+    );
+    inject_builtin_proc_init_events(&mut program, errors);
     validate_delegate_source_model(
         &program,
         options,
@@ -1603,6 +1612,7 @@ fn desugar_processors_impl(
     else {
         return ProcessorDesugarResult {
             program,
+            input_smoothing_aliases,
             runtime_def_names,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
@@ -1716,6 +1726,7 @@ fn desugar_processors_impl(
     }
     ProcessorDesugarResult {
         program,
+        input_smoothing_aliases,
         runtime_def_names,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
@@ -1741,8 +1752,10 @@ pub(crate) fn desugar_processors(
     const_scope: &std::rc::Rc<crate::pipeline::ConstScope>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcessorDesugarResult {
+    let smoothing_templates = crate::input_smoothing::templates(&program);
     desugar_processors_impl(
         program,
+        &smoothing_templates,
         options,
         const_arrays,
         const_scalars,
@@ -1754,6 +1767,7 @@ pub(crate) fn desugar_processors(
 
 pub(crate) fn desugar_materialized_processors(
     program: Program,
+    smoothing_templates: &[ProcessorDef],
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
     const_scalars: &HashMap<String, PrimitiveType>,
@@ -1762,6 +1776,7 @@ pub(crate) fn desugar_materialized_processors(
 ) -> ProcessorDesugarResult {
     desugar_processors_impl(
         program,
+        smoothing_templates,
         options,
         const_arrays,
         const_scalars,

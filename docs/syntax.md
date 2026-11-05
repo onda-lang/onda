@@ -999,6 +999,35 @@ Rules:
 - Inputs are read-only. A ranged top-level input is clamped once per sample before Onda code reads
   it; floating NaN maps to the range minimum.
 
+Input attribute braces also accept named-only `ramp` and `lag` durations in seconds:
+
+```onda
+ins:
+  freq = 440.0 {20.0, 20000.0, ramp = 0.02}
+  cutoff = 1200.0 {min = 20.0, max = 20000.0, lag = 0.05}
+  modulation: f64[2] = [0.0, 1.0] {lag = 0.01}
+```
+
+These attributes work on top-level and proc inputs of type `f32` or `f64`, including
+fixed-size arrays. They are mutually exclusive, even when one duration is zero.
+Durations must be finite, nonnegative compile-time constants. An absent attribute or
+a zero duration creates no smoother instance or smoothing state.
+
+A positive duration inserts an ordinary `std::smoothing::Ramp<T>` (linear) or
+`std::smoothing::Lag<T>` at the input boundary; no explicit import is needed.
+Each input is clamped to its declared range first, then smoothed once before each
+execution of the sample body. Every read, including dynamic and unchecked indexed reads,
+uses the same cached value. Each array element and proc instance has independent state.
+Smoothing advances at the sample body's effective rate, including oversampling; proc
+smoothers advance when that proc is stepped. Block boundaries and process segments do
+not restart smoothing. Initialization seeds each smoother from the input's clamped
+default, or clamped zero when no default is declared; snapshots include its state.
+
+`ramp` reaches a stable target in the specified duration. Each changed target restarts
+that duration from the current output. `lag` uses the exponential time constant, reaching
+approximately 63.2% of a step after the specified time. These are DSP input attributes;
+parameter declarations continue to use host-owned smoothing policies.
+
 Explicitly declared homogeneous inputs can be indexed:
 
 ```onda

@@ -416,7 +416,6 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
     .expect("write project manifest");
 
     let error = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         emit: CompileEmit::Check,
         output: None,
@@ -526,7 +525,7 @@ fn compile_library_checks_constants_without_evaluating_unused_arrays() {
         ),
     ] {
         std::fs::write(&source_path, source).expect("write library source");
-        let result = run_compile(compile_cmd::CompileRequest { math: Default::default(),
+        let result = run_compile(compile_cmd::CompileRequest {
             input: &source_path,
             emit: CompileEmit::Check,
             output: None,
@@ -569,7 +568,6 @@ fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
 
     let overrides = [("Selected".to_owned(), "8".to_owned())];
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Check,
         output: None,
@@ -631,7 +629,6 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
     ));
 
     run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         emit: CompileEmit::Check,
         output: None,
@@ -655,7 +652,6 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
 
     let overrides = [("Selected".to_owned(), "3".to_owned())];
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         emit: CompileEmit::Check,
         output: None,
@@ -700,7 +696,6 @@ fn cli_constant_literals_cover_all_supported_value_const_types() {
         ("Dynamic".to_owned(), "[0.25, 0.5, 1.0]".to_owned()),
     ];
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Check,
         output: None,
@@ -983,7 +978,6 @@ fn compile_emits_complete_portable_mir_slice() {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Mir,
         output: Some(&output_path),
@@ -1030,7 +1024,6 @@ fn compile_emits_versioned_mir_json() {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::MirJson,
         output: Some(&output_path),
@@ -1077,7 +1070,6 @@ fn compile_emits_versioned_mir_messagepack() {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::MirMessagePack,
         output: Some(&output_path),
@@ -1133,7 +1125,6 @@ events {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Object,
         output: Some(&object_path),

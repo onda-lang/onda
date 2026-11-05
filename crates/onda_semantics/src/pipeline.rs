@@ -983,6 +983,7 @@ pub fn analyze_with_options_and_inputs(
     if !errors.is_empty() {
         return Err(errors);
     }
+    let smoothing_templates = crate::input_smoothing::templates(&program);
     materialize_generic_processors(&mut program, &mut errors);
     normalize_materialized_processor_metadata(
         &mut program,
@@ -1029,8 +1030,10 @@ pub fn analyze_with_options_and_inputs(
         mut top_level_delegates,
         authored_instance_roots,
         interface_names,
+        input_smoothing_aliases,
     } = desugar_materialized_processors(
         program,
+        &smoothing_templates,
         options,
         &const_artifacts.const_array_infos,
         &const_scalar_types,
@@ -1895,7 +1898,11 @@ pub fn analyze_with_options_and_inputs(
         }
     };
 
-    let mut input_names = in_ranges.keys().cloned().collect::<Vec<_>>();
+    let mut input_names = in_ranges
+        .keys()
+        .filter(|name| !input_smoothing_aliases.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
     input_names.sort();
     let (input_aliases, input_hoists) =
         build_top_level_range_clamp_entry(&input_names, &in_ranges, |name| {
@@ -4623,6 +4630,7 @@ pub fn analyze_with_options_and_inputs(
             in_defaults,
             in_ranges,
             dynamic_input_range_aliases,
+            input_smoothing_aliases,
             dynamic_param_range_aliases,
             in_arrays,
             out_arrays,

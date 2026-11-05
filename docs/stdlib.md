@@ -808,6 +808,8 @@ proc Lag<T>:
   outs<T> 1
   params:
     time_s: T = 0.05 => update_time
+  events:
+    reset(value: T = 0.0):
 ```
 
 ### Processor `LagUD<T>`

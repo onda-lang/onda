@@ -213,6 +213,11 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     differences without duplicating typing, assignment, or control-flow semantics.
   - `index_access.rs` — canonical source indexing access modes and unsafe receiver-call rewriting.
   - `port_coercion.rs` — port and parameter coercion.
+  - `input_smoothing.rs` — validates input `ramp`/`lag` attributes and lowers positive
+    durations to ordinary specialized stdlib instances, with default-value resets and
+    sample-entry caches. Zero durations create no instances or state. Proc lowering
+    refreshes input value parameters before each step; top-level MIR lowering installs
+    the generated caches over the read-only input surface, including dynamic array reads.
   - `enum_support.rs` — enum display metadata and shared ordinal/storage domains. Enum identities remain
     nominal scalar types through checking and specialization; executable MIR uses `i32`.
   - `pipeline/namespace_flattening/{enums,type_rewriting}.rs` — enum registration, member constants, and
@@ -681,7 +686,8 @@ and invalidation in detail. The main opportunities exposed to backends are:
   compiler-wide promise to skip user parameter hooks; events, segments, and snapshots retain
   their ordinary semantics.
 - Native floating-point permissions independently control reassociation, contraction and ignoring
-  signed zero. They default off. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
+  signed zero internally. They default off; the CLI exposes only `--fast-math` to enable all
+  arithmetic relaxations. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
   x64 MSVC, use SLEEF VFABI mappings selected from resolved LLVM CPU features. After application
   optimization, the backend resolves newly introduced fixed-width vector `exp2` intrinsics using
   the same legal target variants, links only the used ISA/precision bitcode, internalizes helpers with

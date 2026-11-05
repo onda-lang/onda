@@ -31,7 +31,6 @@ pub(crate) struct CompileRequest<'a> {
     pub list_consts: bool,
     pub show_meta: bool,
     pub fast_math: bool,
-    pub math: onda_codegen_llvm::FloatMathPolicy,
     pub target: TargetConfig,
 }
 
@@ -48,7 +47,6 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         list_consts,
         show_meta,
         fast_math,
-        math,
         target,
     } = request;
     let project_input = crate::project_cmd::resolve_entry(input)?;
@@ -114,7 +112,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         format!("MIR lowering failed:\n{details}")
     })?;
     let codegen_options = MirTargetOptions {
-        math,
+        math: Default::default(),
         fast_math,
         target,
     };

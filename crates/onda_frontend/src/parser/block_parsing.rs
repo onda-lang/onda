@@ -7,6 +7,7 @@ struct ParsedNamedDecl {
     ty_loc: Span,
     default: Option<Expr>,
     range: Option<DeclRange>,
+    smoothing: Option<crate::InputSmoothing>,
     control: ParamControl,
     bind: Option<String>,
 }
@@ -34,6 +35,7 @@ fn parse_port_decl_pair(
         ty_loc: parsed.ty_loc,
         default: parsed.default,
         range: parsed.range,
+        smoothing: parsed.smoothing,
     })
 }
 
@@ -99,7 +101,11 @@ fn parse_named_decl(
                 parsed.ty_loc = ty_loc;
             }
             Rule::expr => parsed.default = Some(parse_expr_inner(item)),
-            Rule::decl_range => parsed.range = Some(parse_decl_range_pair(item)?),
+            Rule::port_domain => {
+                let (range, smoothing) = parse_port_domain_pair(item)?;
+                parsed.range = range;
+                parsed.smoothing = smoothing;
+            }
             Rule::param_domain => {
                 let (range, control) = parse_param_domain_pair(item)?;
                 parsed.range = Some(range);
@@ -136,6 +142,12 @@ fn validate_decl_defaults_and_ranges(
         return Err(vec![syntax_at_loc(
             loc,
             format!("{block_name} declarations do not support ranges"),
+        )]);
+    }
+    if parsed.smoothing.is_some() {
+        return Err(vec![syntax_at_loc(
+            loc,
+            format!("{block_name} declarations do not support input smoothing"),
         )]);
     }
     Ok(())

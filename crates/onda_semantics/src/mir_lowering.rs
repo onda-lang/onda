@@ -16,6 +16,7 @@ mod data_slices;
 #[cfg(test)]
 mod data_tests;
 mod expressions;
+mod input_smoothing;
 mod lowerer_core;
 mod messages;
 mod reference_joins;
@@ -380,7 +381,10 @@ fn lower_program_to_mir(
         onda_mir::FunctionKind::Process,
     ));
 
-    let mut globals = RuntimeGlobals::default();
+    let mut globals = RuntimeGlobals {
+        input_smoothing_aliases: program.input_smoothing_aliases.clone(),
+        ..RuntimeGlobals::default()
+    };
     populate_interface(program, &mut mir, &mut globals)?;
     populate_delegates(program, &mut mir)?;
     populate_state(program, &mut mir, &mut globals)?;
@@ -2089,6 +2093,7 @@ struct RuntimeInterfaceView {
 
 #[derive(Debug, Default)]
 struct RuntimeGlobals<'a> {
+    input_smoothing_aliases: HashMap<String, String>,
     retained_init: Option<retained_bindings::RetainedBindings>,
     states: HashMap<String, (onda_mir::StateId, PrimitiveType)>,
     integer_ranges: HashMap<String, onda_mir::IntegerRangeInvariant>,
@@ -2402,6 +2407,7 @@ struct FunctionLowerer<'a> {
     log_sites: &'a mut Vec<onda_mir::LogSite>,
     runtime_globals: Option<&'a RuntimeGlobals<'a>>,
     current_frame: Option<Value>,
+    smoothed_input_endpoints: HashMap<onda_mir::InputId, Binding>,
     oversampled_inputs: HashMap<String, (LocalId, PrimitiveType)>,
     audio_output_caches: HashMap<String, (LocalId, PrimitiveType)>,
     oversampled_input_endpoints: HashMap<onda_mir::InputId, (LocalId, PrimitiveType)>,

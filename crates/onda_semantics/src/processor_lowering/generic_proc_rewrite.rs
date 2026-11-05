@@ -385,6 +385,13 @@ pub(crate) fn validate_generic_proc_template_forwarded_type_args(
 
     for decl in &proc.ins {
         validate_optional_expr_type_args(
+            decl.smoothing.as_ref().map(|s| &s.time_s),
+            &allowed,
+            proc,
+            "input smoothing",
+            errors,
+        );
+        validate_optional_expr_type_args(
             decl.default.as_ref(),
             &allowed,
             proc,

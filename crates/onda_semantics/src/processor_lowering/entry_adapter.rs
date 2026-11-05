@@ -556,6 +556,7 @@ fn project_ports(
                 None
             };
             Some(PortDecl {
+                smoothing: None,
                 loc: locations.get(&spec.name).cloned().unwrap_or_default(),
                 name: spec.name.clone(),
                 output_timing: timing,

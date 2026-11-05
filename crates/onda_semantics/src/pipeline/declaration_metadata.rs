@@ -330,6 +330,9 @@ fn visit_port_decl(decl: &mut PortDecl, label: &str, visitor: &mut Metadata) {
         }
     }
     visit_range(decl.range.as_mut(), visitor);
+    if let Some(smoothing) = &mut decl.smoothing {
+        visitor.expr(&mut smoothing.time_s);
+    }
 }
 
 fn visit_param_decl(decl: &mut ParamDecl, visitor: &mut Metadata) {

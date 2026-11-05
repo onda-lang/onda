@@ -1212,14 +1212,26 @@ pub fn format_port_decl(port: &PortDecl) -> String {
         text.push_str(" = ");
         text.push_str(&format_expr(default));
     }
-    if let Some(range) = &port.range {
+    if port.range.is_some() || port.smoothing.is_some() {
         text.push(' ');
         text.push('{');
-        if let Some(min) = &range.min {
-            text.push_str(&format_expr(min));
-            text.push_str(", ");
+        if let Some(range) = &port.range {
+            if let Some(min) = &range.min {
+                text.push_str(&format_expr(min));
+                text.push_str(", ");
+            }
+            text.push_str(&format_expr(&range.max));
         }
-        text.push_str(&format_expr(&range.max));
+        if let Some(smoothing) = &port.smoothing {
+            if port.range.is_some() {
+                text.push_str(", ");
+            }
+            text.push_str(match smoothing.kind {
+                onda_frontend::InputSmoothingKind::Ramp => "ramp = ",
+                onda_frontend::InputSmoothingKind::Lag => "lag = ",
+            });
+            text.push_str(&format_expr(&smoothing.time_s));
+        }
         text.push('}');
     }
     text
@@ -1359,6 +1371,19 @@ pub(crate) fn format_enum(def: &onda_frontend::EnumDef, indent: usize, out: &mut
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn input_smoothing_attributes_round_trip() {
+        for source in [
+            "ins:\n  cutoff = 440.0 {20, 20000, ramp = 0.02}\nsample:\n  out1 = cutoff\n",
+            "proc Voice<T>:\n  ins<T>:\n    values: T[2] = [0.0, 1.0] {lag = 0.05}\n  sample:\n    out1 = values[0]\n",
+        ] {
+            let parsed = onda_frontend::parse_program(source).unwrap();
+            let formatted = super::format_program(&parsed);
+            assert!(formatted.contains(if source.contains("ramp") { "ramp = 0.02" } else { "lag = 0.05" }));
+            let reparsed = onda_frontend::parse_program(&formatted).unwrap();
+            assert_eq!(super::format_program(&reparsed), formatted);
+        }
+    }
     #[test]
     fn formats_long_parameter_default_without_recursion() {
         let expression = std::iter::repeat_n("1.0", 15_000)

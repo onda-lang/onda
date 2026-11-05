@@ -190,6 +190,7 @@ pub(crate) fn specialize_generic_proc_template(
         .ins
         .iter()
         .map(|decl| PortDecl {
+            smoothing: decl.smoothing.clone(),
             loc: decl.loc.clone(),
             name: decl.name.clone(),
             output_timing: decl.output_timing,
@@ -214,6 +215,7 @@ pub(crate) fn specialize_generic_proc_template(
         .outs
         .iter()
         .map(|decl| PortDecl {
+            smoothing: decl.smoothing.clone(),
             loc: decl.loc.clone(),
             name: decl.name.clone(),
             output_timing: decl.output_timing,
@@ -260,6 +262,14 @@ pub(crate) fn specialize_generic_proc_template(
         })
         .collect::<Vec<_>>();
     for input in &mut ins {
+        if let Some(smoothing) = &mut input.smoothing {
+            substitute_call_type_args_with_bindings_expr(
+                &mut smoothing.time_s,
+                &type_bindings,
+                &format!("processor '{}' input smoothing", template.name),
+                errors,
+            );
+        }
         if let Some(default) = &mut input.default {
             substitute_call_type_args_with_bindings_expr(
                 default,

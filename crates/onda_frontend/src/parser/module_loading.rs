@@ -707,6 +707,24 @@ pub fn inject_auto_std_prelude(program: &mut Program) -> Result<(), Vec<Diagnost
         let imported = load_builtin_module_blocks(module, true, &mut state, &[])?;
         merge_blocks_preferring_existing(&mut program.blocks, imported);
     }
+    fn namespace_uses_smoothing(namespace: &crate::NamespaceDecl) -> bool {
+        namespace.items.iter().any(|item| match item {
+            crate::NamespaceItem::Proc(proc) => {
+                proc.ins.iter().any(|port| port.smoothing.is_some())
+            }
+            crate::NamespaceItem::Namespace(namespace) => namespace_uses_smoothing(namespace),
+            _ => false,
+        })
+    }
+    if program.blocks.iter().any(|block| match block {
+        Block::Ins(ports) => ports.iter().any(|port| port.smoothing.is_some()),
+        Block::Proc(proc) => proc.ins.iter().any(|port| port.smoothing.is_some()),
+        Block::Namespace(namespace) => namespace_uses_smoothing(namespace),
+        _ => false,
+    }) {
+        let imported = load_builtin_module_blocks("std/smoothing", true, &mut state, &[])?;
+        merge_blocks_preferring_existing(&mut program.blocks, imported);
+    }
     Ok(())
 }
 

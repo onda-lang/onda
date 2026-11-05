@@ -501,6 +501,18 @@ const scenarios = [
       ...Array.from({ length: 9 }, () => ({ kind: "render" })),
     ],
   },
+  {
+    name: "input ramp and lag attributes cache values and preserve instance state",
+    source: join(packageDir, "test/fixtures/input-smoothing.onda"),
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      { kind: "render" },
+      { kind: "restore" },
+      ...Array.from({ length: 5 }, () => ({ kind: "render" })),
+    ],
+    expectedChannels: Array.from({ length: 4 }, () => Array(28).fill(0)),
+  },
 ];
 
 try {

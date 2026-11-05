@@ -448,6 +448,21 @@ pub struct PortDecl {
     pub ty_loc: Span,
     pub default: Option<Expr>,
     pub range: Option<DeclRange>,
+    pub smoothing: Option<InputSmoothing>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum InputSmoothingKind {
+    Ramp,
+    Lag,
+}
+
+pub const INPUT_DOMAIN_FIELDS: &[&str] = &["min", "max", "ramp", "lag"];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputSmoothing {
+    pub kind: InputSmoothingKind,
+    pub time_s: Expr,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

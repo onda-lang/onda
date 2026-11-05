@@ -658,6 +658,16 @@ fn validate_template_proc_refs(
         .extend(proc.type_params.iter().cloned());
 
     for decl in &proc.ins {
+        if let Some(smoothing) = &decl.smoothing {
+            validate_template_expr_refs(
+                &smoothing.time_s,
+                current_ns,
+                state,
+                &proc_scope,
+                "processor input smoothing",
+                errors,
+            );
+        }
         validate_template_optional_expr_refs(
             decl.default.as_ref(),
             current_ns,
@@ -3554,6 +3564,17 @@ fn rewrite_port_decls(
     errors: &mut Vec<Diagnostic>,
 ) {
     for decl in decls {
+        if let Some(smoothing) = &mut decl.smoothing {
+            rewrite_expr(
+                &mut smoothing.time_s,
+                current_ns,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+            );
+        }
         rewrite_decl_type_default_range(
             &mut decl.ty,
             &mut decl.default,

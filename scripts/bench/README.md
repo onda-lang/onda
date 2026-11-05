@@ -202,8 +202,9 @@ python3 scripts/bench/compare.py target/bench/arithmetic-o0 target/bench/arithme
 `--opt-level 0..3` controls LLVM, `--wasm-opt-level 0..4` controls Binaryen, and `--fast-math`
 explicitly enables relaxed floating-point optimization. Fast math can change results, reduction
 order and exceptional-value behavior. Keep the intended numerical contract explicit when comparing.
-`--fp-reassociate`, `--fp-contract`, and `--fp-no-signed-zeros` independently control native
-arithmetic permissions. General reductions commonly need both reassociation and ignoring signed
+The benchmark harness additionally exposes `--fp-reassociate`, `--fp-contract`, and
+`--fp-no-signed-zeros` to independently investigate native arithmetic permissions. The `onda` CLI
+exposes only `--fast-math`. General reductions commonly need both reassociation and ignoring signed
 zero to vectorize. Contraction permits one fused rounding instead of two. Vector math automatically
 uses embedded SLEEF 3.9.0 on Linux/macOS x64 and ARM64 and Windows x64 MSVC; other targets keep
 scalar math. JIT and AOT code include the helpers without an extra library dependency, including

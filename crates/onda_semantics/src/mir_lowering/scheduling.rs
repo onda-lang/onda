@@ -494,7 +494,7 @@ impl<'a> FunctionLowerer<'a> {
         } else {
             self.begin_audio_output_frame(&mut sample_block, process_location.clone())?;
             let result = self
-                .lower_statements(sample, &mut sample_block, ContinueMode::None)
+                .lower_sample_with_input_smoothing(sample, &mut sample_block)
                 .and_then(|_| {
                     self.commit_audio_output_frame(
                         &mut sample_block,
@@ -853,7 +853,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
 
-        if let Err(error) = self.lower_statements(sample, &mut substep_body, ContinueMode::None) {
+        if let Err(error) = self.lower_sample_with_input_smoothing(sample, &mut substep_body) {
             self.config = host_config;
             self.oversampled_inputs.clear();
             self.audio_output_caches.clear();

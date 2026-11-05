@@ -1666,7 +1666,24 @@ fn generate_nested_wrapper_defs(
             .collect::<HashMap<_, _>>();
         let mut used_nested_managed_dynamic_arrays = HashSet::<String>::new();
         let mut dynamic_hook_temp_counter = 0;
-        let mut nested_step_body = Vec::<Stmt>::new();
+        let mut nested_step_body =
+            crate::input_smoothing::proc_prelude(callee_proc, &callee_shape, |body| {
+                lower_callee_stmts_for_nested_wrapper(
+                    body,
+                    &proc.name,
+                    &callee_proc_name,
+                    &nested_path,
+                    &callee_shape,
+                    &callee_nested_instances,
+                    &callee_ins_names,
+                    &callee_shape.field_array_slots,
+                    &callee_shape.in_array_slots,
+                    &callee_shape.nested_proc_array_slots,
+                    &delegate_context_args,
+                    proc_api,
+                    errors,
+                )
+            });
         for local_def in unique_proc_local_defs(callee_proc) {
             let callee_shape = callee_shape.without_parameters(&local_def.params);
             let callee_ins_names = callee_shape.ins.iter().cloned().collect();
@@ -1790,7 +1807,7 @@ fn generate_nested_wrapper_defs(
                 readonly: false,
                 loc: Default::default(),
                 name: in_name.clone(),
-                ty: None,
+                ty: Some(FnParamType::Primitive(callee_shape.in_types[in_name])),
                 ty_loc: Default::default(),
                 default: None,
             });
@@ -3263,7 +3280,21 @@ pub(super) fn generate_lowered_proc_blocks(
 
         let mut used_managed_dynamic_arrays = HashSet::<String>::new();
         let mut dynamic_hook_temp_counter = 0;
-        let mut step_body = Vec::<Stmt>::new();
+        let mut step_body = crate::input_smoothing::proc_prelude(proc, &shape, |body| {
+            rewrite_owner_proc_stmts(
+                body,
+                &proc.name,
+                &shape.field_names,
+                &ins_names,
+                &shape.field_array_slots,
+                &shape.in_array_slots,
+                &shape.nested_proc_array_slots,
+                &shape.nested_fields,
+                &nested_instances,
+                proc_api,
+                errors,
+            )
+        });
         for local_def in unique_proc_local_defs(proc) {
             let shape = shape.without_parameters(&local_def.params);
             let ins_names = shape.ins.iter().cloned().collect();

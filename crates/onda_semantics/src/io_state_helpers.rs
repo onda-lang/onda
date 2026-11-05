@@ -599,6 +599,7 @@ pub(crate) fn normalize_numbered_port_decls(
         .into_iter()
         .map(|name| {
             explicit_map.get(&name).cloned().unwrap_or(PortDecl {
+                smoothing: None,
                 loc: Default::default(),
                 name,
                 output_timing: None,

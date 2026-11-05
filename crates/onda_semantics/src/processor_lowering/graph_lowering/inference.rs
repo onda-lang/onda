@@ -141,6 +141,7 @@ fn merge_graph_inferred_port_decls(
         let alias = format!("{prefix}{}", idx + 1);
         if seen.insert(alias.clone()) {
             out.push(PortDecl {
+                smoothing: None,
                 loc: Default::default(),
                 name: alias,
                 output_timing: None,
@@ -158,6 +159,7 @@ fn merge_graph_inferred_port_decls(
         }
         if seen.insert(name.clone()) {
             out.push(PortDecl {
+                smoothing: None,
                 loc: Default::default(),
                 name: name.clone(),
                 output_timing: None,

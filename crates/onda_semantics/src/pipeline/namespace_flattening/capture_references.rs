@@ -229,6 +229,9 @@ fn processor(proc: &ProcessorDef, visit: &mut Visitor<'_>) {
             }
             optional(port.default.as_ref(), visit);
             range(port.range.as_ref(), visit);
+            if let Some(smoothing) = &port.smoothing {
+                visit_expression(&smoothing.time_s, visit);
+            }
         }
         for param in &proc.params {
             if let Some(ty) = &param.ty {

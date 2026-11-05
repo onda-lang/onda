@@ -62,6 +62,7 @@ impl<'a> FunctionLowerer<'a> {
             log_sites,
             runtime_globals: None,
             current_frame: None,
+            smoothed_input_endpoints: HashMap::new(),
             oversampled_inputs: HashMap::new(),
             audio_output_caches: HashMap::new(),
             oversampled_input_endpoints: HashMap::new(),

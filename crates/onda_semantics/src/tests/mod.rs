@@ -4,6 +4,7 @@ mod const_dependencies;
 mod const_validation;
 mod contextual_consts;
 mod enums;
+mod input_smoothing;
 mod main_entry;
 mod runtime_defaults;
 

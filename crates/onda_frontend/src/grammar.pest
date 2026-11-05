@@ -142,14 +142,16 @@ section_default_buffer_type = { "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_end_sep* }
 decl_type = { array_type | tuple_type | type_name | namespace_ref | qualified_ident }
 tuple_type = { "(" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)+ ~ NEWLINE* ~ ")" }
-decl_range = { "{" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)? ~ NEWLINE* ~ "}" }
 quoted_text = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
 param_unit = @{ quoted_text }
 param_domain_value = _{ param_unit | expr }
 param_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ param_domain_value }
 param_domain_item = { param_domain_named | param_unit | expr }
 param_domain = { "{" ~ NEWLINE* ~ param_domain_item ~ (comma_sep ~ param_domain_item)* ~ NEWLINE* ~ "}" }
-port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? }
+port_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
+port_domain_item = { port_domain_named | expr }
+port_domain = { "{" ~ NEWLINE* ~ port_domain_item ~ (comma_sep ~ port_domain_item)* ~ NEWLINE* ~ "}" }
+port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ port_domain? }
 param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_end_sep* }
 proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_end_sep* }
 param_private = @{ "private" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }

@@ -171,7 +171,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut list_consts = false;
     let mut show_meta = false;
     let mut fast_math = false;
-    let mut math = onda_codegen_llvm::FloatMathPolicy::default();
     let mut target_spec_path = None::<PathBuf>;
     let mut target_triple_override = None::<String>;
     let mut target_cpu_override = None::<TargetCpu>;
@@ -232,9 +231,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
-            "--fp-reassociate" => math.reassociate = true,
-            "--fp-contract" => math.contract = true,
-            "--fp-no-signed-zeros" => math.no_signed_zeros = true,
             "--target-triple" => {
                 let Some(value) = args.next() else {
                     return Err("--target-triple requires a target triple".to_owned());
@@ -422,7 +418,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         list_consts,
         show_meta,
         fast_math,
-        math,
         target,
     })
 }

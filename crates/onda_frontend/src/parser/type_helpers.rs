@@ -59,34 +59,95 @@ pub(super) fn parse_section_default_buffer_type(
     parse_buffer_inner(inner)
 }
 
-pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::decl_range {
-        return Err(vec![syntax_at_pair(
-            &pair,
-            "internal parser error: expected declaration range",
-        )]);
-    }
+pub(super) fn parse_port_domain_pair(
+    pair: Pair<'_, Rule>,
+) -> Result<(Option<DeclRange>, Option<crate::InputSmoothing>), Vec<Diagnostic>> {
+    use crate::{InputSmoothing, InputSmoothingKind};
+
     let loc = stmt_loc_from_pair(&pair);
-    let mut inner = pair.into_inner();
-    let Some(first_pair) = inner.next() else {
+    let mut fields = std::collections::HashMap::new();
+    let mut positional = Vec::new();
+    let mut saw_named = false;
+    for item in pair.into_inner() {
+        let value = item.into_inner().next().expect("port domain item");
+        if value.as_rule() == Rule::port_domain_named {
+            saw_named = true;
+            let field_loc = stmt_loc_from_pair(&value);
+            let mut parts = value.into_inner();
+            let name = parts.next().expect("port field name").as_str();
+            if !crate::INPUT_DOMAIN_FIELDS.contains(&name) {
+                return Err(vec![syntax_at_loc(
+                    field_loc.as_ref(),
+                    format!("unknown input attribute '{name}'"),
+                )]);
+            }
+            let expr = parse_expr(parts.next().expect("port field value"))?;
+            if fields.insert(name.to_owned(), expr).is_some() {
+                return Err(vec![syntax_at_loc(
+                    field_loc.as_ref(),
+                    format!("duplicate input attribute '{name}'"),
+                )]);
+            }
+        } else {
+            if saw_named {
+                return Err(vec![syntax_at_pair(
+                    &value,
+                    "positional input range fields must precede named attributes",
+                )]);
+            }
+            positional.push(parse_expr(value)?);
+        }
+    }
+    if positional.len() > 2 {
         return Err(vec![syntax_at_loc(
             loc.as_ref(),
-            "missing declaration range expression",
-        )]);
-    };
-    let first = parse_expr_inner(first_pair);
-    let second = inner.next().map(parse_expr_inner);
-    if inner.next().is_some() {
-        return Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "declaration range accepts at most two expressions",
+            "input ranges accept at most two positional fields; ramp and lag are named-only",
         )]);
     }
-    let (min, max) = match second {
-        Some(max) => (Some(first), max),
-        None => (None, first),
+    let single_is_max = positional.len() == 1 && !fields.contains_key("max");
+    for (index, value) in positional.into_iter().enumerate() {
+        let field = if index == 0 && !single_is_max {
+            "min"
+        } else {
+            "max"
+        };
+        if fields.insert(field.to_owned(), value).is_some() {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                format!("duplicate input attribute '{field}'"),
+            )]);
+        }
+    }
+    if fields.contains_key("ramp") && fields.contains_key("lag") {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "input attributes 'ramp' and 'lag' are mutually exclusive",
+        )]);
+    }
+    let smoothing = fields
+        .remove("ramp")
+        .map(|time_s| InputSmoothing {
+            kind: InputSmoothingKind::Ramp,
+            time_s,
+        })
+        .or_else(|| {
+            fields.remove("lag").map(|time_s| InputSmoothing {
+                kind: InputSmoothingKind::Lag,
+                time_s,
+            })
+        });
+    let min = fields.remove("min");
+    let range = match fields.remove("max") {
+        Some(max) => Some(DeclRange { min, max }),
+        None if min.is_some() => {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "input range requires a 'max' value",
+            )])
+        }
+        None => None,
     };
-    Ok(DeclRange { min, max })
+    Ok((range, smoothing))
 }
 
 pub(super) struct ParsedBindingAttributes {

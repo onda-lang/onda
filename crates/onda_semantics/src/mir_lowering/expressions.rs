@@ -1216,6 +1216,32 @@ impl<'a> FunctionLowerer<'a> {
                 element,
                 clamped,
             } => {
+                if let Some(binding) = self.smoothed_input_endpoints.get(&input) {
+                    if let (Binding::Slice(slice, _, _, _), Some(element)) = (binding, element) {
+                        return Ok(Rvalue::SliceLoad {
+                            slice: Value::Local(*slice),
+                            index: Value::Constant(ScalarValue::I32(element as i32)),
+                            bounds: BoundsMode::Unchecked,
+                        });
+                    }
+                    let place = match (binding, element) {
+                        (Binding::Local(local, _), None) => Place::local(*local),
+                        (Binding::Array(local, _, _), Some(element)) => Place {
+                            base: PlaceBase::Local(*local),
+                            projections: vec![Projection::Index {
+                                index: Value::Constant(ScalarValue::I32(element as i32)),
+                                bounds: BoundsMode::Unchecked,
+                            }],
+                        },
+                        _ => {
+                            return Err(self.error(
+                                format!("invalid smoothed input cache for element {element:?}"),
+                                location,
+                            ))
+                        }
+                    };
+                    return Ok(Rvalue::Load(place));
+                }
                 if let Some(alias) = clamped {
                     debug_assert!(element.is_none());
                     let base = match self.bindings.get(&alias) {

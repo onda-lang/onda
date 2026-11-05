@@ -94,6 +94,7 @@ mod expr_typing;
 mod expr_validation;
 mod generic_specialization;
 mod index_access;
+mod input_smoothing;
 pub mod internal_names;
 mod io_state_helpers;
 mod loop_range;
@@ -173,6 +174,7 @@ pub struct TypedProgram {
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
+    pub(crate) input_smoothing_aliases: HashMap<String, String>,
     pub(crate) dynamic_param_range_aliases: HashMap<String, String>,
     pub in_arrays: HashMap<String, TypedArrayInfo>,
     pub out_arrays: HashMap<String, TypedArrayInfo>,

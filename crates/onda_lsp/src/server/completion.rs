@@ -2055,11 +2055,20 @@ impl CompletionIndex {
         let mut items = Vec::new();
         if context.allow_fields {
             items.extend(
-                PARAM_DOMAIN_FIELDS
-                    .iter()
-                    .copied()
-                    .filter(|field| !context.used_fields.contains(field))
-                    .map(param_domain_field_item),
+                (if context.input {
+                    onda_frontend::INPUT_DOMAIN_FIELDS
+                } else {
+                    PARAM_DOMAIN_FIELDS
+                })
+                .iter()
+                .copied()
+                .filter(|field| !context.used_fields.contains(field))
+                .filter(|field| {
+                    !matches!(*field, "ramp" | "lag")
+                        || (!context.used_fields.contains("ramp")
+                            && !context.used_fields.contains("lag"))
+                })
+                .map(|name| param_domain_field_item(name, context.input)),
             );
         }
         match context.value_kind {
@@ -3129,7 +3138,7 @@ fn argument_item(name: &str, detail: &str) -> CompletionItem {
         ))
 }
 
-fn param_domain_field_item(name: &str) -> CompletionItem {
+fn param_domain_field_item(name: &str, input: bool) -> CompletionItem {
     let snippet = match name {
         "scale" => format!(
             "scale = ${{1|{}|}}",
@@ -3144,10 +3153,17 @@ fn param_domain_field_item(name: &str) -> CompletionItem {
         "max" => "max = $1".to_owned(),
         "curve" => "curve = $1".to_owned(),
         "step" => "step = $1".to_owned(),
+        "ramp" => "ramp = ${1:0.02}".to_owned(),
+        "lag" => "lag = ${1:0.05}".to_owned(),
         _ => unreachable!("unknown parameter domain field"),
     };
     CompletionItem::new(name, COMPLETION_ITEM_KIND_PROPERTY)
-        .detail("parameter domain field")
+        .detail(match name {
+            "ramp" => "input ramp duration in seconds (compile-time constant)",
+            "lag" => "input lag time constant in seconds (compile-time constant)",
+            _ if input => "input attribute",
+            _ => "parameter domain field",
+        })
         .insert_text(format!("{name} = "))
         .snippet(snippet)
         .sort_text(completion_sort_text(

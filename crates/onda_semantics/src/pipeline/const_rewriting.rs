@@ -85,6 +85,9 @@ pub(super) fn reject_forward_const_refs_port_decl(
         reject_forward_const_refs_expr(default, future_consts, errors);
     }
     reject_forward_const_refs_decl_range(&decl.range, future_consts, errors);
+    if let Some(smoothing) = &decl.smoothing {
+        reject_forward_const_refs_expr(&smoothing.time_s, future_consts, errors);
+    }
 }
 
 pub(super) fn reject_forward_const_refs_param_decl(
@@ -1170,6 +1173,9 @@ pub(super) fn substitute_scalar_const_port_decl(
         substitute_scalar_const_expr(default, local_consts);
     }
     substitute_scalar_const_decl_range(&mut decl.range, local_consts);
+    if let Some(smoothing) = &mut decl.smoothing {
+        substitute_scalar_const_expr(&mut smoothing.time_s, local_consts);
+    }
 }
 
 pub(super) fn substitute_scalar_const_param_decl(
@@ -1240,6 +1246,7 @@ pub(super) fn expand_port_count_shorthand(
     if decls.is_empty() {
         for idx in 1..=count {
             decls.push(PortDecl {
+                smoothing: None,
                 loc: loc.clone(),
                 name: format!("{prefix}{idx}"),
                 output_timing: None,

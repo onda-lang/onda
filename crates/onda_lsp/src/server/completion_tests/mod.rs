@@ -1,4 +1,5 @@
 mod enums;
+mod input_smoothing;
 
 use super::*;
 
@@ -79,7 +80,7 @@ fn integer_binding_ranges_complete_mode_and_wrap() {
 
 #[test]
 fn input_domains_complete_domain_fields_instead_of_binding_ranges() {
-    let source = "ins:\n  cutoff = 440.0 {20, 20000, sc";
+    let source = "ins:\n  cutoff = 440.0 {20, 20000, ra";
     let result = completion_items_for_document_with_index(
         source,
         None,
@@ -88,11 +89,11 @@ fn input_domains_complete_domain_fields_instead_of_binding_ranges() {
         None,
         CompletionPosition {
             line: 1,
-            character: "  cutoff = 440.0 {20, 20000, sc".len() as u32,
+            character: "  cutoff = 440.0 {20, 20000, ra".len() as u32,
         },
         true,
     );
-    assert!(result.items.iter().any(|item| item["label"] == "scale"));
+    assert!(result.items.iter().any(|item| item["label"] == "ramp"));
     assert!(!result.items.iter().any(|item| item["label"] == "mode"));
 }
 

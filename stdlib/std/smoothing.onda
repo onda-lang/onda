@@ -22,6 +22,9 @@ namespace std::smoothing:
     def update_time():
       coef = std::smoothing::time_coefficient<T>(time_s)
 
+    event reset(value: T = 0.0):
+      y = value
+
     sample:
       y = in1 + (y - in1) * coef
       out1 = y
