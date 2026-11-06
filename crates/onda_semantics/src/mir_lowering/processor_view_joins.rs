@@ -8,7 +8,10 @@ use crate::processor_views::{
 
 fn plain_environment() -> LoweredProcessorEnvironment {
     LoweredProcessorEnvironment {
+        resource_offset: Value::Constant(ScalarValue::I32(0)),
+        resource_sources: Vec::new(),
         shape: ProcessorEnvironmentShape {
+            resource_sources: Vec::new(),
             state: None,
             owner_storage: None,
             owner: None,
@@ -45,7 +48,11 @@ impl FunctionLowerer<'_> {
             return Ok(None);
         };
         let plain = LoweredProcessorView {
-            shape: ProcessorViewShape::plain(example.shape.proc_name.clone(), example.shape.len),
+            start: Value::Constant(ScalarValue::I32(0)),
+            shape: ProcessorViewShape {
+                environments: Vec::new(),
+                ..example.shape.clone()
+            },
             tag: None,
             environments: Vec::new(),
         };
@@ -90,6 +97,13 @@ impl FunctionLowerer<'_> {
             environments.push(value);
         }
         Ok(Some(LoweredProcessorView {
+            start: self.join_processor_coordinate(
+                then_view.start,
+                else_view.start,
+                then_block,
+                else_block,
+                loc.clone(),
+            ),
             shape,
             tag,
             environments,
@@ -116,58 +130,8 @@ impl FunctionLowerer<'_> {
                     .unwrap() as i32
             })
             .collect::<Vec<_>>();
-        let Some(tag) = view.tag else {
-            self.assign_value(
-                block,
-                destination,
-                Value::Constant(ScalarValue::I32(mapping[0])),
-                loc,
-            );
-            return;
-        };
-        if mapping
-            .iter()
-            .enumerate()
-            .all(|(source, target)| source as i32 == *target)
-        {
-            self.assign_value(block, destination, tag, loc);
-            return;
-        }
-        let mut dispatch = MirBlock::default();
-        self.assign_value(
-            &mut dispatch,
-            destination,
-            Value::Constant(ScalarValue::I32(*mapping.last().unwrap())),
-            loc.clone(),
-        );
-        for (source, target) in mapping.iter().enumerate().rev().skip(1) {
-            let condition = self.compare_value(
-                block,
-                CompareOp::Equal,
-                tag,
-                Value::Constant(ScalarValue::I32(source as i32)),
-                loc.clone(),
-            );
-            let mut selected = MirBlock::default();
-            self.assign_value(
-                &mut selected,
-                destination,
-                Value::Constant(ScalarValue::I32(*target)),
-                loc.clone(),
-            );
-            let mut next = MirBlock::default();
-            self.push_statement(
-                &mut next,
-                StatementKind::If {
-                    condition,
-                    then_block: selected,
-                    else_block: dispatch,
-                },
-                loc.clone(),
-            );
-            dispatch = next;
-        }
-        block.statements.extend(dispatch.statements);
+        let value = self.remap_processor_tag(view.tag, &mapping, block, loc.clone());
+        self.assign_value(block, destination, value, loc);
     }
 
     pub(super) fn join_processor_coordinate(
@@ -195,8 +159,8 @@ impl FunctionLowerer<'_> {
         loc: SourceLoc,
     ) -> LoweredProcessorEnvironment {
         let mut result = environment.clone();
-        // Capture leaves are persistent roots or parameters. Initialize choice
-        // tags on both paths; physical references are reconstructed at use sites.
+        // Root bindings survive the lexical join. Initialize choice tags on
+        // both paths; physical references are reconstructed at use sites.
         result.owner = environment
             .owner
             .as_ref()
@@ -211,7 +175,11 @@ impl FunctionLowerer<'_> {
         result.resources = environment
             .resources
             .iter()
-            .map(|capture| self.publish_processor_capture(capture, active, inactive, loc.clone()))
+            .map(|capture| {
+                capture.as_ref().map(|capture| {
+                    self.publish_processor_capture(capture, active, inactive, loc.clone())
+                })
+            })
             .collect();
         result.coordinates = environment
             .coordinates
@@ -226,9 +194,47 @@ impl FunctionLowerer<'_> {
                 )
             })
             .collect();
+        result.resource_offset = self.join_processor_coordinate(
+            environment.resource_offset,
+            Value::Constant(ScalarValue::I32(0)),
+            active,
+            inactive,
+            loc.clone(),
+        );
         result.outer = environment.outer.as_ref().map(|outer| {
             Box::new(self.publish_processor_environment(outer, active, inactive, loc.clone()))
         });
+        result.resource_sources = environment
+            .resource_sources
+            .iter()
+            .map(|source| {
+                let mut source = source.clone();
+                source.start = self.join_processor_coordinate(
+                    source.start,
+                    Value::Constant(ScalarValue::I32(0)),
+                    active,
+                    inactive,
+                    loc.clone(),
+                );
+                source.tag = source.tag.map(|tag| {
+                    self.join_processor_coordinate(
+                        tag,
+                        Value::Constant(ScalarValue::I32(0)),
+                        active,
+                        inactive,
+                        loc.clone(),
+                    )
+                });
+                source.environments = source
+                    .environments
+                    .iter()
+                    .map(|frame| {
+                        self.publish_processor_environment(frame, active, inactive, loc.clone())
+                    })
+                    .collect();
+                source
+            })
+            .collect();
         result
     }
 
@@ -294,8 +300,18 @@ impl FunctionLowerer<'_> {
             .resources
             .iter()
             .zip(&b.resources)
-            .map(|(a, b)| self.join_processor_capture(a, b, then_block, else_block, loc.clone()))
-            .collect();
+            .map(|(a, b)| match (a, b) {
+                (Some(a), Some(b)) => Ok(Some(self.join_processor_capture(
+                    a,
+                    b,
+                    then_block,
+                    else_block,
+                    loc.clone(),
+                ))),
+                (None, None) => Ok(None),
+                _ => Err(self.error("processor resource recipe changed at a join", loc.clone())),
+            })
+            .collect::<Result<_, _>>()?;
         let outer = match (&a.outer, &b.outer) {
             (Some(a), Some(b)) => Some(Box::new(self.join_processor_environment(
                 a,
@@ -308,7 +324,23 @@ impl FunctionLowerer<'_> {
             _ => return Err(self.error("processor outer environment changed at a join", loc)),
         };
         Ok(LoweredProcessorEnvironment {
+            resource_sources: a
+                .resource_sources
+                .iter()
+                .zip(&b.resource_sources)
+                .map(|(a, b)| {
+                    self.join_processor_views(Some(a), Some(b), then_block, else_block, loc.clone())
+                        .map(|view| view.expect("resource sources have processor views"))
+                })
+                .collect::<Result<_, _>>()?,
             shape: a.shape.clone(),
+            resource_offset: self.join_processor_coordinate(
+                a.resource_offset,
+                b.resource_offset,
+                then_block,
+                else_block,
+                loc.clone(),
+            ),
             owner,
             state_root,
             coordinates,
@@ -339,6 +371,18 @@ impl FunctionLowerer<'_> {
                 loc,
             );
         };
+        // The joined tensors still borrow complete processor roots. Keep their
+        // symbolic environments so lifecycle references resolve from the same
+        // selected roots rather than from the synthetic storage name.
+        let a_view = self.processor_view(a)?;
+        let b_view = self.processor_view(b)?;
+        let processor = self.join_processor_views(
+            a_view.as_ref(),
+            b_view.as_ref(),
+            then_block,
+            else_block,
+            loc.clone(),
+        )?;
         let root = self.fresh_data_name();
         let mut fields = Vec::new();
         for shape in self.struct_field_shapes(&storage.proc_name, loc.clone())? {
@@ -374,11 +418,11 @@ impl FunctionLowerer<'_> {
         }
         let binding = Binding::StructArrayParameter {
             struct_name: storage.proc_name.clone(),
-            processor: None,
-            length: StructArrayLength::Fixed(self.data_extent(len, loc)?),
+            processor,
+            length: StructArrayLength::Fixed(self.data_extent(len, loc.clone())?),
             fields,
         };
-        self.bind_joined_struct_array_leaves(&root, &binding);
+        self.bind_joined_struct_array_leaves(&root, &binding, loc)?;
         self.bindings.insert(root.clone(), binding);
         Ok(root)
     }

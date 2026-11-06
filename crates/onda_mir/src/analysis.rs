@@ -648,23 +648,20 @@ fn call_argument_resource_origins(
                 let source_len = program.types[function.locals[collection.index()].ty.index()]
                     .buffer_collection()
                     .map_or(0, |(_, _, _, len, _)| len);
-                let starts = selected_slots(
+                let starts = selected_slot_range(
                     *start,
                     source_len.saturating_sub(*len).saturating_add(1) as usize,
                     *bounds,
                 );
-                starts
-                    .into_iter()
-                    .flat_map(|start| {
-                        if slot < *len as usize {
-                            aliases.slot(*collection, start + slot)
-                        } else {
-                            (0..*len as usize)
-                                .flat_map(|slot| aliases.slot(*collection, start + slot))
-                                .collect()
-                        }
-                    })
-                    .collect()
+                let selected = if slot < *len as usize {
+                    slot..slot + 1
+                } else {
+                    0..*len as usize
+                };
+                aliases.range(
+                    *collection,
+                    starts.start + selected.start..starts.end.saturating_sub(1) + selected.end,
+                )
             }
             crate::BufferSpanRef::MappedInterface { map, start, len } => {
                 let Some(entries) = program.buffer_maps.get(map.index()).and_then(|map| {
@@ -813,10 +810,10 @@ fn buffer_param_resource_origins(
             let len = program.types[function.locals[collection.index()].ty.index()]
                 .buffer_collection()
                 .map_or(1, |(_, _, _, len, _)| len);
-            selected_slots(selector, len as usize, bounds)
-                .into_iter()
-                .flat_map(|slot| aliases.slot(collection, slot))
-                .collect()
+            aliases.range(
+                collection,
+                selected_slot_range(selector, len as usize, bounds),
+            )
         }
         crate::BufferParamRef::Direct(parameter) => {
             HashSet::from([ResourceOrigin::Parameter(ParameterSlot {
@@ -854,8 +851,16 @@ fn buffer_param_resource_origins(
 }
 
 fn selected_slots(selector: Value, len: usize, bounds: crate::BoundsMode) -> Vec<usize> {
+    selected_slot_range(selector, len, bounds).collect()
+}
+
+fn selected_slot_range(
+    selector: Value,
+    len: usize,
+    bounds: crate::BoundsMode,
+) -> std::ops::Range<usize> {
     if len == 0 {
-        return Vec::new();
+        return 0..0;
     }
     let exact = match selector {
         Value::Constant(ScalarValue::I32(selector)) => match bounds {
@@ -869,7 +874,7 @@ fn selected_slots(selector: Value, len: usize, bounds: crate::BoundsMode) -> Vec
         },
         _ => None,
     };
-    exact.map_or_else(|| (0..len).collect(), |slot| vec![slot])
+    exact.map_or(0..len, |slot| slot..slot + 1)
 }
 
 /// Inclusive integer interval with an explicit MIR scalar width.

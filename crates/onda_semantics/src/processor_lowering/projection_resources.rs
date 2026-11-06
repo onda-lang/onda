@@ -1,6 +1,7 @@
 //! Completes generated operation calls from declared resource identities.
 
 use super::*;
+use crate::def_semantics::inference::resolve_call_args_at;
 
 type ResourceIdentity = (usize, usize);
 type ResourceLayout = Vec<(ResourceIdentity, String)>;
@@ -52,7 +53,11 @@ pub(super) fn complete_operation_calls(
             Some((
                 function.name.clone(),
                 (
-                    function.params.len(),
+                    function
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect::<Vec<_>>(),
                     view_catalog::captured_resource_parameters(function),
                 ),
             ))
@@ -92,20 +97,66 @@ pub(super) fn complete_operation_calls(
         for statement in &mut function.body {
             statement.visit_exprs_mut(|expr| {
                 expr.visit_mut_postorder(|expr| {
-                    let Expr::UserCall { name, args, loc, .. } = expr else { return };
-                    let Some(resources) = layouts.get(name) else { return };
-                    let Some((arity, _)) = signatures.get(name) else { return };
-                    let arity = *arity;
-                    let provided = args.len() - usize::from(proc_storage::selected_coordinate_argument(args).is_some());
-                    if provided >= arity { return; }
-                    let Some(nonresources) = arity.checked_sub(resources.len()) else { return };
-                    let Some(bound) = provided.checked_sub(nonresources) else { return };
-                    for (identity, _) in resources.iter().skip(bound) {
+                    let Expr::UserCall {
+                        name, args, loc, ..
+                    } = expr
+                    else {
+                        return;
+                    };
+                    let Some(resources) = layouts.get(name) else {
+                        return;
+                    };
+                    if resources.is_empty() {
+                        return;
+                    }
+                    let Some((parameters, _)) = signatures.get(name) else {
+                        return;
+                    };
+                    // Coordinates are projection metadata until family materialization.
+                    // Bind the remaining arguments by name: omitted authored defaults
+                    // do not indicate missing resource captures.
+                    let coordinate = proc_storage::selected_coordinate_argument(args)
+                        .map(|position| (position, args.remove(position)));
+                    // This call is intentionally incomplete. Full validation follows
+                    // after missing resources have been supplied.
+                    let bound = resolve_call_args_at(
+                        args,
+                        parameters,
+                        &[],
+                        true,
+                        false,
+                        name,
+                        loc.clone().into(),
+                        &mut Vec::new(),
+                    );
+                    let missing = resources
+                        .iter()
+                        .filter(|(_, parameter)| {
+                            parameters
+                                .iter()
+                                .position(|name| name == parameter)
+                                .is_some_and(|index| bound[index].is_none())
+                        })
+                        .collect::<Vec<_>>();
+                    if let Some((position, coordinate)) = coordinate {
+                        args.insert(position, coordinate);
+                    }
+                    for (identity, parameter) in missing {
                         let Some(binding) = source.get(identity) else {
-                            push_semantic(DiagCtx::new(loc.clone()), errors, format!("processor operation '{name}' lost the resource capture '{}.{}'", identity.0, identity.1));
+                            push_semantic(
+                                DiagCtx::new(loc.clone()),
+                                errors,
+                                format!(
+                                    "processor operation '{name}' lost the resource capture '{}.{}'",
+                                    identity.0, identity.1
+                                ),
+                            );
                             return;
                         };
-                        args.push(CallArg { name: None, expr: Expr::var(binding) });
+                        args.push(CallArg {
+                            name: Some(parameter.clone()),
+                            expr: Expr::var(binding),
+                        });
                     }
                 });
             });

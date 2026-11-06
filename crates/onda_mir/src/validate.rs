@@ -1368,6 +1368,22 @@ impl Validator<'_> {
                         );
                     }
                     if let Some(destination_ty) = self.place_type(function, destination) {
+                        if matches!(
+                            self.program.types.get(destination_ty.index()),
+                            Some(
+                                Type::Buffer { .. }
+                                    | Type::BufferSpan { .. }
+                                    | Type::BufferMap { .. }
+                            )
+                        ) && (!matches!(destination.base, PlaceBase::Local(_))
+                            || !destination.projections.is_empty())
+                        {
+                            self.function_error(
+                                function_id,
+                                statement.source,
+                                "buffer descriptor destination must be an unprojected local",
+                            );
+                        }
                         if !self.rvalue_matches_type(function, value, destination_ty) {
                             self.function_error(
                                 function_id,

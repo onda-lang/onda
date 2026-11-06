@@ -22,6 +22,36 @@ fn send_integers(instance: &mut Instance, name: &str, values: &[i32]) {
 }
 
 #[test]
+fn broadcast_array_parameters_initialize_all_top_level_and_nested_slots() {
+    let source = include_str!("../../../../packages/onda_binaryen_web/test/fixtures/processor-whole-array-constructors.onda");
+    for (source, expected) in [
+        (source.to_owned(), 18.0),
+        (
+            source
+                .replace("f32[2]", "f32[1]")
+                .replace("[0.0, 0.0]", "[0.0]")
+                .replace("[0.25, 0.75]", "[0.25]")
+                .replace("gains[0] + gains[1]", "gains[0]"),
+            4.5,
+        ),
+    ] {
+        for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+            let (mut instance, _, _) = compile_instance_with_options(
+                &source,
+                4,
+                CompileOptions {
+                    sample_rate: 48_000.0,
+                    block_size: 4,
+                    fast_math: false,
+                    opt_level,
+                },
+            );
+            assert_eq!(render(&mut instance, 4), [expected; 4], "{opt_level:?}");
+        }
+    }
+}
+
+#[test]
 fn nested_large_banks_keep_slot_history_and_events_independent() {
     let source =
         include_str!("../../../../packages/onda_binaryen_web/test/fixtures/processor-storage.onda");

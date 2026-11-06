@@ -1,5 +1,116 @@
 use super::*;
 
+fn mir_statement_count(program: &onda_mir::Program) -> usize {
+    let mut blocks = program
+        .functions
+        .iter()
+        .map(|function| &function.body)
+        .collect::<Vec<_>>();
+    let mut count = 0;
+    while let Some(block) = blocks.pop() {
+        count += block.statements.len();
+        for statement in &block.statements {
+            match &statement.kind {
+                onda_mir::StatementKind::If {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    blocks.extend([then_block, else_block]);
+                }
+                onda_mir::StatementKind::Loop { body } => blocks.push(body),
+                _ => {}
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn whole_array_constructor_arguments_keep_capacity_independent_initialization() {
+    for (width, values) in [(1, "[0.25]"), (2, "[0.25, 0.75]")] {
+        for binding in [values, "gains"] {
+            for nested in [false, true] {
+                let count = |capacity| {
+                    let owner = format!(
+                    "init:\n  gains: f32[{width}] = {values}\n  voices: Voice[{capacity}] = Voice(gains = {binding})\nsample:\n  out1 = voices[0]()\n"
+                );
+                    let source = format!(
+                    "proc Voice:\n  params:\n    gains: f32[{width}] = {values}\n  sample:\n    out1 = gains[0]\n{}",
+                    if nested {
+                        format!("proc Bank:\n{}init:\n  bank = Bank()\nsample:\n  out1 = bank()\n", owner.lines().map(|line| format!("  {line}\n")).collect::<String>())
+                    } else {
+                        owner
+                    }
+                );
+                    mir_statement_count(
+                        &lower_program_to_optimized_mir(&analyze_source(&source)).unwrap(),
+                    )
+                };
+                assert_eq!(count(8), count(256), "{binding}, nested={nested}");
+            }
+        }
+    }
+}
+
+#[test]
+fn whole_buffer_collection_constructor_arguments_keep_capacity_independent_initialization() {
+    for nested in [false, true] {
+        let count = |capacity| {
+            let source = format!(
+                "proc Voice:\n  buffers:\n    clips: f32 {{2}}\n  sample:\n    out1 = clips[0][0] + clips[1][0]\n{}",
+                if nested {
+                    format!("proc Bank:\n  buffers:\n    clips: f32 {{2}}\n  init:\n    voices: Voice[{capacity}] = Voice(clips = clips)\n  sample:\n    out1 = voices[0]()\nbuffers:\n  clips: f32 {{2}}\ninit:\n  bank = Bank(clips = clips)\nsample:\n  out1 = bank()\n")
+                } else {
+                    format!("buffers:\n  clips: f32 {{2}}\ninit:\n  voices: Voice[{capacity}] = Voice(clips = clips)\nsample:\n  out1 = voices[0]()\n")
+                }
+            );
+            mir_statement_count(&lower_program_to_optimized_mir(&analyze_source(&source)).unwrap())
+        };
+        assert_eq!(count(8), count(256), "nested={nested}");
+    }
+}
+
+#[test]
+fn repeated_processor_capture_joins_scale_with_distinct_owners() {
+    let count = |depth| {
+        let mut source = String::from(
+            "proc Voice:\n  delegate fired(value: i32)\n  sample:\n    fired(1)\n    out1 = 1.0\nproc Bank:\n  init:\n    voices: Voice[2] = Voice()\n    count: i32 = 0\n  when voices[0].fired(value):\n    count += value\n  sample:\n    out1 = f32(count)\ndef exercise(left: Bank, right: Bank, choose: bool) -> f32:\n  if choose:\n    a0 = left.voices[0]\n    b0 = right.voices[1]\n  else:\n    a0 = right.voices[1]\n    b0 = left.voices[0]\n",
+        );
+        for index in 1..=depth {
+            let previous = index - 1;
+            source.push_str(&format!(
+                "  if choose:\n    a{index} = a{previous}\n    b{index} = b{previous}\n  else:\n    a{index} = b{previous}\n    b{index} = a{previous}\n"
+            ));
+        }
+        source.push_str(&format!("  return a{depth}()\ninit:\n  left = Bank()\n  right = Bank()\n  choose = true\nsample:\n  out1 = exercise(left, right, choose)\n  choose = !choose\n"));
+        let mir = lower_program_to_optimized_mir(&analyze_source(&source)).unwrap();
+        mir_statement_count(&mir)
+    };
+    let small = count(3);
+    let large = count(7);
+    assert!(
+        large < small * 3,
+        "capture choices must stay compact: {small} -> {large}"
+    );
+}
+
+#[test]
+fn processor_array_hook_initialization_has_capacity_independent_mir() {
+    let count = |capacity| {
+        let source = format!(
+            "proc Voice:\n  init:\n    count = 0.0\n  block:\n    count += 1.0\n    sample:\n      out1 = count\n    count += 10.0\ninit:\n  voices: Voice[{capacity}] = Voice()\nsample:\n  out1 = voices[0]()\n"
+        );
+        let mir = lower_program_to_optimized_mir(&analyze_source(&source)).unwrap();
+        mir_statement_count(&mir)
+    };
+    assert_eq!(
+        count(16),
+        count(1024),
+        "hook initialization must not expand per slot"
+    );
+}
+
 fn bank_source(voices: usize) -> String {
     format!(
         r#"

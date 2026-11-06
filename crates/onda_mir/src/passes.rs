@@ -16,6 +16,7 @@ mod cse;
 mod dead_values;
 mod interprocedural;
 mod loop_distribution;
+mod loop_peeling;
 pub(crate) mod parameter_pruning;
 mod state_promotion;
 
@@ -36,6 +37,7 @@ pub struct PassStats {
     pub removed_function_parameters: u64,
     pub removed_functions: u64,
     pub distributed_loops: u64,
+    pub peeled_loops: u64,
 }
 
 /// A validated MIR program after portable cleanup or backend-selected
@@ -103,6 +105,7 @@ impl PassStats {
         self.iterations = self.iterations.saturating_add(other.iterations);
         self.removed_functions += other.removed_functions;
         self.distributed_loops += other.distributed_loops;
+        self.peeled_loops += other.peeled_loops;
         self.propagated_values = self
             .propagated_values
             .saturating_add(other.propagated_values);
@@ -278,18 +281,20 @@ pub fn optimize(
     }
 }
 
-/// Separates independent rendering from an ordered sum for backends that
-/// benefit from vector math. Portable optimization preserves the fused form.
+/// Separates distinguished first iterations and independent rendering from
+/// ordered sums for vectorizing backends. Portable MIR retains its schedule.
 /// Unchanged programs are borrowed; changed programs are revalidated and their
-/// analyses rebuilt. The distributed form cannot match this pass again.
-pub fn distribute_loops(
+/// analyses rebuilt. Both transformations are idempotent.
+pub fn schedule_vector_loops(
     program: &OptimizedProgram,
 ) -> Result<(Cow<'_, OptimizedProgram>, PassStats), Vec<ValidationError>> {
     let mut stats = PassStats::default();
-    if !loop_distribution::is_applicable(program) {
+    let peeling = loop_peeling::Plan::new(program);
+    if peeling.is_empty() && !loop_distribution::is_applicable(program) {
         return Ok((Cow::Borrowed(program), stats));
     }
     let mut raw = program.as_program().clone();
+    peeling.apply(&mut raw, &mut stats);
     loop_distribution::distribute(&mut raw, &mut stats);
     let validated = crate::validate::revalidate_owned(raw, program.program.producer_proofs())?;
     Ok((Cow::Owned(OptimizedProgram::new(validated)), stats))

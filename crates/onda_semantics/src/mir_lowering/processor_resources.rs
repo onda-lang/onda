@@ -1,6 +1,6 @@
 //! Typed resource captures, local descriptor joins, and immutable binding maps.
 use super::*;
-use crate::processor_views::{ProcessorEnvironmentShape, ProcessorResourceShape};
+use crate::processor_views::ProcessorResourceShape;
 use std::cell::RefCell;
 
 #[derive(Debug, Default)]
@@ -31,139 +31,7 @@ impl ProcessorResourceCatalog {
     }
 }
 
-fn resource_shape(
-    name: &str,
-    prefix: &str,
-    environment: &ProcessorEnvironmentShape,
-) -> Option<ProcessorResourceShape> {
-    for (index, shape) in environment.resources.iter().enumerate() {
-        if shape.binding.is_some() {
-            continue;
-        }
-        let resource = format!("{prefix}_resource_{index}");
-        if let Some(count) = shape.alternatives {
-            if name
-                .strip_prefix(&format!("{resource}_choice_"))
-                .and_then(|choice| choice.parse::<usize>().ok())
-                .is_some_and(|choice| choice < count)
-            {
-                let mut shape = shape.clone();
-                shape.alternatives = None;
-                return Some(shape);
-            }
-        } else if name == resource {
-            return Some(shape.clone());
-        }
-    }
-    environment
-        .outer
-        .as_ref()
-        .and_then(|outer| resource_shape(name, &format!("{prefix}_outer"), outer))
-}
-
 impl FunctionLowerer<'_> {
-    /// Resolve inherited constructor recipes only after selecting the active
-    /// environment. Forwarding a view therefore needs only roots and coordinates,
-    /// never descriptors initialized in an inactive branch.
-    pub(super) fn processor_environment_resource_expression(
-        &mut self,
-        frame: &processor_views::LoweredProcessorEnvironment,
-        index: usize,
-        block: &mut MirBlock,
-        location: SourceLoc,
-    ) -> Result<Expr, MirLoweringError> {
-        let (expression, shape) = frame
-            .resources
-            .get(index)
-            .zip(frame.shape.resources.get(index))
-            .ok_or_else(|| {
-                self.error(
-                    "processor operation lost an ordered resource capture",
-                    location.clone(),
-                )
-            })?;
-        let expression = if let Some(binding) = &shape.binding {
-            let expression = self
-                .processor_views
-                .declaration(&binding.owner_struct, &binding.field_name)
-                .and_then(|declaration| declaration.resources.get(binding.resource_index))
-                .cloned()
-                .ok_or_else(|| {
-                    self.error(
-                        "inherited processor resource lost its declaration recipe",
-                        location.clone(),
-                    )
-                })?;
-            let parent = frame.outer.as_deref().ok_or_else(|| {
-                self.error(
-                    "inherited processor resource lost its owner frame",
-                    location.clone(),
-                )
-            })?;
-            let names = self
-                .processor_views
-                .owner_resources
-                .get(&binding.owner_struct)
-                .cloned()
-                .unwrap_or_default();
-            let needs_owner = expression.walk().any(|node| {
-                let name = match node {
-                    Expr::Var { name, .. }
-                    | Expr::Index { base: name, .. }
-                    | Expr::Slice { base: name, .. } => name,
-                    _ => return false,
-                };
-                name == "self"
-                    || name
-                        .strip_prefix("self.")
-                        .is_some_and(|field| !names.iter().any(|name| name == field))
-            });
-            let owner = needs_owner
-                .then(|| {
-                    self.processor_environment_state(parent, block, location.clone())
-                        .map(Expr::var)
-                })
-                .transpose()?;
-            let mut resources = vec![None; parent.resources.len()];
-            for (index, name) in names.iter().enumerate() {
-                let used = expression.walk().any(|node| {
-                    let name_in_recipe = match node {
-                        Expr::Var { name, .. }
-                        | Expr::Index { base: name, .. }
-                        | Expr::Slice { base: name, .. } => name,
-                        _ => return false,
-                    };
-                    name_in_recipe
-                        .strip_prefix("self.")
-                        .unwrap_or(name_in_recipe)
-                        == name
-                });
-                if used {
-                    resources[index] = Some(self.processor_environment_resource_expression(
-                        parent,
-                        index,
-                        block,
-                        location.clone(),
-                    )?);
-                }
-            }
-            self.processor_views.instantiate_member_resource(
-                &binding.owner_struct,
-                &expression,
-                owner.as_ref(),
-                &resources,
-            )
-        } else {
-            self.materialize_processor_resource_capture(expression, shape, block, location.clone())?
-        };
-        self.processor_resource_expression(
-            &expression,
-            shape,
-            frame.coordinates.last().copied(),
-            block,
-        )
-    }
-
     pub(super) fn lexical_processor_resources(
         &self,
         owner: &str,
@@ -247,7 +115,7 @@ impl FunctionLowerer<'_> {
         expression
     }
 
-    fn processor_resource_type(
+    pub(super) fn processor_resource_type(
         &mut self,
         shape: &ProcessorResourceShape,
         location: SourceLoc,
@@ -293,30 +161,6 @@ impl FunctionLowerer<'_> {
         let id = TypeId::new(self.types.len() as u32);
         self.types.push(ty);
         Ok(id)
-    }
-
-    pub(super) fn processor_resource_parameter_type(
-        &mut self,
-        name: &str,
-    ) -> Result<Option<TypeId>, MirLoweringError> {
-        let shape = self.function.params.iter().find_map(|param| {
-            let view = self
-                .processor_views
-                .function_param(&self.function.name, param)?;
-            view.environments
-                .iter()
-                .enumerate()
-                .find_map(|(variant, environment)| {
-                    resource_shape(
-                        name,
-                        &processor_views::capture_prefix(param, variant),
-                        environment,
-                    )
-                })
-        });
-        shape
-            .map(|shape| self.processor_resource_type(&shape, function_location(self.function)))
-            .transpose()
     }
 
     pub(super) fn local_buffer_collection_reference(
@@ -466,19 +310,6 @@ impl FunctionLowerer<'_> {
         let resolved = self.resolve_processor_resource_expression(expression);
         let expression = &resolved;
         let physical_len = shape.mapped_len.or(shape.len);
-        if let Expr::Var { name, .. } = expression {
-            if let Some(Binding::BufferCollectionValue {
-                local, start, len, ..
-            }) = self.bindings.get(name).cloned()
-            {
-                return Ok(CallArgument::BufferSpan(onda_mir::BufferSpanRef::Local {
-                    collection: local,
-                    start,
-                    len,
-                    bounds: BoundsMode::Checked,
-                }));
-            }
-        }
         if let Some(len) = physical_len {
             if shape.mapped && matches!(expression, Expr::ArrayLiteral { .. }) {
                 let mut buffers = Vec::new();
@@ -507,21 +338,14 @@ impl FunctionLowerer<'_> {
                     },
                 ));
             }
-            let mut arguments = Vec::new();
-            self.lower_buffer_array_call_arguments(
+            return self.lower_buffer_collection_argument(
                 "processor environment",
                 "resource",
                 shape.elem_ty,
                 len,
                 expression,
-                &mut arguments,
-            )?;
-            return arguments.pop().ok_or_else(|| {
-                self.error(
-                    "processor collection capture produced no argument",
-                    expression.loc(),
-                )
-            });
+                block,
+            );
         }
         let reference = if let Expr::Var { name, .. } = expression {
             self.direct_buffer_reference(name).map(|(reference, _)| {
@@ -545,7 +369,7 @@ impl FunctionLowerer<'_> {
         })
     }
 
-    fn bind_processor_resource_value(
+    pub(super) fn bind_processor_resource_value(
         &mut self,
         local: LocalId,
         shape: &ProcessorResourceShape,
@@ -565,6 +389,39 @@ impl FunctionLowerer<'_> {
         };
         self.bindings.insert(name.clone(), binding);
         Expr::var(name)
+    }
+
+    fn new_processor_resource_local(
+        &mut self,
+        shape: &ProcessorResourceShape,
+        location: SourceLoc,
+    ) -> Result<LocalId, MirLoweringError> {
+        let ty = self.processor_resource_type(shape, location)?;
+        let local = LocalId::new(self.locals.len() as u32);
+        self.locals.push(onda_mir::Local {
+            name: None,
+            ty,
+            integer_range: None,
+        });
+        Ok(local)
+    }
+
+    fn assign_processor_resource(
+        &mut self,
+        block: &mut MirBlock,
+        local: LocalId,
+        source: CallArgument,
+        location: SourceLoc,
+    ) {
+        let ty = self.locals[local.index()].ty;
+        self.push_statement(
+            block,
+            StatementKind::Assign {
+                destination: Place::local(local),
+                value: Rvalue::MakeBuffer { source, ty },
+            },
+            location,
+        );
     }
 
     pub(super) fn processor_resource_expression(
@@ -597,57 +454,23 @@ impl FunctionLowerer<'_> {
             })?;
             let mut element = shape.clone();
             element.alternatives = None;
-            let ty = self.processor_resource_type(&element, expression.loc())?;
-            let local = LocalId::new(self.locals.len() as u32);
-            self.locals.push(onda_mir::Local {
-                name: None,
-                ty,
-                integer_range: None,
-            });
-            let mut choices = Vec::with_capacity(count);
-            for value in values {
-                let mut branch = MirBlock::default();
-                let source =
-                    self.lower_processor_resource_argument(value, &element, &mut branch)?;
-                self.push_statement(
-                    &mut branch,
-                    StatementKind::Assign {
-                        destination: Place::local(local),
-                        value: Rvalue::MakeBuffer { source, ty },
-                    },
-                    value.loc(),
-                );
-                choices.push(branch);
-            }
-            let selected = self.processor_choice_block(coordinate, choices, 0, expression.loc());
-            block.statements.extend(selected.statements);
-            return Ok(self.bind_processor_resource_value(
-                local,
-                &element,
-                Value::Constant(ScalarValue::I32(0)),
-                element.len.map(|len| len as u32),
-            ));
-        }
-        if !shape.mapped {
-            if matches!(expression, Expr::Var { .. }) {
-                return Ok(expression.clone());
-            }
-            let source = self.lower_processor_resource_argument(expression, shape, block)?;
-            let ty = self.processor_resource_type(shape, expression.loc())?;
-            let local = LocalId::new(self.locals.len() as u32);
-            self.locals.push(onda_mir::Local {
-                name: None,
-                ty,
-                integer_range: None,
-            });
-            self.push_statement(
+            let mut choices = self.processor_resource_choices(
+                coordinate,
+                std::slice::from_ref(&element),
+                count,
                 block,
-                StatementKind::Assign {
-                    destination: Place::local(local),
-                    value: Rvalue::MakeBuffer { source, ty },
-                },
                 expression.loc(),
-            );
+                &mut |_, index, _| Ok(vec![values[index].clone()]),
+            )?;
+            return Ok(choices.remove(0));
+        }
+        if !shape.mapped && matches!(expression, Expr::Var { .. }) {
+            return Ok(expression.clone());
+        }
+        let source = self.lower_processor_resource_argument(expression, shape, block)?;
+        let local = self.new_processor_resource_local(shape, expression.loc())?;
+        self.assign_processor_resource(block, local, source, expression.loc());
+        if !shape.mapped {
             return Ok(self.bind_processor_resource_value(
                 local,
                 shape,
@@ -655,25 +478,6 @@ impl FunctionLowerer<'_> {
                 shape.len.map(|len| len as u32),
             ));
         }
-        let argument = self.lower_processor_resource_argument(expression, shape, block)?;
-        let ty = self.processor_resource_type(shape, expression.loc())?;
-        let local = LocalId::new(self.locals.len() as u32);
-        self.locals.push(onda_mir::Local {
-            name: None,
-            ty,
-            integer_range: None,
-        });
-        self.push_statement(
-            block,
-            StatementKind::Assign {
-                destination: Place::local(local),
-                value: Rvalue::MakeBuffer {
-                    source: argument,
-                    ty,
-                },
-            },
-            expression.loc(),
-        );
         let coordinate = coordinate.ok_or_else(|| {
             self.error(
                 "selected processor resource lost its coordinate",
@@ -773,22 +577,9 @@ impl FunctionLowerer<'_> {
             }
             let a = self.lower_processor_resource_argument(a, shape, then_block)?;
             let b = self.lower_processor_resource_argument(b, shape, else_block)?;
-            let ty = self.processor_resource_type(shape, location.clone())?;
-            let local = LocalId::new(self.locals.len() as u32);
-            self.locals.push(onda_mir::Local {
-                name: None,
-                ty,
-                integer_range: None,
-            });
+            let local = self.new_processor_resource_local(shape, location.clone())?;
             for (block, source) in [(&mut *then_block, a), (&mut *else_block, b)] {
-                self.push_statement(
-                    block,
-                    StatementKind::Assign {
-                        destination: Place::local(local),
-                        value: Rvalue::MakeBuffer { source, ty },
-                    },
-                    location.clone(),
-                );
+                self.assign_processor_resource(block, local, source, location.clone());
             }
             result.push(self.bind_processor_resource_value(
                 local,
@@ -798,5 +589,51 @@ impl FunctionLowerer<'_> {
             ));
         }
         Ok(result)
+    }
+    pub(super) fn processor_resource_choices(
+        &mut self,
+        tag: Value,
+        shapes: &[ProcessorResourceShape],
+        count: usize,
+        block: &mut MirBlock,
+        location: SourceLoc,
+        lower: &mut impl FnMut(&mut Self, usize, &mut MirBlock) -> Result<Vec<Expr>, MirLoweringError>,
+    ) -> Result<Vec<Expr>, MirLoweringError> {
+        let mut results = Vec::with_capacity(shapes.len());
+        for shape in shapes {
+            results.push(self.new_processor_resource_local(shape, location.clone())?);
+        }
+        let mut branches = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut branch = MirBlock::default();
+            let values = lower(self, index, &mut branch)?;
+            if values.len() != shapes.len() {
+                return Err(self.error(
+                    "processor resource choice changed its capture schema",
+                    location,
+                ));
+            }
+            for ((value, shape), local) in values.iter().zip(shapes).zip(&results) {
+                let source = self.lower_processor_resource_argument(value, shape, &mut branch)?;
+                self.assign_processor_resource(&mut branch, *local, source, location.clone());
+            }
+            branches.push(branch);
+        }
+        block.statements.extend(
+            self.processor_choice_block(tag, branches, 0, location)
+                .statements,
+        );
+        Ok(results
+            .into_iter()
+            .zip(shapes)
+            .map(|(local, shape)| {
+                self.bind_processor_resource_value(
+                    local,
+                    shape,
+                    Value::Constant(ScalarValue::I32(0)),
+                    shape.len.map(|len| len as u32),
+                )
+            })
+            .collect())
     }
 }

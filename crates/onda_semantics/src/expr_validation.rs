@@ -1461,6 +1461,9 @@ fn validate_expr_node<'a>(
                 for (idx, arg) in resolved.iter().copied().enumerate() {
                     if let Some(arg) = arg {
                         let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
+                        if crate::processor_views::is_bound_resource_argument(arg, param_ty) {
+                            continue;
+                        }
                         let param_readonly = sig
                             .params
                             .get(idx)
@@ -3416,16 +3419,16 @@ fn validate_buffer_param_call_arg(
         if name == PROCESSOR_RESOURCE_SELECT {
             validate_internal_proc_index_buffer_select_call(name, args, env, loc, errors);
             for slot_expr in args.iter().filter(|a| a.name.is_none()).map(|a| &a.expr) {
-                if let Expr::Var { name: symbol, .. } = slot_expr {
-                    validate_buffer_symbol_for_param(
-                        &context,
-                        expected,
-                        symbol,
-                        env,
-                        slot_expr.loc(),
-                        errors,
-                    );
-                }
+                validate_buffer_param_call_arg(
+                    fn_name,
+                    param_idx,
+                    param_names,
+                    expected,
+                    slot_expr,
+                    env,
+                    slot_expr.loc(),
+                    errors,
+                );
             }
             return;
         }
@@ -4200,6 +4203,11 @@ fn validate_internal_proc_index_buffer_select_call(
 
     for slot_expr in slot_exprs {
         match slot_expr {
+            Expr::Index { base, index, .. }
+                if is_declared_buffer_array_info(env.declared_symbols, base) =>
+            {
+                validate_expr(index, env, errors);
+            }
             Expr::Var { name: symbol, .. } => {
                 if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
                     push_loc_error(

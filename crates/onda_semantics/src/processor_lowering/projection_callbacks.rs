@@ -33,6 +33,9 @@ pub(super) fn child_when_body(
         0
     };
     let (owner_args, outer_args) = context_args.split_at(captured_count);
+    let selected_index = edge
+        .extent
+        .and_then(|_| proc_storage::family_coordinate(declared.projection.coordinate_arity()));
     let body = proc_child_when_body(
         owner,
         child,
@@ -40,7 +43,7 @@ pub(super) fn child_when_body(
         delegate,
         options,
         owner_args,
-        proc_storage::family_coordinate(declared.projection.coordinate_arity()).as_ref(),
+        selected_index.as_ref(),
     );
     if edges.len() == 1 || body.is_empty() {
         return body;

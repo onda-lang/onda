@@ -165,24 +165,45 @@ impl FunctionLowerer<'_> {
         &mut self,
         root: &str,
         binding: &Binding,
-    ) -> Vec<String> {
-        let Binding::StructArrayParameter { fields, .. } = binding else {
-            return Vec::new();
+        loc: SourceLoc,
+    ) -> Result<Vec<String>, MirLoweringError> {
+        let Binding::StructArrayParameter {
+            struct_name,
+            length,
+            fields,
+            ..
+        } = binding
+        else {
+            return Ok(Vec::new());
         };
-        fields
+        // Embedded arrays also supply their enclosing struct's tensor leaves.
+        // Keep their fixed extents when publishing the joined descriptors so
+        // the enclosing view can still be forwarded as the same nominal type.
+        let shapes = match length {
+            StructArrayLength::Fixed(len) => {
+                Some(self.struct_array_field_shapes(struct_name, *len, loc)?)
+            }
+            StructArrayLength::Dynamic(_) | StructArrayLength::Local(_) => None,
+        };
+        Ok(fields
             .iter()
-            .map(|(path, local, element)| {
+            .enumerate()
+            .map(|(index, (path, local, element))| {
                 let onda_mir::Type::Slice { access, .. } =
                     self.types[self.locals[local.index()].ty.index()]
                 else {
                     unreachable!()
                 };
+                let len = shapes.as_ref().map(|shapes| match shapes[index] {
+                    StructFieldShape::Array { len, .. } => len,
+                    _ => unreachable!("array layouts contain tensor leaves"),
+                });
                 let name = Self::data_leaf_name(root, path);
                 self.bindings
-                    .insert(name.clone(), Binding::Slice(*local, *element, access, None));
+                    .insert(name.clone(), Binding::Slice(*local, *element, access, len));
                 name
             })
-            .collect()
+            .collect())
     }
 
     /// A scalar aggregate field is still storage. Join a singleton descriptor,

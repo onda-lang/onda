@@ -15,6 +15,11 @@ pub(crate) use init_analysis::*;
 pub(crate) use runtime_stmt_analysis::*;
 pub(crate) use slice_lengths::*;
 
+/// Typed data declarations own a copy; slice declarations retain a view.
+pub(crate) fn data_declaration_owns_storage(decl_ty: Option<&DeclType>, typed: bool) -> bool {
+    typed && !matches!(decl_ty, Some(DeclType::Slice(_)))
+}
+
 /// The checked scope delta applied when executing a branch in a const def.
 #[derive(Debug, Default)]
 pub(crate) struct CheckedBranchScope {

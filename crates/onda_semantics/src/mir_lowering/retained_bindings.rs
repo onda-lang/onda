@@ -1,4 +1,5 @@
 use super::*;
+use processor_captures::processor_capture_roots;
 use retained_storage::{load_scalar_uses, retain_storage, ViewExtent};
 
 /// A compact entry prelude and its lexical bindings. Locals are private to
@@ -52,17 +53,47 @@ pub(super) fn retain_init_bindings(
             MirType::Slice { .. }
         )
     });
+    // Index only captured roots, including their lexical ancestors. Ordinary
+    // data aliases have no capture dependencies and require no binding scans.
+    let mut dependencies = HashMap::<&str, Vec<String>>::new();
+    for (name, binding) in &bindings {
+        let captures = processor_capture_roots(binding);
+        if captures.is_empty() {
+            continue;
+        }
+        for end in std::iter::once(name.len()).chain(name.match_indices('.').map(|(i, _)| i)) {
+            dependencies
+                .entry(&name[..end])
+                .or_default()
+                .extend(captures.iter().cloned());
+        }
+    }
     let mut retention_roots = views.keys().cloned().collect::<HashSet<_>>();
+    retention_roots.extend(
+        bindings
+            .iter()
+            .filter(|(_, binding)| {
+                matches!(
+                    binding,
+                    Binding::StructView {
+                        processor: Some(_),
+                        ..
+                    } | Binding::StructArrayParameter {
+                        processor: Some(_),
+                        ..
+                    } | Binding::ProcArrayParameter {
+                        processor: Some(_),
+                        ..
+                    }
+                )
+            })
+            .map(|(name, _)| name.clone()),
+    );
     let mut pending = retention_roots.iter().cloned().collect::<Vec<_>>();
     while let Some(root) = pending.pop() {
-        for (name, binding) in &bindings {
-            if !crate::path_is_within_root(name, &root) {
-                continue;
-            }
-            for capture in processor_capture_roots(binding) {
-                if retention_roots.insert(capture.clone()) {
-                    pending.push(capture);
-                }
+        for capture in dependencies.get(root.as_str()).into_iter().flatten() {
+            if retention_roots.insert(capture.clone()) {
+                pending.push(capture.clone());
             }
         }
     }
@@ -275,39 +306,8 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
             visit(local);
         }
     }
-    fn visit_environment(
-        environment: &mut processor_views::LoweredProcessorEnvironment,
-        visit: &mut impl FnMut(&mut LocalId),
-    ) {
-        if let Some(owner) = &mut environment.owner {
-            owner.visit_values(&mut |tag| value(tag, visit));
-        }
-        if let Some(root) = &mut environment.state_root {
-            root.visit_values(&mut |tag| value(tag, visit));
-        }
-        for resource in &mut environment.resources {
-            resource.visit_values(&mut |tag| value(tag, visit));
-        }
-        for coordinate in &mut environment.coordinates {
-            value(coordinate, visit);
-        }
-        if let Some(outer) = &mut environment.outer {
-            visit_environment(outer, visit);
-        }
-    }
-    if let Some(processor) = match binding {
-        Binding::StructView { processor, .. }
-        | Binding::StructParameter { processor, .. }
-        | Binding::StructArrayParameter { processor, .. }
-        | Binding::ProcArrayParameter { processor, .. } => processor.as_mut(),
-        _ => None,
-    } {
-        if let Some(tag) = &mut processor.tag {
-            value(tag, visit);
-        }
-        for capture in &mut processor.environments {
-            visit_environment(capture, visit);
-        }
+    if let Some(processor) = binding.processor_view_mut() {
+        processor.visit_values(&mut |capture| value(capture, visit));
     }
     match binding {
         Binding::Local(local, _) | Binding::Array(local, _, _) | Binding::Slice(local, _, _, _) => {
@@ -387,54 +387,4 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
         | Binding::StructView { .. }
         | Binding::StructArrayStorage { .. } => {}
     }
-}
-
-fn processor_capture_roots(binding: &Binding) -> Vec<String> {
-    fn capture_roots(
-        environment: &processor_views::LoweredProcessorEnvironment,
-        result: &mut Vec<String>,
-    ) {
-        if let Some(owner) = &environment.owner {
-            owner.visit_leaves(&mut |root| result.push(root.clone()));
-        }
-        if let Some(root) = &environment.state_root {
-            root.visit_leaves(&mut |root| result.push(root.clone()));
-        }
-        for (resource, shape) in environment
-            .resources
-            .iter()
-            .zip(&environment.shape.resources)
-        {
-            if shape.binding.is_some() {
-                continue;
-            }
-            resource.visit_leaves(&mut |resource| {
-                for expression in resource.walk() {
-                    match expression {
-                        Expr::Var { name, .. } | Expr::Index { base: name, .. } => {
-                            result.push(name.clone())
-                        }
-                        _ => {}
-                    }
-                }
-            });
-        }
-        if let Some(outer) = &environment.outer {
-            capture_roots(outer, result);
-        }
-    }
-    let processor = match binding {
-        Binding::StructView { processor, .. }
-        | Binding::StructParameter { processor, .. }
-        | Binding::StructArrayParameter { processor, .. }
-        | Binding::ProcArrayParameter { processor, .. } => processor.as_ref(),
-        _ => None,
-    };
-    let mut result = Vec::new();
-    if let Some(processor) = processor {
-        for capture in &processor.environments {
-            capture_roots(capture, &mut result);
-        }
-    }
-    result
 }

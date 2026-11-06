@@ -1,0 +1,32 @@
+proc Voice:
+  delegate fired(value: i32)
+  init:
+    count: i32 = 0
+  sample:
+    count += 1
+    fired(count)
+    out1 = f32(count)
+proc Bank:
+  init:
+    voice = Voice()
+    total: i32 = 0
+  when voice.fired(value):
+    total += value
+  sample:
+    out1 = f32(total)
+proc Rack:
+  init:
+    bank = Bank()
+  sample:
+    out1 = bank()
+def step(voice) -> f32:
+  return voice()
+init:
+  bank = Bank()
+  rack = Rack()
+  selected = bank.voice
+sample:
+  out1 = step(bank.voice)
+  out2 = step(selected)
+  out3 = step(rack.bank.voice)
+  out4 = bank()

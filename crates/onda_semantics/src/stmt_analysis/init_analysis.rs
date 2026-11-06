@@ -15,6 +15,8 @@ pub(crate) struct ProcResolutionCtx<'a> {
 pub(crate) struct InitAnalysisCtx<'a> {
     pub context_label: &'a str,
     pub common: ScopeAnalysisCtx<'a>,
+    /// Physical fields for owned storage; source types can also expose borrowed children.
+    pub storage_struct_defs: &'a HashMap<String, Vec<TypedStructField>>,
     pub init_default_ty: Option<PrimitiveType>,
     pub proc_resolution: Option<ProcResolutionCtx<'a>>,
     pub top_level_proc_symbols: Option<&'a HashSet<String>>,
@@ -1350,7 +1352,7 @@ fn analyze_assign_init(
                                         name,
                                         struct_name,
                                         len,
-                                        struct_defs,
+                                        ctx.storage_struct_defs,
                                         ctx.context_label,
                                         &mut st.state_scalars,
                                         &mut st.declared_symbols,
@@ -2264,7 +2266,7 @@ fn analyze_assign_init(
                             name,
                             struct_name,
                             size_value,
-                            struct_defs,
+                            ctx.storage_struct_defs,
                             &context,
                             &mut st.state_scalars,
                             &mut st.declared_symbols,
@@ -2641,7 +2643,7 @@ fn analyze_struct_data_init_assign(
         return;
     }
 
-    visit_struct_field_paths(struct_name, struct_defs, |path, field| {
+    visit_struct_field_paths(struct_name, ctx.init.storage_struct_defs, |path, field| {
         let flat = format!("{target}.{path}");
         match field.ty {
             TypedFieldType::Scalar(prim) => {
@@ -2662,7 +2664,7 @@ fn analyze_struct_data_init_assign(
                         &flat,
                         elem_struct,
                         len,
-                        struct_defs,
+                        ctx.init.storage_struct_defs,
                         &context,
                         state_scalars,
                         declared_symbols,
@@ -2928,7 +2930,7 @@ fn analyze_struct_field_init_assign(
                         &flat,
                         expected_struct,
                         expected_len,
-                        struct_defs,
+                        ctx.init.storage_struct_defs,
                         &context,
                         state_scalars,
                         declared_symbols,

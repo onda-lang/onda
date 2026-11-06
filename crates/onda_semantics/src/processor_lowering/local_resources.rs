@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn captures(proc: &ProcessorDef) -> HashSet<String> {
+pub(super) fn captures(proc: &ProcessorDef, proc_symbols: &HashSet<String>) -> HashSet<String> {
     let roots = proc
         .init
         .iter()
@@ -15,15 +15,33 @@ pub(super) fn captures(proc: &ProcessorDef) -> HashSet<String> {
             else {
                 return None;
             };
-            matches!(
-                expr,
-                Expr::UserCall { .. } | Expr::ArrayCtor { .. } | Expr::ArrayLiteral { .. }
-            )
-            .then_some(name.as_str())
+            let processor = match expr {
+                Expr::UserCall { name, .. } => proc_symbols.contains(name),
+                Expr::ArrayCtor { spec, .. } => matches!(&spec.elem,
+                    ArrayElemType::Struct(name) if proc_symbols.contains(name)),
+                Expr::ArrayLiteral { values, .. } => values.iter().any(|value|
+                    matches!(value, Expr::UserCall { name, .. } if proc_symbols.contains(name))),
+                _ => false,
+            };
+            processor.then_some(name.as_str())
         })
         .collect::<HashSet<_>>();
     let mut captures = HashSet::new();
-    let mut dependencies = HashMap::<String, HashSet<String>>::new();
+    let local_names = proc
+        .local_defs
+        .iter()
+        .flat_map(|def| {
+            [
+                (def.name.clone(), def.name.as_str()),
+                (
+                    proc_local_hidden_def_name(&proc.name, &def.name),
+                    def.name.as_str(),
+                ),
+            ]
+        })
+        .collect::<HashMap<_, _>>();
+    let mut callers = HashMap::<&str, HashSet<&str>>::new();
+    let mut pending = Vec::new();
     for def in &proc.local_defs {
         let shadows = def
             .params
@@ -31,7 +49,6 @@ pub(super) fn captures(proc: &ProcessorDef) -> HashSet<String> {
             .map(|param| param.name.as_str())
             .collect::<HashSet<_>>();
         let mut borrows = is_generated_proc_delegate_local(proc, &def.name);
-        let calls = dependencies.entry(def.name.clone()).or_default();
         for statement in &def.body {
             statement.visit_exprs(|expr| {
                 expr.visit(|expr| {
@@ -51,12 +68,8 @@ pub(super) fn captures(proc: &ProcessorDef) -> HashSet<String> {
                             || (!shadows.contains(root) && roots.contains(root));
                     }
                     if let Expr::UserCall { name, .. } = expr {
-                        for callee in &proc.local_defs {
-                            if *name == callee.name
-                                || *name == proc_local_hidden_def_name(&proc.name, &callee.name)
-                            {
-                                calls.insert(callee.name.clone());
-                            }
+                        if let Some(callee) = local_names.get(name) {
+                            callers.entry(callee).or_default().insert(&def.name);
                         }
                     }
                     true
@@ -65,30 +78,59 @@ pub(super) fn captures(proc: &ProcessorDef) -> HashSet<String> {
         }
         if borrows {
             captures.insert(def.name.clone());
+            pending.push(def.name.as_str());
         }
     }
-    loop {
-        let before = captures.len();
-        for (caller, callees) in &dependencies {
-            if callees.iter().any(|callee| captures.contains(callee)) {
-                captures.insert(caller.clone());
+    while let Some(callee) = pending.pop() {
+        for caller in callers.get(callee).into_iter().flatten() {
+            if captures.insert((*caller).to_owned()) {
+                pending.push(caller);
             }
         }
-        if captures.len() == before {
-            return captures;
-        }
     }
+    captures
 }
 
 pub(super) fn parameter_name(def: &FunctionDef, name: &str, index: usize) -> String {
-    if def.params.iter().any(|param| param.name == name) {
-        format!("__onda_proc_owner_resource_{index}")
-    } else {
-        name.to_owned()
+    let mut names = def
+        .params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<HashSet<_>>();
+    for statement in &def.body {
+        statement.visit_statements(|statement| match statement {
+            Stmt::Assign {
+                target: AssignTarget::Var(name),
+                ..
+            }
+            | Stmt::For { var: name, .. } => {
+                names.insert(name.clone());
+            }
+            Stmt::Assign {
+                target: AssignTarget::Tuple(targets),
+                ..
+            } => {
+                names.extend(
+                    targets
+                        .iter()
+                        .filter_map(|target| target.binding())
+                        .map(str::to_owned),
+                );
+            }
+            _ => {}
+        });
     }
+    let mut result = name.to_owned();
+    if names.contains(name) {
+        result = format!("__onda_proc_owner_resource_{index}");
+        while names.contains(result.as_str()) {
+            result.push('_');
+        }
+    }
+    result
 }
 
-pub(super) fn parameters(def: &FunctionDef, specs: &[ProcBufferSpec]) -> Vec<ProcBufferSpec> {
+pub(super) fn parameters(def: &FunctionDef, specs: &[TypedBufferDecl]) -> Vec<TypedBufferDecl> {
     specs
         .iter()
         .enumerate()

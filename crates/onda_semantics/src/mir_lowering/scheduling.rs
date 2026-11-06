@@ -214,7 +214,9 @@ impl<'a> FunctionLowerer<'a> {
             });
             self.assign_value(&mut substep_body, *parameter_local, value, location.clone());
         }
+        let processor_scope = self.scoped_processors.len();
         self.lower_statements(sample_body, &mut substep_body, ContinueMode::None)?;
+        self.finish_scoped_processors(processor_scope, &mut substep_body, location.clone())?;
         for output in &outputs {
             let OversampledOutputDestination::State(reference) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
@@ -445,6 +447,14 @@ impl<'a> FunctionLowerer<'a> {
             process_location.clone(),
         );
         let mut block_pre_body = MirBlock::default();
+        self.local_processor_lifetimes = false;
+        self.processor_boundary_hooks(
+            false,
+            sample,
+            block_post,
+            &mut block_pre_body,
+            process_location.clone(),
+        )?;
         let block_local_start = self.locals.len();
         let abortable = crate::task_lowering::contains_task_abort(block_pre);
         if abortable {
@@ -467,7 +477,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         let block_pre_index = body.statements.len();
         let extents = retained_bindings::view_extents(&self.bindings, self.aggregate_layouts)?;
-        let block_region = retained_storage::BlockRegion {
+        let mut block_region = retained_storage::BlockRegion {
             statement: block_pre_index,
             locals: block_local_start..self.locals.len(),
             extents,
@@ -515,6 +525,7 @@ impl<'a> FunctionLowerer<'a> {
             process_location.clone(),
         );
         self.current_frame = Some(Value::Local(logical_frame));
+        self.local_processor_lifetimes = true;
         let sample_result = if sample_oversample_factor.max(1) > 1 {
             self.lower_top_level_oversampled_sample(
                 sample,
@@ -528,6 +539,7 @@ impl<'a> FunctionLowerer<'a> {
             let result = self
                 .lower_statements(sample, &mut sample_block, ContinueMode::None)
                 .and_then(|_| {
+                    self.finish_scoped_processors(0, &mut sample_block, process_location.clone())?;
                     self.commit_audio_output_frame(
                         &mut sample_block,
                         Value::Local(logical_frame),
@@ -590,7 +602,16 @@ impl<'a> FunctionLowerer<'a> {
             process_location.clone(),
         );
         let mut block_post_body = MirBlock::default();
+        let post_scope = self.scoped_processors.len();
         self.lower_statements(block_post, &mut block_post_body, ContinueMode::None)?;
+        self.finish_scoped_processors(post_scope, &mut block_post_body, process_location.clone())?;
+        self.processor_boundary_hooks(
+            true,
+            sample,
+            block_post,
+            &mut block_post_body,
+            process_location.clone(),
+        )?;
         self.push_statement(
             &mut body,
             StatementKind::If {
@@ -600,6 +621,7 @@ impl<'a> FunctionLowerer<'a> {
             },
             process_location.clone(),
         );
+        block_region.statement += self.initialize_scoped_processors(&mut body);
         let source = self.source_span(process_location);
         let i32_type = intern_scalar_type(self.types, PrimitiveType::I32);
         Ok((
@@ -888,6 +910,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
 
+        let processor_scope = self.scoped_processors.len();
         if let Err(error) = self.lower_statements(sample, &mut substep_body, ContinueMode::None) {
             self.config = host_config;
             self.oversampled_inputs.clear();
@@ -898,6 +921,7 @@ impl<'a> FunctionLowerer<'a> {
             self.audio_output_array_caches.clear();
             return Err(error);
         }
+        self.finish_scoped_processors(processor_scope, &mut substep_body, location.clone())?;
         for output in &outputs {
             let OversampledOutputDestination::Interface { current, .. } = &output.destination
             else {

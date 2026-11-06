@@ -78,6 +78,10 @@ impl<'a> FunctionLowerer<'a> {
                         continue;
                     }
                     let declared_scalar_ty = decl_ty.as_ref().and_then(DeclType::scalar);
+                    let owns_storage = crate::stmt_analysis::data_declaration_owns_storage(
+                        decl_ty.as_ref(),
+                        *is_typed_decl || generic_decl_ty.is_some(),
+                    );
                     let declared_integer_range = integer_range_invariant(expr, declared_scalar_ty);
                     if let AssignTarget::Index { base, index } = target {
                         if let Some(data @ DataType::Struct(_)) = self.data_type_of(expr) {
@@ -140,13 +144,12 @@ impl<'a> FunctionLowerer<'a> {
                                         ..
                                     }
                             );
-                            let selects_storage = Self::data_expr_selects_storage(expr);
+                            let selects_storage = crate::array_semantics::selects_storage(expr);
 
                             if introduces_binding && structured {
                                 // An untyped selection introduces a view. A
                                 // typed declaration owns independent storage.
-                                if selects_storage && !(*is_typed_decl || generic_decl_ty.is_some())
-                                {
+                                if selects_storage && !owns_storage {
                                     let source = self.lower_data_expr(expr, &data, block)?;
                                     self.bind_data_alias(
                                         name,
@@ -184,9 +187,7 @@ impl<'a> FunctionLowerer<'a> {
                             let source = self.lower_data_expr(expr, &data, block)?;
                             if existing.is_some() {
                                 self.copy_data(name, &source, &data, block, loc.clone().into())?;
-                            } else if (*is_typed_decl || generic_decl_ty.is_some())
-                                && selects_storage
-                            {
+                            } else if owns_storage && selects_storage {
                                 self.allocate_data(name, &data, loc.clone().into())?;
                                 self.copy_data(name, &source, &data, block, loc.clone().into())?;
                             } else {
@@ -194,6 +195,17 @@ impl<'a> FunctionLowerer<'a> {
                                     name,
                                     &source,
                                     &data,
+                                    block,
+                                    loc.clone().into(),
+                                )?;
+                            }
+                            // A declaration owns its complete environment even
+                            // when runtime storage was planned before lowering.
+                            // Content replacements keep the existing environment.
+                            if structured && owns_storage && selects_storage {
+                                self.bind_owned_processor_view(
+                                    name,
+                                    &source,
                                     block,
                                     loc.clone().into(),
                                 )?;
@@ -393,6 +405,7 @@ impl<'a> FunctionLowerer<'a> {
                                 loc.clone().into(),
                             ));
                         }
+                        self.finish_scoped_processors(0, block, loc.clone().into())?;
                         self.push_statement(
                             block,
                             StatementKind::Return { values: Vec::new() },
@@ -419,6 +432,7 @@ impl<'a> FunctionLowerer<'a> {
                                 block,
                                 loc.clone().into(),
                             )?;
+                            self.finish_scoped_processors(0, block, loc.clone().into())?;
                             self.push_statement(
                                 block,
                                 StatementKind::Return { values: Vec::new() },
@@ -440,8 +454,14 @@ impl<'a> FunctionLowerer<'a> {
                     }
                     let mut returned = Vec::with_capacity(values.len());
                     for (value, result_ty) in values.into_iter().zip(result_types) {
-                        returned.push(self.coerce(value, result_ty, block, expr.loc())?.value);
+                        let value = self.coerce(value, result_ty, block, expr.loc())?;
+                        returned.push(if self.scoped_processors.is_empty() {
+                            value.value
+                        } else {
+                            self.snapshot(value, block, expr.loc()).value
+                        });
                     }
+                    self.finish_scoped_processors(0, block, loc.clone().into())?;
                     self.push_statement(
                         block,
                         StatementKind::Return { values: returned },
@@ -513,7 +533,13 @@ impl<'a> FunctionLowerer<'a> {
                     let condition =
                         self.coerce(condition, PrimitiveType::Bool, &mut loop_body, cond.loc())?;
                     let mut then_block = MirBlock::default();
-                    self.lower_statements(body, &mut then_block, ContinueMode::Plain)?;
+                    let first = self.scoped_processors.len();
+                    self.processor_loop_scopes.push(first);
+                    let flow = self.lower_statements(body, &mut then_block, ContinueMode::Plain)?;
+                    self.processor_loop_scopes.pop();
+                    if flow == StatementFlow::Continues {
+                        self.finish_scoped_processors(first, &mut then_block, loc.clone().into())?;
+                    }
                     self.bindings = outer_bindings;
                     let mut else_block = MirBlock::default();
                     self.push_statement(&mut else_block, StatementKind::Break, loc.clone().into());
@@ -566,10 +592,16 @@ impl<'a> FunctionLowerer<'a> {
                             self.error("break reached MIR outside a loop", loc.clone().into())
                         );
                     }
+                    if let Some(first) = self.processor_loop_scopes.last().copied() {
+                        self.finish_scoped_processors(first, block, loc.clone().into())?;
+                    }
                     self.push_statement(block, StatementKind::Break, loc.clone().into());
                     StatementFlow::Terminates
                 }
                 Stmt::Continue { loc } => {
+                    if let Some(first) = self.processor_loop_scopes.last().copied() {
+                        self.finish_scoped_processors(first, block, loc.clone().into())?;
+                    }
                     match continue_mode.clone() {
                         ContinueMode::None => {
                             return Err(self
@@ -707,6 +739,8 @@ impl<'a> FunctionLowerer<'a> {
             variable.to_owned(),
             Binding::Local(body_index, induction_ty),
         );
+        let first = self.scoped_processors.len();
+        self.processor_loop_scopes.push(first);
         let body_flow = self.lower_statements(
             body,
             &mut loop_body,
@@ -717,7 +751,9 @@ impl<'a> FunctionLowerer<'a> {
                 source: location.clone(),
             },
         )?;
+        self.processor_loop_scopes.pop();
         if body_flow == StatementFlow::Continues {
+            self.finish_scoped_processors(first, &mut loop_body, location.clone())?;
             self.emit_for_latch(
                 &mut loop_body,
                 index,
@@ -740,8 +776,8 @@ impl<'a> FunctionLowerer<'a> {
     pub(super) fn merge_branch_scopes(
         &mut self,
         outer_bindings: HashMap<String, Binding>,
-        then_bindings: HashMap<String, Binding>,
-        else_bindings: HashMap<String, Binding>,
+        mut then_bindings: HashMap<String, Binding>,
+        mut else_bindings: HashMap<String, Binding>,
         then_block: &mut MirBlock,
         else_block: &mut MirBlock,
         location: SourceLoc,
@@ -753,7 +789,18 @@ impl<'a> FunctionLowerer<'a> {
             .collect::<Vec<_>>();
         merged_binding_names.sort();
 
+        let mut captures = self.preserve_processor_capture_roots(
+            &mut then_bindings,
+            &outer_bindings,
+            &merged_binding_names,
+        );
+        captures.extend(self.preserve_processor_capture_roots(
+            &mut else_bindings,
+            &outer_bindings,
+            &merged_binding_names,
+        ));
         self.bindings = outer_bindings;
+        self.bindings.extend(captures);
         let mut covered_binding_names = HashSet::new();
         for name in merged_binding_names {
             if covered_binding_names.contains(&name) {
@@ -773,7 +820,11 @@ impl<'a> FunctionLowerer<'a> {
                 else_block,
                 location.clone(),
             )? {
-                covered_binding_names.extend(self.bind_joined_struct_array_leaves(&name, &binding));
+                covered_binding_names.extend(self.bind_joined_struct_array_leaves(
+                    &name,
+                    &binding,
+                    location.clone(),
+                )?);
                 self.bindings.insert(name, binding);
             }
         }

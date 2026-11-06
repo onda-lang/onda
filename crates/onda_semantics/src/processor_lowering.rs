@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::proc_state_rewrite::{ProcArrayDeclaration, ProcArrayDeclarations};
 use crate::*;
-use onda_frontend::{EventParamDecl, LogicalOp};
+use onda_frontend::EventParamDecl;
 
 #[cfg(test)]
 mod declaration_tests;
+mod declarations;
 mod delegate_lowering;
 mod generated_blocks;
 mod generic_proc_rewrite;
@@ -14,19 +15,21 @@ mod global_proc_rewrite;
 mod graph_lowering;
 mod logical_types;
 pub(crate) use logical_types::processor_source_types;
+mod lifecycle_hooks;
 mod local_resources;
 mod nested_paths;
 mod nested_proc_lowering;
-mod proc_array_hooks;
 mod proc_array_init;
 mod proc_local_defs;
 mod proc_storage;
 mod projection_callbacks;
 mod projection_resources;
+mod resource_recipes;
 mod retained_data;
 mod shape_helpers;
 mod storage_projections;
 mod view_catalog;
+use declarations::*;
 use delegate_lowering::*;
 use generated_blocks::*;
 pub(crate) use generated_blocks::{
@@ -279,13 +282,14 @@ struct ProcBaseShape {
     outs: Vec<String>,
     in_ports: Vec<ProcPortSpec>,
     param_specs: Vec<ProcParamSpec>,
-    buffer_specs: Vec<ProcBufferSpec>,
+    buffer_specs: Vec<TypedBufferDecl>,
+    buffer_capturing_local_defs: HashSet<String>,
     in_types: HashMap<String, PrimitiveType>,
     out_types: HashMap<String, PrimitiveType>,
     in_array_slots: HashMap<String, Vec<String>>,
     field_array_slots: HashMap<String, Vec<String>>,
     nested_proc_array_slots: ProcArrayDeclarations,
-    nested_proc_array_active_fields: HashMap<String, String>,
+    nested_proc_active_fields: HashMap<String, String>,
     state: ProcStateFields,
     fields: Vec<StructField>,
     field_names: HashSet<String>,
@@ -297,13 +301,14 @@ pub(crate) struct ProcLoweringShape {
     pub(crate) outs: Vec<String>,
     pub(crate) in_ports: Vec<ProcPortSpec>,
     pub(crate) param_specs: Vec<ProcParamSpec>,
-    pub(crate) buffer_specs: Vec<ProcBufferSpec>,
+    pub(crate) buffer_specs: Vec<TypedBufferDecl>,
+    pub(crate) buffer_capturing_local_defs: HashSet<String>,
     pub(crate) in_types: HashMap<String, PrimitiveType>,
     pub(crate) out_types: HashMap<String, PrimitiveType>,
     pub(crate) in_array_slots: HashMap<String, Vec<String>>,
     pub(crate) field_array_slots: HashMap<String, Vec<String>>,
     pub(crate) nested_proc_array_slots: ProcArrayDeclarations,
-    pub(crate) nested_proc_array_active_fields: HashMap<String, String>,
+    pub(crate) nested_proc_active_fields: HashMap<String, String>,
     pub(crate) state: ProcStateFields,
     pub(crate) fields: Vec<StructField>,
     pub(crate) field_names: HashSet<String>,
@@ -399,7 +404,7 @@ fn collect_flattened_proc_field_metadata(
                 compiler_scratch_fields,
             );
         }
-        for active in shape.nested_proc_array_active_fields.values() {
+        for active in shape.nested_proc_active_fields.values() {
             compiler_owned_fields.insert(format!("{prefix}{active}"));
             compiler_scratch_fields.insert(format!("{prefix}{active}"));
         }
@@ -962,6 +967,10 @@ fn build_proc_lowering_env(
         return None;
     }
 
+    let proc_symbols = proc_defs
+        .iter()
+        .map(|proc| proc.name.clone())
+        .collect::<HashSet<_>>();
     let mut proc_sample_oversample_factors = HashMap::<String, usize>::new();
     for proc in &mut proc_defs {
         let factor = validated_sample_oversample_factor(
@@ -971,7 +980,7 @@ fn build_proc_lowering_env(
             errors,
         );
         proc_sample_oversample_factors.insert(proc.name.clone(), factor);
-        rewrite_proc_local_defs(proc, errors);
+        rewrite_proc_local_defs(proc, &proc_symbols, errors);
     }
 
     let raw_struct_defs_by_name = program
@@ -1196,9 +1205,8 @@ fn build_proc_lowering_env(
     }
     for proc in &proc_defs {
         let local_defs = unique_proc_local_defs(proc);
-        let needs_buffer_capture = local_defs
-            .iter()
-            .any(|def| local_resources::captures(proc).contains(&def.name));
+        let buffer_capturing_local_defs = local_resources::captures(proc, &proc_symbols);
+        let needs_buffer_capture = !buffer_capturing_local_defs.is_empty();
         let captured_buffers = if needs_buffer_capture {
             let factor = proc_sample_oversample_factors
                 .get(&proc.name)
@@ -1213,20 +1221,11 @@ fn build_proc_lowering_env(
                 proc_runtime_analysis_options(options, factor),
                 &mut ignored_buffer_errors,
             )
-            .into_iter()
-            .map(|buffer| ProcBufferSpec {
-                name: buffer.name,
-                elem_ty: buffer.elem_ty,
-                channels: buffer.channels,
-                array_len: buffer.array_len,
-                is_array: buffer.is_array,
-            })
-            .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
         for local_def in local_defs {
-            let buffers = if local_resources::captures(proc).contains(&local_def.name) {
+            let buffers = if buffer_capturing_local_defs.contains(&local_def.name) {
                 local_resources::parameters(&local_def, &captured_buffers)
             } else {
                 Vec::new()
@@ -1465,6 +1464,43 @@ fn build_proc_lowering_env(
         .map(|p| (p.name.clone(), p.clone()))
         .collect::<HashMap<_, _>>();
 
+    let effective_proc_blocks =
+        compute_effective_proc_block_flags(&proc_order, &proc_defs_by_name, &base_shapes);
+    for (proc_name, api) in &mut proc_api {
+        api.has_block = *effective_proc_blocks
+            .get(proc_name)
+            .unwrap_or(&api.has_block);
+    }
+    // Scalar children use one lifecycle slot, shared by direct calls, borrowed
+    // calls, and their parent's hooks. Shape flattening carries it with its owner.
+    for shape in base_shapes.values_mut() {
+        let mut children = shape.state.nested_procs.iter().collect::<Vec<_>>();
+        children.sort_by_key(|(name, _)| *name);
+        for (name, child) in children {
+            if !proc_api
+                .get(&child.proc_name)
+                .is_some_and(proc_needs_block_hooks)
+            {
+                continue;
+            }
+            let active = runtime_proc_array_active_symbol(name);
+            shape
+                .nested_proc_active_fields
+                .insert(name.clone(), active.clone());
+            shape.field_names.insert(active.clone());
+            shape.fields.push(StructField {
+                loc: Default::default(),
+                name: active,
+                ty: FieldType::Array(onda_frontend::ArrayTypeSpec {
+                    elem: ArrayElemType::Primitive(PrimitiveType::Bool),
+                    size: Box::new(Expr::int(1)),
+                }),
+                ty_loc: Default::default(),
+                default: None,
+            });
+        }
+    }
+
     let mut lowering_shapes = HashMap::<String, ProcLoweringShape>::new();
     for proc_name in &proc_order {
         let mut visiting = Vec::<String>::new();
@@ -1478,13 +1514,6 @@ fn build_proc_lowering_env(
     }
     validate_proc_child_whens(&proc_defs_by_name, &lowering_shapes, options, errors);
 
-    let effective_proc_blocks =
-        compute_effective_proc_block_flags(&proc_order, &proc_defs_by_name, &base_shapes);
-    for (proc_name, api) in &mut proc_api {
-        api.has_block = *effective_proc_blocks
-            .get(proc_name)
-            .unwrap_or(&api.has_block);
-    }
     for proc_name in &proc_order {
         let Some(proc) = proc_defs_by_name.get(proc_name) else {
             continue;
@@ -1618,9 +1647,17 @@ fn desugar_processors_impl(
     }
 
     // Rewrite proc-local defs into hidden ordinary def calls before proc lowering.
+    let proc_symbols = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Proc(proc) => Some(proc.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     for block in &mut program.blocks {
         if let Block::Proc(proc) = block {
-            rewrite_proc_local_defs(proc, errors);
+            rewrite_proc_local_defs(proc, &proc_symbols, errors);
         }
     }
 
@@ -1729,6 +1766,7 @@ fn desugar_processors_impl(
         options,
         &generated_defs,
     );
+    resource_recipes::defer_root_resources(&mut processor_views, &program.blocks, options);
     processor_views
         .lexical_resources
         .extend(lowered_tasks.lexical_resources);

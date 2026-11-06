@@ -1,8 +1,8 @@
 use super::*;
 use crate::def_semantics::call_types::{
-    infer_array_arg_type, infer_struct_expr_type, join_branch_envs, statement_list_flow,
-    update_call_type_env_after_assign, CallArrayElemType, CallTypeContext, CallTypeEnv,
-    StatementFlow,
+    infer_array_arg_type, infer_struct_expr_type, infer_struct_symbol_type, join_branch_envs,
+    statement_list_flow, update_call_type_env_after_assign, CallArrayElemType, CallTypeContext,
+    CallTypeEnv, StatementFlow,
 };
 
 type Origins = HashSet<String>;
@@ -153,11 +153,8 @@ impl PermissionAnalysis<'_> {
             if let Expr::UserCall { name, args, .. } = expr {
                 // Stepping a borrowed processor writes its output cache even
                 // when the sample body only reads bound resources.
-                if env
-                    .types
-                    .struct_instances
-                    .get(name)
-                    .is_some_and(|owner| self.proc_types.contains(owner))
+                if infer_struct_symbol_type(name, &env.types, self.types)
+                    .is_some_and(|owner| self.proc_types.contains(&owner))
                 {
                     self.writes.extend(self.storage_origins(name, env));
                 }
@@ -229,8 +226,10 @@ impl PermissionAnalysis<'_> {
                             }
                             self.expression(expr, env);
                             if !existing {
-                                let copied =
-                                    *is_typed_decl && !matches!(decl_ty, Some(DeclType::Slice(_)));
+                                let copied = crate::stmt_analysis::data_declaration_owns_storage(
+                                    decl_ty.as_ref(),
+                                    *is_typed_decl || generic_decl_ty.is_some(),
+                                );
                                 let reference =
                                     infer_struct_expr_type(expr, &env.types, self.types).is_some()
                                         || infer_array_arg_type(expr, &env.types, self.types)
@@ -420,32 +419,53 @@ pub(super) fn update_readonly_data_param_signatures(
         })
         .collect::<HashMap<_, _>>();
     let mut readonly = candidates.clone();
-    loop {
-        let mut changed = false;
-        for def in defs {
-            let signature = &signatures[&def.name];
-            let seed = def_call_type_env(def, runtime_def_names, lexical_seed, owner_seed);
-            let mut env = ReferenceEnv::for_parameters(seed, signature, &candidates[&def.name]);
-            let mut analysis = PermissionAnalysis {
-                signatures,
-                readonly: &readonly,
-                proc_types: &proc_types,
-                receiver_fields: &receiver_fields,
-                types: context,
-                writes: Origins::new(),
-            };
-            analysis.statements(&def.body, &mut env);
-            let inferred = candidates[&def.name]
-                .difference(&analysis.writes)
-                .cloned()
-                .collect::<Origins>();
-            if readonly[&def.name] != inferred {
-                readonly.insert(def.name.clone(), inferred);
-                changed = true;
-            }
+    let def_names = candidates.keys().cloned().collect();
+    let mut callers = HashMap::<String, Vec<usize>>::new();
+    for (index, def) in defs.iter().enumerate() {
+        let mut callees = Vec::new();
+        seed_called_typed_defs_from_stmts(&def.body, &def_names, &mut callees, &mut HashSet::new());
+        for callee in callees {
+            callers.entry(callee).or_default().push(index);
         }
-        if !changed {
-            break;
+    }
+    // A callee losing a readonly parameter can only affect its callers.
+    // Recursion has not been rejected yet, so retain a monotone worklist.
+    let mut pending = (0..defs.len()).collect::<std::collections::VecDeque<_>>();
+    let mut queued = vec![true; defs.len()];
+    while let Some(index) = pending.pop_front() {
+        queued[index] = false;
+        let def = &defs[index];
+        let signature = &signatures[&def.name];
+        let seed = def_call_type_env(def, runtime_def_names, lexical_seed, owner_seed);
+        let mut env = ReferenceEnv::for_parameters(seed, signature, &candidates[&def.name]);
+        let mut analysis = PermissionAnalysis {
+            signatures,
+            readonly: &readonly,
+            proc_types: &proc_types,
+            receiver_fields: &receiver_fields,
+            types: context,
+            writes: Origins::new(),
+        };
+        if lexical_seed
+            .processor_views
+            .borrow()
+            .post_hook_descendant_owner(&def.name)
+            .is_some()
+        {
+            analysis.writes.insert("self".to_owned());
+        }
+        analysis.statements(&def.body, &mut env);
+        let inferred = candidates[&def.name]
+            .difference(&analysis.writes)
+            .cloned()
+            .collect::<Origins>();
+        if readonly[&def.name] != inferred {
+            readonly.insert(def.name.clone(), inferred);
+            for &caller in callers.get(&def.name).into_iter().flatten() {
+                if !std::mem::replace(&mut queued[caller], true) {
+                    pending.push_back(caller);
+                }
+            }
         }
     }
     for def in defs {

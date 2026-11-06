@@ -19,8 +19,12 @@ mod expressions;
 mod lowerer_core;
 mod messages;
 mod processor_captures;
+mod processor_elements;
+mod processor_lifecycle;
+mod processor_resource_recipes;
 mod processor_resources;
 mod processor_scalars;
+mod processor_scopes;
 mod processor_view_joins;
 mod processor_views;
 mod reference_joins;
@@ -252,7 +256,11 @@ fn lower_user_functions_with_const_data(
             .compile_context
             .map_or(mir.config, |context| context.config());
         let emitted_name = function.name.clone();
-        let lowerer = if function.runtime_context {
+        let lowerer = if function.runtime_context
+            || program
+                .processor_views
+                .function_uses_root_resource_recipes(&function.name)
+        {
             let globals = runtime_globals.ok_or_else(|| {
                 vec![MirLoweringError::new(
                     format!(
@@ -2237,6 +2245,7 @@ enum PreparedCallArgument {
 enum BufferArrayCallSource {
     Interface(onda_mir::BufferId),
     Parameters(ParameterId),
+    Local { collection: LocalId, start: Value },
 }
 
 #[derive(Debug, Clone)]
@@ -2435,6 +2444,10 @@ struct FunctionLowerer<'a> {
     results: Vec<TypeId>,
     locals: Vec<onda_mir::Local>,
     bindings: HashMap<String, Binding>,
+    local_processor_lifetimes: bool,
+    scoped_processors: Vec<processor_scopes::ScopedProcessor>,
+    scoped_processor_bindings: HashMap<String, Binding>,
+    processor_loop_scopes: Vec<usize>,
     /// Lexical introductions that may construct directly in their final
     /// storage. Later assignments must preserve value/snapshot semantics by
     /// materializing their right-hand side before replacing that storage.

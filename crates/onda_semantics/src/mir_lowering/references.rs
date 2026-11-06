@@ -11,11 +11,44 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<Vec<CallArgument>, MirLoweringError> {
+        let processor = self
+            .owner_struct_name(root)
+            .is_some_and(|name| self.processor_views.owner_resources.contains_key(name));
         shapes
             .iter()
             .map(|shape| match shape {
                 StructFieldShape::Scalar { name, ty } => {
-                    self.scalar_reference_argument(&format!("{root}.{name}"), *ty, loc.clone())
+                    let name = format!("{root}.{name}");
+                    let argument = self.scalar_reference_argument(&name, *ty, loc.clone())?;
+                    // Capturing an owner's storage takes its address. A local
+                    // owner may exist on just one arm of an environment choice;
+                    // only the selected callee will read its fields. Forward a
+                    // reference descriptor rather than a bare local place,
+                    // whose call contract requires an eager initialized read.
+                    if let CallArgument::Place(place) = &argument {
+                        if processor && matches!(place.base, PlaceBase::Local(_)) {
+                            let slice = self.emit_slice_temp(
+                                block,
+                                None,
+                                *ty,
+                                access.unwrap_or(onda_mir::AccessMode::ReadWrite),
+                                Rvalue::MakeSlice {
+                                    source: onda_mir::SliceSource::Place(place.clone()),
+                                    start: Value::Constant(ScalarValue::I32(0)),
+                                    len: Value::Constant(ScalarValue::I32(1)),
+                                    bounds: BoundsMode::Unchecked,
+                                    access: access.unwrap_or(onda_mir::AccessMode::ReadWrite),
+                                },
+                                loc.clone(),
+                            );
+                            return Ok(CallArgument::SliceElement {
+                                slice: slice.value,
+                                index: Value::Constant(ScalarValue::I32(0)),
+                                bounds: BoundsMode::Unchecked,
+                            });
+                        }
+                    }
+                    Ok(argument)
                 }
                 StructFieldShape::Array { name, element, len } => {
                     let name = format!("{root}.{name}");

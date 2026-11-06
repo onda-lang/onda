@@ -11,6 +11,16 @@ pub(crate) trait CallTypeRewriter {
     fn context(&self) -> CallTypeContext<'_>;
     fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv);
 
+    fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        self.rewrite_expr(expr, env);
+    }
+
+    fn rewrite_function_resource_recipes(&mut self, function: &str, env: &CallTypeEnv) {
+        super::resource_recipes::rewrite_resource_recipes(Some(function), env, |body, env| {
+            self.rewrite_stmts(body, env);
+        });
+    }
+
     fn rewrite_stmts(&mut self, stmts: &mut [Stmt], env: &mut CallTypeEnv) -> StatementFlow {
         for stmt in stmts {
             let flow = with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
@@ -37,7 +47,7 @@ pub(crate) trait CallTypeRewriter {
                     StatementFlow::Continues
                 }
                 Stmt::Expr { expr, .. } => {
-                    self.rewrite_expr(expr, env);
+                    self.rewrite_statement_expr(expr, env);
                     StatementFlow::Continues
                 }
                 Stmt::Return { expr, .. } => {

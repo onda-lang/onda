@@ -170,7 +170,7 @@ export class MirCompiler extends MirCompilerLowering {
       const prelude = [];
       let selector = null;
       if (
-        source.data.parameter?.kind === "array_element"
+        ["array_element", "local_element"].includes(source.data.parameter?.kind)
         && staticSelector === null
       ) {
         const selectorLocal = this.allocateGeneratedLocal(
@@ -203,7 +203,7 @@ export class MirCompiler extends MirCompilerLowering {
         context,
       );
       if (
-        source.data.parameter?.kind === "array_element"
+        ["array_element", "local_element"].includes(source.data.parameter?.kind)
         && staticSelector === null
         && this.bufferChannelMetadata(
           type.data.channels,

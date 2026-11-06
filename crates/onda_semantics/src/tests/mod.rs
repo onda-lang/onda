@@ -7,6 +7,7 @@ mod contextual_consts;
 mod enums;
 mod indexed_proc_events;
 mod proc_array_borrowing;
+mod processor_projections;
 mod processor_storage;
 mod runtime_defaults;
 

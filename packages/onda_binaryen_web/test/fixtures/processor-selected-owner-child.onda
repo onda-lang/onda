@@ -1,0 +1,21 @@
+proc Voice:
+  init:
+    count: i32 = 0
+  sample:
+    count += 1
+    out1 = f32(count)
+proc Bank:
+  init:
+    voice = Voice()
+  sample:
+    out1 = 0.0
+def step(voice) -> f32:
+  return voice()
+init:
+  banks: Bank[2] = Bank()
+  selector: i32 = 1
+sample:
+  owner = banks[selector]
+  selector = 1 - selector
+  out1 = owner.voice()
+  out2 = owner.voice.out1

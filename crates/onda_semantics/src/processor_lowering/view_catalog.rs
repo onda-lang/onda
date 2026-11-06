@@ -59,7 +59,7 @@ pub(super) fn projection_resources(
     shapes: &HashMap<String, ProcLoweringShape>,
     procs: &HashMap<String, ProcessorDef>,
     options: AnalysisOptions,
-) -> Vec<(ProcessorOperationResource, ProcBufferSpec)> {
+) -> Vec<(ProcessorOperationResource, TypedBufferDecl)> {
     let child = declared.proc_name();
     let mut resources = shapes[child]
         .buffer_specs
@@ -114,11 +114,11 @@ pub(super) fn operation_resources(
     shapes: &HashMap<String, ProcLoweringShape>,
     procs: &HashMap<String, ProcessorDef>,
     options: AnalysisOptions,
-) -> Vec<(ProcessorOperationResource, ProcBufferSpec)> {
+) -> Vec<(ProcessorOperationResource, TypedBufferDecl)> {
     let captures_child = match kind {
-        ProcessorOperation::Local(name) => {
-            local_resources::captures(&procs[declared.proc_name()]).contains(name)
-        }
+        ProcessorOperation::Local(name) => shapes[declared.proc_name()]
+            .buffer_capturing_local_defs
+            .contains(name),
         _ => true,
     };
     projection_resources(declared, shapes, procs, options)
@@ -272,7 +272,7 @@ pub(super) fn projection_operations(
     operations
 }
 
-fn resource_shapes(specs: &[ProcBufferSpec], mapped: bool) -> Vec<ProcessorResourceShape> {
+fn resource_shapes(specs: &[TypedBufferDecl], mapped: bool) -> Vec<ProcessorResourceShape> {
     specs
         .iter()
         .map(|spec| ProcessorResourceShape {
@@ -287,30 +287,26 @@ fn resource_shapes(specs: &[ProcBufferSpec], mapped: bool) -> Vec<ProcessorResou
         .collect()
 }
 
-fn constructor_resources(
+pub(super) fn constructor_resources(
     owner: &ProcessorDef,
     field: &str,
     child: &ProcLoweringShape,
 ) -> Vec<Expr> {
     fn bound_arguments(arguments: &[CallArg], child: &ProcLoweringShape) -> Vec<Expr> {
-        let mut positional = arguments.iter().filter(|argument| argument.name.is_none());
-        let parameter_count = child.param_specs.len();
-        (0..parameter_count + child.buffer_specs.len())
-            .filter_map(|index| {
-                let name = if index < parameter_count {
-                    &child.param_specs[index].name
-                } else {
-                    &child.buffer_specs[index - parameter_count].name
-                };
-                let value = arguments
-                    .iter()
-                    .find(|argument| argument.name.as_deref() == Some(name.as_str()))
-                    .or_else(|| positional.next());
-                (index >= parameter_count)
-                    .then(|| value.map(|argument| argument.expr.clone()))
-                    .flatten()
-            })
-            .collect()
+        // Constructor lowering owns diagnostics; the catalog retains the same
+        // bindings as unevaluated resource recipes.
+        resolve_constructor_args(
+            arguments,
+            &child.param_specs,
+            &child.buffer_specs,
+            "processor constructor",
+            &mut Vec::new(),
+        )
+        .into_iter()
+        .skip(child.param_specs.len())
+        .flatten()
+        .cloned()
+        .collect()
     }
     owner
         .init
@@ -426,6 +422,8 @@ pub(super) fn build_view_catalog(
         })
         .collect::<HashMap<_, _>>();
     let mut catalog = ProcessorViewCatalog::default();
+    let mut declarations = Vec::new();
+    let mut operations = Vec::new();
     let mut owners = shapes.keys().collect::<Vec<_>>();
     owners.sort();
     for owner in owners {
@@ -480,30 +478,28 @@ pub(super) fn build_view_catalog(
                 ProcessorOperation::Local(def.name.clone()),
             )
         }));
-        catalog
-            .operations
-            .extend(root_operations.into_iter().map(|(name, kind)| {
-                GeneratedProcessorOperation {
-                    name,
-                    projection: root.clone(),
-                    resources: shapes[owner]
-                        .buffer_specs
-                        .iter()
-                        .enumerate()
-                        .filter(|_| match &kind {
-                            ProcessorOperation::Local(name) => {
-                                local_resources::captures(owner_proc).contains(name)
-                            }
-                            _ => true,
-                        })
-                        .map(|(resource_index, _)| ProcessorOperationResource {
-                            frame_depth: 0,
-                            resource_index,
-                        })
-                        .collect(),
-                    kind,
-                }
-            }));
+        operations.extend(root_operations.into_iter().map(|(name, kind)| {
+            GeneratedProcessorOperation {
+                name,
+                projection: root.clone(),
+                resources: shapes[owner]
+                    .buffer_specs
+                    .iter()
+                    .enumerate()
+                    .filter(|_| match &kind {
+                        ProcessorOperation::Local(name) => {
+                            shapes[owner].buffer_capturing_local_defs.contains(name)
+                        }
+                        _ => true,
+                    })
+                    .map(|(resource_index, _)| ProcessorOperationResource {
+                        frame_depth: 0,
+                        resource_index,
+                    })
+                    .collect(),
+                kind,
+            }
+        }));
         for declared in declared_projections(owner, shapes) {
             let Some(child) = procs.get(declared.proc_name()) else {
                 continue;
@@ -527,7 +523,7 @@ pub(super) fn build_view_catalog(
                     .filter(|api| proc_needs_block_hooks(api))
                     .and_then(|_| {
                         shapes[owner]
-                            .nested_proc_array_active_fields
+                            .nested_proc_active_fields
                             .get(&edge.declaration)
                     })
                     .cloned();
@@ -572,14 +568,16 @@ pub(super) fn build_view_catalog(
                     );
                     resource_types.extend(resource_shapes(&shapes[owner].buffer_specs, false));
                 }
-                catalog.declarations.push(ProcessorViewDeclaration {
+                declarations.push(ProcessorViewDeclaration {
                     owner_struct: owner.clone(),
                     field_name: edge.declaration.clone(),
                     proc_name: edge.proc_name.clone(),
                     len: edge.extent,
                     active_field: active_field.clone(),
                     environment: ProcessorEnvironmentShape {
+                        resource_sources: Vec::new(),
                         state: Some(ProcessorStateShape {
+                            local_lifecycle: false,
                             storage: ProcessorStorageShape {
                                 proc_name: owner.clone(),
                                 len: None,
@@ -601,7 +599,7 @@ pub(super) fn build_view_catalog(
                 });
             }
             for (_, name, kind) in projection_operations(&declared, child, shape) {
-                catalog.operations.push(GeneratedProcessorOperation {
+                operations.push(GeneratedProcessorOperation {
                     name,
                     projection: declared.projection.clone(),
                     resources: operation_resources(&declared, &kind, shapes, procs, options)
@@ -627,7 +625,9 @@ pub(super) fn build_view_catalog(
             .map(|shape| resource_shapes(&shape.buffer_specs, false))
             .unwrap_or_default();
         let environment = ProcessorEnvironmentShape {
+            resource_sources: Vec::new(),
             state: Some(ProcessorStateShape {
+                local_lifecycle: false,
                 storage: ProcessorStorageShape {
                     proc_name: instance.proc_name.clone(),
                     len: None,
@@ -647,7 +647,7 @@ pub(super) fn build_view_catalog(
             ProcessorViewSource {
                 shape: ProcessorViewShape {
                     proc_name: instance.proc_name.clone(),
-                    len: None,
+                    extent: crate::processor_views::ProcessorViewExtent::Scalar,
                     environments: vec![environment],
                 },
                 captures: vec![ProcessorEnvironmentCapture {
@@ -716,7 +716,9 @@ pub(super) fn build_view_catalog(
             })
             .unwrap_or_default();
         let environment = ProcessorEnvironmentShape {
+            resource_sources: Vec::new(),
             state: Some(ProcessorStateShape {
+                local_lifecycle: false,
                 storage: ProcessorStorageShape {
                     proc_name: instance.proc_name.clone(),
                     len: Some(slots.len()),
@@ -736,7 +738,7 @@ pub(super) fn build_view_catalog(
             ProcessorViewSource {
                 shape: ProcessorViewShape {
                     proc_name: instance.proc_name.clone(),
-                    len: Some(slots.len()),
+                    extent: crate::processor_views::ProcessorViewExtent::Array(slots.len()),
                     environments: vec![environment],
                 },
                 captures: vec![ProcessorEnvironmentCapture {
@@ -749,7 +751,7 @@ pub(super) fn build_view_catalog(
             },
         );
     }
-    for operation in &mut catalog.operations {
+    for operation in &mut operations {
         let Some(parameters) = signatures.get(operation.name.as_str()) else {
             operation.resources.clear();
             continue;
@@ -811,6 +813,7 @@ pub(super) fn build_view_catalog(
             .map(|(resource, _)| resource)
             .collect();
     }
+    catalog.set_definitions(declarations, operations);
     catalog
 }
 

@@ -1,0 +1,20 @@
+proc Voice:
+  buffers:
+    clip: f32
+  block:
+    sample:
+      out1 = clip[0]
+    clip[0] += 1.0
+proc Bank:
+  buffers:
+    clip: f32
+  init:
+    voices: Voice[1] = Voice(clip = clip)
+buffers:
+  clip: f32
+init:
+  bank = Bank(clip = clip)
+block:
+  copies: Voice[1] = bank.voices
+  sample:
+    out1 = copies[0]()

@@ -147,10 +147,15 @@ impl<'a> FunctionLowerer<'a> {
             length,
             source.access,
             block,
-            statement_location,
+            statement_location.clone(),
         );
 
-        let processor = self.selected_processor_view(base, Value::Local(normalized))?;
+        let processor = self.selected_processor_view(
+            base,
+            Value::Local(normalized),
+            block,
+            statement_location,
+        )?;
         let shapes = self.struct_field_shapes(&struct_name, expression.loc())?;
         let mut selected_field = false;
         for (field_index, shape) in shapes.into_iter().enumerate() {

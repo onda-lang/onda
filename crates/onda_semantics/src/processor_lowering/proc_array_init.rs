@@ -67,18 +67,51 @@ pub(super) fn top_level_setup(array: &str, len: usize, mut body: Vec<Stmt>) -> S
     }
 }
 
-pub(super) fn is_uniform(init: &Option<Vec<Expr>>, arrays: &HashSet<String>) -> bool {
+pub(super) fn per_slot_arguments(
+    params: &[ProcParamSpec],
+    buffers: &[TypedBufferDecl],
+) -> HashSet<String> {
+    params
+        .iter()
+        .filter(|param| param.is_scalar)
+        .map(|param| &param.name)
+        .chain(
+            buffers
+                .iter()
+                .filter(|buffer| !buffer.is_array)
+                .map(|buffer| &buffer.name),
+        )
+        .cloned()
+        .collect()
+}
+
+pub(super) fn is_array_argument(expression: &Expr, arrays: &HashSet<String>) -> bool {
+    match expression {
+        Expr::ArrayLiteral { .. } => true,
+        Expr::Var { name, .. } => arrays.contains(name),
+        _ => false,
+    }
+}
+
+pub(super) fn is_uniform(
+    init: &Option<Vec<Expr>>,
+    arrays: &HashSet<String>,
+    per_slot: &HashSet<String>,
+) -> bool {
     let Some(values) = init else { return true };
     let [Expr::UserCall { args, .. }] = values.as_slice() else {
         return false;
     };
-    !args.iter().any(|arg| {
-        arg.expr.walk().any(|node| match node {
-            Expr::ArrayLiteral { .. } => true,
-            Expr::Var { name, .. } => arrays.contains(name),
-            _ => false,
+    // Only scalar destinations interpret a whole array as per-slot values.
+    // Array-valued parameters and collections consume their argument intact.
+    !args
+        .iter()
+        .filter(|arg| {
+            arg.name
+                .as_ref()
+                .is_some_and(|name| per_slot.contains(name))
         })
-    })
+        .any(|arg| is_array_argument(&arg.expr, arrays))
 }
 
 pub(super) fn broadcast_setup(

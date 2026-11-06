@@ -1,5 +1,6 @@
 use super::*;
 use crate::expr_analysis::has_scalar_value_binding;
+use crate::proc_call_support::proc_array_alias_from_expr;
 
 pub(crate) fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
@@ -1810,17 +1811,10 @@ fn analyze_flow_assignment(
                 validate_fixed_data_expr(expr, scope_expr_env!(), errors);
                 match data {
                     DataType::Struct(struct_name) => {
-                        if let Some(source) = indexed_read_source(expr)
-                            .filter(|source| proc_array_roots.contains_key(source.base))
+                        if let Some(alias) =
+                            proc_array_alias_from_expr(expr, proc_array_roots, local_proc_aliases)
                         {
-                            local_proc_aliases.insert(
-                                name.clone(),
-                                ProcArrayAliasInfo {
-                                    array_base: source.base.to_owned(),
-                                    index_expr: source.index.clone(),
-                                    access: source.access,
-                                },
-                            );
+                            local_proc_aliases.insert(name.clone(), alias);
                         }
                         if add_struct_element_alias_bindings(
                             name,

@@ -76,6 +76,10 @@ impl<'a> FunctionLowerer<'a> {
             results: Vec::new(),
             locals: Vec::new(),
             bindings: HashMap::new(),
+            local_processor_lifetimes: true,
+            scoped_processors: Vec::new(),
+            scoped_processor_bindings: HashMap::new(),
+            processor_loop_scopes: Vec::new(),
             data_initialization_sites,
             next_data_id: 0,
             event_slice_parameters: Vec::new(),
@@ -128,6 +132,7 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn bind_init_all(&mut self, name: &str) {
         debug_assert!(self.runtime_globals.is_some());
+        self.local_processor_lifetimes = false;
         self.bindings.insert(name.to_owned(), Binding::InitAll);
     }
 
@@ -444,12 +449,19 @@ impl<'a> FunctionLowerer<'a> {
         let mut embedded_struct_array_parameters = Vec::new();
         let mut next_parameter_id = 0_u32;
         let processor_parameters = self.processor_capture_parameters();
-        for (name, kind) in self
+        for (name, kind, resource) in self
             .function
             .params
             .iter()
             .zip(self.function.param_kinds.iter())
-            .chain(processor_parameters.iter().map(|(name, kind)| (name, kind)))
+            .map(|(name, kind)| (name, kind, None))
+            .chain(processor_parameters.iter().map(|parameter| {
+                (
+                    &parameter.name,
+                    &parameter.kind,
+                    parameter.resource.as_ref(),
+                )
+            }))
         {
             match kind {
                 TypedFnParam::Scalar { ty } => {
@@ -571,8 +583,8 @@ impl<'a> FunctionLowerer<'a> {
                             function_location(self.function),
                         ));
                     }
-                    let type_id = if let Some(ty) = self.processor_resource_parameter_type(name)? {
-                        ty
+                    let type_id = if let Some(resource) = resource {
+                        self.processor_resource_type(resource, function_location(self.function))?
                     } else {
                         intern_buffer_span_type(
                             self.types,
@@ -1167,6 +1179,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         self.bind_event_struct_slices(&mut body)?;
         self.bind_runtime_embedded_struct_arrays(&mut body)?;
+        self.finish_processor_function_children(&mut body)?;
         // A first assignment is only an introduction when no binding owns the
         // name on entry. Runtime state is planned before init, but becomes an
         // existing owner for every function lowered after init.
@@ -1188,8 +1201,12 @@ impl<'a> FunctionLowerer<'a> {
                 .unwrap_or(1);
             self.lower_oversampled_proc_step(&meta, factor, &mut body)?;
         } else {
-            self.lower_statements(&self.function.body, &mut body, ContinueMode::None)?;
+            let flow = self.lower_statements(&self.function.body, &mut body, ContinueMode::None)?;
+            if flow == crate::def_semantics::call_types::StatementFlow::Continues {
+                self.finish_scoped_processors(0, &mut body, function_location(self.function))?;
+            }
         }
+        self.initialize_scoped_processors(&mut body);
         let source = self.source_span(function_location(self.function));
         Ok((
             onda_mir::Function {

@@ -1,0 +1,20 @@
+proc Voice:
+  init:
+    before: i32 = 0
+    after: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before * 10 + after)
+    after += 1
+init:
+  voice = Voice()
+  blocks: i32 = 0
+block:
+  blocks += 1
+  saved: f32[2] = [f32(blocks), 2.0]
+  saved_voice: Voice = voice
+  sample:
+    copy: Voice = voice
+    unused: Voice = voice
+    out1 = copy() + saved_voice() + saved[0]

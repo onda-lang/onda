@@ -1,4 +1,5 @@
 use super::*;
+use onda_mir::BoundsMode;
 
 impl FunctionEmitter<'_, '_> {
     pub(super) unsafe fn lower_buffer_value(
@@ -141,6 +142,17 @@ impl FunctionEmitter<'_, '_> {
         buffer: onda_mir::BufferRef,
     ) -> Result<LLVMValueRef, MirCodegenError> {
         let channels = self.module.program.interface.buffers[buffer.index()].channels;
+        if !matches!(channels, onda_mir::BufferChannels::Dynamic)
+            && matches!(
+                buffer,
+                onda_mir::BufferRef::ArrayElement {
+                    bounds: BoundsMode::Checked,
+                    ..
+                }
+            )
+        {
+            self.lower_buffer_ref_index(buffer)?;
+        }
         match channels {
             onda_mir::BufferChannels::Mono => Ok(LLVMConstInt(
                 LLVMInt32TypeInContext(self.module.context),
@@ -589,6 +601,13 @@ impl FunctionEmitter<'_, '_> {
             if let Some(channels) =
                 self.constant_buffer_channels(self.buffer_param_channel_kind(parameter)?)
             {
+                if let Some((selector, BoundsMode::Checked)) = parameter.selection() {
+                    let ty = parameter.ty(self.function).expect("typed buffer reference");
+                    let (_, _, _, len, _) = self.module.program.types[ty.index()]
+                        .buffer_collection()
+                        .expect("selected buffer collection");
+                    self.lower_fixed_index(selector, len as usize, BoundsMode::Checked)?;
+                }
                 return Ok(channels);
             }
         }

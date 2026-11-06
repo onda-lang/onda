@@ -1,0 +1,32 @@
+proc Voice:
+  init:
+    counter: i32 = 0
+  sample:
+    counter += 1
+    out1 = f32(counter)
+proc Bank:
+  init:
+    voice = Voice()
+  sample:
+    out1 = voice()
+proc Rack:
+  init:
+    bank = Bank()
+  sample:
+    out1 = bank()
+def step(bank: Bank) -> f32:
+  return bank.voice()
+def cached(bank: Bank) -> f32:
+  return bank.voice.out1
+def step_deep(rack: Rack) -> f32:
+  return step(rack.bank)
+def cached_deep(rack: Rack) -> f32:
+  return rack.bank.voice.out1
+init:
+  bank = Bank()
+  rack = Rack()
+sample:
+  out1 = step(bank)
+  out2 = cached(bank) + cached(bank)
+  out3 = step_deep(rack)
+  out4 = cached_deep(rack) * 11.0

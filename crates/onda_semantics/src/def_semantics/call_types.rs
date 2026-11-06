@@ -1,4 +1,6 @@
+mod resource_recipes;
 mod scopes;
+pub(crate) use resource_recipes::rewrite_root_resource_recipes;
 pub(crate) use scopes::CallTypeRewriter;
 
 use std::collections::{HashMap, HashSet};
@@ -8,6 +10,7 @@ use crate::*;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallTypeEnv {
     owner_type_params: HashSet<String>,
+    pub(crate) local_processor_lifetimes: bool,
     pub(crate) sample_options: Option<AnalysisOptions>,
     pub(crate) processor_apis: std::rc::Rc<HashMap<String, crate::proc_state_rewrite::ProcApi>>,
     /// Processor layout is declaration metadata, shared by every lexical scope.
@@ -15,6 +18,9 @@ pub(crate) struct CallTypeEnv {
     pub(crate) processor_views:
         std::rc::Rc<std::cell::RefCell<crate::processor_views::ProcessorViewCatalog>>,
     pub(crate) processor_bindings: HashMap<String, crate::processor_views::ProcessorViewShape>,
+    /// Lexically introduced processor values use complete-view call lowering.
+    /// Global constructors and function parameters have their ordinary ABI plan.
+    lexical_processor_bindings: HashSet<String>,
     shadowed_processor_roots: HashSet<String>,
     /// Lexical bindings whose concrete semantic type still depends on a call
     /// site or an unresolved expression. Keeping existence separate from type
@@ -112,14 +118,33 @@ pub(crate) fn statement_flow(stmt: &Stmt) -> StatementFlow {
 /// terminating branch contributes no constraints there because execution can
 /// only arrive through the other branch.
 pub(crate) fn join_branch_envs(
-    mut then_env: CallTypeEnv,
+    then_env: CallTypeEnv,
     then_flow: StatementFlow,
     else_env: CallTypeEnv,
     else_flow: StatementFlow,
 ) -> (CallTypeEnv, StatementFlow) {
+    join_reachable_scopes(
+        then_env,
+        then_flow,
+        else_env,
+        else_flow,
+        |then_env, else_env| {
+            then_env.intersect_with(&else_env);
+        },
+    )
+}
+
+/// Only paths reaching the continuation contribute bindings to its scope.
+pub(crate) fn join_reachable_scopes<T>(
+    mut then_env: T,
+    then_flow: StatementFlow,
+    else_env: T,
+    else_flow: StatementFlow,
+    merge: impl FnOnce(&mut T, T),
+) -> (T, StatementFlow) {
     match (then_flow, else_flow) {
         (StatementFlow::Continues, StatementFlow::Continues) => {
-            then_env.intersect_with(&else_env);
+            merge(&mut then_env, else_env);
             (then_env, StatementFlow::Continues)
         }
         (StatementFlow::Continues, StatementFlow::Terminates) => {
@@ -158,10 +183,61 @@ impl CallArrayType {
 }
 
 impl CallTypeEnv {
+    pub(crate) fn is_lexical_processor_binding(&self, name: &str) -> bool {
+        self.lexical_processor_bindings.contains(name)
+    }
+
     pub(crate) fn processor_view_shape(
         &self,
         expression: &Expr,
     ) -> Option<crate::processor_views::ProcessorViewShape> {
+        let elements = match expression {
+            Expr::ArrayLiteral { values, .. } => Some(values.as_slice()),
+            Expr::ArrayCtor {
+                init,
+                init_is_value: false,
+                ..
+            } => init.as_deref(),
+            _ => None,
+        };
+        if let Some(elements) = elements {
+            let sources = elements
+                .iter()
+                .map(|value| self.processor_view_shape(value))
+                .collect::<Option<Vec<_>>>()?;
+            return crate::processor_views::ProcessorViewShape::owned_elements(&sources)
+                .map(|shape| shape.with_local_lifecycle(self.local_processor_lifetimes));
+        }
+        if let Expr::ArrayCtor {
+            spec,
+            init,
+            init_is_value,
+            ..
+        } = expression
+        {
+            if let crate::array_semantics::ArrayInitializer::Value(source) =
+                crate::array_semantics::ArrayInitializer::new(init.as_deref(), *init_is_value)
+            {
+                let shape = self.processor_view_shape(source)?;
+                return Some(
+                    shape
+                        .owned_array(const_positive_usize_for_call_type(&spec.size)?)
+                        .with_local_lifecycle(self.local_processor_lifetimes),
+                );
+            }
+            return None;
+        }
+        if let Expr::Slice {
+            base,
+            selector: None,
+            channel: None,
+            ..
+        } = expression
+        {
+            return self
+                .processor_view_shape(&Expr::var(base))
+                .map(|shape| shape.sliced());
+        }
         if let Some(indexed) = crate::indexed_read_source(expression) {
             return self
                 .processor_view_shape(&Expr::var(indexed.base))
@@ -202,7 +278,7 @@ impl CallTypeEnv {
         let owner_struct = self.struct_instances.get(owner).cloned().or_else(|| {
             owner_shape
                 .as_ref()
-                .filter(|shape| shape.len.is_none())
+                .filter(|shape| !shape.is_array())
                 .map(|shape| shape.proc_name.clone())
         });
         if let Some(owner_struct) =
@@ -234,7 +310,9 @@ impl CallTypeEnv {
                 let mut shape = ProcessorViewShape::plain(proc_name.clone(), None);
                 if !api.buffers.is_empty() {
                     shape.environments.push(ProcessorEnvironmentShape {
+                        resource_sources: Vec::new(),
                         state: Some(ProcessorStateShape {
+                            local_lifecycle: false,
                             storage: ProcessorStorageShape {
                                 proc_name: proc_name.clone(),
                                 len: None,
@@ -274,9 +352,11 @@ impl CallTypeEnv {
                 use crate::processor_views::*;
                 return Some(ProcessorViewShape {
                     proc_name: proc_name.clone(),
-                    len: Some(*len),
+                    extent: ProcessorViewExtent::Array(*len),
                     environments: vec![ProcessorEnvironmentShape {
+                        resource_sources: Vec::new(),
                         state: Some(ProcessorStateShape {
+                            local_lifecycle: false,
                             storage: ProcessorStorageShape {
                                 proc_name: proc_name.clone(),
                                 len: Some(*len),
@@ -315,6 +395,13 @@ impl CallTypeEnv {
                 *shape = joined;
             }
         }
+        self.lexical_processor_bindings.extend(
+            other
+                .lexical_processor_bindings
+                .iter()
+                .filter(|name| self.processor_bindings.contains_key(*name))
+                .cloned(),
+        );
     }
 
     pub(crate) fn fixed_array_length_call(&self, expr: &Expr) -> Option<i32> {
@@ -362,6 +449,7 @@ impl CallTypeEnv {
 
     pub(crate) fn enter_function(&mut self, type_params: &[String]) {
         self.set_owner_type_params(type_params);
+        self.local_processor_lifetimes = true;
     }
 
     /// Binds a concrete function parameter in the shared call-typing
@@ -473,6 +561,8 @@ impl CallTypeEnv {
     pub(crate) fn shadow_binding(&mut self, name: &str) {
         self.shadowed_processor_roots.insert(name.to_owned());
         crate::shadow_rooted_entries(&mut self.processor_bindings, name);
+        self.lexical_processor_bindings
+            .retain(|binding| !crate::path_is_within_root(binding, name));
         self.unresolved_bindings
             .retain(|binding| !crate::path_is_within_root(binding, name));
         crate::shadow_rooted_entries(&mut self.scalar_types, name);
@@ -505,6 +595,10 @@ impl CallTypeEnv {
             *shape = joined;
             true
         });
+        self.lexical_processor_bindings
+            .extend(other.lexical_processor_bindings.iter().cloned());
+        self.lexical_processor_bindings
+            .retain(|name| self.processor_bindings.contains_key(name));
         let mut common_bindings = std::mem::take(&mut self.unresolved_bindings);
         common_bindings.retain(|name| other.has_binding(name));
         let mut retain_or_mark_unresolved = |name: &str, resolved: bool| {
@@ -722,7 +816,7 @@ pub(crate) fn infer_struct_symbol_type(
         .cloned()
         .or_else(|| {
             env.processor_view_shape(&Expr::var(name))
-                .filter(|shape| shape.len.is_none())
+                .filter(|shape| !shape.is_array())
                 .map(|shape| shape.proc_name)
         })
         .or_else(|| {
@@ -1171,14 +1265,38 @@ pub(crate) fn update_call_type_env_after_assign(
     env: &mut CallTypeEnv,
     context: CallTypeContext<'_>,
 ) {
+    let owns_storage = crate::stmt_analysis::data_declaration_owns_storage(
+        decl_ty,
+        decl_ty.is_some() || generic_decl_ty.is_some(),
+    );
     let processor_view = match target {
         AssignTarget::Var(name) if has_semantic_binding(name, env, context) => {
             env.processor_view_shape(&Expr::var(name))
         }
-        _ => env.processor_view_shape(expr),
+        _ => env.processor_view_shape(expr).map(|shape| {
+            if owns_storage {
+                shape
+                    .owned()
+                    .with_local_lifecycle(env.local_processor_lifetimes)
+            } else {
+                shape
+            }
+        }),
     };
     update_call_type_env_after_assign_impl(target, decl_ty, generic_decl_ty, expr, env, context);
     if let (AssignTarget::Var(name), Some(shape)) = (target, processor_view) {
+        if !env.processor_views.borrow().roots.contains_key(name) {
+            env.lexical_processor_bindings.insert(name.clone());
+        }
+        if shape.is_array() {
+            env.array_types.insert(
+                name.clone(),
+                CallArrayType::nominal(shape.proc_name.clone(), shape.array_len()),
+            );
+        } else {
+            env.struct_instances
+                .insert(name.clone(), shape.proc_name.clone());
+        }
         env.processor_bindings.insert(name.clone(), shape);
     }
 }

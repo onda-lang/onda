@@ -145,8 +145,7 @@ pub use pipeline::{
 use port_coercion::*;
 use proc_call_rewrite::*;
 use proc_call_support::{
-    rewrite_proc_alias_calls_for_validation, rewrite_proc_alias_calls_in_expr, split_dot_path,
-    ProcArrayAliasInfo,
+    rewrite_proc_alias_calls_for_validation, split_dot_path, ProcArrayAliasInfo,
 };
 use proc_resolution::*;
 use proc_state_rewrite::*;

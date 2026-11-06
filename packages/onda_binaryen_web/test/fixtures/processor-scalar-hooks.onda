@@ -1,0 +1,20 @@
+proc Voice:
+  init:
+    before: i32 = 0
+    after: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before * 10 + after)
+    after += 1
+def step(voice) -> f32:
+  return voice()
+proc Bank:
+  init:
+    voice = Voice()
+  sample:
+    out1 = voice()
+init:
+  bank = Bank()
+sample:
+  out1 = step(bank.voice)

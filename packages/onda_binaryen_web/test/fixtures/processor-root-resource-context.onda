@@ -1,0 +1,17 @@
+proc Voice:
+  buffers:
+    clip: f32
+  sample:
+    out1 = clip[0]
+def choose(index: i32) -> i32:
+  return index + i32(SR / 48000.0) - 1
+def step(voice) -> f32:
+  return voice()
+buffers:
+  clips: f32 {2}
+init:
+  index: i32 = 0
+  voices: Voice[2] = Voice(clip = clips[choose(index)])
+sample 2:
+  out1 = step(voices[0])
+  out2 = f32(choose(index))

@@ -385,6 +385,13 @@ steps. The final 12-case native check produces byte-identical objects to the com
 removed experiments; it establishes preservation of code generation, not an additional speedup.
 Historical compile-scaling, Wasm and FFT results are labeled separately from that cleanup check.
 
+The [2026-11-06 loop-peeling results](results/2026-11-06-loop-peeling.json) record callback-bank
+speedups and the direct array recurrence that remained scalar. The subsequent
+[predicate-folding results](results/2026-11-06-predicate-folding.json) measure the additional
+counted-loop proof that exposes vectorization in that recurrence, including varied-frequency
+arrays, unchanged processor-bank controls, bit-exact comparisons, and worker identities. These
+are sequential optimization baselines; their before/after ratios are not interchangeable.
+
 `metadata.json` records settings, compiler binary hash, harness hashes, CPU information, platform,
 Git revision and whether the working tree is dirty. Wasm runs also record backend source and
 package-lock hashes, Node and V8 versions. Result rows include MIR/LLVM/Wasm artifact hashes.

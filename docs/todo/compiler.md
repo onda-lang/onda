@@ -2,11 +2,15 @@
 
 ## Processor lowering and compile-time scalability
 
-The convolution project is the current stress case: it contains two convolver instances, four FFT
-sizes, large flattened state, and more than two hundred specialized MIR functions. Some of that work
-is inherent, but the compiler currently constructs uniform flattened helper ABIs and then removes
-most of their parameters. Keep the existing MIR unused-parameter pass as a correctness backstop,
-while moving avoidable work earlier in the pipeline.
+Processor arrays now use columnar field tensors and shared implementations specialized by
+processor declaration and context shape. Runtime views carry storage roots and coordinates;
+helper signatures scale with live fields rather than array capacity. MIR dead-value cleanup and
+unused-parameter pruning already remove dead scalar parameter materializations and converge
+across forwarding chains while retaining failing argument preparation.
+
+The convolution project remains a compile-time stress case with large state and many specialized
+functions. Further work should reduce unnecessary construction before the existing MIR cleanup,
+using fresh measurements rather than treating the former per-slot expansion as a current cost.
 
 - Add call-transitive, leaf-level state-use analysis during processor ABI planning.
   - Emit only the scalar/array leaves each generated helper transitively accesses.
@@ -17,23 +21,9 @@ while moving avoidable work earlier in the pipeline.
   - Replace its fixed-point full scans with a caller worklist if profiling finds pathological deep
     forwarding chains.
 
-- Make processor specializations independent of instance paths where possible.
-  - Compile structurally identical instances, such as left/right convolvers or repeated voices,
-    against one shared implementation.
-  - Pass an explicit instance-state view instead of baking physical state names into each helper.
-  - Preserve specialization by processor type, compile context, and genuinely distinct constants.
-
-- Make MIR unused-parameter pruning see through scalar parameter materialization.
-  - Lowering currently emits a `local = load @parameter` assignment for every scalar and tuple
-    component, so the load itself makes an otherwise unused parameter appear live.
-  - Remove the canonical materialization together with the parameter when its destination local is
-    otherwise dead, including after forwarding arguments disappear in a later pruning round.
-  - Continue preserving source argument evaluation whenever preparing an argument can fail or has
-    observable effects.
-
 - Evaluate compact typed state-region references in MIR.
-  - Represent a processor or aggregate state region with one reference plus validated field access,
-    rather than hundreds of independent scalar/array reference parameters.
+  - Compare a region reference with the current one-reference-per-live-field ABI for declarations
+    with many distinct fields. Array capacity no longer expands that ABI.
   - Define field-level aliasing, mutability, range facts, serialization, and backend lowering before
     changing the MIR contract.
   - Measure this against leaf-pruned flat ABIs first; do not add aggregate machinery unless it
@@ -127,9 +117,17 @@ difference in work.
     state and effect ordering on failure.
 
 - Expose independent work in processor callback loops through shared MIR proofs.
-  - The reported callback bank remains conservative about vectorization despite contiguous state
-    tensors and explicit owner coordinates. Analyze which iterations affect shared owner state and
-    whether separating or peeling those iterations leaves provably independent work.
+  - Native scheduling now peels a distinguished first iteration using generic MIR predicate
+    summaries through helpers. This exposes vectorization in the indexed callback banks without
+    reordering their effects. Extend only with proofs and measurements for predicates selecting
+    other iterations, dynamic bounds, and more general callback dependencies.
+  - Proven first-index comparisons in the remainder now fold using the counted-loop legality proof
+    and conservative local-copy tracking. This also addresses the direct array recurrence that
+    stayed scalar in the [initial peeling measurements](../../scripts/bench/results/2026-11-06-loop-peeling.json);
+    [paired folding measurements](../../scripts/bench/results/2026-11-06-predicate-folding.json)
+    cover that case and unchanged processor-bank controls.
+    Further propagation through helper boundaries needs its own proof; profitability summaries
+    cannot substitute for value identity or memory independence.
   - Preserve synchronous callback order, overlapping views, checked failures and the ordered
     floating-point reduction. Keep uncertain effects on the original execution path.
   - Share reusable effect/dependence facts in MIR; evaluate vectorization and target costs in the

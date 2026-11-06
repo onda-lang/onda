@@ -195,12 +195,12 @@ fn infer_mono_arg_key(
             _ => None,
         };
         let matching_extent_kind = match param_ty {
-            Some(FnParamType::Struct(_)) => shape.len.is_none(),
+            Some(FnParamType::Struct(_)) => !shape.is_array(),
             Some(
                 FnParamType::Array(_)
                 | FnParamType::ArrayGeneric(_)
                 | FnParamType::SizedArray { .. },
-            ) => shape.len.is_some(),
+            ) => shape.is_array(),
             _ => true,
         };
         if shape.requires_environment()
@@ -588,15 +588,21 @@ fn generate_mono_def(
                 }
             }
             MonoParamKey::ResolvedProcessorView(shape, _) => {
-                let ty = if let Some(len) = shape.len {
+                let declared_size =
+                    match original.params.get(idx).and_then(|param| param.ty.as_ref()) {
+                        Some(FnParamType::SizedArray { size, .. }) => Some(size.clone()),
+                        _ => None,
+                    };
+                let ty = if let Some(size) =
+                    declared_size.or_else(|| shape.array_len().map(|len| Expr::int(len as i64)))
+                {
                     FnParamType::SizedArray {
                         elem: None,
                         generic_name: Some(shape.proc_name.clone()),
-                        size: match original.params.get(idx).and_then(|param| param.ty.as_ref()) {
-                            Some(FnParamType::SizedArray { size, .. }) => size.clone(),
-                            _ => Expr::int(len as i64),
-                        },
+                        size,
                     }
+                } else if shape.is_array() {
+                    FnParamType::ArrayGeneric(shape.proc_name.clone())
                 } else {
                     FnParamType::Struct(shape.proc_name.clone())
                 };
@@ -1144,41 +1150,7 @@ pub(crate) fn monomorphize_calls_in_function(
         proc_types,
         return_type_env: env,
     };
-    let mut local_env = env.clone();
-    local_env.enter_function(&type_params);
-
-    for param in &mut def.params {
-        local_env.bind_function_param(param, &type_params);
-        if let Some(default) = &mut param.default {
-            let mut statement = vec![Stmt::Expr {
-                loc: default.loc().span(),
-                expr: default.clone(),
-            }];
-            monomorphize_calls_in_stmts(
-                &mut statement,
-                &local_env,
-                mono_eligible,
-                fn_signatures,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            if let Stmt::Expr { expr, .. } = &mut statement[0] {
-                *default = std::mem::replace(expr, Expr::int(0));
-            }
-        }
-    }
-
-    local_env.bind_processor_function_params(&def.name);
-
-    monomorphize_calls_in_stmts(
-        &mut def.body,
-        &local_env,
+    let mut rewriter = MonoRewriter {
         mono_eligible,
         fn_signatures,
         generic_templates,
@@ -1189,7 +1161,21 @@ pub(crate) fn monomorphize_calls_in_function(
         return_types,
         errors,
         owner,
-    );
+    };
+    let mut local_env = env.clone();
+    local_env.enter_function(&type_params);
+
+    for param in &mut def.params {
+        local_env.bind_function_param(param, &type_params);
+        if let Some(default) = &mut param.default {
+            rewriter.rewrite_expr(default, &local_env);
+        }
+    }
+
+    local_env.bind_processor_function_params(&def.name);
+
+    rewriter.rewrite_function_resource_recipes(&def.name, &local_env);
+    rewriter.rewrite_stmts(&mut def.body, &mut local_env);
 }
 
 struct MonoRewriter<'a> {
@@ -1206,6 +1192,10 @@ struct MonoRewriter<'a> {
 }
 
 impl CallTypeRewriter for MonoRewriter<'_> {
+    fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        crate::proc_call_rewrite::rewrite_processor_projection_statement(expr, env, self.errors);
+        self.rewrite_expr(expr, env);
+    }
     fn context(&self) -> CallTypeContext<'_> {
         CallTypeContext {
             return_types: self.return_types,
@@ -1213,6 +1203,7 @@ impl CallTypeRewriter for MonoRewriter<'_> {
         }
     }
     fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        crate::proc_call_rewrite::rewrite_processor_projection_calls(expr, env, self.errors);
         monomorphize_calls_in_expr(
             expr,
             env,

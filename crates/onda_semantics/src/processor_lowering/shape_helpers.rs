@@ -1,17 +1,22 @@
 use super::*;
-use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
+use crate::proc_call_support::{proc_array_alias_from_expr, rewrite_proc_alias_call_sites_in_expr};
 
 pub(crate) fn proc_name_for_lowered_proc_call<'a>(
     name: &str,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<&'a str> {
     let name = crate::compile_context::lowered_function_origin(name);
-    proc_api.iter().find_map(|(proc_name, api)| {
-        (name == format!("{proc_name}{PROC_STEP_FN_SUFFIX}")
-            || (0..api.outputs.names.len())
-                .any(|index| name == format!("{proc_name}{PROC_CALL_OUT_FN_PREFIX}{index}")))
-        .then_some(proc_name.as_str())
-    })
+    let proc_name = name.strip_suffix(PROC_STEP_FN_SUFFIX).or_else(|| {
+        let (owner, index) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)?;
+        let ordinal = index.parse::<usize>().ok()?;
+        (ordinal < proc_api.get(owner)?.outputs.names.len()
+            && !index.starts_with('+')
+            && (index == "0" || !index.starts_with('0')))
+        .then_some(owner)
+    })?;
+    proc_api
+        .get_key_value(proc_name)
+        .map(|(name, _)| name.as_str())
 }
 
 fn nested_proc_operator_timing(
@@ -306,7 +311,12 @@ fn collect_non_sample_proc_operator_diags_from_expr(
     out: &mut Vec<(DiagCtx, OutputTiming)>,
 ) {
     let mut rewritten = expr.clone();
-    rewrite_proc_alias_call_sites_in_expr(&mut rewritten, aliases);
+    rewrite_proc_alias_call_sites_in_expr(
+        &mut rewritten,
+        aliases,
+        nested_instances,
+        proc_array_slots,
+    );
     let mut scratch = Vec::<Diagnostic>::new();
     rewrite_nested_proc_calls_in_expr(
         &mut rewritten,
@@ -351,7 +361,7 @@ fn collect_non_sample_proc_operator_diags_from_expr_stmt(
         expr: expr.clone(),
     };
     if let Stmt::Expr { expr, .. } = &mut rewritten_stmt {
-        rewrite_proc_alias_call_sites_in_expr(expr, aliases);
+        rewrite_proc_alias_call_sites_in_expr(expr, aliases, nested_instances, proc_array_slots);
     }
     let mut scratch = Vec::<Diagnostic>::new();
     rewrite_nested_proc_calls_in_stmt(
@@ -391,26 +401,6 @@ fn collect_non_sample_proc_operator_diags_from_target(
             out,
         );
     });
-}
-
-fn proc_alias_from_expr(
-    expr: &Expr,
-    proc_array_slots: &ProcArrayDeclarations,
-    aliases: &HashMap<String, ProcArrayAliasInfo>,
-) -> Option<ProcArrayAliasInfo> {
-    if let Some(source) = indexed_read_source(expr) {
-        return proc_array_slots
-            .contains_key(source.base)
-            .then(|| ProcArrayAliasInfo {
-                array_base: source.base.to_owned(),
-                index_expr: source.index.clone(),
-                access: source.access,
-            });
-    }
-    match expr {
-        Expr::Var { name, .. } => aliases.get(name).cloned(),
-        _ => None,
-    }
 }
 
 fn merge_proc_aliases_union(
@@ -454,7 +444,8 @@ fn collect_non_sample_proc_operator_diags_from_stmts(
                     out,
                 );
                 if let AssignTarget::Var(name) = target {
-                    if let Some(alias) = proc_alias_from_expr(expr, proc_array_slots, aliases) {
+                    if let Some(alias) = proc_array_alias_from_expr(expr, proc_array_slots, aliases)
+                    {
                         aliases.insert(name.clone(), alias);
                     } else {
                         aliases.remove(name);
@@ -1041,32 +1032,6 @@ pub(super) fn compute_effective_proc_block_flags(
     cache
 }
 
-pub(super) fn infer_primary_output_type_from_processor(proc: &ProcessorDef) -> PrimitiveType {
-    let inferred_io = infer_numbered_io_from_sample(&proc.sample);
-    let inferred_names = infer_numbered_names_from_proc(proc);
-    let inferred_out_max = match proc.outs_timing {
-        OutputTiming::Sample => inferred_io.max_out,
-        OutputTiming::Block => inferred_names.max_kout,
-    };
-    let out_ports = normalize_numbered_port_decls(
-        &proc.outs,
-        proc_output_numbered_prefix(proc),
-        inferred_out_max,
-    );
-    let Some(first_out) = out_ports.first() else {
-        return PrimitiveType::F32;
-    };
-    match first_out.ty.as_ref() {
-        Some(DeclType::Scalar(ty)) => *ty,
-        Some(DeclType::Array { elem, .. }) => *elem,
-        Some(DeclType::Tuple(_))
-        | Some(DeclType::Generic(_))
-        | Some(DeclType::Slice(_))
-        | Some(DeclType::ArrayGeneric { .. })
-        | None => PrimitiveType::F32,
-    }
-}
-
 pub(super) fn struct_defs_for_scalar_expr_inference(
     struct_defs: &HashMap<String, onda_frontend::StructDef>,
 ) -> HashMap<String, Vec<TypedStructField>> {
@@ -1111,7 +1076,7 @@ pub(super) fn array_infos_from_param_specs(
 ) -> HashMap<String, TypedArrayInfo> {
     param_specs
         .iter()
-        .filter(|spec| spec.slots.len() > 1)
+        .filter(|spec| !spec.is_scalar)
         .map(|spec| {
             let elem_ty = spec
                 .slots
@@ -1142,7 +1107,7 @@ fn proc_bound_param_hook_calls(param_specs: &[ProcParamSpec]) -> Vec<String> {
     param_specs
         .iter()
         .filter_map(|spec| {
-            if spec.slots.len() == 1 && spec.slots[0].name == spec.name {
+            if spec.is_scalar {
                 spec.slots[0].bind.clone()
             } else {
                 None
@@ -1225,6 +1190,7 @@ struct HookSafeCtx<'a> {
 
 #[derive(Debug, Default)]
 struct ChildProcSurface {
+    constructor_per_slot: HashSet<String>,
     params: HashSet<String>,
     param_arrays: HashSet<String>,
     inputs: HashSet<String>,
@@ -1274,57 +1240,34 @@ fn build_child_proc_surfaces(
     for proc in proc_defs_by_name.values() {
         let mut scratch_errors = Vec::<Diagnostic>::new();
         let proc_options = proc_options_for_shape(proc, options);
-        let inferred_io = infer_numbered_io_from_sample(&proc.sample);
-        let inferred_names = infer_numbered_names_from_proc(proc);
-        let ins_ports = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
-        let out_inferred_max = match proc.outs_timing {
-            OutputTiming::Sample => inferred_io.max_out,
-            OutputTiming::Block => inferred_names.max_kout,
-        };
-        let outs_ports = normalize_numbered_port_decls(
-            &proc.outs,
-            proc_output_numbered_prefix(proc),
-            out_inferred_max,
-        );
-        let params =
-            normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
-        let (ins, _, _, in_array_slots) = expand_proc_port_specs(
-            &proc.name,
-            &ins_ports,
-            "input",
-            proc_options,
-            const_arrays,
-            &mut scratch_errors,
-        );
-        let (outs, _, _, out_array_slots) = expand_proc_port_specs(
-            &proc.name,
-            &outs_ports,
-            "output",
-            proc_options,
-            const_arrays,
-            &mut scratch_errors,
-        );
-        let (param_specs, _) = expand_proc_param_specs(
-            &proc.name,
-            &params,
-            proc_options,
-            const_arrays,
-            &mut scratch_errors,
-        );
+        let declarations =
+            prepare_proc_declarations(proc, proc_options, const_arrays, &mut scratch_errors);
 
-        let mut surface = ChildProcSurface::default();
-        surface.inputs.extend(ins);
-        surface.inputs.extend(in_array_slots.keys().cloned());
-        surface.input_arrays.extend(in_array_slots.keys().cloned());
+        let mut surface = ChildProcSurface {
+            constructor_per_slot: proc_array_init::per_slot_arguments(
+                &declarations.params,
+                &declarations.buffers,
+            ),
+            ..Default::default()
+        };
+        surface.inputs.extend(declarations.inputs.slots);
+        surface
+            .inputs
+            .extend(declarations.inputs.arrays.keys().cloned());
+        surface
+            .input_arrays
+            .extend(declarations.inputs.arrays.into_keys());
         if surface.inputs.len() > 1 {
             surface.inputs.insert("ins".to_owned());
             surface.input_arrays.insert("ins".to_owned());
         }
-        surface.outputs.extend(outs);
-        surface.outputs.extend(out_array_slots.keys().cloned());
+        surface.outputs.extend(declarations.outputs.slots);
+        surface
+            .outputs
+            .extend(declarations.outputs.arrays.keys().cloned());
         surface
             .output_arrays
-            .extend(out_array_slots.keys().cloned());
+            .extend(declarations.outputs.arrays.into_keys());
         if surface.outputs.len() > 1 {
             match proc.outs_timing {
                 OutputTiming::Sample => {
@@ -1337,7 +1280,7 @@ fn build_child_proc_surfaces(
                 }
             }
         }
-        for spec in &param_specs {
+        for spec in &declarations.params {
             if spec.is_private() {
                 continue;
             }
@@ -1345,11 +1288,12 @@ fn build_child_proc_surfaces(
             surface
                 .params
                 .extend(spec.slots.iter().map(|slot| slot.name.clone()));
-            if spec.slots.len() > 1 {
+            if !spec.is_scalar {
                 surface.param_arrays.insert(spec.name.clone());
             }
         }
-        if param_specs
+        if declarations
+            .params
             .iter()
             .filter(|spec| !spec.is_private())
             .map(|spec| spec.slots.len())
@@ -2579,41 +2523,30 @@ pub(super) fn compute_proc_shape(
     const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
 ) -> ProcBaseShape {
-    let struct_symbols = struct_defs.keys().cloned().collect::<HashSet<_>>();
     let proc_options = proc_runtime_analysis_options(options, sample_oversample_factor);
     let child_proc_surfaces = build_child_proc_surfaces(proc_defs_by_name, options, const_arrays);
     check_local_param_duplicates(&proc.params, errors);
-    let inferred_io = infer_numbered_io_from_sample(&proc.sample);
-    let inferred_names = infer_numbered_names_from_proc(proc);
-    let ins_ports = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
-    let out_inferred_max = match proc.outs_timing {
-        OutputTiming::Sample => inferred_io.max_out,
-        OutputTiming::Block => inferred_names.max_kout,
-    };
-    let out_ports = normalize_numbered_port_decls(
-        &proc.outs,
-        proc_output_numbered_prefix(proc),
-        out_inferred_max,
-    );
-    let params = normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
-    let (ins, in_types, in_ports, mut in_array_slots) = expand_proc_port_specs(
-        &proc.name,
-        &ins_ports,
-        "input",
-        proc_options,
-        const_arrays,
-        errors,
-    );
-    let (outs, out_types, _out_ports, out_array_slots) = expand_proc_port_specs(
-        &proc.name,
-        &out_ports,
-        "output",
-        proc_options,
-        const_arrays,
-        errors,
-    );
-    let (param_specs, mut field_array_slots) =
-        expand_proc_param_specs(&proc.name, &params, proc_options, const_arrays, errors);
+    let ProcDeclarations {
+        inputs:
+            ProcPortDeclarations {
+                slots: ins,
+                types: in_types,
+                specs: in_ports,
+                arrays: mut in_array_slots,
+                ..
+            },
+        outputs:
+            ProcPortDeclarations {
+                slots: outs,
+                types: out_types,
+                specs: out_ports,
+                arrays: out_array_slots,
+                ..
+            },
+        params: param_specs,
+        param_arrays: mut field_array_slots,
+        buffers: buffer_specs,
+    } = prepare_proc_declarations(proc, proc_options, const_arrays, errors);
     let port_index_params = uniform_port_index_info_from_types(
         true,
         param_specs.iter().map(|spec| spec.slots.len()).sum(),
@@ -2633,16 +2566,6 @@ pub(super) fn compute_proc_shape(
     let proc_input_arrays = array_infos_from_slot_map(&in_array_slots, &in_types);
     let proc_output_arrays = array_infos_from_slot_map(&out_array_slots, &out_types);
     let proc_param_arrays = array_infos_from_param_specs(&param_specs);
-    let buffer_specs = coerce_buffers(&proc.buffers, proc_options, errors)
-        .into_iter()
-        .map(|b| ProcBufferSpec {
-            name: b.name,
-            elem_ty: b.elem_ty,
-            channels: b.channels,
-            array_len: b.array_len,
-            is_array: b.is_array,
-        })
-        .collect::<Vec<_>>();
     for (name, slots) in out_array_slots {
         field_array_slots.insert(name, slots);
     }
@@ -2823,51 +2746,23 @@ pub(super) fn compute_proc_shape(
             );
         }
     }
-    for buffer in &buffer_specs {
-        let channels = match buffer.channels {
-            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
-            TypedBufferChannels::Static(ch) => BufferChannelInfo::Static(ch),
-            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
-        };
-        insert_declared_symbol(
-            &mut state_type_hints,
-            &mut declared_symbols,
-            buffer.name.clone(),
-            DeclaredSymbolInfo::Buffer {
-                elem_ty: buffer.elem_ty,
-                channels,
-                array_len: buffer.array_len,
-                is_array: buffer.is_array,
-            },
-        );
-    }
-
-    let proc_ns = namespace_of_symbol(&proc.name);
-    let proc_locals = HashSet::<String>::new();
-    let proc_label = format!("processor '{}'", proc.name);
-    let init_default_ty =
-        resolve_init_default_ty(proc.init.default_ty.as_ref(), &proc_label, errors);
-
+    bind_proc_buffer_symbols(&buffer_specs, &mut declared_symbols);
     let fn_signatures = fn_signatures_full.clone();
-
-    // Unified init scope: use analyze_init_stmt
-    let proc_resolution = Some(ProcResolutionCtx {
-        owner_proc_name: &proc.name,
-        reserved: &reserved,
-        current_ns: &proc_ns,
-        proc_symbols,
-        struct_symbols: &struct_symbols,
-        frontend_struct_defs: struct_defs,
-        ctor_symbols,
-        in_init_scope: true,
-    });
-    debug_assert!(
-        proc_resolution.is_some(),
-        "proc init analysis requires ProcResolutionCtx"
+    let mut init_local_array_aliases = HashMap::new();
+    seed_top_level_array_aliases(&mut init_local_array_aliases, &proc_param_arrays, false);
+    seed_top_level_array_aliases(&mut init_local_array_aliases, const_arrays, false);
+    let mut init_st = InitAnalysisState::new(
+        HashSet::new(),
+        HashMap::new(),
+        init_local_array_aliases,
+        declared_symbols,
+        state_type_hints.clone(),
     );
-    let init_ctx = InitAnalysisCtx {
-        context_label: &proc_label,
-        common: ScopeAnalysisCtx {
+    // Seed known_scalars with reserved names so they're visible for decl-order checks
+    init_st.known_scalars.extend(reserved.iter().cloned());
+    analyze_processor_init(
+        proc,
+        ScopeAnalysisCtx {
             policy: ScopePolicy::Init,
             input_names: &ins_names,
             output_names: &out_names,
@@ -2886,23 +2781,16 @@ pub(super) fn compute_proc_shape(
             port_index_kins: None,
             proc_event_names: &proc_event_names,
         },
-        init_default_ty,
-        proc_resolution,
-        top_level_proc_symbols: None,
-    };
-    let mut init_local_array_aliases = HashMap::new();
-    seed_top_level_array_aliases(&mut init_local_array_aliases, &proc_param_arrays, false);
-    seed_top_level_array_aliases(&mut init_local_array_aliases, const_arrays, false);
-    let mut init_st = InitAnalysisState::new(
-        HashSet::new(),
-        HashMap::new(),
-        init_local_array_aliases,
-        declared_symbols,
-        state_type_hints.clone(),
+        ProcConstructors {
+            reserved: &reserved,
+            procs: proc_symbols,
+            struct_symbols: &struct_defs.keys().cloned().collect(),
+            structs: struct_defs,
+            symbols: ctor_symbols,
+        },
+        &mut init_st,
+        errors,
     );
-    // Seed known_scalars with reserved names so they're visible for decl-order checks
-    init_st.known_scalars.extend(reserved.iter().cloned());
-    analyze_owner_init_stmts(&proc.init, &init_ctx, &proc_locals, &mut init_st, errors);
     let init_flow = init_st.flow_state();
     let mut init_bindings = persistent_init_bindings(
         &proc.init,
@@ -3091,20 +2979,13 @@ pub(super) fn compute_proc_shape(
     for (instance_name, nested) in &state.nested_procs {
         if let Some(target_proc) = proc_defs_by_name.get(&nested.proc_name) {
             let target_proc_options = proc_options_for_shape(target_proc, options);
-            let target_io = infer_numbered_io_from_sample(&target_proc.sample);
-            let target_ins =
-                normalize_numbered_port_decls(&target_proc.ins, "in", target_io.max_in);
-            let (nested_param_specs, _) = expand_proc_param_specs(
-                &target_proc.name,
-                &target_proc.params,
-                target_proc_options,
-                const_arrays,
-                errors,
-            );
+            let declarations =
+                prepare_proc_declarations(target_proc, target_proc_options, const_arrays, errors);
+            let target_ins = &declarations.inputs.declarations;
             let mut params: Vec<String> = target_ins.iter().map(|p| p.name.clone()).collect();
             let mut defaults: Vec<Option<Expr>> =
                 target_ins.iter().map(|p| p.default.clone()).collect();
-            for spec in &nested_param_specs {
+            for spec in &declarations.params {
                 params.push(spec.name.clone());
                 defaults.push(Some(Expr::number(0.0)));
             }
@@ -3123,7 +3004,13 @@ pub(super) fn compute_proc_shape(
                 },
             );
 
-            let primary_ty = infer_primary_output_type_from_processor(target_proc);
+            let primary_ty = declarations
+                .outputs
+                .slots
+                .first()
+                .and_then(|name| declarations.outputs.types.get(name))
+                .copied()
+                .unwrap_or(PrimitiveType::F32);
             insert_declared_symbol(
                 &mut proc_state_scalars,
                 &mut proc_declared_symbols,
@@ -3131,29 +3018,12 @@ pub(super) fn compute_proc_shape(
                 DeclaredSymbolInfo::FunctionReturn { ty: primary_ty },
             );
 
-            let inferred_io = infer_numbered_io_from_sample(&target_proc.sample);
-            let inferred_names = infer_numbered_names_from_proc(target_proc);
-            let inferred_out_max = match target_proc.outs_timing {
-                OutputTiming::Sample => inferred_io.max_out,
-                OutputTiming::Block => inferred_names.max_kout,
-            };
-            let nested_out_ports = normalize_numbered_port_decls(
-                &target_proc.outs,
-                proc_output_numbered_prefix(target_proc),
-                inferred_out_max,
-            );
-            let (_, nested_out_types, _, nested_out_arrays) = expand_proc_port_specs(
-                &target_proc.name,
-                &nested_out_ports,
-                "output",
-                target_proc_options,
-                const_arrays,
-                errors,
-            );
-            for port in &nested_out_ports {
+            for port in &declarations.outputs.declarations {
                 let flat_base = format!("{instance_name}.{}", port.name);
-                if let Some(slots) = nested_out_arrays.get(&port.name) {
-                    if let Some(elem_ty) = nested_out_types
+                if let Some(slots) = declarations.outputs.arrays.get(&port.name) {
+                    if let Some(elem_ty) = declarations
+                        .outputs
+                        .types
                         .get(slots.first().map(|s| s.as_str()).unwrap_or_default())
                         .copied()
                     {
@@ -3165,12 +3035,12 @@ pub(super) fn compute_proc_shape(
                         );
                     }
                     proc_state_arrays.entry(flat_base).or_insert(slots.len());
-                } else if let Some(ty) = nested_out_types.get(&port.name).copied() {
+                } else if let Some(ty) = declarations.outputs.types.get(&port.name).copied() {
                     proc_state_scalars.entry(flat_base).or_insert(ty);
                 }
             }
 
-            for spec in nested_param_specs {
+            for spec in declarations.params {
                 let flat_base = format!("{instance_name}.{}", spec.name);
                 if spec.slots.len() <= 1 {
                     if let Some(slot) = spec.slots.first() {
@@ -3357,7 +3227,7 @@ pub(super) fn compute_proc_shape(
     }
 
     let mut nested_proc_array_slots = ProcArrayDeclarations::new();
-    let mut nested_proc_array_active_fields = HashMap::<String, String>::new();
+    let mut nested_proc_active_fields = HashMap::<String, String>::new();
     let mut nested_proc_array_names = state.nested_proc_arrays.keys().cloned().collect::<Vec<_>>();
     nested_proc_array_names.sort();
     for array_name in nested_proc_array_names {
@@ -3394,15 +3264,20 @@ pub(super) fn compute_proc_shape(
             )
             .cloned()
             .collect();
-        let uniform =
-            constructor.is_none_or(|init| proc_array_init::is_uniform(init, &array_symbols));
+        let uniform = constructor.is_none_or(|init| {
+            child_proc_surfaces
+                .get(&array_state.proc_name)
+                .is_some_and(|surface| {
+                    proc_array_init::is_uniform(init, &array_symbols, &surface.constructor_per_slot)
+                })
+        });
         let slots = ProcArrayDeclaration::new(
             array_name.clone(),
             array_state.proc_name.clone(),
             len,
             uniform,
         );
-        nested_proc_array_active_fields.insert(
+        nested_proc_active_fields.insert(
             array_name.clone(),
             runtime_proc_array_active_symbol(&array_name),
         );
@@ -3619,12 +3494,13 @@ pub(super) fn compute_proc_shape(
         in_ports,
         param_specs,
         buffer_specs,
+        buffer_capturing_local_defs: local_resources::captures(proc, proc_symbols),
         in_types,
         out_types,
         in_array_slots,
         field_array_slots,
         nested_proc_array_slots,
-        nested_proc_array_active_fields,
+        nested_proc_active_fields,
         state,
         fields,
         field_names,
@@ -3710,7 +3586,7 @@ pub(super) fn build_proc_lowering_shape(
     let mut field_names = base.field_names.clone();
     let mut field_array_slots = base.field_array_slots.clone();
     let mut nested_proc_array_slots = base.nested_proc_array_slots.clone();
-    let mut nested_proc_array_active_fields = base.nested_proc_array_active_fields.clone();
+    let mut nested_proc_active_fields = base.nested_proc_active_fields.clone();
     let mut nested_fields = HashMap::<String, HashSet<String>>::new();
 
     let mut nested_vars = base.state.nested_procs.keys().cloned().collect::<Vec<_>>();
@@ -3756,8 +3632,8 @@ pub(super) fn build_proc_lowering_shape(
             let prefixed_slots = slots.prefixed(&nested_var);
             nested_proc_array_slots.insert(prefixed_base, prefixed_slots);
         }
-        for (array_base, active_field) in &callee_shape.nested_proc_array_active_fields {
-            nested_proc_array_active_fields.insert(
+        for (array_base, active_field) in &callee_shape.nested_proc_active_fields {
+            nested_proc_active_fields.insert(
                 nested_field_name(&nested_var, array_base),
                 nested_field_name(&nested_var, active_field),
             );
@@ -3793,12 +3669,13 @@ pub(super) fn build_proc_lowering_shape(
         in_ports: base.in_ports,
         param_specs: base.param_specs,
         buffer_specs: base.buffer_specs,
+        buffer_capturing_local_defs: base.buffer_capturing_local_defs,
         in_types: base.in_types,
         out_types: base.out_types,
         in_array_slots: base.in_array_slots,
         field_array_slots,
         nested_proc_array_slots,
-        nested_proc_array_active_fields,
+        nested_proc_active_fields,
         state: base.state,
         fields,
         field_names,

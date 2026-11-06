@@ -1,6 +1,64 @@
 use super::buffer_metadata::BufferMetadata;
 use super::*;
 
+pub(super) struct ResolvedCallArguments<'a> {
+    pub expressions: Vec<&'a Expr>,
+    pub evaluation_order: Vec<usize>,
+}
+
+/// Share argument binding between direct calls and processor dispatch. Runtime
+/// captures follow source order; only the final ABI arguments use parameter order.
+pub(super) fn resolve_call_arguments<'a>(
+    callee: &'a TypedFunction,
+    args: &'a [onda_frontend::CallArg],
+    location: SourceLoc,
+) -> Result<ResolvedCallArguments<'a>, MirLoweringError> {
+    let name = &callee.name;
+    let mut diagnostics = Vec::<Diagnostic>::new();
+    let resolved = bind_call_args_at(
+        args,
+        &callee.params,
+        &callee.param_defaults,
+        callee.params.first().map(String::as_str) == Some("self"),
+        false,
+        &format!("function '{name}' call"),
+        location.clone(),
+        &mut diagnostics,
+    );
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(MirLoweringError::new(
+            format!(
+                "call argument normalization failed after semantic analysis: {}",
+                diagnostic.message
+            ),
+            location,
+        ));
+    }
+
+    let mut ordered_args = Vec::with_capacity(callee.params.len());
+    for index in 0..callee.params.len() {
+        let expression = resolved
+            .by_param
+            .get(index)
+            .and_then(|value| *value)
+            .or_else(|| callee.param_defaults.get(index).and_then(Option::as_ref))
+            .ok_or_else(|| {
+                MirLoweringError::new(
+                    format!(
+                        "call to '{name}' has no value for parameter '{}'",
+                        callee.params[index]
+                    ),
+                    location.clone(),
+                )
+            })?;
+        ordered_args.push(expression);
+    }
+    Ok(ResolvedCallArguments {
+        expressions: ordered_args,
+        evaluation_order: resolved.evaluation_order,
+    })
+}
+
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn materialize_buffer_reference(
         &mut self,
@@ -608,13 +666,9 @@ impl<'a> FunctionLowerer<'a> {
             ..
         }) = self.bindings.get(root).cloned()
         {
-            let Some((owner, array)) = self.nested_proc_array_source_any(root) else {
-                return Err(self.error(
-                    "processor-array view has no owner identity",
-                    expression.loc(),
-                ));
-            };
-            if struct_name != expected_proc || array.len != expected_len as usize {
+            if struct_name != expected_proc
+                || !matches!(length, StructArrayLength::Fixed(len) if len == expected_len)
+            {
                 return Err(self.error(
                     format!("processor-array view '{root}' does not match '{expected_proc}[{expected_len}]'"),
                     expression.loc(),
@@ -623,14 +677,7 @@ impl<'a> FunctionLowerer<'a> {
             let length = self.struct_array_length_value(length, block, expression.loc());
             call_args.push(CallArgument::Value(length));
             if self.proc_array_hook_types.contains(expected_proc) {
-                let active_name = format!("{owner}.{}", array.active_field);
-                let active = self.lower_named_slice(
-                    &active_name,
-                    SliceSelection::default(),
-                    Some(onda_mir::AccessMode::ReadWrite),
-                    block,
-                    expression.loc(),
-                )?;
+                let active = self.processor_array_active_slice(root, block, expression.loc())?;
                 call_args.push(CallArgument::Value(active.value));
             }
             self.append_proc_array_fields(root, &shapes, &fields, call_args, expression.loc())?;
@@ -944,38 +991,15 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    pub(super) fn lower_buffer_array_call_arguments(
-        &self,
+    pub(super) fn lower_buffer_collection_argument(
+        &mut self,
         callee_name: &str,
         param_name: &str,
         expected_elem: PrimitiveType,
         expected_len: usize,
         expression: &Expr,
-        out: &mut Vec<CallArgument>,
-    ) -> Result<(), MirLoweringError> {
-        if let Expr::Var { name, .. } = expression {
-            if let Some(Binding::BufferCollectionValue {
-                local,
-                element,
-                start,
-                len,
-            }) = self.bindings.get(name)
-            {
-                if *element != expected_elem || *len as usize != expected_len {
-                    return Err(self.error(
-                        "local buffer collection has incompatible shape",
-                        expression.loc(),
-                    ));
-                }
-                out.push(CallArgument::BufferSpan(onda_mir::BufferSpanRef::Local {
-                    collection: *local,
-                    start: *start,
-                    len: *len,
-                    bounds: BoundsMode::Checked,
-                }));
-                return Ok(());
-            }
-        }
+        block: &mut MirBlock,
+    ) -> Result<CallArgument, MirLoweringError> {
         let (base, requested_start, requested_end) = match expression {
             Expr::Var { name, .. } => (name.as_str(), None, None),
             Expr::Slice {
@@ -996,13 +1020,27 @@ impl<'a> FunctionLowerer<'a> {
             }
         };
 
-        let (source, actual_elem, source_len) = if let Some(Binding::BufferParameterArray(
-            span,
-            elem,
-            len,
-        )) = self.bindings.get(base).cloned()
-        {
-            (BufferArrayCallSource::Parameters(span), elem, len)
+        let local = match self.bindings.get(base) {
+            Some(Binding::BufferParameterArray(span, element, len)) => {
+                Some((BufferArrayCallSource::Parameters(*span), *element, *len))
+            }
+            Some(Binding::BufferCollectionValue {
+                local,
+                element,
+                start,
+                len,
+            }) => Some((
+                BufferArrayCallSource::Local {
+                    collection: *local,
+                    start: *start,
+                },
+                *element,
+                *len,
+            )),
+            _ => None,
+        };
+        let (source, actual_elem, source_len) = if let Some(source) = local {
+            source
         } else if let Some((first, elem, len)) = self
             .runtime_globals
             .and_then(|globals| globals.buffer_arrays.get(base).copied())
@@ -1067,7 +1105,7 @@ impl<'a> FunctionLowerer<'a> {
                 expression.loc(),
             )
         })?;
-        out.push(CallArgument::BufferSpan(match source {
+        Ok(CallArgument::BufferSpan(match source {
             BufferArrayCallSource::Interface(first) => onda_mir::BufferSpanRef::Interface {
                 first: onda_mir::BufferId::new(first.raw() + start),
                 len,
@@ -1075,8 +1113,33 @@ impl<'a> FunctionLowerer<'a> {
             BufferArrayCallSource::Parameters(span) => {
                 onda_mir::BufferSpanRef::Parameter { span, start, len }
             }
-        }));
-        Ok(())
+            BufferArrayCallSource::Local {
+                collection,
+                start: offset,
+            } => {
+                let start = if start == 0 {
+                    offset
+                } else {
+                    self.emit_temp(
+                        block,
+                        PrimitiveType::I32,
+                        Rvalue::Binary {
+                            op: MirBinaryOp::Add,
+                            lhs: offset,
+                            rhs: Value::Constant(ScalarValue::I32(start as i32)),
+                        },
+                        expression.loc(),
+                    )
+                    .value
+                };
+                onda_mir::BufferSpanRef::Local {
+                    collection,
+                    start,
+                    len,
+                    bounds: BoundsMode::Checked,
+                }
+            }
+        }))
     }
 
     pub(super) fn lower_user_call(
@@ -1132,45 +1195,8 @@ impl<'a> FunctionLowerer<'a> {
         // that same dense order after the caller's existing functions.
         let function_id = FunctionId::new((self.function_base + function_index) as u32);
         let callee = &self.functions[function_index];
-        let mut diagnostics = Vec::<Diagnostic>::new();
-        let resolved = bind_call_args_at(
-            args,
-            &callee.params,
-            &callee.param_defaults,
-            callee.params.first().map(String::as_str) == Some("self"),
-            false,
-            &format!("function '{name}' call"),
-            location.clone(),
-            &mut diagnostics,
-        );
-        if let Some(diagnostic) = diagnostics.into_iter().next() {
-            return Err(self.error(
-                format!(
-                    "call argument normalization failed after semantic analysis: {}",
-                    diagnostic.message
-                ),
-                location,
-            ));
-        }
-
-        let mut ordered_args = Vec::with_capacity(callee.params.len());
-        for index in 0..callee.params.len() {
-            let expression = resolved
-                .by_param
-                .get(index)
-                .and_then(|value| *value)
-                .or_else(|| callee.param_defaults.get(index).and_then(Option::as_ref))
-                .ok_or_else(|| {
-                    self.error(
-                        format!(
-                            "call to '{name}' has no value for parameter '{}'",
-                            callee.params[index]
-                        ),
-                        location.clone(),
-                    )
-                })?;
-            ordered_args.push(expression);
-        }
+        let resolved = resolve_call_arguments(callee, args, location.clone())?;
+        let ordered_args = resolved.expressions;
         let param_kinds = &callee.param_kinds;
         let param_names = &callee.params;
         let readonly_data_params = &callee.readonly_data_params;
@@ -1207,6 +1233,7 @@ impl<'a> FunctionLowerer<'a> {
                     .processor_argument_view(
                         ordered_args[index],
                         prepared_args[index].as_ref().expect("argument prepared"),
+                        block,
                     )?
                     .ok_or_else(|| {
                         self.error(
@@ -1348,7 +1375,7 @@ impl<'a> FunctionLowerer<'a> {
                         call_args.push(CallArgument::Value(value.value));
                     }
                 }
-                TypedFnParam::Buffer { elem_ty, .. } => {
+                TypedFnParam::Buffer { elem_ty, channels } => {
                     let PreparedCallArgument::DirectReference(prepared_expression) = prepared
                     else {
                         return Err(self.error(
@@ -1366,99 +1393,39 @@ impl<'a> FunctionLowerer<'a> {
                     } = expression
                     {
                         if selector == PROCESSOR_RESOURCE_SELECT {
-                            let mut choices = Vec::new();
-                            for choice in selector_args.iter().filter(|argument| {
-                                !matches!(
-                                    argument.name.as_deref(),
-                                    Some(PROC_INDEX_BASE_ARG | PROC_INDEX_EXPR_ARG)
-                                )
-                            }) {
-                                let Expr::Var {
-                                    name: buffer_name, ..
-                                } = &choice.expr
-                                else {
-                                    return Err(self.error(
-                                        format!(
-                                            "call to '{name}' buffer selector for '{param_name}' contains a non-buffer alternative"
-                                        ),
-                                        choice.expr.loc(),
-                                    ));
-                                };
-                                let argument = if let Some(Binding::BufferParameter(
-                                    parameter,
-                                    actual,
-                                )) = self.bindings.get(buffer_name).cloned()
-                                {
-                                    if actual != *elem_ty {
-                                        return Err(self.error(
-                                            format!(
-                                                "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
-                                                elem_ty.name(),
-                                                actual.name()
-                                            ),
-                                            choice.expr.loc(),
-                                        ));
-                                    }
-                                    CallArgument::Place(Place {
-                                        base: PlaceBase::Parameter(parameter),
-                                        projections: Vec::new(),
-                                    })
-                                } else if let Some((buffer, actual)) = self
-                                    .runtime_globals
-                                    .and_then(|globals| globals.buffers.get(buffer_name).copied())
-                                {
-                                    if actual != *elem_ty {
-                                        return Err(self.error(
-                                            format!(
-                                                "call to '{name}' buffer parameter '{param_name}' expected {} elements, got {}",
-                                                elem_ty.name(),
-                                                actual.name()
-                                            ),
-                                            choice.expr.loc(),
-                                        ));
-                                    }
-                                    CallArgument::Buffer(onda_mir::BufferRef::Direct(buffer))
-                                } else {
-                                    return Err(self.error(
-                                        format!(
-                                            "call to '{name}' buffer selector for '{param_name}' references unsupported buffer '{buffer_name}'"
-                                        ),
-                                        choice.expr.loc(),
-                                    ));
-                                };
-                                choices.push(argument);
-                            }
-                            if resource_selection.is_none() {
-                                let Some(index) = processor_selection else {
-                                    return Err(self.error(
-                                        format!(
-                                            "call to '{name}' has a processor-indexed buffer selector without a matching processor dispatch"
-                                        ),
-                                        expression.loc(),
-                                    ));
-                                };
-                                resource_selection = Some(ResourceCallSelection {
-                                    index,
-                                    choices: choices.len(),
-                                    arguments: Vec::new(),
-                                });
-                            }
-                            let dispatch = resource_selection
-                                .as_mut()
-                                .expect("processor-indexed buffer dispatch was initialized");
-                            if choices.len() != dispatch.choices {
-                                return Err(self.error(
-                                    format!(
-                                        "call to '{name}' processor-indexed buffer selector has {} alternatives, expected {}",
-                                        choices.len(),
-                                        dispatch.choices
-                                    ),
+                            let coordinate = processor_selection.ok_or_else(|| {
+                                self.error(
+                                    "buffer selection lost its processor coordinate",
                                     expression.loc(),
-                                ));
-                            }
-                            let argument_index = call_args.len();
-                            call_args.push(choices[0].clone());
-                            dispatch.arguments.push((argument_index, choices));
+                                )
+                            })?;
+                            let values = selector_args
+                                .iter()
+                                .filter(|argument| argument.name.is_none())
+                                .map(|argument| argument.expr.clone())
+                                .collect::<Vec<_>>();
+                            let mut shape = crate::processor_views::ProcessorResourceShape {
+                                elem_ty: *elem_ty,
+                                channels: channels.clone(),
+                                len: None,
+                                mapped: false,
+                                mapped_len: None,
+                                alternatives: Some(values.len()),
+                                binding: None,
+                            };
+                            let selected = self.processor_resource_expression(
+                                &Expr::ArrayLiteral {
+                                    loc: expression.loc().into(),
+                                    values,
+                                },
+                                &shape,
+                                Some(Value::Local(coordinate)),
+                                block,
+                            )?;
+                            shape.alternatives = None;
+                            call_args.push(
+                                self.lower_processor_resource_argument(&selected, &shape, block)?,
+                            );
                             continue;
                         }
                     }
@@ -1589,16 +1556,14 @@ impl<'a> FunctionLowerer<'a> {
                                     Some(PROC_INDEX_BASE_ARG | PROC_INDEX_EXPR_ARG)
                                 )
                             }) {
-                                let mut expanded = Vec::with_capacity(*len);
-                                self.lower_buffer_array_call_arguments(
+                                alternatives.push(vec![self.lower_buffer_collection_argument(
                                     name,
                                     param_name,
                                     *elem_ty,
                                     *len,
                                     &choice.expr,
-                                    &mut expanded,
-                                )?;
-                                alternatives.push(expanded);
+                                    block,
+                                )?]);
                             }
                             if resource_selection.is_none() {
                                 let index = processor_selection.ok_or_else(|| self.error(
@@ -1642,14 +1607,14 @@ impl<'a> FunctionLowerer<'a> {
                             continue;
                         }
                     }
-                    self.lower_buffer_array_call_arguments(
+                    call_args.push(self.lower_buffer_collection_argument(
                         name,
                         param_name,
                         *elem_ty,
                         *len,
                         &prepared_expression,
-                        &mut call_args,
-                    )?;
+                        block,
+                    )?);
                 }
                 TypedFnParam::Struct { struct_name } => {
                     let access = if readonly_data_params.contains(param_name) {

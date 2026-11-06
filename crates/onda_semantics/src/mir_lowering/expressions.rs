@@ -463,6 +463,11 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
+        if !self.bindings.contains_key(name) {
+            if let Some((owner, _)) = name.rsplit_once('.') {
+                self.prepare_scalar_processor_view(owner, block, location.clone())?;
+            }
+        }
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
                 Binding::PlaceAlias(place, ty) => Ok(self.emit_temp(block, ty, Rvalue::Load(place), location)),

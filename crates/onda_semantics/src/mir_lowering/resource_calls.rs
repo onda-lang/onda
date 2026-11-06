@@ -44,70 +44,22 @@ impl FunctionLowerer<'_> {
                 for (index, alternatives) in &selection.arguments {
                     selected[*index] = alternatives[choice].clone();
                 }
-                selected
+                let mut branch = MirBlock::default();
+                self.push_statement(
+                    &mut branch,
+                    StatementKind::Call {
+                        results: results.clone(),
+                        function,
+                        args: selected,
+                    },
+                    location.clone(),
+                );
+                branch
             })
             .collect::<Vec<_>>();
         let selected =
-            self.resource_call_selection(selection.index, function, &results, &calls, 0, location);
+            self.processor_choice_block(Value::Local(selection.index), calls, 0, location);
         block.statements.extend(selected.statements);
         Ok(())
-    }
-
-    fn resource_call_selection(
-        &mut self,
-        index: LocalId,
-        function: FunctionId,
-        results: &[LocalId],
-        calls: &[Vec<CallArgument>],
-        first: usize,
-        location: SourceLoc,
-    ) -> MirBlock {
-        let mut block = MirBlock::default();
-        if calls.len() == 1 {
-            self.push_statement(
-                &mut block,
-                StatementKind::Call {
-                    results: results.to_vec(),
-                    function,
-                    args: calls[0].clone(),
-                },
-                location,
-            );
-            return block;
-        }
-        let mid = calls.len() / 2;
-        let condition = self.compare_value(
-            &mut block,
-            CompareOp::Less,
-            Value::Local(index),
-            Value::Constant(ScalarValue::I32((first + mid) as i32)),
-            location.clone(),
-        );
-        let then_block = self.resource_call_selection(
-            index,
-            function,
-            results,
-            &calls[..mid],
-            first,
-            location.clone(),
-        );
-        let else_block = self.resource_call_selection(
-            index,
-            function,
-            results,
-            &calls[mid..],
-            first + mid,
-            location.clone(),
-        );
-        self.push_statement(
-            &mut block,
-            StatementKind::If {
-                condition,
-                then_block,
-                else_block,
-            },
-            location,
-        );
-        block
     }
 }

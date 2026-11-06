@@ -244,7 +244,14 @@ export class MirCompilerLowering extends MirCompilerCore {
       this.requireScalarType(result, `result ${resultId} of '${target.name}'`),
     );
     const resultType = this.wasmResultType(resultScalars);
-    const call = this.module.call(this.functionNames[data.function], args, resultType);
+    const packed = this.functionAbiLayout[data.function];
+    const callArgs = packed ? [this.module.i32.const(packed.address)] : args;
+    const directCall = this.module.call(this.functionNames[data.function], callArgs, resultType);
+    const call = packed ? this.module.block(null, [
+      ...packed.entries.map(({ scalar, address }, index) =>
+        this.storeScalar(scalar, this.module.i32.const(address), args[index])),
+      directCall,
+    ], resultType) : directCall;
     let compiledCall;
     if (data.results.length === 0) {
       compiledCall = call;
@@ -1471,13 +1478,13 @@ export class MirCompilerLowering extends MirCompilerCore {
 
   compileBufferChannels(bufferRef, context) {
     const channels = this.bufferRefChannelMetadata(bufferRef);
-    if (channels.kind === "mono") return this.module.i32.const(1);
-    if (channels.kind === "static") return this.module.i32.const(channels.count);
     return this.withBufferRefIndex(
       bufferRef,
       context,
       binaryen.i32,
-      (index, staticIndex) => this.bufferTableValueFactory(
+      (index, staticIndex) => channels.kind !== "dynamic"
+        ? this.module.i32.const(channels.count ?? 1)
+        : this.bufferTableValueFactory(
         POINTER_GLOBALS.bufferChannels,
         index,
         staticIndex,
@@ -1510,13 +1517,13 @@ export class MirCompilerLowering extends MirCompilerCore {
       type.data.channels,
       type.data.element,
     );
-    if (channels.kind === "mono") return this.module.i32.const(1);
-    if (channels.kind === "static") return this.module.i32.const(channels.count);
     return this.withBufferParamSelector(
       parameterId,
       context,
       binaryen.i32,
-      (selector, staticSelector) => this.bufferParamComponentFactory(
+      (selector, staticSelector) => channels.kind !== "dynamic"
+        ? this.module.i32.const(channels.count ?? 1)
+        : this.bufferParamComponentFactory(
         parameterId,
         3,
         "i32",

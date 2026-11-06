@@ -436,3 +436,219 @@ fn branch_joined_scalar_descriptors_have_precise_effects_and_cannot_be_snapshott
     });
     assert!(validate(&program).is_err());
 }
+
+#[test]
+fn buffer_references_allow_payload_writes_but_cannot_replace_caller_descriptors() {
+    let mut program = mapped_program();
+    let buffer_ty = TypeId::new(program.types.len() as u32);
+    program.types.push(Type::Buffer {
+        element: ScalarType::F32,
+        channels: BufferChannels::Mono,
+        access: AccessMode::ReadWrite,
+    });
+    let store = |reference| {
+        statement(StatementKind::BufferParamStore {
+            parameter: reference,
+            channel: None,
+            index: Value::Constant(ScalarValue::I32(0)),
+            value: Value::Constant(ScalarValue::F32(42.0)),
+            bounds: BoundsMode::Clamp,
+        })
+    };
+    let mut helper = function("write", FunctionKind::User);
+    helper.params = [
+        PassingMode::ReadWriteReference,
+        PassingMode::ReadOnlyReference,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, mode)| FunctionParam {
+        name: format!("buffer{index}"),
+        ty: buffer_ty,
+        mode,
+        integer_range: None,
+    })
+    .collect();
+    helper.body.statements = vec![store(BufferParamRef::Direct(ParameterId::new(0)))];
+    program.functions.truncate(2);
+    program.functions.push(helper);
+    let process = &mut program.functions[1];
+    process.locals.push(Local {
+        name: None,
+        ty: buffer_ty,
+        integer_range: None,
+    });
+    process.body.statements = vec![
+        statement(StatementKind::Assign {
+            destination: Place::local(LocalId::new(0)),
+            value: Rvalue::MakeBuffer {
+                source: CallArgument::Buffer(BufferRef::Direct(BufferId::new(0))),
+                ty: buffer_ty,
+            },
+        }),
+        statement(StatementKind::Call {
+            results: Vec::new(),
+            function: FunctionId::new(2),
+            args: vec![
+                CallArgument::Place(Place::local(LocalId::new(0))),
+                CallArgument::Buffer(BufferRef::Direct(BufferId::new(2))),
+            ],
+        }),
+        store(BufferParamRef::Local(LocalId::new(0))),
+    ];
+    validate(&program).unwrap();
+    assert_eq!(
+        analyze_buffer_writes(&program).unwrap().buffers(),
+        &[true, false, false]
+    );
+    for value in [
+        Rvalue::Load(Place {
+            base: PlaceBase::Parameter(ParameterId::new(1)),
+            projections: Vec::new(),
+        }),
+        Rvalue::MakeBuffer {
+            source: CallArgument::BufferParam(BufferParamRef::Direct(ParameterId::new(1))),
+            ty: buffer_ty,
+        },
+    ] {
+        program.functions[2].body.statements = vec![statement(StatementKind::Assign {
+            destination: Place {
+                base: PlaceBase::Parameter(ParameterId::new(0)),
+                projections: Vec::new(),
+            },
+            value,
+        })];
+        let errors =
+            validate(&program).expect_err("buffer references cannot replace caller descriptors");
+        assert!(
+            errors.iter().any(|error| error
+                .message
+                .contains("buffer descriptor destination must be an unprojected local")),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn large_dynamic_collection_windows_keep_precise_origins() {
+    for len in [64_u32, 4096] {
+        for mapped in [false, true] {
+            let mut program = mapped_program();
+            for (id, width) in [(1, len), (2, len / 2)] {
+                program.types[id] = if mapped {
+                    Type::BufferMap {
+                        element: ScalarType::F32,
+                        channels: BufferChannels::Mono,
+                        access: AccessMode::ReadWrite,
+                        len: width,
+                    }
+                } else {
+                    Type::BufferSpan {
+                        element: ScalarType::F32,
+                        channels: BufferChannels::Mono,
+                        access: AccessMode::ReadWrite,
+                        len: width,
+                    }
+                };
+            }
+            program.interface.buffers = (0..len)
+                .map(|index| Buffer {
+                    name: format!("buffer{index}"),
+                    element: ScalarType::F32,
+                    channels: BufferChannels::Mono,
+                    access: AccessMode::ReadWrite,
+                })
+                .collect();
+            program.buffer_maps[0].buffers = (0..len).rev().map(BufferId::new).collect();
+            let StatementKind::Call { args, .. } =
+                &mut program.functions[1].body.statements[0].kind
+            else {
+                unreachable!()
+            };
+            args[0] = CallArgument::BufferSpan(if mapped {
+                BufferSpanRef::MappedInterface {
+                    map: BufferMapId::new(0),
+                    start: 0,
+                    len,
+                }
+            } else {
+                BufferSpanRef::Interface {
+                    first: BufferId::new(0),
+                    len,
+                }
+            });
+            args.push(CallArgument::Value(Value::Constant(ScalarValue::I32(0))));
+            program.functions.truncate(3);
+            let helper = &mut program.functions[2];
+            helper.params.push(FunctionParam {
+                name: "start".into(),
+                ty: TypeId::new(0),
+                mode: PassingMode::Value,
+                integer_range: None,
+            });
+            helper.locals = [1, 2, 0]
+                .map(|ty| Local {
+                    name: None,
+                    ty: TypeId::new(ty),
+                    integer_range: None,
+                })
+                .into();
+            helper.body.statements = vec![
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(2)),
+                    value: Rvalue::Load(Place {
+                        base: PlaceBase::Parameter(ParameterId::new(1)),
+                        projections: vec![],
+                    }),
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(0)),
+                    value: Rvalue::MakeBuffer {
+                        ty: TypeId::new(1),
+                        source: CallArgument::BufferSpan(BufferSpanRef::Parameter {
+                            span: ParameterId::new(0),
+                            start: 0,
+                            len,
+                        }),
+                    },
+                }),
+                statement(StatementKind::Assign {
+                    destination: Place::local(LocalId::new(1)),
+                    value: Rvalue::MakeBuffer {
+                        ty: TypeId::new(2),
+                        source: CallArgument::BufferSpan(BufferSpanRef::Local {
+                            collection: LocalId::new(0),
+                            start: Value::Local(LocalId::new(2)),
+                            len: len / 2,
+                            bounds: BoundsMode::Clamp,
+                        }),
+                    },
+                }),
+                statement(StatementKind::BufferParamStore {
+                    parameter: BufferParamRef::LocalElement {
+                        collection: LocalId::new(1),
+                        selector: Value::Constant(ScalarValue::I32(0)),
+                        bounds: BoundsMode::Clamp,
+                    },
+                    channel: None,
+                    index: Value::Constant(ScalarValue::I32(0)),
+                    value: Value::Constant(ScalarValue::F32(1.0)),
+                    bounds: BoundsMode::Clamp,
+                }),
+            ];
+            validate(&program).unwrap();
+            let effects = analyze_buffer_writes(&program).unwrap();
+            for (index, actual) in effects.buffers().iter().enumerate() {
+                let expected = if mapped {
+                    index >= len as usize / 2 - 1
+                } else {
+                    index <= len as usize / 2
+                };
+                assert_eq!(
+                    *actual, expected,
+                    "len={len}, mapped={mapped}, buffer={index}"
+                );
+            }
+        }
+    }
+}

@@ -1,5 +1,79 @@
 use super::*;
 
+#[test]
+fn constant_channel_queries_preserve_checked_selection_failures() {
+    let fixture = include_str!(
+        "../../../../../packages/onda_binaryen_web/test/fixtures/mir/checked-buffer-channels.json"
+    );
+    for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        for channels in [
+            onda_mir::BufferChannels::Mono,
+            onda_mir::BufferChannels::Static(2),
+        ] {
+            for index in [-1, 0, 2] {
+                let mut program = onda_mir::from_json_program(fixture).unwrap();
+                if let Type::BufferMap { channels: kind, .. } = &mut program.types[3] {
+                    *kind = channels;
+                }
+                for buffer in &mut program.interface.buffers {
+                    buffer.channels = channels;
+                }
+                let StatementKind::Assign {
+                    value:
+                        Rvalue::BufferParamChannels(onda_mir::BufferParamRef::LocalElement {
+                            selector,
+                            ..
+                        }),
+                    ..
+                } = &mut program.functions[2].body.statements[1].kind
+                else {
+                    unreachable!()
+                };
+                *selector = Value::Constant(onda_mir::ScalarValue::I32(index));
+                let native = lower_mir_and_jit_with_options(
+                    program,
+                    MirCompileOptions {
+                        math: Default::default(),
+                        fast_math: false,
+                        opt_level,
+                    },
+                )
+                .unwrap();
+                let params = native.default_param_bytes();
+                let mut state = native.initialize_state(&params).unwrap();
+                let mut output = [0.0_f32; 4];
+                let status = native.test_process_checked(
+                    &mut state,
+                    &params,
+                    0,
+                    0,
+                    0,
+                    &[],
+                    &[output.as_mut_ptr().cast()],
+                    &[std::ptr::null_mut(); 2],
+                    &[1; 2],
+                    &[if channels == onda_mir::BufferChannels::Mono {
+                        1
+                    } else {
+                        2
+                    }; 2],
+                    &[48_000.0; 2],
+                );
+                assert_eq!(
+                    status.is_ok(),
+                    index == 0,
+                    "{status:?}, {channels:?}, {index}"
+                );
+                let offset = native.state_byte_offsets()[0];
+                assert_eq!(
+                    f32::from_ne_bytes(state.bytes()[offset..offset + 4].try_into().unwrap()),
+                    if index == 0 { 77.0 } else { 0.0 }
+                );
+            }
+        }
+    }
+}
+
 fn mapped_buffer_program() -> Program {
     let (_, mut program) = source_program(
         r#"

@@ -1,0 +1,27 @@
+proc Voice:
+  buffers:
+    clip: f32
+  init:
+    count: i32 = 0
+  sample:
+    count += 1
+    out1 = clip[0] + f32(count)
+def step(voice: Voice) -> f32:
+  return voice()
+def forward(voice) -> f32:
+  return step(voice)
+buffers:
+  left: f32
+  right: f32
+init:
+  left[0] = 7.0
+  right[0] = 11.0
+  voices: Voice[2] = [Voice(clip = left), Voice(clip = right)]
+block:
+  block_copy: Voice = voices[1]
+  sample:
+    sample_copy: Voice = voices[0]
+    sample_copy = voices[1]
+    out1 = forward(sample_copy)
+    out2 = forward(block_copy)
+    out3 = voices[0].out1 + voices[1].out1

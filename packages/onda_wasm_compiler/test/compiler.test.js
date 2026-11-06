@@ -107,6 +107,31 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("compiles copied processor environments and wide aggregates without inlining", async () => {
+  const compiler = await createCompiler();
+  try {
+    const width = 1100;
+    const fields = Array.from({ length: width }, (_, index) => `  field${index}: f32 = ${index}.0`).join("\n");
+    const sum = Array.from({ length: width }, (_, index) => `value.field${index}`).join(" + ");
+    const sources = [`struct Wide:\n${fields}\ndef sum(value: Wide) -> f32:\n  return ${sum}\ninit:\n  value = Wide()\nsample:\n  out1 = sum(value)\n`];
+    for (const file of [
+      "processor-owned-element-resources.onda",
+      "processor-view-distinct-local-owners.onda",
+      "processor-view-distinct-local-array-owners.onda",
+    ]) {
+      sources.push(await readFile(new URL(`../../onda_binaryen_web/test/fixtures/${file}`, import.meta.url), "utf8"));
+    }
+    for (const source of sources) {
+      const { artifact } = await compiler.compileSource(source, {
+        sampleRate: 48_000, blockSize: 4, codegen: { optimize: false },
+      });
+      await WebAssembly.compile(artifact.wasm);
+    }
+  } finally {
+    await compiler.dispose();
+  }
+});
+
 test("compiles the demand-driven sine wavetable", async () => {
   const compiler = await createCompiler();
   const { artifact } = await compiler.compileSource(`

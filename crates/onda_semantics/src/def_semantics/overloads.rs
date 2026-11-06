@@ -775,15 +775,16 @@ pub(crate) fn rewrite_overloaded_calls_in_function(
             );
         }
     }
-    resolved
-        + rewrite_overloaded_calls_in_stmt_list(
-            &mut def.body,
-            &mut env,
-            context,
-            owner,
-            overloads,
-            errors,
-        )
+    let mut rewriter = OverloadRewriter {
+        context,
+        owner,
+        overloads,
+        errors,
+        resolved,
+    };
+    rewriter.rewrite_function_resource_recipes(&def.name, &env);
+    rewriter.rewrite_stmts(&mut def.body, &mut env);
+    rewriter.resolved
 }
 
 struct OverloadRewriter<'a> {
@@ -795,10 +796,15 @@ struct OverloadRewriter<'a> {
 }
 
 impl CallTypeRewriter for OverloadRewriter<'_> {
+    fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        crate::proc_call_rewrite::rewrite_processor_projection_statement(expr, env, self.errors);
+        self.rewrite_expr(expr, env);
+    }
     fn context(&self) -> CallTypeContext<'_> {
         self.context
     }
     fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        crate::proc_call_rewrite::rewrite_processor_projection_calls(expr, env, self.errors);
         rewrite_overloaded_calls_in_expr_impl(
             expr,
             env,

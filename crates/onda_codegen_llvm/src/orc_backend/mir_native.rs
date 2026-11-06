@@ -4133,8 +4133,8 @@ unsafe fn build_native_module(
     source_locations: bool,
 ) -> Result<(LLVMModuleRef, LLVMContextRef, NativeLayouts), MirCodegenError> {
     // Keep target-profitable scheduling out of portable MIR: Binaryen cannot
-    // yet vectorize these math kernels and pays for the extra traversal.
-    let (scheduled, _) = onda_mir::distribute_loops(program).map_err(|errors| {
+    // yet exploit these loops and would pay for code growth or extra traversals.
+    let (scheduled, _) = onda_mir::schedule_vector_loops(program).map_err(|errors| {
         MirCodegenError::invalid(
             errors
                 .into_iter()

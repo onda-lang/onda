@@ -29,111 +29,29 @@ pub(crate) fn processor_source_types(
             // reuses the same rules for constructor resolution and state types.
             let mut errors = Vec::new();
             let options = proc_options_for_shape(proc, options);
-            let inferred_io = infer_numbered_io_from_sample(&proc.sample);
-            let inferred_names = infer_numbered_names_from_proc(proc);
-            let ins = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
-            let outs = normalize_numbered_port_decls(
-                &proc.outs,
-                proc_output_numbered_prefix(proc),
-                match proc.outs_timing {
-                    OutputTiming::Sample => inferred_io.max_out,
-                    OutputTiming::Block => inferred_names.max_kout,
-                },
-            );
-            let params =
-                normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
-            let (_, ins_types, _, ins_arrays) = expand_proc_port_specs(
-                &proc.name,
-                &ins,
-                "input",
-                options,
-                const_arrays,
-                &mut errors,
-            );
-            let (_, outs_types, _, outs_arrays) = expand_proc_port_specs(
-                &proc.name,
-                &outs,
-                "output",
-                options,
-                const_arrays,
-                &mut errors,
-            );
-            let (params, param_arrays) =
-                expand_proc_param_specs(&proc.name, &params, options, const_arrays, &mut errors);
-            let mut scalar_types = ins_types;
-            scalar_types.extend(outs_types);
-            for param in params {
+            let declarations = prepare_proc_declarations(proc, options, const_arrays, &mut errors);
+            let mut scalar_types = declarations.inputs.types;
+            scalar_types.extend(declarations.outputs.types);
+            for param in declarations.params {
                 scalar_types.extend(param.slots.into_iter().map(|slot| (slot.name, slot.ty)));
             }
-            let arrays = ins_arrays
+            let arrays = declarations
+                .inputs
+                .arrays
                 .into_iter()
-                .chain(outs_arrays)
-                .chain(param_arrays)
+                .chain(declarations.outputs.arrays)
+                .chain(declarations.param_arrays)
                 .collect::<HashMap<_, _>>();
             let mut symbols = DeclaredSymbolMap::new();
             crate::decl_symbols::bind_const_symbols(&mut symbols, const_scalars, const_arrays);
             symbols.const_scope = const_scope.cloned();
             symbols.options = options;
-            for buffer in coerce_buffers(&proc.buffers, options, &mut errors) {
-                symbols.insert(
-                    buffer.name,
-                    DeclaredSymbolInfo::Buffer {
-                        elem_ty: buffer.elem_ty,
-                        channels: match buffer.channels {
-                            TypedBufferChannels::Mono => BufferChannelInfo::Mono,
-                            TypedBufferChannels::Static(n) => BufferChannelInfo::Static(n),
-                            TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
-                        },
-                        array_len: buffer.array_len,
-                        is_array: buffer.is_array,
-                    },
-                );
-            }
-            let label = format!("processor '{}'", proc.name);
-            let namespace = namespace_of_symbol(&proc.name);
+            bind_proc_buffer_symbols(&declarations.buffers, &mut symbols);
             let reserved = scalar_types
                 .keys()
                 .chain(symbols.keys())
                 .cloned()
                 .collect::<HashSet<_>>();
-            let ctx = InitAnalysisCtx {
-                context_label: &label,
-                common: ScopeAnalysisCtx {
-                    policy: ScopePolicy::Init,
-                    input_names: &empty,
-                    output_names: &empty,
-                    output_array_names: &empty,
-                    io_surface_names: &empty,
-                    io_surface_array_names: &empty,
-                    dynamic_param_array_names: &empty,
-                    param_names: &empty,
-                    struct_defs: &typed_structs,
-                    fn_signatures,
-                    fn_return_types,
-                    options,
-                    port_index_ins: None,
-                    port_index_outs: None,
-                    port_index_params: None,
-                    port_index_kins: None,
-                    proc_event_names: &empty,
-                },
-                init_default_ty: resolve_init_default_ty(
-                    proc.init.default_ty.as_ref(),
-                    &label,
-                    &mut errors,
-                ),
-                proc_resolution: Some(ProcResolutionCtx {
-                    owner_proc_name: &proc.name,
-                    reserved: &reserved,
-                    current_ns: &namespace,
-                    proc_symbols: &proc_symbols,
-                    struct_symbols: &struct_symbols,
-                    frontend_struct_defs: structs,
-                    ctor_symbols,
-                    in_init_scope: true,
-                }),
-                top_level_proc_symbols: None,
-            };
             let mut aliases = HashMap::new();
             seed_top_level_array_aliases(&mut aliases, const_arrays, false);
             for (name, slots) in &arrays {
@@ -161,7 +79,37 @@ pub(crate) fn processor_source_types(
                 symbols,
                 scalar_types,
             );
-            analyze_owner_init_stmts(&proc.init, &ctx, &empty, &mut state, &mut errors);
+            analyze_processor_init(
+                proc,
+                ScopeAnalysisCtx {
+                    policy: ScopePolicy::Init,
+                    input_names: &empty,
+                    output_names: &empty,
+                    output_array_names: &empty,
+                    io_surface_names: &empty,
+                    io_surface_array_names: &empty,
+                    dynamic_param_array_names: &empty,
+                    param_names: &empty,
+                    struct_defs: &typed_structs,
+                    fn_signatures,
+                    fn_return_types,
+                    options,
+                    port_index_ins: None,
+                    port_index_outs: None,
+                    port_index_params: None,
+                    port_index_kins: None,
+                    proc_event_names: &empty,
+                },
+                ProcConstructors {
+                    reserved: &reserved,
+                    procs: &proc_symbols,
+                    struct_symbols: &struct_symbols,
+                    structs,
+                    symbols: ctor_symbols,
+                },
+                &mut state,
+                &mut errors,
+            );
             let mut fields = HashMap::new();
             let mut add = |name: &str, ty, struct_name, array_elem_ty, array_elem_struct| {
                 if !name.contains(['.', '['])

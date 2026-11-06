@@ -296,7 +296,7 @@ fn proc_named_arg_call_target_from_parts(
         errors,
     )?;
     let resolved_slot = try_constant_index_i64(&index_expr).and_then(|raw_idx| {
-        if raw_idx < 0 || raw_idx >= slots.len() as i64 {
+        if raw_idx < 0 || slots.known_len().is_some_and(|len| raw_idx >= len as i64) {
             None
         } else {
             slots.binding(raw_idx as usize).cloned()
@@ -548,7 +548,7 @@ fn lower_named_proc_param_call_expr(
     replace_call_with_temp: bool,
     errors: &mut Vec<Diagnostic>,
 ) {
-    rewrite_proc_alias_call_sites_in_expr(expr, aliases);
+    rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
 
     let Expr::UserCall { name, args, .. } = expr else {
         return;
@@ -952,7 +952,7 @@ fn lower_named_proc_param_calls_in_stmt(
     let mut prelude = Vec::<Stmt>::new();
     match stmt {
         Stmt::Assign { target, expr, .. } => {
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
+            rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
             lower_named_proc_param_calls_in_expr(
                 expr,
                 proc_vars,
@@ -967,7 +967,7 @@ fn lower_named_proc_param_calls_in_stmt(
             update_proc_array_aliases_from_assignment(target, expr, proc_array_slots, aliases);
         }
         Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
+            rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
             lower_named_proc_param_calls_in_expr(
                 expr,
                 proc_vars,
@@ -982,7 +982,7 @@ fn lower_named_proc_param_calls_in_stmt(
         }
         Stmt::Print { values, .. } => {
             for value in values {
-                rewrite_proc_alias_calls_in_expr(value, aliases);
+                rewrite_proc_alias_call_sites_in_expr(value, aliases, proc_vars, proc_array_slots);
                 lower_named_proc_param_calls_in_expr(
                     value,
                     proc_vars,
@@ -1002,7 +1002,7 @@ fn lower_named_proc_param_calls_in_stmt(
             else_branch,
             ..
         } => {
-            rewrite_proc_alias_calls_in_expr(cond, aliases);
+            rewrite_proc_alias_call_sites_in_expr(cond, aliases, proc_vars, proc_array_slots);
             lower_named_proc_param_calls_in_expr(
                 cond,
                 proc_vars,
@@ -1042,8 +1042,8 @@ fn lower_named_proc_param_calls_in_stmt(
             body,
             ..
         } => {
-            rewrite_proc_alias_calls_in_expr(start, aliases);
-            rewrite_proc_alias_calls_in_expr(end, aliases);
+            rewrite_proc_alias_call_sites_in_expr(start, aliases, proc_vars, proc_array_slots);
+            rewrite_proc_alias_call_sites_in_expr(end, aliases, proc_vars, proc_array_slots);
             lower_named_proc_param_calls_in_expr(
                 start,
                 proc_vars,
@@ -1067,7 +1067,12 @@ fn lower_named_proc_param_calls_in_stmt(
                 errors,
             );
             if let Some(step_expr) = step {
-                rewrite_proc_alias_calls_in_expr(step_expr, aliases);
+                rewrite_proc_alias_call_sites_in_expr(
+                    step_expr,
+                    aliases,
+                    proc_vars,
+                    proc_array_slots,
+                );
                 lower_named_proc_param_calls_in_expr(
                     step_expr,
                     proc_vars,
@@ -1092,7 +1097,7 @@ fn lower_named_proc_param_calls_in_stmt(
             );
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_proc_alias_calls_in_expr(cond, aliases);
+            rewrite_proc_alias_call_sites_in_expr(cond, aliases, proc_vars, proc_array_slots);
             reject_named_proc_param_calls_in_expr(
                 cond,
                 proc_vars,
@@ -1449,6 +1454,7 @@ fn expand_proc_value_specs(
                 );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_scalar: true,
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
                         private: param.private,
@@ -1540,6 +1546,7 @@ fn expand_proc_value_specs(
                 field_array_slots.insert(param.name.clone(), slot_names);
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_scalar: false,
                     slots,
                 });
             }
@@ -1624,6 +1631,7 @@ fn expand_proc_value_specs(
                 );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_scalar: false,
                     slots,
                 });
             }
@@ -1633,7 +1641,7 @@ fn expand_proc_value_specs(
     (specs, field_array_slots)
 }
 
-pub(crate) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
+pub(crate) fn proc_buffer_fn_param_type(spec: &TypedBufferDecl) -> FnParamType {
     let channels = match spec.channels {
         TypedBufferChannels::Mono => BufferChannels::Mono,
         TypedBufferChannels::Dynamic => BufferChannels::Dynamic,

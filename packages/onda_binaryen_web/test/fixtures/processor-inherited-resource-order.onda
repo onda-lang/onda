@@ -1,0 +1,36 @@
+struct Counter:
+  value: i32
+proc Voice:
+  buffers:
+    first: f32
+    second: f32
+  sample:
+    out1 = first[0] * 10.0 + second[0]
+proc Bank:
+  buffers:
+    left: f32
+    right: f32
+  init:
+    voice = Voice(first = right, second = left)
+  sample:
+    out1 = voice()
+def advance(counter: Counter) -> i32:
+  result = counter.value
+  counter.value += 1
+  return result
+def step(voice) -> f32:
+  return voice()
+buffers:
+  clips: f32 {2}
+init:
+  counter = Counter(0)
+  bank = Bank(left = clips[advance(counter)], right = clips[advance(counter)])
+sample:
+  clips[0][0] = 7.0
+  clips[1][0] = 11.0
+  counter.value = 0
+  out1 = step(bank.voice)
+  out2 = f32(counter.value)
+  counter.value = 0
+  out3 = bank()
+  out4 = f32(counter.value)

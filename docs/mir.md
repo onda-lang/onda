@@ -343,14 +343,15 @@ validates the completed pipeline once, and returns `PassStats` with an opaque `O
 Portable MIR retains fused rendering and reduction loops; profitable scheduling is selected
 separately by each backend.
 
-### Ordered loop distribution
+### Backend-selected loop scheduling
 
-The explicit `distribute_loops` MIR pass separates independent rendering from an ordered sum.
+The explicit `schedule_vector_loops` MIR pass peels distinguished first iterations and separates
+independent rendering from an ordered sum.
 LLVM requests this pass at its shared JIT/IR/object emission boundary, enabling vector math without
 changing the portable MIR supplied by the caller. Binaryen keeps the fused schedule because its
 current scalar array-math lowering does not offset the extra traversal and loads. The pass borrows
 unchanged programs; changed programs are revalidated and their effects, ranges and storage origins
-are rebuilt. Applying it to an already distributed program leaves that program unchanged.
+are rebuilt. Both transformations are idempotent.
 
 Distribution requires a nonempty fixed forward loop of at least 32 iterations, expensive
 pointwise math, and a reduction term already stored to an owned array at the current index. The
@@ -358,6 +359,23 @@ second traversal reads that array and adds in the original order. It allocates n
 does not enable floating-point reassociation. Calls, failures, cross-index writes, unresolved
 aliases, and reduction-dependent rendering retain the original schedule. The size threshold avoids
 small loops where the additional traversal outweighs vector math.
+
+Peeling requires a nonempty fixed forward loop of at least 32 iterations with an unchanged,
+unescaped induction variable and no early exits or nested loops in its body. Equality/inequality
+predicates on the initial index are found directly or through value arguments to inlineable
+helpers. Those summaries select candidates; they do not establish memory independence. The
+peeled iteration preserves each original operation, including checked failures and synchronous
+callbacks, followed by the original increment and remaining loop. Within the remainder, the
+counted-loop proof establishes that the induction variable never equals its initial value. Direct
+`==` / `!=` comparisons with that value fold to false / true, including local copies proven equal
+to the current induction variable on every incoming path. Overwritten or reference-passed copies,
+call results, and values carried from a previous iteration supply no such proof. Helper summaries
+never authorize these folds. The peeled iteration keeps its original comparisons; folding changes
+neither effect order nor checked operations.
+
+No exclusivity or reassociation assumptions are added. LLVM determines whether inlining and
+constant propagation expose a vectorizable remainder. `PassStats::peeled_loops` reports the number
+of transformed loops; `folded_rvalues` also counts the proven remainder comparisons.
 
 ### Effects, ranges, and bounds proofs
 
@@ -525,6 +543,8 @@ The lowering owns:
   variables. These borrow existing descriptors; they allocate no descriptor tables or sample
   storage. A finite choice of unrelated parameter buffers or contiguous spans uses balanced
   branches to select one descriptor. Effect analysis preserves all possible logical origins.
+  Descriptor assignments target unprojected locals; reference parameters permit payload writes
+  according to the buffer's access mode, but cannot replace the caller's descriptor.
   Initialization aliases reconstruct descriptors from logical bindings after restore rather
   than saving host pointers.
 - scalar, fixed primitive-array, and dynamic primitive-slice event interfaces with direct handler IDs
@@ -576,6 +596,9 @@ has one reference per live field, independent of array capacity. Field-level eff
 identities and parameter pruning therefore use the same MIR analyses as ordinary aggregates.
 Aggregate width and function parameter count have no additional arbitrary cap; checked storage
 sizes, aggregate complexity and function local limits still apply.
+Binaryen legalizes signatures above the engine's positional-parameter limit with a private
+argument frame. Calls preserve component types and reference addresses without requiring
+inlining; the acyclic call graph permits each callee to reuse its frame without allocation.
 Borrowed views carry root storage, captured coordinates, lifecycle identity, bound resources and
 enclosing callback environments through helper calls. Joins retain symbolic root and resource
 selections with initialized tags on every path. Inherited constructor recipes resolve against

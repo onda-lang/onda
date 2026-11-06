@@ -1351,42 +1351,53 @@ pub(super) fn expand_nested_struct_ctor_assign(
     out
 }
 
+fn constructor_param_values(
+    param: &ProcParamSpec,
+    expression: Option<&Expr>,
+    selection: Option<(usize, usize)>,
+    arrays: &HashSet<String>,
+    context: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<Expr> {
+    let Some(expression) = expression else {
+        return param
+            .slots
+            .iter()
+            .map(|slot| slot.default.clone().unwrap_or(Expr::number(0.0)))
+            .collect();
+    };
+    let expression = if let Some((index, len)) = selection.filter(|_| param.is_scalar) {
+        select_proc_array_initializer_expr_for_slot(expression, index, len, context, arrays, errors)
+    } else {
+        expression.clone()
+    };
+    // A one-element parameter accepts a scalar override as well as an array.
+    let expand = if !param.is_scalar
+        && (param.slots.len() != 1 || proc_array_init::is_array_argument(&expression, arrays))
+    {
+        crate::proc_call_rewrite::expand_array_expr_to_slots
+    } else {
+        expand_expr_to_slots
+    };
+    expand(&expression, param.slots.len(), context, errors)
+}
+
 pub(super) fn expand_nested_proc_ctor_assign(
     owner_proc: &str,
     nested_var: &str,
     ctor_name: &str,
     ctor_args: &[CallArg],
     callee_param_specs: &[ProcParamSpec],
-    callee_buffer_specs: &[ProcBufferSpec],
+    callee_buffer_specs: &[TypedBufferDecl],
     delegate_context_args: &[Expr],
     proc_array_slot: Option<(usize, usize)>,
     constructor_array_symbols: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<Stmt>, Vec<Expr>) {
-    let mut param_names = callee_param_specs
-        .iter()
-        .map(|p| p.name.clone())
-        .collect::<Vec<_>>();
-    let mut param_defaults = callee_param_specs
-        .iter()
-        .map(|p| {
-            if p.slots.iter().all(|s| s.default.is_some()) {
-                Some(Expr::number(0.0))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    for buffer in callee_buffer_specs {
-        param_names.push(buffer.name.clone());
-        param_defaults.push(None);
-    }
-    let resolved = resolve_call_args(
+    let resolved = resolve_constructor_args(
         ctor_args,
-        &param_names,
-        &param_defaults,
-        false,
-        true,
+        callee_param_specs,
+        callee_buffer_specs,
         &format!(
             "processor constructor '{}(...)' for nested state '{}'",
             ctor_name, nested_var
@@ -1397,43 +1408,9 @@ pub(super) fn expand_nested_proc_ctor_assign(
     let mut out = Vec::<Stmt>::new();
     let mut bound_buffers = Vec::<Expr>::new();
     for (idx, param) in callee_param_specs.iter().enumerate() {
-        let values = match resolved.get(idx).copied().flatten() {
-            Some(expr) => {
-                let expr = if param.slots.len() == 1 {
-                    if let Some((array_slot_idx, array_len)) = proc_array_slot {
-                        select_proc_array_initializer_expr_for_slot(
-                            expr,
-                            array_slot_idx,
-                            array_len,
-                            &format!(
-                            "processor constructor '{}(...)' argument '{}' for nested state '{}'",
-                            ctor_name, param.name, nested_var
-                        ),
-                            constructor_array_symbols,
-                            errors,
-                        )
-                    } else {
-                        expr.clone()
-                    }
-                } else {
-                    expr.clone()
-                };
-                expand_expr_to_slots(
-                    &expr,
-                    param.slots.len(),
-                    &format!(
-                        "processor constructor '{}(...)' argument '{}'",
-                        ctor_name, param.name
-                    ),
-                    errors,
-                )
-            }
-            None => param
-                .slots
-                .iter()
-                .map(|slot| slot.default.clone().unwrap_or(Expr::number(0.0)))
-                .collect::<Vec<_>>(),
-        };
+        let values = constructor_param_values(param, resolved.get(idx).copied().flatten(),
+            proc_array_slot, constructor_array_symbols,
+            &format!("processor constructor '{ctor_name}(...)' argument '{}' for nested state '{nested_var}'", param.name), errors);
         for (slot_idx, slot) in param.slots.iter().enumerate() {
             let value = values
                 .get(slot_idx)
@@ -1527,35 +1504,15 @@ pub(super) fn expand_proc_instance_ctor_assign(
     ctor_name: &str,
     ctor_args: &[CallArg],
     param_specs: &[ProcParamSpec],
-    buffer_specs: &[ProcBufferSpec],
+    buffer_specs: &[TypedBufferDecl],
     proc_array_slot: Option<(usize, usize)>,
     constructor_array_symbols: &HashSet<String>,
     errors: &mut Vec<Diagnostic>,
 ) -> (Vec<Stmt>, Vec<Expr>) {
-    let mut param_names = param_specs
-        .iter()
-        .map(|p| p.name.clone())
-        .collect::<Vec<_>>();
-    let mut param_defaults = param_specs
-        .iter()
-        .map(|p| {
-            if p.slots.iter().all(|s| s.default.is_some()) {
-                Some(Expr::number(0.0))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    for buffer in buffer_specs {
-        param_names.push(buffer.name.clone());
-        param_defaults.push(None);
-    }
-    let resolved = resolve_call_args(
+    let resolved = resolve_constructor_args(
         ctor_args,
-        &param_names,
-        &param_defaults,
-        false,
-        true,
+        param_specs,
+        buffer_specs,
         &format!("processor constructor '{ctor_name}(...)' for instance '{instance_var}'"),
         errors,
     );
@@ -1563,43 +1520,9 @@ pub(super) fn expand_proc_instance_ctor_assign(
     let mut out = Vec::<Stmt>::new();
     let mut bound_buffers = Vec::<Expr>::new();
     for (idx, param) in param_specs.iter().enumerate() {
-        let values = match resolved.get(idx).copied().flatten() {
-            Some(expr) => {
-                let expr = if param.slots.len() == 1 {
-                    if let Some((array_slot_idx, array_len)) = proc_array_slot {
-                        select_proc_array_initializer_expr_for_slot(
-                            expr,
-                            array_slot_idx,
-                            array_len,
-                            &format!(
-                                "processor constructor '{}(...)' argument '{}' for instance '{}'",
-                                ctor_name, param.name, instance_var
-                            ),
-                            constructor_array_symbols,
-                            errors,
-                        )
-                    } else {
-                        expr.clone()
-                    }
-                } else {
-                    expr.clone()
-                };
-                expand_expr_to_slots(
-                    &expr,
-                    param.slots.len(),
-                    &format!(
-                        "processor constructor '{}(...)' argument '{}'",
-                        ctor_name, param.name
-                    ),
-                    errors,
-                )
-            }
-            None => param
-                .slots
-                .iter()
-                .map(|slot| slot.default.clone().unwrap_or(Expr::number(0.0)))
-                .collect::<Vec<_>>(),
-        };
+        let values = constructor_param_values(param, resolved.get(idx).copied().flatten(),
+            proc_array_slot, constructor_array_symbols,
+            &format!("processor constructor '{ctor_name}(...)' argument '{}' for instance '{instance_var}'", param.name), errors);
         for (slot_idx, slot) in param.slots.iter().enumerate() {
             let value = values
                 .get(slot_idx)

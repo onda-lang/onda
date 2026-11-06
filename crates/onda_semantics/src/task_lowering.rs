@@ -1198,6 +1198,7 @@ fn analyze_task_owner_init(
         &mut scratch_errors,
     );
     let init_ctx = InitAnalysisCtx {
+        storage_struct_defs: struct_defs,
         context_label: &owner.name,
         common: ScopeAnalysisCtx {
             policy: ScopePolicy::Init,

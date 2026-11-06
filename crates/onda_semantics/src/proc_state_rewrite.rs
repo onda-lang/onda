@@ -27,7 +27,7 @@ pub(crate) struct ProcApi {
     pub(crate) outputs: ProcOutputs,
     pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) delegates: HashMap<String, ProcEventSpec>,
-    pub(crate) buffers: Vec<ProcBufferSpec>,
+    pub(crate) buffers: Vec<TypedBufferDecl>,
     pub(crate) steppable: bool,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
@@ -61,6 +61,7 @@ pub(crate) struct ProcParamSlotSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSpec {
     pub(crate) name: String,
+    pub(crate) is_scalar: bool,
     pub(crate) slots: Vec<ProcParamSlotSpec>,
 }
 
@@ -68,15 +69,6 @@ impl ProcParamSpec {
     pub(crate) fn is_private(&self) -> bool {
         self.slots.iter().any(|slot| slot.private)
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ProcBufferSpec {
-    pub(crate) name: String,
-    pub(crate) elem_ty: PrimitiveType,
-    pub(crate) channels: TypedBufferChannels,
-    pub(crate) array_len: usize,
-    pub(crate) is_array: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -164,12 +156,12 @@ pub(crate) struct ProcNestedArrayState {
     pub(crate) size_expr: Expr,
 }
 
-/// A declared processor array. Uniform constructors have one family binding;
-/// authored per-element initializers retain only their actual binding data.
+/// A processor-array surface. Uniform declarations and borrowed slices have
+/// one family binding; per-element constructors retain their actual bindings.
 #[derive(Debug, Clone)]
 pub(crate) struct ProcArrayDeclaration {
     pub(crate) proc_name: String,
-    pub(crate) len: usize,
+    len: Option<usize>,
     bindings: Vec<String>,
 }
 
@@ -180,16 +172,29 @@ impl ProcArrayDeclaration {
             .collect();
         Self {
             proc_name,
-            len,
+            len: Some(len),
             bindings,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         self.len
+            .expect("a processor declaration has a fixed extent")
+    }
+
+    pub(crate) fn known_len(&self) -> Option<usize> {
+        self.len
+    }
+
+    pub(crate) fn borrowed(base: &str, proc_name: String) -> Self {
+        Self {
+            proc_name,
+            len: None,
+            bindings: vec![format!("{base}[0]")],
+        }
     }
     pub(crate) fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len == Some(0)
     }
     pub(crate) fn first_binding(&self) -> Option<&String> {
         self.bindings.first()

@@ -61,7 +61,9 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
   dependence facts from [compiler analyses](compiler.md#dsp-loop-proofs-and-diagnostics).
 - Measure processor callback-loop SIMD as the
   [shared MIR effect/dependence proofs](compiler.md#dsp-scheduling-and-processor-array-performance)
-  improve. Use the 16/128/1,024/16,384-slot cases from the
+  improve. Native scheduling already peels distinguished first iterations and folds proven
+  first-index comparisons in their remainders; LLVM still decides whether the remaining work can
+  vectorize. Use the 16/128/1,024/16,384-slot cases from the
   [final processor-storage report](../../scripts/bench/results/2026-11-02-processor-final.md#mir-alignment-and-larger-capacity-stress),
   inspecting LLVM remarks, aligned accesses, scalar tails, register pressure and callback latency.
   Preserve callback and reduction order, retain safe scalar execution when proofs are insufficient,

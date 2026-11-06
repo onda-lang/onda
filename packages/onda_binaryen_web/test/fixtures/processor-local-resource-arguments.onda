@@ -1,0 +1,60 @@
+struct Trace:
+  value: i32
+def mark(trace: Trace, value: i32) -> i32:
+  trace.value = trace.value * 10 + value
+  return value
+proc Voice:
+  buffers:
+    source: f32
+  delegate fired(value: i32)
+  sample:
+    fired(1)
+    out1 = source[0]
+def step(voice) -> f32:
+  return voice()
+proc Bank:
+  buffers:
+    source: f32
+  delegate completed(value: i32)
+  init:
+    voice = Voice(source = source)
+    trace = Trace(0)
+    count: i32 = 0
+  when voice.fired(value):
+    count += value
+  def mix(source: f32, b: i32 = 7) -> f32:
+    return source + f32(b) * 10.0 + step(voice)
+  def forward(value: f32) -> f32:
+    return mix(source = value)
+  sample:
+    trace.value = 0
+    count = 0
+    out1 = mix(b = mark(trace, 2), source = f32(mark(trace, 1)))
+    out2 = mix(0.5)
+    out3 = forward(value = 0.25)
+    out4 = f32(trace.value)
+    out5 = f32(count)
+    completed(count)
+proc Rack:
+  buffers:
+    source: f32
+    context: f32
+  init:
+    banks: Bank[2] = Bank(source = source)
+    seen: i32 = 0
+  when banks[1].completed(value):
+    seen += value + i32(context[0])
+  sample:
+    seen = 0
+    selected = banks[1]
+    out1, out2, out3, out4, out5 = selected()
+    out6 = f32(seen)
+buffers:
+  source: f32
+  context: f32
+init:
+  rack = Rack(source = source, context = context)
+sample:
+  source[0] = 3.0
+  context[0] = 10.0
+  out1, out2, out3, out4, out5, out6 = rack()

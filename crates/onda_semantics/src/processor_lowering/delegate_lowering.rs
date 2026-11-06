@@ -2064,18 +2064,16 @@ fn rewrite_source_overload_when(
 
 fn bind_source_buffer_types(
     env: &mut crate::def_semantics::CallTypeEnv,
-    buffers: &[BufferDecl],
-    options: AnalysisOptions,
+    buffers: &[TypedBufferDecl],
 ) {
-    let mut ignored_errors = Vec::new();
-    for buffer in crate::declaration_coercion::coerce_buffers(buffers, options, &mut ignored_errors)
-    {
+    for buffer in buffers {
         env.buffer_types.insert(
             buffer.name.clone(),
             (buffer.elem_ty, buffer.channels.clone()),
         );
         if buffer.is_array {
-            env.buffer_array_lens.insert(buffer.name, buffer.array_len);
+            env.buffer_array_lens
+                .insert(buffer.name.clone(), buffer.array_len);
         }
     }
 }
@@ -2114,7 +2112,8 @@ fn bind_top_validation_surfaces(
         Block::Buffers(buffers) => Some(buffers.decls.as_slice()),
         _ => None,
     }) {
-        bind_source_buffer_types(env, buffers, options);
+        let buffers = coerce_buffers(buffers, options, &mut ignored_errors);
+        bind_source_buffer_types(env, &buffers);
     }
     env.bind_constants(const_scalars, const_arrays, const_scope, options);
 }
@@ -2140,64 +2139,40 @@ fn bind_proc_validation_surfaces(
     const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
 ) {
     let mut ignored_errors = Vec::new();
-    let proc_options = proc_runtime_analysis_options(
-        options,
-        validated_sample_oversample_factor(
-            proc.sample_oversample_factor.as_ref(),
-            options,
-            &format!("processor '{}' sample block", proc.name),
-            &mut ignored_errors,
-        ),
-    );
-    let inferred_io = infer_numbered_io_from_sample(&proc.sample);
-    let inferred_names = infer_numbered_names_from_proc(proc);
-    let ins = normalize_numbered_port_decls(&proc.ins, "in", inferred_io.max_in);
-    let outs = normalize_numbered_port_decls(
-        &proc.outs,
-        proc_output_numbered_prefix(proc),
-        match proc.outs_timing {
-            OutputTiming::Sample => inferred_io.max_out,
-            OutputTiming::Block => inferred_names.max_kout,
-        },
-    );
-    let params = normalize_numbered_param_decls(&proc.params, "param", inferred_names.max_param);
-    let (_, in_types, _, in_arrays) = expand_proc_port_specs(
-        &proc.name,
-        &ins,
-        "input",
-        proc_options,
-        const_arrays,
-        &mut ignored_errors,
-    );
-    let (_, out_types, _, out_arrays) = expand_proc_port_specs(
-        &proc.name,
-        &outs,
-        "output",
-        proc_options,
-        const_arrays,
-        &mut ignored_errors,
-    );
-    let (param_specs, _) = expand_proc_param_specs(
-        &proc.name,
-        &params,
-        proc_options,
-        const_arrays,
-        &mut ignored_errors,
-    );
+    let proc_options = proc_options_for_shape(proc, options);
+    let declarations =
+        prepare_proc_declarations(proc, proc_options, const_arrays, &mut ignored_errors);
 
-    env.scalar_types
-        .extend(in_types.iter().map(|(name, ty)| (name.clone(), *ty)));
-    env.scalar_types
-        .extend(out_types.iter().map(|(name, ty)| (name.clone(), *ty)));
     env.scalar_types.extend(
-        param_specs
+        declarations
+            .inputs
+            .types
+            .iter()
+            .map(|(name, ty)| (name.clone(), *ty)),
+    );
+    env.scalar_types.extend(
+        declarations
+            .outputs
+            .types
+            .iter()
+            .map(|(name, ty)| (name.clone(), *ty)),
+    );
+    env.scalar_types.extend(
+        declarations
+            .params
             .iter()
             .flat_map(|spec| spec.slots.iter().map(|slot| (slot.name.clone(), slot.ty))),
     );
-    bind_validation_arrays(env, &array_infos_from_slot_map(&in_arrays, &in_types));
-    bind_validation_arrays(env, &array_infos_from_slot_map(&out_arrays, &out_types));
-    bind_validation_arrays(env, &array_infos_from_param_specs(&param_specs));
-    bind_source_buffer_types(env, &proc.buffers, proc_options);
+    bind_validation_arrays(
+        env,
+        &array_infos_from_slot_map(&declarations.inputs.arrays, &declarations.inputs.types),
+    );
+    bind_validation_arrays(
+        env,
+        &array_infos_from_slot_map(&declarations.outputs.arrays, &declarations.outputs.types),
+    );
+    bind_validation_arrays(env, &array_infos_from_param_specs(&declarations.params));
+    bind_source_buffer_types(env, &declarations.buffers);
     env.bind_constants(const_scalars, const_arrays, const_scope, proc_options);
 }
 
