@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Pass references to nested processors, processor arrays, and slices through helper functions
+  while preserving their state, bound buffers, and delegate subscriptions, including references
+  selected by conditional branches.
+- Call events on dynamically selected processor-array elements.
 - `onda bench` for benchmarking native Onda processing, with block timings, throughput,
   estimated realtime DSP CPU use, and optional JSON output.
 - Fieldless nominal enums with dense `i32` ordinals, explicit ordinal conversions, and support
@@ -30,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Large nested processor arrays compile without the previous aggregate-size limit or generating
+  a separate implementation for every element, making larger voice banks practical.
+- Faster native processor-bank processing, with roughly 4–5× speedups in measured 16- and
+  128-voice benchmarks; see the [benchmark report](scripts/bench/results/2026-11-02-processor-final.md).
 - Web Audio reports numeric execution and validation failures through an independent shared status
   ring and constructs errors on the main thread. A bounded request window and control wakeups
   avoid polling delays between commands; transport failure
@@ -44,6 +52,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - C metadata uses borrowed descriptors, including cached enum JSON and recursive message schemas.
   Batch decoding uses cursors; redundant property getters, indexed occurrence helpers and empty
   browser `createDefaultImports` helpers have been removed.
+- One allocation-free payload-layout query serves events and delegates, reporting packed offsets
+  and workspace sizes for nested arrays and slices so native hosts can share Onda's layout rules.
 
 - Buffer `.len()` returns the total element count across channels; `.samples()` returns the
   per-channel length. `std::data::Data.samples()` replaces `.frames()`, and buffer UI metadata
@@ -57,6 +67,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Preserve processor block-hook and callback ordering through aliases, branches, and helper calls,
+  including when hosts process a block in multiple segments.
+- Keep processor buffer references current after restoring snapshots and rebinding host buffers.
+- Evaluate processor selection indices only once, preserving side effects when selecting a receiver.
+- Initialize private parameters in every processor-array element and keep task activation independent
+  when mixing constant and dynamic array indices.
 - Direct buffer-reference aliases retain their buffer identity and metadata queries.
 - Touch scrolling can continue into the surrounding browser page when a panel
   reaches its scroll boundary.

@@ -254,17 +254,19 @@ sample:
         assert_eq!(params[2]["ty"]["kind"], "slice");
         assert_eq!(params[2]["ty"]["element"]["encoding"], "f32");
         assert_eq!(params[3]["ty"]["encoding"], "i64");
-        let mut payload = 0;
-        let mut workspace = 0;
-        assert!(onda_delegate_payload_sizes(
-            program.0,
-            0,
-            [3].as_ptr(),
-            1,
-            &mut payload,
-            &mut workspace
-        ));
-        assert_eq!(payload, 32);
+        let mut layout = onda_payload_layout_t::default();
+        assert_eq!(
+            onda_payload_layout(
+                info.payload_plan,
+                [3].as_ptr(),
+                1,
+                std::ptr::null_mut(),
+                0,
+                &mut layout,
+            ),
+            0
+        );
+        assert_eq!(layout.payload_bytes, 32);
     }
 }
 
@@ -409,39 +411,37 @@ sample:
         );
 
         let lengths = [2_i32];
-        let mut payload_bytes = -1;
-        let mut workspace_bytes = -1;
-        assert!(onda_event_payload_sizes(
-            program.0,
-            0,
-            lengths.as_ptr(),
-            lengths.len() as i32,
-            &mut payload_bytes,
-            &mut workspace_bytes,
-        ));
-        assert_eq!((payload_bytes, workspace_bytes), (36, 40));
-        assert!(onda_delegate_payload_sizes(
-            program.0,
-            0,
-            lengths.as_ptr(),
-            lengths.len() as i32,
-            &mut payload_bytes,
-            &mut workspace_bytes,
-        ));
-        assert_eq!((payload_bytes, workspace_bytes), (36, 40));
-
-        let negative = [-1_i32];
-        payload_bytes = 71;
-        workspace_bytes = 73;
-        assert!(!onda_event_payload_sizes(
-            program.0,
-            0,
-            negative.as_ptr(),
-            1,
-            &mut payload_bytes,
-            &mut workspace_bytes,
-        ));
-        assert_eq!((payload_bytes, workspace_bytes), (71, 73));
+        let mut layout = onda_payload_layout_t::default();
+        for info in [
+            onda_event_info(program.0, 0),
+            onda_delegate_info(program.0, 0),
+        ] {
+            assert_eq!(
+                onda_payload_layout(
+                    (*info).payload_plan,
+                    lengths.as_ptr(),
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut layout,
+                ),
+                0
+            );
+            assert_eq!((layout.payload_bytes, layout.workspace_bytes), (36, 40));
+        }
+        let before = layout;
+        assert_eq!(
+            onda_payload_layout(
+                (*onda_event_info(program.0, 0)).payload_plan,
+                [-1].as_ptr(),
+                1,
+                std::ptr::null_mut(),
+                0,
+                &mut layout,
+            ),
+            ONDA_API_ERROR_INVALID_SHAPE
+        );
+        assert_eq!(layout, before);
         assert!(onda_event_info(program.0, 1)
             .as_ref()
             .map_or(std::ptr::null(), |info| info.schema_json)

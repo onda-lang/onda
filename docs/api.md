@@ -396,7 +396,7 @@ unranged numeric conversions return NaN. Raw parameter bytes retain full-width `
 ### Messages and tensor views
 
 Message records contain a recursive `schema_json`, fixed/minimum packed payload sizes, delegate
-record sizes and tensor count. Fixed sizes are -1 for dynamic messages; event record sizes are -1.
+record sizes, tensor count and an immutable borrowed `payload_plan`. Fixed sizes are -1 for dynamic messages; event record sizes are -1.
 The schema preserves nested structs, tuples, arrays, slices, exact defaults and enum/integer domains.
 There is no separate scalar-only parameter projection.
 
@@ -405,10 +405,35 @@ parameter, primitive type, fixed shape, element product and dynamic outer-slice 
 parameters, `fixed_element_count` is the view's element count; for slices, multiply it by the
 logical slice length. Paths and shapes are borrowed until program destruction.
 
-`onda_event_payload_sizes` and `onda_delegate_payload_sizes` accept one signed logical length per
-top-level slice and return packed wire bytes and aligned preparation workspace bytes. Reserve the
-latter with `onda_instance_reserve_event_workspace` before realtime dispatch when necessary.
-Minimum payload sizes include slice length prefixes with zero elements.
+`onda_payload_layout` resolves either an event or delegate plan from one nonnegative logical length
+per top-level slice, in declaration order. It returns packed payload bytes, aligned preparation
+workspace bytes, and the number of regions. Pass `NULL, 0` for the region storage to query only
+those totals; otherwise supply caller-owned storage for every region. The query allocates nothing
+and checks all lengths, overflow and capacity before writing any output. Failures leave both the
+summary and region array unchanged and return the corresponding `ONDA_API_ERROR_*` status.
+
+Regions appear in wire order, with one region per primitive tensor and one additional region per
+slice length prefix. `parameter_index` identifies the source parameter; `tensor_index` is the
+flattened leaf index or `-1` for a length prefix. Each region reports its element count, packed byte
+offset/size and aligned workspace offset. Empty tensors retain zero-byte regions, so region count
+depends on schema shape, not array capacity or slice length. Offsets exclude delegate record headers.
+For example, `gain: f32, points: f32[], enabled: bool` with three points has four regions at
+offsets 0, 4, 8 and 20, and a 21-byte payload:
+
+```c
+const onda_message_info_t* event = onda_event_info(program, event_index);
+int32_t lengths[] = { 3 };
+onda_payload_region_t regions[4];
+onda_payload_layout_t layout;
+int status = onda_payload_layout(event->payload_plan, lengths, 1,
+                                 regions, 4, &layout);
+```
+
+The plan is borrowed until program destruction and needs no separate destroy call. Queries may
+run concurrently with separate output storage. Reserve `layout.workspace_bytes` with
+`onda_instance_reserve_event_workspace` before realtime dispatch when necessary. Layout resolution
+does not encode values, normalize domains, or dispatch events. Native tensor views remain available
+for synchronous calls that do not need packed transport.
 
 ### Print source metadata
 
@@ -601,7 +626,7 @@ All event functions accept an optional execution output and execute synchronousl
 Event payloads use the recursive schema returned by `onda_event_info(...)->schema_json`. Encode parameters in
 declaration order and fields depth-first; structs are structure-of-arrays tensors, and each dynamic
 slice contributes one little-endian `i32` logical length followed by its leaf tensors. Use
-`onda_event_payload_sizes` to size dynamic wire data and preparation workspace, reserve additional
+`onda_payload_layout` to resolve dynamic wire regions and preparation workspace, reserve additional
 workspace before realtime dispatch when necessary, and treat input rejection separately from
 handler failure. The processor remains usable after rejected input.
 
@@ -764,12 +789,10 @@ onda_delegate_batch_reset
 onda_delegate_count
 onda_delegate_index
 onda_delegate_info
-onda_delegate_payload_sizes
 onda_diag_dispose
 onda_event_count
 onda_event_index
 onda_event_info
-onda_event_payload_sizes
 onda_event_tensor_info
 onda_format_print_batch
 onda_format_print_batch_into
@@ -796,6 +819,7 @@ onda_param_index
 onda_param_info
 onda_param_normalized_to_plain
 onda_param_plain_to_normalized
+onda_payload_layout
 onda_prepare_process
 onda_print_batch_next
 onda_print_batch_reset

@@ -405,6 +405,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   metadata queries; event trigger; state snapshot/restore).
 
 - `value_info.rs` — immutable program-owned value, buffer and message records with cached enum JSON.
+- `payload_layout.rs` — borrowed message plans and allocation-free C layout queries, reusing the
+  processor ABI's checked region traversal for both events and delegates.
 - `source_info.rs` — borrowed source graph, project buffer and materialization records.
 
 ### `onda_cpal` (`crates/onda_cpal/src`)

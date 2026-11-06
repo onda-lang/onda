@@ -12,8 +12,8 @@ use std::slice;
 use std::sync::{Arc, OnceLock};
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, DeclaredMessage,
-    JitProgram, MirCompileOptions, ParamScale, RuntimeAllocator, TargetOptLevel,
+    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, JitProgram,
+    MirCompileOptions, ParamScale, RuntimeAllocator, TargetOptLevel,
 };
 use onda_frontend::{
     load_program_file, load_program_file_from_snapshot, parse_program, rewrite_source_references,
@@ -3795,6 +3795,8 @@ mod instance_operations;
 pub use instance_operations::*;
 mod value_info;
 pub use value_info::*;
+mod payload_layout;
+pub use payload_layout::*;
 
 mod metadata;
 

@@ -185,6 +185,7 @@ impl ValueInfo {
             });
         }
         for index in 0..program.jit.event_count() {
+            let plan = program.jit.event_descriptor(index).unwrap().payload_plan();
             result.events.push(onda_message_info_t {
                 name: program.event_names[index].as_ptr(),
                 schema_json: program.event_schema_json[index].as_ptr(),
@@ -198,18 +199,16 @@ impl ValueInfo {
                     .map_or(-1, saturating_usize_to_i32),
                 record_bytes: -1,
                 record_min_bytes: -1,
-                tensor_count: saturating_usize_to_i32(
-                    program
-                        .jit
-                        .event_descriptor(index)
-                        .unwrap()
-                        .payload_plan()
-                        .tensors()
-                        .len(),
-                ),
+                tensor_count: saturating_usize_to_i32(plan.tensors().len()),
+                payload_plan: (plan as *const onda_processor_abi::payload::PayloadPlan).cast(),
             });
         }
         for index in 0..program.jit.delegate_count() {
+            let plan = program
+                .jit
+                .delegate_descriptor(index)
+                .unwrap()
+                .payload_plan();
             result.delegates.push(onda_message_info_t {
                 name: program.delegate_names[index].as_ptr(),
                 schema_json: program.delegate_schema_json[index].as_ptr(),
@@ -229,15 +228,8 @@ impl ValueInfo {
                     .jit
                     .delegate_record_min_bytes(index)
                     .map_or(-1, saturating_usize_to_i32),
-                tensor_count: saturating_usize_to_i32(
-                    program
-                        .jit
-                        .delegate_descriptor(index)
-                        .unwrap()
-                        .payload_plan()
-                        .tensors()
-                        .len(),
-                ),
+                tensor_count: saturating_usize_to_i32(plan.tensors().len()),
+                payload_plan: (plan as *const onda_processor_abi::payload::PayloadPlan).cast(),
             });
         }
         Ok(result)
@@ -305,6 +297,7 @@ pub struct onda_message_info_t {
     pub record_bytes: i32,
     pub record_min_bytes: i32,
     pub tensor_count: i32,
+    pub payload_plan: *const onda_payload_plan_t,
 }
 
 /// Borrows immutable metadata until program destruction; null means invalid handle/index.

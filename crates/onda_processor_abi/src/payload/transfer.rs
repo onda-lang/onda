@@ -1,4 +1,4 @@
-use super::layout::{read_length, IntegerDomain, Region};
+use super::layout::{read_length, IntegerDomain};
 use super::*;
 
 /// A validated normalized payload. Its borrow keeps caller-owned workspace
@@ -28,10 +28,12 @@ impl PayloadPlan {
         self.walk(
             |offset, _| read_length(input, offset),
             |region| match region {
-                Region::Length { wire, workspace } => storage[workspace].copy_from_slice(
+                PayloadRegion::Length {
+                    wire, workspace, ..
+                } => storage[workspace].copy_from_slice(
                     &i32::from_le_bytes(input[wire].try_into().unwrap()).to_ne_bytes(),
                 ),
-                Region::Tensor(region) => {
+                PayloadRegion::Tensor(region) => {
                     let leaf = &self.tensors[region.tensor];
                     let size = leaf.encoding.byte_size();
                     for (source, target) in input[region.wire]
@@ -149,7 +151,7 @@ impl PreparedPayload<'_> {
             .walk(
                 |_, offset| read_prepared_length(self.storage, offset),
                 |region| {
-                    if let Region::Tensor(region) = region {
+                    if let PayloadRegion::Tensor(region) = region {
                         let bytes = &self.storage[region.workspace.clone()];
                         visit(&self.plan.tensors[region.tensor], region, bytes);
                     }
@@ -167,11 +169,13 @@ impl PreparedPayload<'_> {
             .walk(
                 |_, offset| read_prepared_length(self.storage, offset),
                 |region| match region {
-                    Region::Length { wire, workspace } => output[wire].copy_from_slice(
+                    PayloadRegion::Length {
+                        wire, workspace, ..
+                    } => output[wire].copy_from_slice(
                         &i32::from_ne_bytes(self.storage[workspace].try_into().unwrap())
                             .to_le_bytes(),
                     ),
-                    Region::Tensor(region) => {
+                    PayloadRegion::Tensor(region) => {
                         let size = self.plan.tensors[region.tensor].encoding.byte_size();
                         for (source, target) in self.storage[region.workspace]
                             .chunks_exact(size)

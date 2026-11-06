@@ -223,7 +223,7 @@ impl PayloadEncoderWorkspace {
                 Ok(len as usize)
             },
             |region| {
-                if let super::layout::Region::Tensor(region) = region {
+                if let PayloadRegion::Tensor(region) = region {
                     offsets[region.tensor] = region.wire.start;
                 }
             },
@@ -326,7 +326,7 @@ impl PayloadPlan {
                 Ok(length)
             },
             |region| {
-                if let super::layout::Region::Tensor(region) = region {
+                if let PayloadRegion::Tensor(region) = region {
                     offsets[region.tensor] = region.wire.start;
                 }
             },

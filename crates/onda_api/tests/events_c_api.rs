@@ -4798,3 +4798,6 @@ unsafe fn get_project_materialization_file(
 
 #[path = "events_c_api/metadata.rs"]
 mod metadata;
+
+#[path = "events_c_api/payload_layout.rs"]
+mod payload_layout;

@@ -23,6 +23,8 @@ typedef struct onda_project_image onda_project_image_t;
 typedef struct onda_project_materialization_plan onda_project_materialization_plan_t;
 typedef struct onda_compile_constants onda_compile_constants_t;
 typedef struct onda_diag onda_diag_t;
+/* Immutable plan borrowed from a message descriptor; do not destroy it. */
+typedef struct onda_payload_plan onda_payload_plan_t;
 
 /* Named negative results for operation-status functions. These are distinct from query APIs whose
    documentation assigns -1 as an unavailable/invalid sentinel.
@@ -976,6 +978,7 @@ typedef struct onda_message_info_t {
   const char* name;
   const char* schema_json;
   int32_t payload_bytes, payload_min_bytes, record_bytes, record_min_bytes, tensor_count;
+  const onda_payload_plan_t* payload_plan;
 } onda_message_info_t;
 const onda_buffer_info_t* onda_buffer_info(const onda_program_t* program, int32_t index);
 const onda_buffer_array_info_t* onda_buffer_array_info(const onda_program_t* program, int32_t index);
@@ -1014,21 +1017,44 @@ int onda_event_tensor_info(
   int tensor_index,
   onda_event_tensor_info_t* out_info
 );
-bool onda_event_payload_sizes(
-  const onda_program_t* program,
-  int index,
+typedef struct onda_payload_layout_t {
+  int32_t payload_bytes;
+  int32_t workspace_bytes;
+  int32_t region_count;
+} onda_payload_layout_t;
+
+/* One region in packed wire order. parameter_index addresses the top-level
+   schema parameter. tensor_index is -1 for its i32 slice-length prefix (one
+   element, four bytes); otherwise it addresses a flattened primitive tensor.
+   Empty tensors retain a region with zero elements/bytes. workspace_offset
+   addresses the naturally aligned native representation; payload_offset
+   addresses packed little-endian bytes. Neither includes a delegate record header. */
+typedef struct onda_payload_region_t {
+  int32_t parameter_index;
+  int32_t tensor_index;
+  int32_t element_count;
+  int32_t payload_offset;
+  int32_t payload_bytes;
+  int32_t workspace_offset;
+} onda_payload_region_t;
+
+/* Generic layout query for either event_info->payload_plan or
+   delegate_info->payload_plan. The plan remains valid until program destruction.
+   Supply one nonnegative logical length per top-level slice, in declaration order.
+   Use NULL out_regions and zero region_capacity to query just sizes/count; otherwise
+   capacity must hold every region. out_layout is required. Buffers must not overlap
+   each other, slice_lengths, or program-owned storage. The query allocates nothing,
+   reads no payload values, and leaves all outputs unchanged on failure.
+   Returns 0, INVALID_ARGUMENT for malformed pointers/counts, INVALID_SHAPE for
+   invalid slice lengths/count, SIZE_OVERFLOW for excessive extents, or SIZE_MISMATCH
+   for insufficient region capacity. */
+int onda_payload_layout(
+  const onda_payload_plan_t* plan,
   const int32_t* slice_lengths,
-  int slice_length_count,
-  int* out_payload_bytes,
-  int* out_workspace_bytes
-);
-bool onda_delegate_payload_sizes(
-  const onda_program_t* program,
-  int index,
-  const int32_t* slice_lengths,
-  int slice_length_count,
-  int* out_payload_bytes,
-  int* out_workspace_bytes
+  int32_t slice_length_count,
+  onda_payload_region_t* out_regions,
+  int32_t region_capacity,
+  onda_payload_layout_t* out_layout
 );
 int onda_state_total_bytes(const onda_program_t* program);
 

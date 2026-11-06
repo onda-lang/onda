@@ -39,6 +39,8 @@ pub struct PayloadPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorRegion {
+    /// Index in the source message's top-level parameter list.
+    pub parameter: usize,
     pub tensor: usize,
     pub logical_len: usize,
     pub elements: usize,
@@ -46,8 +48,10 @@ pub struct TensorRegion {
     pub workspace: Range<usize>,
 }
 
-pub(super) enum Region {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PayloadRegion {
     Length {
+        parameter: usize,
         wire: Range<usize>,
         workspace: Range<usize>,
     },
@@ -143,6 +147,12 @@ impl PayloadPlan {
         self.params.iter().filter(|param| param.dynamic).count()
     }
 
+    /// One region per leaf tensor, plus one length prefix per slice parameter.
+    /// Empty tensors retain their region, so this count depends only on schema.
+    pub fn region_count(&self) -> usize {
+        self.tensors.len() + self.dynamic_parameters()
+    }
+
     pub fn fixed_wire_size(&self) -> Option<usize> {
         (self.dynamic_parameters() == 0).then(|| self.minimum_sizes().0)
     }
@@ -178,13 +188,33 @@ impl PayloadPlan {
 
     /// Sizes depend only on shape and lengths, not values or normalization.
     pub fn sizes(&self, lengths: &[i32]) -> Result<(usize, usize), PayloadError> {
+        self.walk_lengths(lengths, |_| {})
+    }
+
+    /// Resolve packed and aligned regions without allocating or inspecting values.
+    /// Validates all lengths and extents before invoking the visitor, including
+    /// regions after dynamic slices. No callbacks occur on failure.
+    pub fn visit_layout(
+        &self,
+        lengths: &[i32],
+        visit: impl FnMut(PayloadRegion),
+    ) -> Result<(usize, usize), PayloadError> {
+        self.sizes(lengths)?;
+        self.walk_lengths(lengths, visit)
+    }
+
+    fn walk_lengths(
+        &self,
+        lengths: &[i32],
+        visit: impl FnMut(PayloadRegion),
+    ) -> Result<(usize, usize), PayloadError> {
         let mut lengths = lengths.iter();
         let sizes = self.walk(
             |_, _| {
                 let len = *lengths.next().ok_or(PayloadError::InvalidLengths)?;
                 usize::try_from(len).map_err(|_| PayloadError::NegativeLength)
             },
-            |_| {},
+            visit,
         )?;
         if lengths.next().is_some() {
             return Err(PayloadError::InvalidLengths);
@@ -207,15 +237,16 @@ impl PayloadPlan {
     pub(super) fn walk(
         &self,
         mut length: impl FnMut(usize, usize) -> Result<usize, PayloadError>,
-        mut visit: impl FnMut(Region),
+        mut visit: impl FnMut(PayloadRegion),
     ) -> Result<(usize, usize), PayloadError> {
         let mut wire = 0;
         let mut workspace = 0;
-        for param in &self.params {
+        for (parameter, param) in self.params.iter().enumerate() {
             let len = if param.dynamic {
                 let prepared = aligned(workspace, 4)?;
                 let len = length(wire, prepared)?;
-                visit(Region::Length {
+                visit(PayloadRegion::Length {
+                    parameter,
                     wire: wire..checked_add(wire, 4)?,
                     workspace: prepared..checked_add(prepared, 4)?,
                 });
@@ -231,6 +262,7 @@ impl PayloadPlan {
                 let bytes = checked_mul(elements, leaf.encoding.byte_size())?;
                 let prepared = aligned(workspace, leaf.encoding.byte_size())?;
                 let region = TensorRegion {
+                    parameter,
                     tensor: index,
                     logical_len: len,
                     elements,
@@ -239,7 +271,7 @@ impl PayloadPlan {
                 };
                 wire = region.wire.end;
                 workspace = region.workspace.end;
-                visit(Region::Tensor(region));
+                visit(PayloadRegion::Tensor(region));
             }
         }
         Ok((wire, workspace))

@@ -311,40 +311,6 @@ pub(super) fn decl_buffer_channels_kind_to_i32(channels: DeclaredBufferChannels)
     }
 }
 
-unsafe fn message_payload_sizes(
-    message: Option<&DeclaredMessage>,
-    slice_lengths: *const i32,
-    slice_length_count: i32,
-    out_payload_bytes: *mut i32,
-    out_workspace_bytes: *mut i32,
-) -> bool {
-    let Some(message) = message else {
-        return false;
-    };
-    if slice_length_count < 0 || out_payload_bytes.is_null() || out_workspace_bytes.is_null() {
-        return false;
-    }
-    let lengths = if slice_length_count == 0 {
-        &[]
-    } else {
-        if slice_lengths.is_null() {
-            return false;
-        }
-        slice::from_raw_parts(slice_lengths, slice_length_count as usize)
-    };
-    let Ok((payload_bytes, workspace_bytes)) = message.payload_plan().sizes(lengths) else {
-        return false;
-    };
-    let (Ok(payload_bytes), Ok(workspace_bytes)) =
-        (i32::try_from(payload_bytes), i32::try_from(workspace_bytes))
-    else {
-        return false;
-    };
-    *out_payload_bytes = payload_bytes;
-    *out_workspace_bytes = workspace_bytes;
-    true
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn onda_input_index(
     program: *const onda_program,
@@ -475,52 +441,6 @@ pub unsafe extern "C" fn onda_event_tensor_info(
         },
     );
     0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_event_payload_sizes(
-    program: *const onda_program,
-    index: i32,
-    slice_lengths: *const i32,
-    slice_length_count: i32,
-    out_payload_bytes: *mut i32,
-    out_workspace_bytes: *mut i32,
-) -> bool {
-    let message = if program.is_null() || index < 0 {
-        None
-    } else {
-        (&*program).inner.jit.event_descriptor(index as usize)
-    };
-    message_payload_sizes(
-        message,
-        slice_lengths,
-        slice_length_count,
-        out_payload_bytes,
-        out_workspace_bytes,
-    )
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_delegate_payload_sizes(
-    program: *const onda_program,
-    index: i32,
-    slice_lengths: *const i32,
-    slice_length_count: i32,
-    out_payload_bytes: *mut i32,
-    out_workspace_bytes: *mut i32,
-) -> bool {
-    let message = if program.is_null() || index < 0 {
-        None
-    } else {
-        (&*program).inner.jit.delegate_descriptor(index as usize)
-    };
-    message_payload_sizes(
-        message,
-        slice_lengths,
-        slice_length_count,
-        out_payload_bytes,
-        out_workspace_bytes,
-    )
 }
 
 #[no_mangle]

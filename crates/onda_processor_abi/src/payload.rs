@@ -10,7 +10,9 @@ pub use shape::PayloadLeaf;
 mod value;
 pub use value::{PayloadEncoder, PayloadEncoderWorkspace, PayloadSink, PayloadSource};
 mod transfer;
-pub use layout::{IntegerDomain, ParameterPlan, PayloadPlan, PayloadTensor, TensorRegion};
+pub use layout::{
+    IntegerDomain, ParameterPlan, PayloadPlan, PayloadRegion, PayloadTensor, TensorRegion,
+};
 pub use transfer::PreparedPayload;
 
 /// Default host-side wire budget for a payload containing dynamic slices.

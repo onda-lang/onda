@@ -172,6 +172,83 @@ fn dynamic_empty_payloads_keep_later_parameters_and_plan_size_bounded() {
 }
 
 #[test]
+fn layout_visits_match_prepared_regions_and_fail_before_visiting() {
+    let plan = PayloadPlan::new(&schema()).unwrap();
+    let mut regions = Vec::new();
+    assert_eq!(
+        plan.visit_layout(&[2], |r| regions.push(r)).unwrap(),
+        (45, 48)
+    );
+    assert_eq!(regions.len(), plan.region_count());
+    assert_eq!(
+        regions[1],
+        PayloadRegion::Length {
+            parameter: 1,
+            wire: 1..5,
+            workspace: 4..8,
+        }
+    );
+    let wire = input();
+    let mut workspace = Workspace([0; 128]);
+    let prepared = plan.prepare(&wire, &mut workspace.0).unwrap();
+    let mut tensors = regions.iter().filter_map(|region| match region {
+        PayloadRegion::Tensor(tensor) => Some(tensor),
+        _ => None,
+    });
+    prepared.visit_tensors(|_, region, _| assert_eq!(tensors.next(), Some(&region)));
+    assert_eq!(tensors.next(), None);
+
+    for lengths in [&[][..], &[-1], &[2, 3], &[i32::MAX]] {
+        assert!(plan
+            .visit_layout(lengths, |_| panic!("visited an invalid layout"))
+            .is_err());
+    }
+    regions.clear();
+    assert_eq!(
+        plan.visit_layout(&[0], |r| regions.push(r)).unwrap(),
+        (13, 16)
+    );
+    assert_eq!(regions.len(), 5);
+    assert!(matches!(&regions[2], PayloadRegion::Tensor(r)
+        if r.elements == 0 && r.wire == (5..5) && r.workspace == (8..8)));
+    assert!(matches!(&regions[4], PayloadRegion::Tensor(r)
+        if r.parameter == 2 && r.wire == (5..13)));
+}
+
+#[test]
+fn fixed_nested_array_layout_scales_with_schema_not_array_capacity() {
+    let schema = PayloadSchema {
+        params: vec![field(
+            "bank",
+            PayloadType::Array {
+                len: 16_384,
+                element: Box::new(PayloadType::Struct {
+                    name: "Item".into(),
+                    fields: vec![
+                        field("enabled", PayloadType::scalar(ScalarEncoding::Bool)),
+                        field(
+                            "pair",
+                            PayloadType::Array {
+                                len: 2,
+                                element: Box::new(PayloadType::scalar(ScalarEncoding::F64)),
+                            },
+                        ),
+                    ],
+                }),
+            },
+        )],
+    };
+    let plan = PayloadPlan::new(&schema).unwrap();
+    assert_eq!(plan.region_count(), 2);
+    let mut visited = 0;
+    assert_eq!(
+        plan.visit_layout(&[], |_| visited += 1).unwrap(),
+        (278_528, 278_528)
+    );
+    assert_eq!(visited, 2);
+}
+
+#[test]
 fn wire_capacity_accounts_for_worst_case_workspace_alignment() {
     let schema = PayloadSchema {
         params: vec![
@@ -334,6 +411,10 @@ mod allocation_check {
         let mut output = [0; 128];
         let before = ALLOCATIONS.with(Cell::get);
         for _ in 0..100 {
+            let mut regions = 0;
+            assert_eq!(plan.visit_layout(&[2], |_| regions += 1).unwrap(), (45, 48));
+            assert_eq!(regions, 5);
+            assert!(plan.visit_layout(&[i32::MAX], |_| unreachable!()).is_err());
             let encoded = encoder.encode(&values).unwrap();
             let prepared = plan.prepare(encoded, &mut workspace.0).unwrap();
             prepared.encode(&mut output).unwrap();
