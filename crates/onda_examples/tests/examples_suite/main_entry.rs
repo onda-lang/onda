@@ -42,7 +42,14 @@ sample:
         assert_eq!(instance.param_name(0), Some("gain"));
         bind_input(&mut instance, 0, input.as_ptr().cast(), 16).expect("input");
         let outputs = bind_outputs(&mut instance, 1, 4);
-        process_checked(&mut instance, 4, ExecutionOutput::none()).expect("process");
+        onda_runtime::process_checked_segment(
+            &mut instance,
+            0,
+            4,
+            onda_runtime::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .expect("process");
         assert_eq!(outputs[0], [-0.5, 0.0, 0.25, 1.0], "{name}");
     }
 }
@@ -104,7 +111,14 @@ sample:
                 .expect("input");
             }
             let outputs = bind_outputs(&mut instance, 3, 4);
-            process_checked(&mut instance, 4, ExecutionOutput::none()).expect("process");
+            onda_runtime::process_checked_segment(
+                &mut instance,
+                0,
+                4,
+                onda_runtime::PROCESSOR_FULL_BLOCK,
+                ExecutionOutput::none(),
+            )
+            .expect("process");
             rendered.push(outputs);
         }
         if factor == 1 {
@@ -171,12 +185,26 @@ proc Main:
         ExecutionOutput::none(),
     )
     .expect("event dispatch");
-    process_checked(&mut instance, 4, ExecutionOutput::none()).expect("next block");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("next block");
     assert_eq!(outputs[0], [0.75; 4]);
     assert_eq!(outputs[2], [4.0; 4]);
     assert_eq!(outputs[3], [10.75; 4]);
     outputs.iter_mut().for_each(|output| output.fill(0.0));
-    process_checked(&mut instance, 4, ExecutionOutput::none()).expect("equal control refresh");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("equal control refresh");
     assert_eq!(outputs[2], [5.0; 4]);
 }
 
@@ -208,7 +236,14 @@ proc Main:
     bind_output(&mut instance, 0, output.as_mut_ptr().cast(), 32).expect("output array");
     assert!(instance.param_index("offset").is_none());
     set_param_f32_array(&mut instance, "gains", &[0.5, 2.0]);
-    process_checked(&mut instance, 4, ExecutionOutput::none()).expect("process");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("process");
     assert_eq!(output, [2.0, 3.0, 4.0, 5.0, 5.0, 6.0, 7.0, 8.0]);
 }
 
@@ -228,19 +263,57 @@ proc Main:
 "#;
     let (mut instance, _, _) = compile_instance(source, 2);
     let outputs = bind_outputs(&mut instance, 1, 2);
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("first");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("first");
     assert_eq!(outputs[0], [2.0, 4.0]);
-    init_checked(&mut instance, InitMode::PreservePinned).expect("preserve");
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("preserved");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("preserve");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("preserved");
     assert_eq!(outputs[0], [4.0, 6.0]);
-    init_checked(&mut instance, InitMode::Full).expect("full");
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("reset");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("full");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reset");
     assert_eq!(outputs[0], [2.0, 4.0]);
 
     let (mut event_only, _, _) =
         compile_instance("proc Main:\n  outs 1\n  event reset():\n    print(1)\n", 2);
     let outputs = bind_outputs(&mut event_only, 1, 2);
-    process_checked(&mut event_only, 2, ExecutionOutput::none()).expect("neutral process");
+    onda_runtime::process_checked_segment(
+        &mut event_only,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("neutral process");
     assert_eq!(outputs[0], [0.0; 2]);
 }
 
@@ -275,8 +348,20 @@ proc Main:
         PrimitiveType::F32,
     )
     .expect("first buffer");
-    init_checked(&mut instance, InitMode::Full).expect("initialize against bound buffer");
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("first");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("initialize against bound buffer");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("first");
     assert_eq!(outputs[0], [0.25; 2]);
     bind_buffer(
         &mut instance,
@@ -305,13 +390,22 @@ proc Main:
     assert_eq!(batch.record_count, 1);
     assert_eq!(
         batch
-            .occurrence(0)
+            .occurrences()
+            .next()
+            .transpose()
             .expect("valid batch")
             .expect("occurrence")
             .payload,
         0.75_f32.to_le_bytes()
     );
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("rebound");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("rebound");
     assert_eq!(outputs[0], [0.75; 2]);
 }
 
@@ -334,10 +428,24 @@ proc Main:
 "#;
     let (mut instance, _, _) = compile_instance(source, 2);
     let outputs = bind_outputs(&mut instance, 1, 2);
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("yield");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("yield");
     assert_eq!(outputs[0], [0.0; 2]);
     set_param_f32(&mut instance, "gain", 0.75);
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("resume");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("resume");
     assert_eq!(outputs[0], [1.0; 2]);
 }
 
@@ -374,7 +482,14 @@ proc Main:
     onda_runtime::read_control_output_bytes(&instance, 0, &mut bytes).expect("control output");
     assert_eq!(f32::from_ne_bytes(bytes), 0.25);
     set_param_f32(&mut instance, "step", 0.5);
-    process_checked(&mut instance, 4, ExecutionOutput::none()).expect("next");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("next");
     onda_runtime::read_control_output_bytes(&instance, 0, &mut bytes).expect("control output");
     assert_eq!(f32::from_ne_bytes(bytes), 0.75);
 }
@@ -409,7 +524,14 @@ proc Main:
         ExecutionOutput::none(),
     )
     .expect("nested event");
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("process");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("process");
     assert_eq!(outputs[0], [2.0; 2]);
 }
 
@@ -444,7 +566,9 @@ proc Main:
     )
     .expect("measure");
     let occurrence = batch
-        .occurrence(0)
+        .occurrences()
+        .next()
+        .transpose()
         .expect("valid batch")
         .expect("measurement");
     assert_eq!(occurrence.payload, 192_000.0_f32.to_le_bytes());
@@ -490,10 +614,24 @@ proc Main:
         PrimitiveType::F32,
     )
     .expect("buffer array");
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("process");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("process");
     assert_eq!(outputs[0], [2.5; 2]);
     set_param_f32_array(&mut instance, "gain", &[0.75]);
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("refresh");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("refresh");
     assert_eq!(outputs[0], [3.5; 2]);
 }
 
@@ -522,7 +660,14 @@ proc Main:
 "#;
     let (mut instance, _, _) = compile_instance(source, 2);
     let outputs = bind_outputs(&mut instance, 6, 2);
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("defaults");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("defaults");
     for (output, expected) in outputs.iter().zip([4.0, 4.0, 1.0, 2.0, 0.5, 4.5]) {
         assert_eq!(output, &[expected; 2]);
     }
@@ -551,7 +696,14 @@ proc Main:
         let index = instance.param_index(name).expect("public parameter");
         set_param_by_index(&mut instance, index, &bytes).expect("set array");
     }
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("refresh");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("refresh");
     for (output, expected) in outputs.iter().zip([12.0, 12.0, 2.0, 1.0, 0.75, 4.5]) {
         assert_eq!(output, &[expected; 2]);
     }
@@ -598,12 +750,21 @@ proc Main:
         .collect();
     assert_eq!(
         batch
-            .occurrence(0)
+            .occurrences()
+            .next()
+            .transpose()
             .expect("valid batch")
             .expect("publication")
             .payload,
         expected
     );
-    process_checked(&mut instance, 2, ExecutionOutput::none()).expect("process");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("process");
     assert_eq!(outputs[0], [7.0; 2]);
 }

@@ -11,10 +11,7 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, PrimitiveType};
-use onda_runtime::{
-    bind_buffer, bind_output, create_instance, init_checked, process_checked, InitMode,
-    InstanceConfig,
-};
+use onda_runtime::{bind_buffer, bind_output, create_instance, init_checked, InitMode};
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -119,6 +116,7 @@ struct LoadingSummary {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    onda_realtime::configure_current_thread_audio_fp_mode();
     let mut args = env::args().skip(1);
     let impulse_frames = args
         .next()
@@ -229,16 +227,8 @@ fn measure(
     for _ in 0..repetitions {
         left_output.fill(0.0);
         right_output.fill(0.0);
-        let mut instance = create_instance(
-            program.clone(),
-            InstanceConfig {
-                sample_rate: SAMPLE_RATE,
-                frames_per_block: block_size,
-                in_channels: 0,
-                out_channels: 2,
-            },
-        )
-        .map_err(|error| format!("instance creation failed: {error:?}"))?;
+        let mut instance = create_instance(program.clone(), None)
+            .map_err(|error| format!("instance creation failed: {error:?}"))?;
         unsafe {
             bind_buffer(
                 &mut instance,
@@ -265,8 +255,14 @@ fn measure(
             )
             .map_err(|error| format!("right output binding failed: {error:?}"))?;
         }
-        init_checked(&mut instance, InitMode::Full)
-            .map_err(|error| format!("instance initialization failed: {error:?}"))?;
+        init_checked(
+            &mut instance,
+            InitMode::Full,
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .map_err(onda_frontend::Diagnostic::from)
+        .and_then(onda_codegen_llvm::check_execution_status)
+        .map_err(|error| format!("instance initialization failed: {error:?}"))?;
 
         let mut peak_us = 0.0_f64;
         let started = Instant::now();
@@ -274,12 +270,10 @@ fn measure(
         let mut blocks = 0;
         while blocks < maximum_blocks {
             let block_started = Instant::now();
-            process_checked(
-                &mut instance,
-                block_size,
-                onda_runtime::ExecutionOutput::none(),
-            )
-            .map_err(|error| format!("processing failed: {error:?}"))?;
+            onda_runtime::process_checked(&mut instance, onda_runtime::ExecutionOutput::none())
+                .map_err(onda_frontend::Diagnostic::from)
+                .and_then(onda_codegen_llvm::check_execution_status)
+                .map_err(|error| format!("processing failed: {error:?}"))?;
             peak_us = peak_us.max(block_started.elapsed().as_secs_f64() * 1_000_000.0);
             blocks += 1;
 
@@ -303,23 +297,19 @@ fn measure(
         totals.push(started.elapsed().as_secs_f64() * 1_000_000.0);
 
         for _ in 0..STEADY_STATE_WARMUP_BLOCKS {
-            process_checked(
-                &mut instance,
-                block_size,
-                onda_runtime::ExecutionOutput::none(),
-            )
-            .map_err(|error| format!("steady-state warmup failed: {error:?}"))?;
+            onda_runtime::process_checked(&mut instance, onda_runtime::ExecutionOutput::none())
+                .map_err(onda_frontend::Diagnostic::from)
+                .and_then(onda_codegen_llvm::check_execution_status)
+                .map_err(|error| format!("steady-state warmup failed: {error:?}"))?;
         }
         let mut steady_state_peak_us = 0.0_f64;
         let steady_state_started = Instant::now();
         for _ in 0..STEADY_STATE_BLOCKS {
             let block_started = Instant::now();
-            process_checked(
-                &mut instance,
-                block_size,
-                onda_runtime::ExecutionOutput::none(),
-            )
-            .map_err(|error| format!("steady-state processing failed: {error:?}"))?;
+            onda_runtime::process_checked(&mut instance, onda_runtime::ExecutionOutput::none())
+                .map_err(onda_frontend::Diagnostic::from)
+                .and_then(onda_codegen_llvm::check_execution_status)
+                .map_err(|error| format!("steady-state processing failed: {error:?}"))?;
             steady_state_peak_us =
                 steady_state_peak_us.max(block_started.elapsed().as_secs_f64() * 1_000_000.0);
         }

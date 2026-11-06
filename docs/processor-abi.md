@@ -556,11 +556,11 @@ This index is checked against `include/onda_processor_abi.h` so newly exposed fu
 released without appearing in this reference.
 
 <!-- BEGIN PROCESSOR C API FUNCTION INDEX -->
+
+```text
 onda_process
 onda_processor_batch_next_record
-onda_processor_batch_record_at
 onda_processor_delegate_batch_next
-onda_processor_delegate_batch_occurrence_at
 onda_processor_delegate_batch_reset
 onda_processor_execution_output_reset
 onda_processor_float_grid_value_matches
@@ -575,6 +575,7 @@ onda_processor_param_domain_is_valid
 onda_processor_param_normalized_to_plain
 onda_processor_param_plain_to_normalized
 onda_processor_print_batch_next
-onda_processor_print_batch_occurrence_at
 onda_processor_print_batch_reset
+```
+
 <!-- END PROCESSOR C API FUNCTION INDEX -->

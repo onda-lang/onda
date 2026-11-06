@@ -21,7 +21,8 @@ static int views_from_metadata(
   size_t view_capacity,
   int* view_count
 ) {
-  const int tensor_count = onda_event_tensor_count(program, event_index);
+  const onda_message_info_t* info = onda_event_info(program, event_index);
+  const int tensor_count = info ? info->tensor_count : -1;
   if (tensor_count < 0 || (size_t) tensor_count > view_capacity)
     return -1;
   for (int tensor_index = 0; tensor_index < tensor_count; ++tensor_index) {
@@ -88,16 +89,17 @@ static int run_case(
   int view_count,
   int unchecked
 ) {
+  onda_configure_current_thread_audio_fp_mode();
   onda_diag_t diagnostic = { 0 };
   onda_instance_t* instance =
-    onda_instance_create_initialized(program, 0, 1, NULL, &diagnostic);
+    onda_instance_create(program, NULL, &diagnostic);
   if (instance == NULL)
     return report_diagnostic("instance creation", &diagnostic);
   onda_diag_dispose(&diagnostic);
 
   float output = 0.0F;
   if (onda_bind_output(instance, 0, &output, sizeof output) != 0
-      || onda_validate_buffers(instance) != 0) {
+      || onda_init_checked(instance, ONDA_INIT_FULL, NULL) != 0) {
     fprintf(stderr, "binding preparation failed\n");
     onda_instance_destroy(instance);
     return -1;
@@ -107,7 +109,7 @@ static int run_case(
     ? onda_trigger_event_views_by_index_unchecked(instance, event_index, views, NULL)
     : onda_trigger_event_views_by_index_checked(instance, event_index, views, view_count, NULL);
   const int process_status = event_status == ONDA_EXECUTION_OK
-    ? onda_process_checked(instance, 1, NULL)
+    ? onda_process_checked(instance, NULL)
     : event_status;
   printf(
     "%s: event=%d process=%d output=%.1f\n",
@@ -138,6 +140,7 @@ int main(void) {
     .sample_rate = 48000.0F,
     .block_size = 1,
   };
+  onda_configure_current_thread_audio_fp_mode();
   onda_diag_t diagnostic = { 0 };
   onda_program_t* program = onda_compile(source, &options, &diagnostic);
   if (program == NULL)

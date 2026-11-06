@@ -13,7 +13,7 @@ fn compile_instance(src: &str, frames: usize) -> (onda_runtime::Instance, usize,
 
 fn compile_instance_with_options(
     src: &str,
-    frames: usize,
+    _frames: usize,
     options: CompileOptions,
 ) -> (onda_runtime::Instance, usize, usize) {
     let parsed = parse_program(src).expect("parse should succeed");
@@ -29,16 +29,8 @@ fn compile_instance_with_options(
     let out_channels = typed.outs.len();
     let jit = lower_typed_and_jit(typed, options).expect("jit lowering should succeed");
 
-    let instance = create_instance_initialized(
-        jit,
-        InstanceConfig {
-            sample_rate: options.sample_rate,
-            frames_per_block: frames,
-            in_channels,
-            out_channels,
-        },
-    )
-    .expect("instance should be created");
+    let mut instance = onda_runtime::create_instance(jit, None).expect("instance should allocate");
+    assert_eq!(onda_runtime::init_checked(&mut instance, onda_runtime::InitMode::Full, onda_runtime::ExecutionOutput::none()).unwrap(), 0);
     (instance, in_channels, out_channels)
 }
 

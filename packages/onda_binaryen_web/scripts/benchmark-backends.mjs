@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import binaryen from "binaryen";
 import {
   compileTrustedMir as compileMir,
-  createDefaultImports,
 } from "../src/index.js";
 import { scalarSize, writeParameterDefaults } from "./wasm-memory.mjs";
 
@@ -189,7 +188,7 @@ try {
     const instantiateSamples = [];
     for (let repetition = 0; repetition <= compileRepetitions; repetition += 1) {
       const started = performance.now();
-      await WebAssembly.instantiate(artifact.wasm, createDefaultImports());
+      await WebAssembly.instantiate(artifact.wasm, {});
       const elapsed = performance.now() - started;
       if (repetition > 0) instantiateSamples.push(elapsed);
     }
@@ -340,7 +339,7 @@ if (llvmRegressions.length > 0) {
 async function prepareWasmBenchmark(artifact) {
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const metadata = artifact.metadata;

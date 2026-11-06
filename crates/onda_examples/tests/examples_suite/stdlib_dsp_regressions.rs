@@ -14,7 +14,14 @@ fn render(source: &str, frames: usize) -> Vec<Vec<f64>> {
         )
         .unwrap();
     }
-    process_checked(&mut instance, frames, ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     output
 }
 

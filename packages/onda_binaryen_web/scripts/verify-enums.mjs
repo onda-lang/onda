@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PayloadPlan, writeEventInput } from "@onda-lang/processor-abi";
-import { compileTrustedMir, createDefaultImports } from "../src/index.js";
+import { compileTrustedMir } from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
 import { writeParameterDefaults } from "./wasm-memory.mjs";
 
@@ -25,7 +25,7 @@ try {
     assert.equal(params[0].enumeration.members[2].label, "Band-pass");
     assert.equal(params[1].param_control.step_count, 0);
     assert.equal(events[0].schema.params[0].ty.fields[0].ty.fields[0].ty.enumeration.name, "Mode");
-    const { instance } = await WebAssembly.instantiate(artifact.wasm, createDefaultImports());
+    const { instance } = await WebAssembly.instantiate(artifact.wasm, {});
     const exports = instance.exports;
     const memory = exports.memory;
     let heap = Number(exports.__heap_base.value);

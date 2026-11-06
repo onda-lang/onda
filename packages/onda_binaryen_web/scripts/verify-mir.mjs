@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 
 import {
   compileTrustedMir as compileMir,
-  createDefaultImports,
 } from "../src/index.js";
 
 const mirPath = process.argv[2];
@@ -17,7 +16,7 @@ if (!WebAssembly.validate(artifact.wasm)) {
 
 const { instance } = await WebAssembly.instantiate(
   artifact.wasm,
-  createDefaultImports(),
+  {},
 );
 const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
 const blockSize = artifact.metadata.compile.block_size;

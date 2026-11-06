@@ -920,7 +920,10 @@ mod tests {
             .expect("active run")
             .bind_buffer_samples("src", vec![0.9], 1, 48_000.0)
             .expect_err("mono data must not replace a static stereo binding");
-        assert!(error.message.contains("expects 2 channels"), "{error:?}");
+        assert!(
+            error.message.contains("invalid shape for buffer 0"),
+            "{error:?}"
+        );
 
         let run = session.run(&main).expect("active run");
         assert_eq!(run.buffer_info()[0].loaded_channels, Some(2));

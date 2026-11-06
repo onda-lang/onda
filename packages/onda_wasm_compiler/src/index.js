@@ -607,9 +607,6 @@ async function initializeToolchain(frontendWasm) {
   return { frontend, compileTrustedMir: backend.compileTrustedMir };
 }
 
-export function createDefaultImports() {
-  return {};
-}
 
 function normalizeCompileOptions(options) {
   const compile = normalizeCompileInputOptions(options);

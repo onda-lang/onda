@@ -1,4 +1,6 @@
-import { paramAddress, paramElementAddress, paramSmoothingSamples, ParamSmoothing } from "./param-metadata.js";
+import { ONDA_RUNTIME_ERROR as ERROR, STATUS_OPERATIONS, failureStatus } from "./runtime-status.js";
+import { openExecutionStatusRing, writeExecutionStatus } from "./execution-status-ring.js";
+import { paramSmoothingSamples, ParamSmoothing } from "./param-metadata.js";
 import {
   EXECUTION_OPERATION_EVENT,
   EXECUTION_OPERATION_INIT,
@@ -20,16 +22,12 @@ const DEFAULT_EVENT_PAYLOAD_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_DELEGATE_CAPACITY_BYTES = 64 * 1024;
 const DEFAULT_PRINT_CAPACITY_BYTES = 64 * 1024;
 
-class ProcessorExecutionError extends Error {
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-}
 const DELEGATE_BATCH_SIZE_BYTES = 20;
 const PRINT_BATCH_SIZE_BYTES = 20;
 const EXECUTION_OUTPUT_SIZE_BYTES = 12;
 const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+
+const DECIMAL_I64 = /^-?[0-9]+$/;
 
 function exactI64(value) {
   let integer;
@@ -37,13 +35,13 @@ function exactI64(value) {
     integer = value;
   } else if (typeof value === "number" && Number.isSafeInteger(value)) {
     integer = BigInt(value);
-  } else if (typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+  } else if (typeof value === "string" && DECIMAL_I64.test(value)) {
     integer = BigInt(value);
   } else {
-    throw new TypeError("i64 value must be a bigint, safe integer, or decimal integer string");
+    throw ERROR.INVALID_PARAMETER;
   }
   if (BigInt.asIntN(64, integer) !== integer) {
-    throw new RangeError(`i64 value '${integer}' is outside the signed 64-bit range`);
+    throw ERROR.INVALID_PARAMETER;
   }
   return integer;
 }
@@ -290,7 +288,25 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       printOverflowCount: 0,
       printTransportDropCount: 0,
     };
+    this.executionStatusRing = processorOptions.executionStatusRing == null
+      ? null : openExecutionStatusRing(processorOptions.executionStatusRing);
+    this.statusMessage = { type: "onda-status", requestId: 0, operation: 0, status: 0 };
+    this.statusReadyMessage = { type: "onda-status-ready" };
+    this.transportFailed = false;
+    this.eventIds = new Map(this.eventInfo.map((event, index) => [event.name, index]));
+    this.bufferIds = new Map(this.bufferInfo.map((buffer, index) => [buffer.name, index]));
+    this.paramAddresses = new Map();
+    this.arrayParamAddresses = [];
+    this.paramInfo.forEach((info, index) => {
+      const address = { info };
+      this.paramAddresses.set(index, address);
+      this.paramAddresses.set(info.name, address);
+      if (this.isFixedArray(info)) {
+        this.arrayParamAddresses.push({ info, prefix: `${info.name}[` });
+      }
+    });
     this.writeParamDefaults();
+    this.paramDefaults = new Uint8Array(this.memory.buffer, this.paramsPtr, this.paramSizeBytes).slice();
     this.writeInitialParams(processorOptions.params ?? {});
     this.paramSmoothing = new ParamSmoothing(
       this.paramInfo,
@@ -342,6 +358,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     this.dataViewCache = new DataView(buffer);
     if (!this.viewsReady) return;
 
+    this.paramBytes = new Uint8Array(buffer, this.paramsPtr, this.paramSizeBytes);
     this.stateBytes = new Uint8Array(
       buffer,
       this.statePtr,
@@ -385,7 +402,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (scalar === "i64") return new BigInt64Array(this.memoryBuffer, address, length);
     if (scalar === "f32") return new Float32Array(this.memoryBuffer, address, length);
     if (scalar === "f64") return new Float64Array(this.memoryBuffer, address, length);
-    throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+    throw ERROR.INVALID_STORAGE;
   }
 
   configuredEventPayloadCapacity(configuredCapacity) {
@@ -488,6 +505,11 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   writeParamDefaults() {
+    if (this.paramDefaults) {
+      this.refreshMemoryCache();
+      this.paramBytes.set(this.paramDefaults);
+      return;
+    }
     for (const param of this.paramInfo) {
       const value = this.metadataDefaultValue(param);
       if (value !== undefined) {
@@ -501,11 +523,37 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   setParam(selector, value, explicitElement = null) {
-    const { info: param, element } = explicitElement === null
-      ? paramAddress(this.paramInfo, selector)
-      : paramElementAddress(this.paramInfo, selector, explicitElement);
-    if (value === undefined) {
-      throw new Error(`Onda parameter '${param.name}' requires a value`);
+    let param = this.paramAddresses.get(selector)?.info;
+    let element = explicitElement;
+    if (!param && typeof selector === "string" && selector.endsWith("]") && explicitElement === null) {
+      for (const address of this.arrayParamAddresses) {
+        if (!selector.startsWith(address.prefix)) continue;
+        const start = address.prefix.length;
+        const end = selector.length - 1;
+        if (start === end || (selector[start] === "0" && end - start > 1)) break;
+        element = 0;
+        for (let index = start; index < end; index += 1) {
+          const digit = selector.charCodeAt(index) - 48;
+          if (digit < 0 || digit > 9) throw ERROR.INVALID_PARAMETER;
+          element = element * 10 + digit;
+        }
+        param = address.info;
+        break;
+      }
+    }
+    if (!param || value === undefined) throw ERROR.INVALID_PARAMETER;
+    if (element !== null && (!Number.isSafeInteger(element) || element < 0 || element >= param.array_len)) {
+      throw ERROR.INVALID_PARAMETER;
+    }
+    // Validate every element before storing any: rejection must not partially
+    // update parameters or smoothing targets (notably an invalid i64 array tail).
+    if (element === null) this.validateStorageValue(param, value);
+    if (element !== null || !this.isFixedArray(param)) {
+      this.validateScalarValue(param.scalar, value);
+    } else {
+      for (let index = 0; index < param.array_len; index += 1) {
+        this.validateScalarValue(param.scalar, value[index]);
+      }
     }
     const offset = Number(param.byte_offset);
     const byteSize = Number(param.byte_size);
@@ -520,7 +568,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       byteSize !== expectedByteSize ||
       offset + byteSize > this.paramSizeBytes
     ) {
-      throw new Error(`Onda parameter '${param.name}' has invalid storage metadata`);
+      throw ERROR.INVALID_PARAMETER;
     }
     if (element !== null) {
       this.setParamScalar(param, element, value);
@@ -547,10 +595,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   init(mode) {
     if (mode !== PROCESSOR_INIT_PRESERVE_PINNED && mode !== PROCESSOR_INIT_FULL) {
-      throw new Error(`invalid Onda init mode '${String(mode)}'`);
+      throw ERROR.INVALID_INIT_MODE;
     }
     if (mode === PROCESSOR_INIT_PRESERVE_PINNED && !this.initialized) {
-      throw new Error("full initialization is required before preserving pinned state");
+      throw ERROR.UNINITIALIZED;
     }
     this.runInitialization(mode);
   }
@@ -568,6 +616,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   runInitialization(mode, afterInitialize, collectOutput = true) {
+    if (this.transportFailed) throw ERROR.TRANSPORT_OVERFLOW;
     // Reinitializing state does not create a compile-block boundary. Retain
     // the host-side position so the next process segment cannot synthesize an
     // extra BEGIN_BLOCK or postpone the matching END_BLOCK.
@@ -596,28 +645,25 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         0,
       );
     }
-    this.checkExecutionStatus(status, "processor init");
+    this.checkExecutionStatus(status);
     afterInitialize?.();
     this.commitInitializedState(blockCursor);
   }
 
-  requireInitialized(operation) {
+  requireInitialized() {
     if (!this.initialized) {
-      throw new Error(`full initialization is required before ${operation}`);
+      throw ERROR.UNINITIALIZED;
     }
   }
 
-  checkExecutionStatus(status, operation) {
+  checkExecutionStatus(status, inputRejectionAllowed = false) {
     if (status === PROCESSOR_EXECUTION_OK) return;
-    this.invalidateState();
-    throw new ProcessorExecutionError(
-      `${operation} failed with Onda execution status ${String(status)}`,
-      status,
-    );
+    if (!inputRejectionAllowed || status !== PROCESSOR_EXECUTION_INPUT_REJECTED) this.invalidateState();
+    throw status;
   }
 
   createSnapshot() {
-    this.requireInitialized("snapshot");
+    this.requireInitialized();
     const snapshot = new Uint8Array(this.snapshotSizeBytes);
     this.refreshMemoryCache();
     const state = this.stateBytes;
@@ -636,11 +682,6 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
 
   restoreSnapshot(value) {
     const snapshot = this.snapshotBytes(value);
-    if (snapshot.byteLength !== this.snapshotSizeBytes) {
-      throw new Error(
-        `snapshot has ${snapshot.byteLength} bytes; expected ${this.snapshotSizeBytes}`,
-      );
-    }
     // The ABI restore base is a fresh post-init image, so scratch and
     // control-mirror state never leak across a restore. Initialization and
     // overlay form one lifecycle transition: neither partial result is ready.
@@ -664,18 +705,18 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     const range = entry.integer_range;
     if (range === null || range === undefined) return;
     if (entry.scalar !== "i32" && entry.scalar !== "i64") {
-      throw new Error(`state '${String(entry.name)}' has an invalid integer range`);
+      throw ERROR.INVALID_STORAGE;
     }
     const mode = range.mode;
     if (mode !== "clamp" && mode !== "wrap") {
-      throw new Error(`state '${String(entry.name)}' has an invalid integer range mode`);
+      throw ERROR.INVALID_STORAGE;
     }
     const view = new DataView(state.buffer, state.byteOffset + offset, byteSize);
     if (entry.scalar === "i32") {
       const min = Number(range.min?.value);
       const max = Number(range.max?.value);
       if (!Number.isInteger(min) || !Number.isInteger(max) || min > max || byteSize !== entry.array_len * 4) {
-        throw new Error(`state '${String(entry.name)}' has invalid i32 range bounds`);
+        throw ERROR.INVALID_STORAGE;
       }
       for (let element = 0; element < byteSize; element += 4) {
         const value = view.getInt32(element, true);
@@ -692,10 +733,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       min = BigInt(range.min?.value);
       max = BigInt(range.max?.value);
     } catch {
-      throw new Error(`state '${String(entry.name)}' has invalid i64 range bounds`);
+      throw ERROR.INVALID_STORAGE;
     }
     if (min > max || byteSize !== entry.array_len * 8) {
-      throw new Error(`state '${String(entry.name)}' has invalid i64 range bounds`);
+      throw ERROR.INVALID_STORAGE;
     }
     const width = max - min + 1n;
     for (let element = 0; element < byteSize; element += 8) {
@@ -708,12 +749,11 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   snapshotBytes(value) {
+    if (!(value instanceof ArrayBuffer) && !ArrayBuffer.isView(value)) throw ERROR.INVALID_SNAPSHOT;
+    if (value.byteLength !== this.snapshotSizeBytes) throw ERROR.INVALID_SNAPSHOT;
     if (value instanceof Uint8Array) return value;
     if (value instanceof ArrayBuffer) return new Uint8Array(value);
-    if (ArrayBuffer.isView(value)) {
-      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    }
-    throw new Error("snapshot restore requires byte storage");
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   }
 
   validateSnapshotEntry(entry, packedOffset, physicalOffset, byteSize) {
@@ -727,9 +767,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       || packedOffset + byteSize > this.snapshotSizeBytes
       || physicalOffset + byteSize > this.stateSizeBytes
     ) {
-      throw new Error(
-        `state '${String(entry.name)}' has invalid snapshot metadata`,
-      );
+      throw ERROR.INVALID_STORAGE;
     }
   }
 
@@ -744,6 +782,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   handleMessage(message) {
+    if (this.transportFailed) return;
     try {
       if (message.type === "set-param") {
         this.setParam(
@@ -751,24 +790,29 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
           message.value,
           message.element ?? null,
         );
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "set-param-smoothing") {
-        const samples = paramSmoothingSamples(message.seconds, this.compileSampleRate, this.blockSize);
+        const seconds = message.seconds;
+        const count = Math.ceil(seconds * this.compileSampleRate);
+        if (!Number.isFinite(seconds) || seconds < 0 || !Number.isSafeInteger(count)) {
+          throw ERROR.INVALID_SMOOTHING;
+        }
+        const samples = count > this.blockSize ? count : 0;
         this.paramSmoothing.setDuration(samples, this.memoryView(), this.paramsPtr);
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "reset-params") {
         this.writeParamDefaults();
         this.paramSmoothing.reset(this.memoryView(), this.paramsPtr);
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "init") {
         this.init(message.mode);
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "event") {
         this.dispatchEvent(
           message.event ?? message.name ?? message.index,
           message.payload,
         );
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "read-control-outputs") {
         this.postResponse(message, {
           type: "control-outputs",
@@ -790,46 +834,69 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         );
       } else if (message.type === "restore-snapshot") {
         this.restoreSnapshot(message.snapshot ?? message.bytes);
-        this.postResponse(message, { type: "onda-ok", operation: message.type });
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "delegate-subscription") {
         this.setDelegateSubscription(message.enabled, message.subscriptionId);
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else if (message.type === "print-subscription") {
         this.setPrintSubscription(message.enabled, message.subscriptionId);
+        this.publishStatus(message.requestId, STATUS_OPERATIONS.indexOf(message.type), 0);
       } else {
-        throw new Error(`unknown Onda worklet operation '${String(message.type)}'`);
+        throw ERROR.UNKNOWN_OPERATION;
       }
     } catch (error) {
-      const response = {
-        type: "onda-error",
-        operation: message.type ?? "unknown",
-        requestId: message.requestId,
-        error: String(error && error.message ? error.message : error),
-      };
-      if (Number.isInteger(error?.status)) response.status = error.status;
-      this.port.postMessage(response);
+      const status = failureStatus(error);
+      if (status === ERROR.UNEXPECTED_FAILURE || status === ERROR.INVALID_STORAGE || status === ERROR.INVALID_OUTPUT) {
+        this.invalidateState();
+      }
+      this.publishStatus(message.requestId, Math.max(0, STATUS_OPERATIONS.indexOf(message.type)), status);
+    } finally {
+      // Control-path wakeup for hosts without Atomics.waitAsync. Render failures
+      // still only write shared storage and are picked up by the polling reader.
+      if (this.executionStatusRing && message.notifyStatus) {
+        this.port.postMessage(this.statusReadyMessage);
+      }
     }
   }
 
+  publishStatus(requestId, operation, status) {
+    if (requestId === undefined && status === 0) return;
+    if (this.executionStatusRing) {
+      if (!writeExecutionStatus(this.executionStatusRing, requestId ?? 0, operation, status)) {
+        this.transportFailed = true;
+        this.invalidateState();
+      }
+      return;
+    }
+    // Reuse a prepared packet. Structured cloning by MessagePort can still
+    // allocate; browsers without shared memory have no allocation-free transport.
+    const message = this.statusMessage;
+    message.requestId = requestId ?? 0;
+    message.operation = operation;
+    message.status = status;
+    this.port.postMessage(message);
+  }
+
   dispatchEvent(selector, payload) {
-    this.requireInitialized("event dispatch");
+    this.requireInitialized();
     if (Number.isInteger(selector) && selector >= this.eventInfo.length) return;
     const eventId = Number.isInteger(selector)
       ? selector
-      : this.eventInfo.findIndex((event) => event.name === selector);
+      : this.eventIds.get(selector);
     const event = this.eventInfo[eventId];
     if (!event) {
-      throw new Error(`unknown Onda event '${String(selector)}'`);
+      throw ERROR.UNKNOWN_EVENT;
     }
-    if (!(payload instanceof Uint8Array)) throw new TypeError("event payload must be encoded bytes");
+    if (!(payload instanceof Uint8Array)) throw ERROR.INVALID_PAYLOAD;
     const payloadSize = payload.byteLength;
     if (payloadSize > this.eventPayloadCapacity) {
-      throw new Error(`event '${event.name}' requires ${payloadSize} payload bytes; configured capacity is ${this.eventPayloadCapacity}`);
+      throw ERROR.PAYLOAD_CAPACITY;
     }
     const view = this.memoryView();
     this.eventPayloadView.set(payload);
     const handler = this.exports[event.export];
     if (typeof handler !== "function") {
-      throw new Error(`missing WebAssembly export '${event.export}'`);
+      throw ERROR.INVALID_STORAGE;
     }
     view.setUint32(this.eventInputPtr, this.eventPayloadPtr, true);
     view.setUint32(this.eventInputPtr + 4, payloadSize, true);
@@ -845,21 +912,15 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       this.bufferSampleRatesPtr,
       this.executionOutputPtr,
     );
-    if (status === PROCESSOR_EXECUTION_INPUT_REJECTED) {
-      throw new ProcessorExecutionError(
-        `event '${event.name}' input rejected: invalid payload or insufficient workspace`,
-        status,
-      );
-    }
     this.publishExecutionOutput(
       EXECUTION_OPERATION_EVENT,
       eventId,
     );
-    this.checkExecutionStatus(status, `event '${event.name}'`);
+    this.checkExecutionStatus(status, true);
   }
 
   readControlOutputs() {
-    this.requireInitialized("reading control outputs");
+    this.requireInitialized();
     return Object.fromEntries(
       this.controlOutputInfo.map((output) => [
         output.name,
@@ -905,10 +966,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       ? view.getUint32(this.printBatchPtr + 16, true)
       : 0;
     if (delegateUsed > this.delegateCapacity) {
-      throw new Error("processor returned an invalid delegate byte count");
+      throw ERROR.INVALID_OUTPUT;
     }
     if (printUsed > this.printCapacity) {
-      throw new Error("processor returned an invalid print byte count");
+      throw ERROR.INVALID_OUTPUT;
     }
     const hasCurrent = delegateUsed
       || delegateRecordCount
@@ -1117,10 +1178,10 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   readBuffer(selector) {
     const bufferId = Number.isInteger(selector)
       ? selector
-      : this.bufferInfo.findIndex((buffer) => buffer.name === selector);
+      : this.bufferIds.get(selector);
     const binding = this.bufferBindings[bufferId];
     if (!binding) {
-      throw new Error(`unknown Onda buffer '${String(selector)}'`);
+      throw ERROR.UNKNOWN_BUFFER;
     }
     const length = binding.frames * binding.channels;
     const elementSize = this.scalarByteSize(binding.scalar);
@@ -1212,18 +1273,18 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     const isArrayValue = Array.isArray(value)
       || (ArrayBuffer.isView(value) && typeof value.length === "number");
     if (isFixedArray !== isArrayValue) {
-      throw new Error(
-        isFixedArray
-          ? `'${info.name}' requires exactly ${length} ${info.scalar} value(s)`
-          : `'${info.name}' requires one ${info.scalar} value`,
-      );
+      throw ERROR.INVALID_PARAMETER;
     }
-    if (isFixedArray && value.length !== length) {
-      throw new Error(
-        `'${info.name}' requires exactly ${length} ${info.scalar} value(s)`,
-      );
-    }
+    if (isFixedArray && value.length !== length) throw ERROR.INVALID_PARAMETER;
     return length;
+  }
+
+  validateScalarValue(scalar, value) {
+    if (scalar === "i64") {
+      exactI64(value);
+    } else if (value === undefined || value === null || typeof value === "object" || typeof value === "symbol" || typeof value === "function") {
+      throw ERROR.INVALID_PARAMETER;
+    }
   }
 
   writeStorage(address, info, value, view = this.memoryView()) {
@@ -1271,7 +1332,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (scalar === "bool") return 1;
     if (scalar === "i32" || scalar === "f32") return 4;
     if (scalar === "i64" || scalar === "f64") return 8;
-    throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+    throw ERROR.INVALID_STORAGE;
   }
 
   writeScalar(address, scalar, value, view = this.memoryView()) {
@@ -1280,7 +1341,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     else if (scalar === "i64") view.setBigInt64(address, exactI64(value), true);
     else if (scalar === "f32") view.setFloat32(address, Number(value), true);
     else if (scalar === "f64") view.setFloat64(address, Number(value), true);
-    else throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+    else throw ERROR.INVALID_STORAGE;
   }
 
   readScalar(address, scalar, view = this.memoryView()) {
@@ -1289,7 +1350,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
     if (scalar === "i64") return view.getBigInt64(address, true);
     if (scalar === "f32") return view.getFloat32(address, true);
     if (scalar === "f64") return view.getFloat64(address, true);
-    throw new Error(`unsupported ABI scalar '${String(scalar)}'`);
+    throw ERROR.INVALID_STORAGE;
   }
 
   ensureInputCapacity(frames) {
@@ -1338,7 +1399,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       const bus = inputs[busId];
       if (bus.length > 0) return bus[0].length;
     }
-    throw new Error("AudioWorklet callback has no audio channel from which to derive its frame count");
+    throw ERROR.INVALID_AUDIO_SHAPE;
   }
 
   copyInputSamples(
@@ -1387,7 +1448,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         }
         return;
       }
-      throw new Error(`unsupported audio input scalar '${String(info.scalar)}'`);
+      throw ERROR.INVALID_STORAGE;
     }
 
     for (let frame = 0; frame < segmentFrames; frame += 1) {
@@ -1440,7 +1501,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       for (let busChannel = 0; busChannel < bus.length; busChannel += 1) {
         const source = bus[busChannel];
         if (source.length !== callbackFrames) {
-          throw new Error("AudioWorklet input channels have inconsistent block sizes");
+          throw ERROR.INVALID_AUDIO_SHAPE;
         }
         if (inputChannel < this.inputCount) {
           const info = this.inputChannels[inputChannel];
@@ -1528,7 +1589,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       for (let busChannel = 0; busChannel < bus.length; busChannel += 1) {
         const destination = bus[busChannel];
         if (destination.length !== callbackFrames) {
-          throw new Error("AudioWorklet output channels have inconsistent block sizes");
+          throw ERROR.INVALID_AUDIO_SHAPE;
         }
         if (outputChannel < this.outputCount) {
           const info = this.outputChannels[outputChannel];
@@ -1604,6 +1665,17 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   }
 
   processInitialized(inputs, outputs) {
+    try {
+      return this.render(inputs, outputs);
+    } catch (error) {
+      this.invalidateState();
+      this.clearOutputs(outputs);
+      this.publishStatus(0, 1, failureStatus(error));
+      return true;
+    }
+  }
+
+  render(inputs, outputs) {
     this.refreshMemoryCache();
     const frames = this.audioFrameCount(inputs, outputs);
 
@@ -1641,12 +1713,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       if (status !== PROCESSOR_EXECUTION_OK) {
         this.invalidateState();
         this.clearOutputs(outputs);
-        this.port.postMessage({
-          type: "onda-error",
-          operation: "process",
-          status,
-          error: `processor process failed with Onda execution status ${String(status)}`,
-        });
+        this.publishStatus(0, 1, status);
         return true;
       }
       this.marshalOutputSegment(

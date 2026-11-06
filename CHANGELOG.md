@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `onda bench` for benchmarking native Onda processing, with block timings, throughput,
+  estimated realtime DSP CPU use, and optional JSON output.
 - Fieldless nominal enums with dense `i32` ordinals, explicit ordinal conversions, and support
   in state, functions, arrays, slices, and nested event/delegate payloads. External enum values
   are clamped to the member range.
@@ -27,6 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   [UI host API](docs/ui-api.md).
 
 ### Changed
+
+- Web Audio reports numeric execution and validation failures through an independent shared status
+  ring and constructs errors on the main thread. A bounded request window and control wakeups
+  avoid polling delays between commands; transport failure
+  rejects pending work. Wasm traps silence and invalidate the processor until recovery, and rejected
+  parameter arrays preserve existing values and smoothing targets.
+
+- Hosted instances derive configuration from the program and use one constructor with an optional
+  allocator followed by explicit initialization. Runtime execution returns generated `u32` statuses
+  or allocation-free `RuntimeError` values; compiler diagnostics retain their existing format.
+- Hosts own thread floating-point policy through an optional explicit helper. Full-block execution
+  bypasses segment validation, and binding calls validate and update descriptor tables immediately.
+- C metadata uses borrowed descriptors, including cached enum JSON and recursive message schemas.
+  Batch decoding uses cursors; redundant property getters, indexed occurrence helpers and empty
+  browser `createDefaultImports` helpers have been removed.
 
 - Buffer `.len()` returns the total element count across channels; `.samples()` returns the
   per-channel length. `std::data::Data.samples()` replaces `.frames()`, and buffer UI metadata

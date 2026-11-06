@@ -302,5 +302,3 @@ export class OndaBinaryenError extends Error {}
 export function createCompiler(
   options?: DirectCompilerOptions | WorkerCompilerOptions,
 ): Promise<OndaCompilerInstance>;
-
-export function createDefaultImports(): Record<string, never>;

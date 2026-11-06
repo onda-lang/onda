@@ -18,7 +18,6 @@ import {
   PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   compileTrustedMir,
   createProcessorArtifactFiles,
-  createDefaultImports,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,
   validateProcessorArtifact,
@@ -483,7 +482,7 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
 
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   let heap = Number(__heap_base.value);
@@ -721,7 +720,7 @@ test("passes an addressable slice element to a reference parameter", async () =>
   assert.equal(WebAssembly.validate(artifact.wasm), true);
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const params = Number(__heap_base.value);
@@ -1655,7 +1654,7 @@ test("preserves current-schema i64 and non-finite constants exactly", async () =
   const artifact = compileMir(mir);
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const view = new DataView(instance.exports.memory.buffer);
   assert.equal(view.getBigInt64(1024, true), -(1n << 63n));
@@ -3206,7 +3205,7 @@ test("loads the current audio output frame through explicit MIR", async () => {
   const artifact = compileMir(mir);
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   let heap = Number(__heap_base.value);

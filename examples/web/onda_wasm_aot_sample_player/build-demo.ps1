@@ -30,6 +30,8 @@ Copy-Item (Join-Path $abiDir "src\param-control.js") (Join-Path $demoDir "param-
 Copy-Item (Join-Path $abiDir "src\enum-metadata.js") (Join-Path $demoDir "enum-metadata.js") -Force
 Copy-Item (Join-Path $abiDir "src\payload.js") (Join-Path $demoDir "payload.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\index.js") (Join-Path $demoDir "onda-webaudio.js") -Force
+Copy-Item (Join-Path $webAudioDir "src\runtime-status.js") (Join-Path $demoDir "runtime-status.js") -Force
+Copy-Item (Join-Path $webAudioDir "src\execution-status-ring.js") (Join-Path $demoDir "execution-status-ring.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\worklet.js") (Join-Path $demoDir "onda-wasm-processor.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\processor-constants.js") (Join-Path $demoDir "processor-constants.js") -Force
 Copy-Item (Join-Path $webAudioDir "src\param-metadata.js") (Join-Path $demoDir "param-metadata.js") -Force
@@ -38,6 +40,8 @@ Copy-Item `
     (Join-Path $repoRoot "examples\projects\embedded_room\assets\impulse.wav") `
     (Join-Path $demoDir "impulse.wav") `
     -Force
+node (Join-Path $repoRoot "scripts\verify-webaudio-stage.mjs") (Join-Path $demoDir "onda-webaudio.js") (Join-Path $demoDir "onda-wasm-processor.js")
+if ($LASTEXITCODE -ne 0) { throw "Web Audio staging verification failed" }
 node (Join-Path $demoDir "smoke-test.mjs")
 
 Write-Host "Built the precompiled sample-player artifact in: $demoDir"

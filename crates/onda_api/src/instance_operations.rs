@@ -20,7 +20,7 @@ pub unsafe extern "C" fn onda_set_param_by_index(
     };
     match set_param_by_index(&mut (*instance).inner, index as usize, bytes) {
         Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_PARAMETER_REJECTED,
+        Err(error) => error.code(),
     }
 }
 
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn onda_set_param_element_by_index(
         bytes,
     ) {
         Ok(()) => 0,
-        Err(_) => ONDA_API_ERROR_PARAMETER_REJECTED,
+        Err(error) => error.code(),
     }
 }
 
@@ -65,7 +65,7 @@ pub unsafe extern "C" fn onda_set_param_plain_f64(
     }
     match runtime_set_param_plain_f64(&mut (*instance).inner, index as usize, plain) {
         Ok(()) => 0,
-        Err(_) => ONDA_API_ERROR_PARAMETER_REJECTED,
+        Err(error) => error.code(),
     }
 }
 
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn onda_set_param_element_plain_f64(
         plain,
     ) {
         Ok(()) => 0,
-        Err(_) => ONDA_API_ERROR_PARAMETER_REJECTED,
+        Err(error) => error.code(),
     }
 }
 
@@ -101,7 +101,7 @@ pub unsafe extern "C" fn onda_set_param_normalized(
     }
     match runtime_set_param_normalized(&mut (*instance).inner, index as usize, normalized) {
         Ok(()) => 0,
-        Err(_) => ONDA_API_ERROR_PARAMETER_REJECTED,
+        Err(error) => error.code(),
     }
 }
 
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn onda_set_param_element_normalized(
         normalized,
     ) {
         Ok(()) => 0,
-        Err(_) => ONDA_API_ERROR_PARAMETER_REJECTED,
+        Err(error) => error.code(),
     }
 }
 
@@ -149,7 +149,7 @@ pub unsafe extern "C" fn onda_control_output_read_bytes(
     let out_slice = std::slice::from_raw_parts_mut(out_bytes.cast::<u8>(), required as usize);
     match read_control_output_bytes(&(*instance).inner, index as usize, out_slice) {
         Ok(_) => required,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Err(error) => error.code(),
     }
 }
 
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn onda_bind_input(
     let bytes = src_bytes as usize;
     match unsafe { bind_input(&mut (*instance).inner, index as usize, ptr, bytes) } {
         Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Err(error) => error.code(),
     }
 }
 
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn onda_bind_output(
     let bytes = dst_bytes as usize;
     match unsafe { bind_output(&mut (*instance).inner, index as usize, ptr, bytes) } {
         Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Err(error) => error.code(),
     }
 }
 
@@ -231,7 +231,7 @@ pub unsafe extern "C" fn onda_bind_buffer(
         )
     } {
         Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Err(error) => error.code(),
     }
 }
 
@@ -244,28 +244,27 @@ pub unsafe extern "C" fn onda_reset_buffer_to_project_default(
         return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     let instance = &mut *instance;
-    let program = Arc::clone(&instance.program);
-    let Some(defaults) = &program.project_defaults else {
+    let Some(defaults) = &instance.program.project_defaults else {
         return ONDA_API_ERROR_VALIDATION_FAILED;
     };
     match bind_project_default(&mut instance.inner, defaults, index as usize) {
         Ok(true) => 0,
-        Ok(false) | Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Ok(false) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Err(error) => error.code(),
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn onda_process_checked(
     instance: *mut onda_instance,
-    frames: i32,
     output: *mut onda_execution_output_t,
 ) -> i32 {
-    if instance.is_null() || frames < 0 {
+    if instance.is_null() {
         reset_c_execution_output(output);
         return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     execution_status_to_c(with_runtime_execution_output(output, |output| {
-        process_checked_with_status(&mut (*instance).inner, frames as usize, output)
+        process_checked(&mut (*instance).inner, output)
     }))
 }
 
@@ -282,7 +281,7 @@ pub unsafe extern "C" fn onda_process_checked_segment(
         return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
     execution_status_to_c(with_runtime_execution_output(output, |output| {
-        process_checked_segment_with_status(
+        process_checked_segment(
             &mut (*instance).inner,
             start_frame as usize,
             frames as usize,
@@ -307,35 +306,8 @@ pub unsafe extern "C" fn onda_init_checked(
         return ONDA_API_ERROR_INVALID_ARGUMENT;
     };
     execution_status_to_c(with_runtime_execution_output(output, |output| {
-        runtime_init_checked_with_status(&mut (*instance).inner, mode, output)
+        runtime_init_checked(&mut (*instance).inner, mode, output)
     }))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_init_unchecked(
-    instance: *mut onda_instance,
-    mode: i32,
-    output: *mut onda_execution_output_t,
-) -> i32 {
-    if instance.is_null() {
-        reset_c_execution_output(output);
-        return ONDA_API_ERROR_INVALID_ARGUMENT;
-    }
-    let Some(mode) = init_mode_from_c(mode) else {
-        reset_c_execution_output(output);
-        return ONDA_API_ERROR_INVALID_ARGUMENT;
-    };
-    execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        runtime_init_unchecked(&mut (*instance).inner, mode, output)
-    }))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_instance_state_bytes(instance: *const onda_instance) -> i32 {
-    if instance.is_null() {
-        return -1;
-    }
-    saturating_usize_to_i32((*instance).inner.state_size_bytes())
 }
 
 #[no_mangle]
@@ -355,12 +327,8 @@ pub unsafe extern "C" fn onda_instance_snapshot_state(
         return required;
     }
     let destination = std::slice::from_raw_parts_mut(out_bytes.cast::<u8>(), required as usize);
-    if (*instance)
-        .inner
-        .write_snapshot_state_bytes(destination)
-        .is_err()
-    {
-        return ONDA_API_ERROR_VALIDATION_FAILED;
+    if let Err(error) = (*instance).inner.write_snapshot_state_bytes(destination) {
+        return error.code();
     }
     required
 }
@@ -382,51 +350,7 @@ pub unsafe extern "C" fn onda_instance_restore_state(
     } else {
         std::slice::from_raw_parts(bytes.cast::<u8>(), byte_count as usize)
     };
-    execution_status_to_c((*instance).inner.restore_state_bytes_with_status(snapshot))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_bindings(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return ONDA_API_ERROR_INVALID_ARGUMENT;
-    }
-    match validate_bindings(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_inputs(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return ONDA_API_ERROR_INVALID_ARGUMENT;
-    }
-    match validate_inputs(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_outputs(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return ONDA_API_ERROR_INVALID_ARGUMENT;
-    }
-    match validate_outputs(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn onda_validate_buffers(instance: *mut onda_instance) -> i32 {
-    if instance.is_null() {
-        return ONDA_API_ERROR_INVALID_ARGUMENT;
-    }
-    match validate_buffers(&mut (*instance).inner) {
-        Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
-    }
+    execution_status_to_c((*instance).inner.restore_state_bytes(snapshot))
 }
 
 #[no_mangle]
@@ -444,13 +368,13 @@ pub unsafe extern "C" fn onda_process_unchecked(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn onda_prepare_unchecked_process(instance: *mut onda_instance) -> i32 {
+pub unsafe extern "C" fn onda_prepare_process(instance: *mut onda_instance) -> i32 {
     if instance.is_null() {
         return ONDA_API_ERROR_INVALID_ARGUMENT;
     }
-    match prepare_unchecked_process(&mut (*instance).inner) {
+    match prepare_process(&(*instance).inner) {
         Ok(_) => 0,
-        Err(_) => ONDA_API_ERROR_VALIDATION_FAILED,
+        Err(error) => error.code(),
     }
 }
 

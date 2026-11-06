@@ -49,6 +49,8 @@ $backendSource.Replace('from "binaryen"', 'from "./binaryen.js"') |
 $backendArtifactSource = Get-Content (Join-Path $compilerPackage "dist\backend\artifact.js") -Raw
 $backendArtifactSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $compilerOut "dist\backend\artifact.js") -NoNewline
+Copy-Item (Join-Path $webAudioPackage "src\runtime-status.js") (Join-Path $webAudioOut "runtime-status.js") -Force
+Copy-Item (Join-Path $webAudioPackage "src\execution-status-ring.js") (Join-Path $webAudioOut "execution-status-ring.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\worklet.js") (Join-Path $webAudioOut "worklet.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\processor-constants.js") (Join-Path $webAudioOut "processor-constants.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAudioOut "param-metadata.js") -Force
@@ -60,6 +62,8 @@ Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $webAudioOut "payl
 $webAudioSource = Get-Content (Join-Path $webAudioPackage "src\index.js") -Raw
 $webAudioSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $webAudioOut "index.js") -NoNewline
+node (Join-Path $repoRoot "scripts\verify-webaudio-stage.mjs") (Join-Path $webAudioOut "index.js") (Join-Path $webAudioOut "worklet.js")
+if ($LASTEXITCODE -ne 0) { throw "Web Audio staging verification failed" }
 node (Join-Path $repoRoot "scripts\stage-gpu-ui.mjs") (Join-Path $demoDir "gpu")
 if ($LASTEXITCODE -ne 0) { throw "GPU UI staging failed" }
 node (Join-Path $repoRoot "scripts\bundle-web-playground.mjs") (Join-Path $demoDir "playground.js") (Join-Path $compilerOut "src\worker.js")

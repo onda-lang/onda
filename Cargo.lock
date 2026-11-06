@@ -2253,6 +2253,7 @@ dependencies = [
  "onda_mir",
  "onda_processor_abi",
  "onda_project",
+ "onda_realtime",
  "onda_runtime",
  "onda_semantics",
  "serde_json",
@@ -2271,6 +2272,7 @@ dependencies = [
  "onda_lsp",
  "onda_mir",
  "onda_project",
+ "onda_realtime",
  "onda_run",
  "onda_runtime",
  "onda_semantics",
@@ -2327,6 +2329,7 @@ dependencies = [
  "onda_mir",
  "onda_processor_abi",
  "onda_project",
+ "onda_realtime",
  "onda_runtime",
  "onda_semantics",
 ]
@@ -2455,7 +2458,6 @@ dependencies = [
  "onda_frontend",
  "onda_mir",
  "onda_processor_abi",
- "onda_realtime",
  "onda_semantics",
  "serde_json",
 ]

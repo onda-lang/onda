@@ -20,7 +20,7 @@ measurement procedures and dated results.
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
 | `onda_processor_abi` | Compiler-free shared processor descriptor schema and ABI version constants. |
 | `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated current-schema MIR MessagePack or JSON. |
-| `onda_realtime` | Backend-independent realtime thread policy, including one-time x86 FTZ/DAZ setup. |
+| `onda_realtime` | Backend-independent realtime thread policy, including explicit x86 FTZ/DAZ setup. |
 | `onda_host_protocol` | Canonical host-owned MIDI and transport event catalog shared by native tooling and browser hosts. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
@@ -29,7 +29,7 @@ measurement procedures and dated results.
 | `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
 | `onda_scope` | Bounded min/max scope envelopes, display budgets, and a shared compact binary codec. |
 | `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and shared source formatting. |
-| `onda_cli` | `onda` binary: argument parsing and `compile`/`run`/`daemon`/`lsp` command dispatch. |
+| `onda_cli` | `onda` binary: argument parsing and `compile`/`bench`/`run`/`daemon`/`lsp` command dispatch. |
 | `onda_ui` | Host-independent Rust/wgpu run screen, interaction, text, shaders, Wasm canvas, and optional C interface. |
 | `onda_gpu` | Native winit adapter for the shared run screen, used by `onda run`. |
 | `onda_examples` | Example `.onda` programs and `.ondaproject` showcases surfaced through `examples/`. |
@@ -346,9 +346,10 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   by native and WebAssembly integrations.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
-- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants,
-  reset, event dispatch, and public validated parameter-domain discovery/conversion through
-  `Instance::param_domain`.
+- `lib.rs` — instance lifecycle, canonical status-returning execution, snapshots and output batches.
+- `bindings.rs` — eager binding validation and pointer-table updates; process readiness checks.
+- `parameters.rs` — exact parameter writes, numeric controls and held control-output reads.
+- `tests/` and integration tests — lifecycle, binding, allocation/deallocation and execution parity.
 
 ### `onda_api` (`crates/onda_api/src`)
 - `lib.rs`, `metadata.rs` — C ABI surface (single-source, direct filesystem source/project input,
@@ -358,6 +359,9 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set;
   metadata queries; event trigger; state snapshot/restore).
 
+- `value_info.rs` — immutable program-owned value, buffer and message records with cached enum JSON.
+- `source_info.rs` — borrowed source graph, project buffer and materialization records.
+
 ### `onda_cpal` (`crates/onda_cpal/src`)
 - `lib.rs` — CPAL 0.18/PipeWire device discovery and stream setup, allocation-free input/output callbacks, FP-mode setup, and lock-free SPSC sample transport.
 
@@ -366,6 +370,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - Analysis sessions and document overlays are re-exported from `onda_semantics::AnalysisSession`.
 - `run_session.rs` — live JIT instance lifecycle, validated initial and replacement buffer binding,
   param updates, and `render_block`.
+  `prepare_processing` provides exclusively borrowed prepared processor calls without host
+  rendering or output collection for benchmarking.
   `PreparedRunBuffer` owns validated samples and precomputed waveform data; replacement
   returns retired instance/storage ownership for reclamation outside the render producer.
 - `run_session/param_smoothing.rs` — host-owned linear ramps for continuous float controls.
@@ -443,6 +449,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `main.rs`, `main_tests.rs` — binary entry and integration tests.
 - `args.rs` — CLI argument parsing.
 - `compile_cmd.rs` — `onda compile` (check / IR / obj / `--dump-graph` / cross-target).
+- `bench_cmd.rs` — `onda bench`: repeated prepared native processor calls with untimed setup/warmup,
+  shared project/buffer/parameter handling, and text or JSON timing reports.
 - `run_cmd.rs` — `onda run` / `run play` / `run render` dispatch.
 - `daemon_stdio.rs` — `onda daemon stdio` JSON transport.
 - `diag_print.rs` — terminal diagnostic rendering.
@@ -560,18 +568,18 @@ browser hosts leave it empty; the plugin supplies its control-input mappings.
   select LLVM's platform ABI and object representation without changing the logical Onda ABI.
 - Standard optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings; MIR does not
   override LLVM's loop or SLP vectorization heuristics.
-- Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
-  on x86 this enables FTZ/DAZ once per thread before executing DSP.
+- Hosts own thread floating-point policy. The optional explicit helper enables x86 FTZ/DAZ on each
+  call; runtime execution never changes the host policy implicitly.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
 - Runtime init, events, and processing use prepared buffer descriptor tables; omitted slots are
-  prepared as neutral descriptors rather than blocking execution. Rebinding invalidates the tables,
-  and the next checked entry-point call observes the replacement without implicitly rerunning init.
+  prepared as neutral descriptors rather than blocking execution. Binding validates and updates affected slots immediately,
+  without implicitly rerunning init.
   Buffer-write metadata conservatively joins writes reachable from init, process, and exported
   events, including generated proc-init paths. Segment variants exist for hosts that split a logical
   block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
-  - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
-  - unchecked preparation validates the current bindings; buffer references resolve directly
+  - `prepare_process(instance)` / `process_unchecked_segment(...)`
+  - readiness checks initialization and required audio bindings; buffer references resolve directly
     through those tables, so rebinding cannot leave pointer-bearing derived state stale.
   - native codegen snapshots each used direct buffer descriptor field once at process/event entry,
     exposes the validated primitive alignment on accesses, and marks external-buffer memory as
@@ -749,6 +757,12 @@ and invalidation in detail. The main opportunities exposed to backends are:
   processor worklet. The Web Audio adapter precompiles processor modules outside the rendering
   thread, caches typed linear-memory views, bulk-copies full-block f32 audio, and locks host
   linear-memory allocation after construction; dynamic event storage is bounded and preallocated.
+  Numeric execution statuses use a separate bounded shared ring; the main-thread adapter bounds
+  in-flight control requests and constructs public errors. Without `Atomics.waitAsync`, control
+  replies wake the adapter through the port while render failures are polled. Status overflow closes
+  the adapter and rejects pending work; unexpected execution failures silence the worklet until
+  full init/restore recovery.
+  Browsers without shared memory use numeric port replies, which can incur cloning allocations.
   Software math helpers stay inside generated Wasm. The playground compiles against the
   actual `AudioContext` sample rate; the adapter rejects mismatched AOT artifacts.
   [Playground integration](../ui/playground/README.md) owns browser lifecycle and capture

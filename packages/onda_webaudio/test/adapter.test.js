@@ -208,8 +208,8 @@ class FailingInitFakeNode extends FakeNode {
       postMessage(message);
       if (message.type === "init") {
         queueMicrotask(() => this.port.reply({
-          type: "onda-error",
-          operation: "init",
+          type: "onda-status",
+          operation: 2,
           requestId: message.requestId,
           status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
           error: "initialization failed",
@@ -367,8 +367,8 @@ test("execution failures preserve their generated status", async () => {
   const pending = processor.trigger("note");
   const request = node.port.messages.at(-1);
   node.port.reply({
-    type: "onda-error",
-    operation: "event",
+    type: "onda-status",
+    operation: 3,
     requestId: request.requestId,
     status: PROCESSOR_EXECUTION_INPUT_REJECTED,
     error: "event input rejected",
@@ -391,8 +391,8 @@ test("delivers render failures through typed execution-error listeners", () => {
   const unsubscribe = processor.onExecutionError((error) => errors.push(error));
 
   node.port.reply({
-    type: "onda-error",
-    operation: "process",
+    type: "onda-status",
+    operation: 1,
     status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
     error: "processor process failed",
   });
@@ -405,8 +405,8 @@ test("delivers render failures through typed execution-error listeners", () => {
   assert.equal(unsubscribe(), false);
 
   node.port.reply({
-    type: "onda-error",
-    operation: "process",
+    type: "onda-status",
+    operation: 1,
     status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
     error: "processor process failed again",
   });

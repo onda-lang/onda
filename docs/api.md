@@ -78,9 +78,10 @@ The common conventions are:
 
 - Pointer-returning constructors return `NULL` on failure.
 - Operation-status functions return `0` on success, `ONDA_API_ERROR_INVALID_ARGUMENT` for malformed
-  scalar arguments or required null handles/pointers, `ONDA_API_ERROR_VALIDATION_FAILED` when the
-  current program or instance contract rejects an otherwise structured request, and
-  `ONDA_API_ERROR_PARAMETER_REJECTED` for an unsuitable parameter write.
+  scalar arguments or required null handles/pointers, and specific negative codes for runtime
+  rejection: uninitialized/invalidated state, unknown indices, missing bindings, size mismatch,
+  alignment, shape, sample rate, element type, segment bounds, flags or missing control domains.
+  `ONDA_API_ERROR_VALIDATION_FAILED` remains for formatting and unavailable project defaults.
   `ONDA_API_ERROR_ALLOCATION_FAILED` reports failure to provision explicitly requested runtime
   storage.
 - Generated execution entry points may additionally return a positive `ONDA_EXECUTION_*` code.
@@ -123,7 +124,7 @@ The metadata and binding APIs use these primitive identifiers:
 | `ONDA_PRIMITIVE_I64` | `int64_t` |
 | `ONDA_PRIMITIVE_BOOL` | `uint8_t`, exactly `0` or `1` |
 
-Native parameter storage and `onda_param_default_bytes` use native byte order. Event and delegate
+Native parameter storage and parameter descriptor `default_bytes` use native byte order. Event and delegate
 wire payloads contain no implicit alignment padding and use little-endian byte order. Fixed arrays
 are contiguous; a top-level slice is encoded as a little-endian signed `int32_t` element count
 followed by its packed field tensors.
@@ -157,7 +158,7 @@ int main(void) {
   }
 
   onda_instance_t* instance =
-    onda_instance_create_initialized(program, 0, 1, NULL, &diag);
+    onda_instance_create(program, NULL, &diag);
   if (instance == NULL) {
     fprintf(stderr, "%s\n", diag.message ? diag.message : "instance creation failed");
     onda_program_destroy(program);
@@ -165,9 +166,15 @@ int main(void) {
     return 1;
   }
 
+  onda_configure_current_thread_audio_fp_mode();
+  if (onda_init_checked(instance, ONDA_INIT_FULL, NULL) != ONDA_EXECUTION_OK) {
+    onda_instance_destroy(instance);
+    onda_program_destroy(program);
+    return 1;
+  }
   float output[128];
   if (onda_bind_output(instance, 0, output, (int)sizeof(output)) != 0 ||
-      onda_process_checked(instance, 128, NULL) != 0) {
+      onda_process_checked(instance, NULL) != 0) {
     fprintf(stderr, "processing failed\n");
   }
 
@@ -276,9 +283,9 @@ watching, diagnostics, source capture, and replay.
 | Contributing paths | `onda_source_manifest_count`, `onda_source_manifest_path` |
 | Unresolved candidate paths | `onda_source_manifest_unresolved_count`, `onda_source_manifest_unresolved_path` |
 | Filesystem watch set | `onda_source_manifest_watch_count`, `onda_source_manifest_watch_path` |
-| Captured documents | `onda_source_manifest_document_count`, `onda_source_manifest_document_path`, `onda_source_manifest_document_contents` |
-| Successful resolutions | `onda_source_manifest_resolution_count`, `onda_source_manifest_resolution_source_path`, `onda_source_manifest_resolution_kind`, `onda_source_manifest_resolution_specifier`, `onda_source_manifest_resolution_target_path` |
-| Unresolved references | `onda_source_manifest_unresolved_resolution_count`, `onda_source_manifest_unresolved_resolution_source_path`, `onda_source_manifest_unresolved_resolution_kind`, `onda_source_manifest_unresolved_resolution_specifier`, `onda_source_manifest_unresolved_resolution_candidate_count`, `onda_source_manifest_unresolved_resolution_candidate_path` |
+| Captured documents | `onda_source_manifest_document_count`, `onda_source_manifest_document_info` |
+| Successful resolutions | `onda_source_manifest_resolution_count`, `onda_source_manifest_resolution_info` |
+| Unresolved references | `onda_source_manifest_unresolved_resolution_count`, `onda_source_manifest_unresolved_resolution_info`, `onda_source_manifest_unresolved_resolution_candidate_path` |
 | Cleanup | `onda_source_manifest_destroy` |
 
 Resolution kinds are `ONDA_SOURCE_REFERENCE_INCLUDE` and `ONDA_SOURCE_REFERENCE_IMPORT`. Document
@@ -333,9 +340,9 @@ declaration compatibility is checked when compiling the resulting image. Pass
 | Data | Functions |
 | --- | --- |
 | Entry and standard-library identity | `onda_project_image_entry`, `onda_project_image_stdlib_digest` |
-| Documents | `onda_project_image_document_count`, `onda_project_image_document_path`, `onda_project_image_document_contents` |
-| Resolutions | `onda_project_image_resolution_count`, `onda_project_image_resolution_source`, `onda_project_image_resolution_kind`, `onda_project_image_resolution_specifier`, `onda_project_image_resolution_target` |
-| Logical buffers | `onda_project_image_buffer_count`, `onda_project_image_buffer_name`, `onda_project_image_buffer_asset_id`, `onda_project_image_buffer_element_type`, `onda_project_image_buffer_frames`, `onda_project_image_buffer_channels`, `onda_project_image_buffer_sample_rate` |
+| Documents | `onda_project_image_document_count`, `onda_project_image_document_info` |
+| Resolutions | `onda_project_image_resolution_count`, `onda_project_image_resolution_info` |
+| Logical buffers | `onda_project_image_buffer_count`, `onda_project_image_buffer_info` |
 | Configuration and compilation | `onda_project_image_inspect_compile_constants`, `onda_project_image_compile` |
 
 Programs compiled from project files or images retain immutable decoded buffer defaults. Instances
@@ -345,135 +352,63 @@ Compilation rejects a project-bound asset when reachable Onda code may write it.
 ### Materializing editable files
 
 `onda_project_image_materialize` returns an owned plan. Inspect it with
-`onda_project_materialization_file_count`, `onda_project_materialization_file_path`, and
-`onda_project_materialization_file_bytes`, then release it with
-`onda_project_materialization_destroy`. File bytes use the same size-query convention as other
-binary output functions.
+`onda_project_materialization_file_count`, `onda_project_materialization_file_info`, then release it with
+`onda_project_materialization_destroy`. The record borrows file bytes until plan destruction.
 
 ## Program metadata
 
 All metadata belongs to the immutable `onda_program_t`. Returned strings and pointers remain valid
 until `onda_program_destroy`. Indices are stable for the program's lifetime.
 
-### Surface discovery
+### Borrowed descriptors
 
-The primary surfaces follow a regular query matrix:
+Counts and name-to-index lookups remain available. A single descriptor query returns each
+surface's immutable metadata; a null pointer means an invalid program or index.
 
-| Surface | Count | Name | Name to index | Type text | Byte size |
-| --- | --- | --- | --- | --- | --- |
-| Inputs | `onda_input_count` | `onda_input_name` | `onda_input_index` | `onda_input_type` | `onda_input_type_bytes` |
-| Outputs | `onda_output_count` | `onda_output_name` | `onda_output_index` | `onda_output_type` | `onda_output_type_bytes` |
-| Control outputs | `onda_control_output_count` | `onda_control_output_name` | `onda_control_output_index` | `onda_control_output_type` | `onda_control_output_type_bytes` |
-| Parameters | `onda_param_count` | `onda_param_name` | `onda_param_index` | `onda_param_type` | `onda_param_type_bytes` |
-| Buffers | `onda_buffer_count` | `onda_buffer_name` | `onda_buffer_index` | `onda_buffer_type` | element size via `onda_buffer_elem_type_bytes` |
-| Events | `onda_event_count` | `onda_event_name` | `onda_event_index` | parameter metadata | `onda_event_payload_bytes` |
-| Delegates | `onda_delegate_count` | `onda_delegate_name` | `onda_delegate_index` | parameter metadata | delegate sizing queries |
-| State | `onda_state_count` | `onda_state_name` | — | `onda_state_type` | `onda_state_type_bytes` |
-
-Primitive element types are returned by `onda_input_elem_type`, `onda_output_elem_type`,
-`onda_control_output_elem_type`, `onda_param_elem_type`, and `onda_state_elem_type`. Corresponding
-fixed lengths come from `onda_input_array_len`, `onda_output_array_len`,
-`onda_control_output_array_len`, `onda_param_array_len`, and `onda_state_array_len`.
-
-Flattened logical slot offsets use `onda_input_slot_offset`, `onda_output_slot_offset`,
-`onda_control_output_slot_offset`, and `onda_param_slot_offset`. Packed byte offsets use
-`onda_input_byte_offset`, `onda_output_byte_offset`, `onda_control_output_byte_offset`,
-`onda_param_byte_offset`, and `onda_state_byte_offset`. `onda_state_total_bytes` returns the total
-persistent snapshot size.
-
-### Defaults, ranges, and parameter controls
-
-Input, output, and parameter defaults use `onda_*_has_default` and `onda_*_default_f64`.
-`onda_param_default_bytes` preserves the exact native scalar or fixed-array representation and
-supports a size query. Event defaults use `onda_event_param_has_default` and
-`onda_event_param_default_bytes`; their packed representation is little-endian event-wire data.
-
-Input, output, and parameter ranges use `onda_*_has_range`, `onda_*_range_min_f64`, and
-`onda_*_range_max_f64`. The parameter-only host-control surface adds:
-
-| Function | Meaning |
-| --- | --- |
-| `onda_param_scale` | `ONDA_PARAM_SCALE_NONE`, `ONDA_PARAM_SCALE_LINEAR`, `ONDA_PARAM_SCALE_LOG`, or `-1` for an invalid query. Values match the raw processor ABI. |
-| `onda_param_has_curve`, `onda_param_curve` | Optional finite lincurve shaping. |
-| `onda_param_unit_copy` | Optional NUL-terminated UTF-8 presentation unit. |
-| `onda_param_enum_json_copy`, `onda_control_output_enum_json_copy` | Optional enum type and ordered member names/labels as NUL-terminated JSON. |
-| `onda_param_has_step`, `onda_param_step_f64`, `onda_param_step_count` | Discrete host-control grid. |
-| `onda_param_normalized_to_plain` | Convert and constrain a normalized host value. |
-| `onda_param_plain_to_normalized` | Constrain and convert a plain host value. |
-
-Numeric fixed-array parameters expose their shared element domain through the scale, curve, unit,
-step, and conversion queries. Every valid parameter without a numeric domain returns
-`ONDA_PARAM_SCALE_NONE`. Unranged numeric conversions return NaN and their control setters reject
-the write. Boolean controls are the exception: plain and normalized values use the `value >= 0.5`
-threshold, including individual fixed-array elements.
-`onda_param_step_count` returns `0` when a valid parameter has no discrete step, including when it
-has no numeric domain, and `-1` for an invalid query; positive results are the number of intervals
-in the declared grid. A one-member enum also has zero intervals and retains a discrete step of one.
-
-The shared `double` host-control surface exactly represents integers only through
-`ONDA_MAX_EXACT_HOST_CONTROL_INTEGER`. Raw parameter bytes retain full-width `i64` values.
-
-Enum metadata has the shape `{"name":"dsp::Mode","members":[{"name":"LowPass","label":"Low Pass"},...]}`.
-The member index is its `i32` value. The copy queries return `0` when absent, the required byte count
-including NUL when present, or `-1` for invalid arguments. A null or undersized output queries the
-size without writing. Fixed arrays share one descriptor. Event and delegate enum leaves carry the
-same `enumeration` object in their existing recursive JSON schemas; binary payloads remain integers.
-Configuration inspection exposes the same JSON object through
-`onda_compile_const_descriptor_t.enumeration_json_utf8` (null for ordinary scalar types).
-Enum configuration scalars and arrays use `ONDA_PRIMITIVE_I32` inputs and selected values;
-compilation clamps those ordinals to the declared member range.
-
-### Buffers and buffer arrays
-
-`onda_buffer_array_count`, `onda_buffer_array_name`, `onda_buffer_array_first`, and
-`onda_buffer_array_len` preserve logical fixed collections over contiguous physical buffer slots.
-
-`onda_buffer_elem_type`, `onda_buffer_elem_type_bytes`, `onda_buffer_channels_kind`, and
-`onda_buffer_channels_static` describe one physical slot. Channel kinds are
-`ONDA_BUFFER_CHANNELS_MONO`, `ONDA_BUFFER_CHANNELS_STATIC`, and
-`ONDA_BUFFER_CHANNELS_DYNAMIC`. `onda_buffer_may_write` reports whether any reachable generated path
-may write the slot, including paths reachable from top-level or proc initialization as well as
-events and processing.
-
-### Event and delegate parameters
-
-Events and delegates expose parallel parameter metadata:
-
-| Property | Event | Delegate |
+| Surface | Descriptor query | Record |
 | --- | --- | --- |
-| Parameter count | `onda_event_param_count` | `onda_delegate_param_count` |
-| Name | `onda_event_param_name` | `onda_delegate_param_name` |
-| Primitive type | `onda_event_param_elem_type` | `onda_delegate_param_elem_type` |
-| Fixed length / slice marker | `onda_event_param_array_len` | `onda_delegate_param_array_len` |
-| Is fixed array | `onda_event_param_is_array` | `onda_delegate_param_is_array` |
-| Is slice | `onda_event_param_is_slice` | `onda_delegate_param_is_slice` |
-| Fixed byte offset | `onda_event_param_offset_bytes` | `onda_delegate_param_offset_bytes` |
+| Input | `onda_input_info` | `onda_value_info_t` |
+| Output | `onda_output_info` | `onda_value_info_t` |
+| Control output | `onda_control_output_info` | `onda_value_info_t` |
+| Parameter | `onda_param_info` | `onda_value_info_t` |
+| State | `onda_state_info` | `onda_value_info_t` |
+| Buffer | `onda_buffer_info` | `onda_buffer_info_t` |
+| Buffer array | `onda_buffer_array_info` | `onda_buffer_array_info_t` |
+| Event | `onda_event_info` | `onda_message_info_t` |
+| Delegate | `onda_delegate_info` | `onda_message_info_t` |
 
-A scalar has array length `1`; a slice has length `0`. Use the `is_array` query to distinguish a
-scalar from a fixed array of length one. The first slice itself has a fixed offset to its length
-prefix. Every parameter following a slice has a runtime-dependent offset, so the offset query
-returns `-1`; decode sequentially from the preceding slice length instead.
+Value records contain names, type text, primitive element type, array shape, slot and byte offsets,
+exact native default bytes, numeric defaults/ranges, control scale, curve, step, unit and enum JSON.
+Optional strings and default bytes are null when absent; optional numeric fields use their
+`has_*` flags and NaN where appropriate. `slot_offset` is -1 for state. Enum JSON is serialized
+once during compilation and borrowed until program destruction. Its shape is
+`{"name":"Mode","members":[{"name":"LowPass","label":"Low Pass"},...]}`; member ordinals
+use `i32` storage. `onda_state_total_bytes` reports the persistent snapshot size.
 
-`onda_event_tensor_count` and `onda_event_tensor_info` expose the event-view ABI directly as a flat
-table in dispatch order. Each entry provides its dot-separated leaf path, owning top-level parameter,
-primitive type, fixed array shape and element product, and whether it has a dynamic outer slice axis.
-For a fixed parameter, `fixed_element_count` is the view's required `element_count`. For a slice,
-the required `element_count` is the logical slice length multiplied by `fixed_element_count`.
-Borrowed paths and shapes remain valid until program destruction.
+Buffer records describe primitive width, channel constraints and whether reachable code may write
+the buffer. Buffer-array records identify a contiguous run of physical slots by `first` and `len`.
 
-For the full recursive logical schema, defaults, and integer domains, use
-`onda_event_schema_json` or `onda_delegate_schema_json`. Each returns the same recursive
-`PayloadSchema` JSON carried by a raw processor descriptor. Struct values are objects keyed by field
-name; tuples and arrays are ordered sequences. The string is borrowed and remains valid until the
-program is destroyed.
+`onda_param_normalized_to_plain` and `onda_param_plain_to_normalized` implement control-domain
+conversion. Numeric arrays share their element domain. Booleans use the `value >= 0.5` threshold;
+unranged numeric conversions return NaN. Raw parameter bytes retain full-width `i64` values;
+`double` control values are exact only through `ONDA_MAX_EXACT_HOST_CONTROL_INTEGER`.
 
-`onda_event_payload_bytes` returns the exact wire size for a fixed event and `-1` for a dynamic
-event. `onda_event_payload_min_bytes` includes every dynamic slice's four-byte length prefix with
-zero elements. `onda_event_payload_sizes` accepts one signed logical length per top-level slice, in
-declaration order, and returns both the exact packed wire size and the aligned preparation workspace
-size. Allocate the payload using the former and, when increasing the instance's realtime capacity,
-pass the latter to `onda_instance_reserve_event_workspace`. The delegate sizing function follows the
-same rules. Delegate batch capacity is described in [Delegates](#delegates).
+### Messages and tensor views
+
+Message records contain a recursive `schema_json`, fixed/minimum packed payload sizes, delegate
+record sizes and tensor count. Fixed sizes are -1 for dynamic messages; event record sizes are -1.
+The schema preserves nested structs, tuples, arrays, slices, exact defaults and enum/integer domains.
+There is no separate scalar-only parameter projection.
+
+`onda_event_tensor_info` exposes each flattened primitive leaf in dispatch order: path, owning
+parameter, primitive type, fixed shape, element product and dynamic outer-slice marker. For fixed
+parameters, `fixed_element_count` is the view's element count; for slices, multiply it by the
+logical slice length. Paths and shapes are borrowed until program destruction.
+
+`onda_event_payload_sizes` and `onda_delegate_payload_sizes` accept one signed logical length per
+top-level slice and return packed wire bytes and aligned preparation workspace bytes. Reserve the
+latter with `onda_instance_reserve_event_workspace` before realtime dispatch when necessary.
+Minimum payload sizes include slice length prefixes with zero elements.
 
 ### Print source metadata
 
@@ -486,18 +421,17 @@ lexical owner, declaration, primitive argument types, and fixed payload size. Al
 
 ### Creation
 
-| Function | Initialization | Allocator |
-| --- | --- | --- |
-| `onda_instance_create` | Writes parameter defaults but does not execute Onda `init`. | Onda allocator |
-| `onda_instance_create_initialized` | Performs full initialization. | Onda allocator |
-| `onda_instance_create_with_allocator` | Uninitialized. | Host allocator |
-| `onda_instance_create_initialized_with_allocator` | Fully initialized. | Host allocator |
+`onda_instance_create(program, allocator, out_diag)` allocates program-shaped storage, installs
+parameter and project-buffer defaults, and returns an uninitialized instance. Pass `NULL` for the
+default allocator. Sample rate, block size and channel counts come from the compiled program.
+Call `onda_init_checked` explicitly and inspect its execution status. Release the instance with
+`onda_instance_destroy`.
 
-Creation validates the requested flattened input and output channel counts. The initialized forms
-accept `onda_execution_output_t`, allowing authored initialization prints to be collected on
-success. Initialization cannot publish delegates, so a supplied delegate batch remains empty. If
-initialized creation fails, both output batches are cleared and the diagnostic is the only result.
-Release every successful instance with `onda_instance_destroy`.
+Hosts own floating-point thread policy. `onda_configure_current_thread_audio_fp_mode()` optionally
+enables the audio policy on the calling thread (FTZ/DAZ on x86). Every explicit call reapplies it.
+Call it before initialization, events or processing on each execution thread when desired; hosts
+that share a thread with other work own saving/restoring the prior mode. Runtime calls never change
+this policy implicitly.
 
 `onda_allocator_t` affects only instance-owned runtime storage. Its `alloc` callback runs
 synchronously during creation and explicit `onda_instance_reserve_event_workspace` calls. Realtime
@@ -524,8 +458,8 @@ Capacity rejection during event dispatch does not invalidate the instance.
 - `ONDA_INIT_PRESERVE_PINNED` reinitializes ordinary state while preserving pinned state and task
   continuations. It is valid only after successful full initialization.
 
-Initialization prepares and observes the instance's current external-buffer bindings. Project
-defaults are installed before initialized project creation runs authored initialization; ordinary
+Initialization observes the instance's current external-buffer bindings. Project
+defaults are installed during creation before explicit initialization; ordinary
 unbound slots use their neutral descriptors. Rebinding does not rerun initialization automatically;
 call `onda_init_checked` when state derived by an earlier initializer should be recomputed from the
 new binding.
@@ -536,15 +470,15 @@ when validation rejects the request before generated code runs. It returns
 state indeterminate, and the instance rejects stateful operations until a full initialization or
 snapshot restore succeeds.
 
-`onda_init_unchecked(instance, mode, output)` is the realtime reset variant for instances that
-have completed full initialization at least once. Validate current buffer descriptors after any
-rebind with `onda_validate_buffers` or `onda_prepare_unchecked_process`, and retain the same bound
-storage guarantees as unchecked processing. This call does not revalidate bindings or construct a
-diagnostic on generated failure: it returns zero on success, a positive generated-runtime failure
-code, or an `ONDA_API_ERROR_*` code. Both success and generated failure allocate nothing. A failed
-call invalidates state; unchecked `ONDA_INIT_FULL` can recover it, while preserve-pinned mode
-requires currently initialized state. Print records survive generated failure and delegate records
-are cleared, as with other execution entry points.
+Initialization, processing, events, binding validation and snapshot operations allocate no error
+strings, including rejection and generated-failure paths. Rust execution returns
+`Result<u32, RuntimeError>`: a small owned validation error or the generated numeric status.
+Formatting and conversion to an allocating `Diagnostic` are explicit host operations. Compiler
+errors retain their rich `Diagnostic` values, source locations and messages.
+
+Print records emitted before a generated failure remain available; delegate records are cleared.
+Validation rejection preserves state. Full initialization or successful restore recovers invalidated
+state; preserve-pinned initialization requires initialized state.
 
 ## Parameters and bindings
 
@@ -578,7 +512,7 @@ bindings before execution.
 `onda_bind_buffer` installs one zero-copy physical buffer slot using a primitive type, positive
 frames/channels, and sample rate. A replacement binding is used by subsequent init, event, and
 processing calls without reconstructing the instance. The memory must be writable when
-`onda_buffer_may_write` is true.
+the buffer descriptor's `may_write` field is true.
 
 Either of these forms unbinds a buffer:
 
@@ -589,25 +523,20 @@ An unbound buffer remains processable through neutral one-frame storage: reads r
 writes are discarded. `onda_reset_buffer_to_project_default` restores an immutable default retained
 from a compiled project.
 
-### Explicit validation
+### Process readiness
 
-- `onda_validate_inputs` validates input bindings.
-- `onda_validate_outputs` validates output bindings.
-- `onda_validate_buffers` prepares and validates buffer descriptors, including neutral slots.
-- `onda_validate_bindings` performs all three steps.
-- `onda_prepare_unchecked_process` validates initialization and every binding for subsequent
-  unchecked processing.
-
-Changing a prepared binding invalidates the unchecked-processing contract until preparation runs
-again.
+Bindings validate their shape, extent, type and alignment and update the affected ABI slots
+immediately. Rejected binds preserve the previous binding. Unbinding installs neutral buffer
+descriptors immediately. `onda_prepare_process` checks initialization and required audio bindings;
+it performs no descriptor rebuild. Successful rebinds preserve readiness; unbinding required audio
+or a generated failure revokes it. Host memory must remain valid throughout its binding lifetime.
 
 ## Processing
 
 ### Checked processing
 
-`onda_process_checked(instance, frames, output)` processes one complete logical activation. `frames`
-must be between zero and the compiled block size; only that prefix of each binding is accessed. The
-function runs both block-pre and block-post behavior.
+`onda_process_checked(instance, output)` processes exactly the compiled block size, running both
+block hooks and bypassing segment validation. Use the segment API for a shorter prefix or offset.
 
 `onda_process_checked_segment(instance, start_frame, frames, flags, output)` splits one logical
 block while keeping full-block bindings:
@@ -625,9 +554,8 @@ or snapshot restoration.
 
 ### Unchecked processing
 
-After successful `onda_prepare_unchecked_process`, use `onda_process_unchecked` for one complete
-compiled block or `onda_process_unchecked_segment` for segmented processing. Calling these before
-preparation, or after changing a prepared binding, violates the API contract.
+After successful `onda_prepare_process`, use `onda_process_unchecked` for one complete
+compiled block or `onda_process_unchecked_segment` for segmented processing. Calling these without initialized state and complete valid bindings violates the API contract.
 
 Unchecked calls avoid repeated host-boundary validation but do not suppress generated runtime safety
 checks. `ONDA_EXECUTION_OK` is success;
@@ -636,8 +564,7 @@ state until successful full initialization or snapshot restoration.
 
 ## Events
 
-`onda_trigger_event_by_index_checked` validates the packed payload and current buffer descriptors
-before running a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
+`onda_trigger_event_by_index_checked` validates instance readiness and preflights packed payload data before running a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
 insufficient workspace and `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE` for handler failure. Unknown
 event indices are deliberately neutral and return success.
 
@@ -665,13 +592,13 @@ allocations.
 `onda_trigger_event_views_by_index_unchecked` uses exactly the same canonical SoA representation,
 but derives the tensor count from the event schema and performs no instance, buffer, tensor shape,
 alignment, or value validation. The instance must be fully initialized with prepared buffer
-bindings (via `onda_validate_buffers` or `onda_prepare_unchecked_process` after rebinding), and
+bindings established by successful binding calls, and
 `tensors` must point to the exact schema-derived number of valid views. Violating this contract is
 undefined behavior. This is the minimum-overhead entry for hosts that prepare and reuse known-correct
 views.
 
 All event functions accept an optional execution output and execute synchronously on the calling thread.
-Event payloads use the recursive schema returned by `onda_event_schema_json`. Encode parameters in
+Event payloads use the recursive schema returned by `onda_event_info(...)->schema_json`. Encode parameters in
 declaration order and fields depth-first; structs are structure-of-arrays tensors, and each dynamic
 slice contributes one little-endian `i32` logical length followed by its leaf tensors. Use
 `onda_event_payload_sizes` to size dynamic wire data and preparation workspace, reserve additional
@@ -696,9 +623,9 @@ u32 call_local_sequence
 payload bytes
 ```
 
-The header size is `ONDA_DELEGATE_RECORD_HEADER_SIZE`. `onda_delegate_payload_bytes` and
-`onda_delegate_record_bytes` return exact sizes for fixed delegates. Dynamic delegates return `-1`;
-`onda_delegate_payload_min_bytes` and `onda_delegate_record_min_bytes` include every slice length
+The header size is `ONDA_DELEGATE_RECORD_HEADER_SIZE`. The message descriptor's `payload_bytes` and
+`record_bytes` contain exact sizes for fixed delegates (-1 for dynamic messages);
+`payload_min_bytes` and `record_min_bytes` include every slice length
 prefix but no runtime slice elements. There is no exact whole-call capacity because occurrence
 count, selected delegates, and slice lengths may all depend on runtime control flow.
 
@@ -713,7 +640,7 @@ onda_execution_output_t output = {
   .print_batch = NULL,
 };
 
-int status = onda_process_checked(instance, frames, &output);
+int status = onda_process_checked(instance, &output);
 if (status == ONDA_EXECUTION_OK) {
   onda_batch_cursor_t cursor = {0};
   onda_delegate_occurrence_t occurrence;
@@ -736,8 +663,7 @@ supplied batch before init or process code; an event entry resets it before inpu
 rejected events return empty batches.
 `onda_delegate_batch_next` performs linear constant-time cursor iteration, returning `1` for a
 record, `0` at the end, and `-1` for invalid or malformed input.
-`onda_delegate_batch_occurrence_at` returns `0` for an out-of-range index and `-1` for malformed
-input; it is convenient for one index but repeated indexed iteration is quadratic.
+Use the cursor API for linear iteration; consume it through the end to validate the complete batch.
 
 Missing storage suppresses only the host copy. Calls and internal handlers still run. Records are
 appended whole; insufficient capacity drops the record and increments saturated `overflow_count`.
@@ -763,7 +689,7 @@ onda_execution_output_t output = {
   .print_batch = &prints,
 };
 
-int status = onda_process_checked(instance, frames, &output);
+int status = onda_process_checked(instance, &output);
 
 onda_owned_string_t text = {0};
 onda_diag_t diag = {0};
@@ -774,7 +700,7 @@ onda_owned_string_dispose(&text);
 onda_diag_dispose(&diag);
 ```
 
-`onda_print_batch_reset`, `onda_print_batch_next`, and `onda_print_batch_occurrence_at` parallel the
+`onda_print_batch_reset` and `onda_print_batch_next` parallel the
 delegate helpers, including their result conventions. The occurrence site index resolves through
 `onda_log_site_info`.
 
@@ -792,12 +718,11 @@ failure remain available for diagnostics.
 
 ## State snapshots and control outputs
 
-`onda_instance_state_bytes` reports the current instance snapshot size;
-`onda_state_total_bytes` reports the same packed persistent-state size from program metadata.
+`onda_state_total_bytes(program)` reports the packed persistent-state snapshot size.
 
 `onda_instance_snapshot_state` copies persistent state, excluding scratch and control-output
 mirrors. A `NULL` or undersized destination performs a size query. Invalid arguments return `-1`;
-a requested copy returns `ONDA_API_ERROR_VALIDATION_FAILED` when initialized state is unavailable.
+a requested copy returns `ONDA_API_ERROR_UNINITIALIZED` or `ONDA_API_ERROR_INVALIDATED` when state is unavailable.
 `onda_instance_restore_state` runs full initialization and then overlays an exact snapshot. Invalid
 snapshot or binding input is rejected with an `ONDA_API_ERROR_*` code before execution and preserves
 the prior state. A generated initializer failure returns `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE`
@@ -809,271 +734,130 @@ uses the same size-query convention.
 
 <!-- BEGIN C API FUNCTION INDEX -->
 
-## Complete function index
-
-The groups below enumerate every function exported by `include/onda.h`. The earlier sections provide
-the behavioral contracts; the header provides exact parameter types.
-
-### Results, diagnostics, and batch utilities
-
 ```text
-onda_delegate_batch_reset
+onda_bind_buffer
+onda_bind_input
+onda_bind_output
+onda_buffer_array_count
+onda_buffer_array_info
+onda_buffer_asset_decode
+onda_buffer_asset_encode
+onda_buffer_asset_format_version
+onda_buffer_count
+onda_buffer_index
+onda_buffer_info
+onda_compile
+onda_compile_constants_at
+onda_compile_constants_count
+onda_compile_constants_destroy
+onda_compile_constants_inputs
+onda_compile_file
+onda_compile_source_graph
+onda_configure_current_thread_audio_fp_mode
+onda_control_output_count
+onda_control_output_index
+onda_control_output_info
+onda_control_output_read_bytes
+onda_current_stdlib_digest
 onda_delegate_batch_next
-onda_delegate_batch_occurrence_at
-onda_print_batch_reset
-onda_print_batch_next
-onda_print_batch_occurrence_at
+onda_delegate_batch_reset
+onda_delegate_count
+onda_delegate_index
+onda_delegate_info
+onda_delegate_payload_sizes
+onda_diag_dispose
+onda_event_count
+onda_event_index
+onda_event_info
+onda_event_payload_sizes
+onda_event_tensor_info
 onda_format_print_batch
 onda_format_print_batch_into
-onda_owned_string_dispose
-onda_diag_dispose
-```
-
-### Compilation and source graphs
-
-```text
+onda_init_checked
+onda_input_count
+onda_input_index
+onda_input_info
 onda_inspect_compile_constants
-onda_compile_constants_count
-onda_compile_constants_at
-onda_compile_constants_inputs
-onda_compile_constants_destroy
-onda_compile
-onda_compile_file
 onda_inspect_compile_constants_file
-onda_compile_source_graph
 onda_inspect_compile_constants_source_graph
-onda_rewrite_source_references
-onda_source_manifest_count
-onda_source_manifest_path
-onda_source_manifest_unresolved_count
-onda_source_manifest_unresolved_path
-onda_source_manifest_watch_count
-onda_source_manifest_watch_path
-onda_source_manifest_document_count
-onda_source_manifest_document_path
-onda_source_manifest_document_contents
-onda_source_manifest_resolution_count
-onda_source_manifest_resolution_source_path
-onda_source_manifest_resolution_kind
-onda_source_manifest_resolution_specifier
-onda_source_manifest_resolution_target_path
-onda_source_manifest_unresolved_resolution_count
-onda_source_manifest_unresolved_resolution_source_path
-onda_source_manifest_unresolved_resolution_kind
-onda_source_manifest_unresolved_resolution_specifier
-onda_source_manifest_unresolved_resolution_candidate_count
-onda_source_manifest_unresolved_resolution_candidate_path
-onda_source_manifest_destroy
-```
-
-### Project images and assets
-
-```text
-onda_version
-onda_project_image_format_version
-onda_buffer_asset_format_version
-onda_current_stdlib_digest
-onda_buffer_asset_encode
-onda_buffer_asset_decode
-onda_project_image_capture
-onda_project_image_with_buffer_overrides
-onda_project_image_deserialize
-onda_project_image_load_files
-onda_project_image_serialize
-onda_project_image_content_digest
-onda_project_image_entry
-onda_project_image_stdlib_digest
-onda_project_image_document_count
-onda_project_image_document_path
-onda_project_image_document_contents
-onda_project_image_resolution_count
-onda_project_image_resolution_source
-onda_project_image_resolution_kind
-onda_project_image_resolution_specifier
-onda_project_image_resolution_target
-onda_project_image_buffer_count
-onda_project_image_buffer_name
-onda_project_image_buffer_asset_id
-onda_project_image_buffer_element_type
-onda_project_image_buffer_frames
-onda_project_image_buffer_channels
-onda_project_image_buffer_sample_rate
-onda_project_image_inspect_compile_constants
-onda_project_image_compile
-onda_project_image_materialize
-onda_project_materialization_file_count
-onda_project_materialization_file_path
-onda_project_materialization_file_bytes
-onda_project_materialization_destroy
-onda_project_image_destroy
-```
-
-### Programs, instances, execution, and state
-
-```text
-onda_program_destroy
 onda_instance_create
-onda_instance_create_initialized
-onda_instance_create_with_allocator
-onda_instance_create_initialized_with_allocator
-onda_instance_reserve_event_workspace
 onda_instance_destroy
+onda_instance_reserve_event_workspace
+onda_instance_restore_state
+onda_instance_snapshot_state
+onda_log_site_count
+onda_log_site_info
+onda_output_count
+onda_output_index
+onda_output_info
+onda_owned_string_dispose
+onda_param_count
+onda_param_index
+onda_param_info
+onda_param_normalized_to_plain
+onda_param_plain_to_normalized
+onda_prepare_process
+onda_print_batch_next
+onda_print_batch_reset
+onda_process_checked
+onda_process_checked_segment
+onda_process_unchecked
+onda_process_unchecked_segment
+onda_program_destroy
+onda_project_image_buffer_count
+onda_project_image_buffer_info
+onda_project_image_capture
+onda_project_image_compile
+onda_project_image_content_digest
+onda_project_image_deserialize
+onda_project_image_destroy
+onda_project_image_document_count
+onda_project_image_document_info
+onda_project_image_entry
+onda_project_image_format_version
+onda_project_image_inspect_compile_constants
+onda_project_image_load_files
+onda_project_image_materialize
+onda_project_image_resolution_count
+onda_project_image_resolution_info
+onda_project_image_serialize
+onda_project_image_stdlib_digest
+onda_project_image_with_buffer_overrides
+onda_project_materialization_destroy
+onda_project_materialization_file_count
+onda_project_materialization_file_info
+onda_reset_buffer_to_project_default
+onda_rewrite_source_references
 onda_set_param_by_index
 onda_set_param_element_by_index
-onda_set_param_plain_f64
+onda_set_param_element_normalized
 onda_set_param_element_plain_f64
 onda_set_param_normalized
-onda_set_param_element_normalized
+onda_set_param_plain_f64
+onda_source_file_count
+onda_source_file_path
+onda_source_manifest_count
+onda_source_manifest_destroy
+onda_source_manifest_document_count
+onda_source_manifest_document_info
+onda_source_manifest_path
+onda_source_manifest_resolution_count
+onda_source_manifest_resolution_info
+onda_source_manifest_unresolved_count
+onda_source_manifest_unresolved_path
+onda_source_manifest_unresolved_resolution_candidate_path
+onda_source_manifest_unresolved_resolution_count
+onda_source_manifest_unresolved_resolution_info
+onda_source_manifest_watch_count
+onda_source_manifest_watch_path
+onda_state_count
+onda_state_info
+onda_state_total_bytes
 onda_trigger_event_by_index_checked
 onda_trigger_event_by_index_unchecked
 onda_trigger_event_views_by_index_checked
 onda_trigger_event_views_by_index_unchecked
-onda_bind_input
-onda_bind_output
-onda_bind_buffer
-onda_reset_buffer_to_project_default
-onda_process_checked
-onda_process_checked_segment
-onda_init_checked
-onda_init_unchecked
-onda_instance_state_bytes
-onda_instance_snapshot_state
-onda_instance_restore_state
-onda_control_output_read_bytes
-onda_validate_bindings
-onda_validate_inputs
-onda_validate_outputs
-onda_validate_buffers
-onda_prepare_unchecked_process
-onda_process_unchecked
-onda_process_unchecked_segment
-```
-
-### Program metadata
-
-```text
-onda_input_count
-onda_output_count
-onda_control_output_count
-onda_param_count
-onda_buffer_count
-onda_buffer_array_count
-onda_event_count
-onda_delegate_count
-onda_source_file_count
-onda_source_file_path
-onda_log_site_count
-onda_log_site_info
-onda_state_count
-onda_input_name
-onda_output_name
-onda_control_output_name
-onda_param_name
-onda_buffer_name
-onda_buffer_array_name
-onda_buffer_array_first
-onda_buffer_array_len
-onda_event_name
-onda_delegate_name
-onda_state_name
-onda_event_param_count
-onda_event_param_name
-onda_delegate_param_count
-onda_delegate_param_name
-onda_input_index
-onda_output_index
-onda_control_output_index
-onda_param_index
-onda_buffer_index
-onda_event_index
-onda_delegate_index
-onda_input_type
-onda_output_type
-onda_control_output_type
-onda_param_type
-onda_buffer_type
-onda_state_type
-onda_input_type_bytes
-onda_output_type_bytes
-onda_control_output_type_bytes
-onda_param_type_bytes
-onda_state_type_bytes
-onda_event_payload_bytes
-onda_event_payload_min_bytes
-onda_event_schema_json
-onda_event_tensor_count
-onda_event_tensor_info
-onda_event_payload_sizes
-onda_delegate_payload_bytes
-onda_delegate_payload_min_bytes
-onda_delegate_schema_json
-onda_delegate_payload_sizes
-onda_delegate_record_bytes
-onda_delegate_record_min_bytes
-onda_event_param_elem_type
-onda_event_param_array_len
-onda_event_param_is_array
-onda_event_param_is_slice
-onda_event_param_offset_bytes
-onda_event_param_has_default
-onda_event_param_default_bytes
-onda_delegate_param_elem_type
-onda_delegate_param_array_len
-onda_delegate_param_is_array
-onda_delegate_param_is_slice
-onda_delegate_param_offset_bytes
-onda_buffer_elem_type
-onda_buffer_elem_type_bytes
-onda_buffer_channels_kind
-onda_buffer_channels_static
-onda_buffer_may_write
-onda_input_elem_type
-onda_output_elem_type
-onda_control_output_elem_type
-onda_param_elem_type
-onda_state_elem_type
-onda_input_array_len
-onda_output_array_len
-onda_control_output_array_len
-onda_param_array_len
-onda_state_array_len
-onda_input_slot_offset
-onda_output_slot_offset
-onda_control_output_slot_offset
-onda_param_slot_offset
-onda_input_byte_offset
-onda_output_byte_offset
-onda_control_output_byte_offset
-onda_param_byte_offset
-onda_state_byte_offset
-onda_state_total_bytes
-onda_input_has_default
-onda_output_has_default
-onda_param_has_default
-onda_param_default_bytes
-onda_input_default_f64
-onda_output_default_f64
-onda_param_default_f64
-onda_input_has_range
-onda_output_has_range
-onda_param_has_range
-onda_input_range_min_f64
-onda_input_range_max_f64
-onda_output_range_min_f64
-onda_output_range_max_f64
-onda_param_range_min_f64
-onda_param_range_max_f64
-onda_param_scale
-onda_param_has_curve
-onda_param_curve
-onda_param_enum_json_copy
-onda_control_output_enum_json_copy
-onda_param_unit_copy
-onda_param_has_step
-onda_param_step_f64
-onda_param_step_count
-onda_param_normalized_to_plain
-onda_param_plain_to_normalized
+onda_version
 ```
 
 <!-- END C API FUNCTION INDEX -->

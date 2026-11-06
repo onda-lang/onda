@@ -16,6 +16,7 @@ name = "onda-run"
 path = "src/run_launcher.rs"
 
 [dependencies]
+onda_realtime = { path = "../onda_realtime" }
 hound = "3.5.1"
 onda_daemon = { path = "../onda_daemon" }
 onda_codegen_llvm = { path = "../onda_codegen_llvm" }

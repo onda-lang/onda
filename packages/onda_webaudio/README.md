@@ -228,6 +228,25 @@ cross-origin isolated, normally with `Cross-Origin-Opener-Policy: same-origin` a
 `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`). Audio processing remains usable
 without those headers, but registering an output listener fails with a clear error.
 
+## Execution failures
+
+Generated failures reject with `OndaExecutionError.status`; worklet validation and transport
+failures reject with `OndaRuntimeError.code` from `ONDA_RUNTIME_ERROR`. Requested failures reject
+only their promise. `onExecutionError` receives asynchronous render failures. Generated runtime
+failures and unexpected Wasm traps invalidate the processor and silence later callbacks; full
+initialization or snapshot restoration recovers it. Event input rejection preserves live state.
+Rejected parameter arrays leave both storage and smoothing targets unchanged.
+
+When shared memory is available, numeric statuses and acknowledgements use their own bounded
+ring, independent of print/delegate capacity. Error objects and messages are created on the main
+thread. Control requests use a bounded in-flight window with room for replies and render failures.
+Without `Atomics.waitAsync`, control replies wake the adapter through the port; asynchronous render
+failures are polled. Those control wakeups can incur browser cloning allocations.
+A status transport overflow
+silences the worklet, closes the adapter and rejects pending requests; recreate the processor.
+Without shared memory, a reused numeric MessagePort packet provides the same error semantics,
+although browser structured cloning may allocate.
+
 ## Real-time behavior
 
 `createOndaAudioProcessor` compiles the processor's `WebAssembly.Module` concurrently with worklet

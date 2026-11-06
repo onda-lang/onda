@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 mod args;
+mod bench_cmd;
 mod compile_cmd;
 mod daemon_stdio;
 mod diag_print;
@@ -36,7 +37,7 @@ const USAGE_BODY: &str = r#"Commands:
     [--target-triple <triple>] [--target-cpu <name|host>] [--target-abi <name>] 
     [--reloc-model <default|static|pic|dynamic-no-pic>] 
     [--code-model <default|small|kernel|medium|large>] 
-  
+
   onda run [input]                   Open the interactive run window
     
     [--sample-rate <hz>] [--block-size <frames>]
@@ -62,6 +63,13 @@ const USAGE_BODY: &str = r#"Commands:
   onda project <directory>           Create or package an Onda project
     
     [--from <input.onda>] [--buffer <name=path>]
+  
+  onda bench <input>                 Benchmark native CPU block processing
+
+    [--runs <count>] [--blocks <count>] [--warmup-blocks <count>]
+    [--sample-rate <hz>] [--block-size <frames>]
+    [--opt-level <0|1|2|3>] [--fast-math]
+    [--set <name=value>] [--buffer <name=path>] [--meta] [--json]
   
   onda daemon diagnose <input>       Run daemon-backed analysis and diagnostics
     
@@ -106,12 +114,19 @@ Run Options:
   --input-device         Select audio input device by exact name for run playback
   --output-device        Select audio output device by exact name for run playback
   --midi-input-device    Select MIDI input device by exact name for run playback
-  --set                  Override a scalar run param with `name=value`
+  --set                  Override a run/bench param or array element with `name=value`
   --buffer               Bind a declared buffer to a WAV or .ondabuffer file with `name=path`
   --control-json         Emit run control handshake on stdout and serve param control over localhost
   --start-paused         Compile without starting audio processing (requires --control-json)
   --report-sources       Include source graphs and hashes in startup output (requires --control-json)
   --theme                Run window theme: `dark` or `light` (default: detected at startup)
+
+Bench Options:
+
+  --runs, -n             Number of measured runs (default: 10)
+  --blocks               Complete blocks processed per run (default: 1000)
+  --warmup-blocks        Untimed blocks before measurement (default: 100; 0 disables)
+  --json                 Print benchmark results as JSON
 
 Project Options:
 
@@ -157,6 +172,7 @@ enum Command {
         target: TargetConfig,
     },
     Lsp,
+    Bench(bench_cmd::BenchOptions),
     Run(RunCommand),
     Daemon(DaemonCommand),
 }
@@ -278,6 +294,7 @@ fn main() {
             target,
         }),
         Command::Lsp => onda_lsp::run_stdio_loop(),
+        Command::Bench(options) => bench_cmd::run_bench(options),
         Command::Run(cmd) => run_run(cmd),
         Command::Daemon(cmd) => run_daemon(cmd),
     };

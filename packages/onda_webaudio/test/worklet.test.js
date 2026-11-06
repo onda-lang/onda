@@ -1,3 +1,6 @@
+import { OndaAudioProcessor, OndaExecutionError, OndaRuntimeError } from "../src/index.js";
+import { createExecutionStatusRing, openExecutionStatusRing, drainExecutionStatusRing, MAX_IN_FLIGHT_REQUESTS } from "../src/execution-status-ring.js";
+import { ONDA_RUNTIME_ERROR as ERROR } from "../src/runtime-status.js";
 import { PayloadPlan } from "@onda-lang/processor-abi";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -7,6 +10,7 @@ import {
   createExecutionOutputRing,
   drainExecutionOutputRing,
   openExecutionOutputRing,
+  writeExecutionOutputRing,
 } from "../src/execution-output-ring.js";
 
 let Processor;
@@ -113,7 +117,7 @@ test("worklet remains silent until explicit full initialization", () => {
 
   assert.equal(processor.process([], [[output]]), true);
   assert.deepEqual([...output], [0, 0, 0]);
-  assert.throws(() => processor.init(0), /full initialization is required/);
+  assert.throws(() => processor.init(0), (status) => status === ERROR.UNINITIALIZED);
   processor.init(1);
   assert.equal(processor.initialized, true);
   assert.equal(processor.process, processor.processInitialized);
@@ -137,7 +141,7 @@ test("failed live initialization returns the worklet to the silent pending state
   assert.equal(outputPublishes, 1);
   assert.equal(processor.initialized, false);
   assert.equal(processor.process, processor.processPending);
-  assert.throws(() => processor.init(0), /full initialization is required/);
+  assert.throws(() => processor.init(0), (status) => status === ERROR.UNINITIALIZED);
 
   const output = new Float32Array([1, 1, 1]);
   assert.equal(processor.process([], [[output]]), true);
@@ -157,7 +161,7 @@ test("failed processing invalidates the worklet and keeps later callbacks silent
     },
   });
   const messages = [];
-  processor.port.postMessage = (message) => messages.push(message);
+  processor.port.postMessage = (message) => messages.push(structuredClone(message));
   const output = new Float32Array([1, 1, 1]);
 
   assert.equal(processor.process([], [[output]]), true);
@@ -166,7 +170,7 @@ test("failed processing invalidates the worklet and keeps later callbacks silent
   assert.equal(processor.process, processor.processPending);
   assert.equal(processor.blockCursor, 0);
   assert.equal(messages.length, 1);
-  assert.equal(messages[0].type, "onda-error");
+  assert.equal(messages[0].type, "onda-status");
   assert.equal(messages[0].status, 1);
 
   output.fill(1);
@@ -190,8 +194,7 @@ test("failed event execution invalidates the worklet", () => {
   });
 
   assert.throws(() => processor.dispatchEvent("fail", new Uint8Array()), (error) => {
-    assert.match(error.message, /event 'fail' failed with Onda execution status 1/);
-    assert.equal(error.status, 1);
+    assert.equal(error, 1);
     return true;
   });
   assert.equal(processor.initialized, false);
@@ -206,11 +209,11 @@ test("worklet event dispatch ignores unknown nonnegative indices", () => {
   assert.doesNotThrow(() => processor.dispatchEvent(99, new Uint8Array([1, 2, 3])));
   assert.throws(
     () => processor.dispatchEvent(-1, new Uint8Array()),
-    /unknown Onda event '-1'/,
+    (status) => status === ERROR.UNKNOWN_EVENT,
   );
   assert.throws(
     () => processor.dispatchEvent("missing", new Uint8Array()),
-    /unknown Onda event 'missing'/,
+    (status) => status === ERROR.UNKNOWN_EVENT,
   );
 });
 
@@ -746,8 +749,8 @@ test("worklet indexed array writes preserve sibling values for every primitive",
     const read = { f32: "getFloat32", f64: "getFloat64", i32: "getInt32", i64: "getBigInt64", bool: "getUint8" }[scalar];
     assert.equal(view[read](processor.paramsPtr + width, true), scalar === "bool" ? 1 : scalar === "i64" ? 8n : 8);
     processor.setParam("values[1]", scalar === "bool" ? false : 6);
-    assert.throws(() => processor.setParam("values[2]", 0), /out of bounds/);
-    assert.throws(() => processor.setParam("values", 0, 2), /out of bounds/);
+    assert.throws(() => processor.setParam("values[2]", 0), (status) => status === ERROR.INVALID_PARAMETER);
+    assert.throws(() => processor.setParam("values", 0, 2), (status) => status === ERROR.INVALID_PARAMETER);
   }
 });
 
@@ -935,10 +938,10 @@ test("live smoothing changes preserve DSP state, settle at zero, and enable afte
     const host = rampProcessor({ scalar, seconds: 0 });
     const memory = host.processor.memory.buffer;
     const messages = [];
-    host.processor.port.postMessage = message => messages.push(message);
+    host.processor.port.postMessage = message => messages.push(structuredClone(message));
     const change = (seconds) => {
       host.processor.handleMessage({ type: "set-param-smoothing", requestId: 20, seconds });
-      assert.equal(messages.at(-1).type, "onda-ok");
+      assert.equal(messages.at(-1).status, 0);
       assert.equal(host.processor.memory.buffer, memory);
     };
     host.process();
@@ -955,7 +958,7 @@ test("live smoothing changes preserve DSP state, settle at zero, and enable afte
     assert.deepEqual([host.read(0), host.read(1)], [0.75, 0.25]);
     for (const seconds of [-1, NaN, Infinity, Number.MAX_VALUE, "3"]) {
       host.processor.handleMessage({ type: "set-param-smoothing", requestId: 21, seconds });
-      assert.equal(messages.at(-1).type, "onda-error");
+      assert.equal(messages.at(-1).status, ERROR.INVALID_SMOOTHING);
       assert.equal(host.processor.paramSmoothing.samples, 96);
     }
     host.process();
@@ -986,5 +989,249 @@ test("duration changes do not restart cancelled nonfinite transitions", () => {
       assert.ok(Object.is(host.read(), value));
       assert.equal(host.processor.paramSmoothing.activeCount, 0);
     }
+  }
+});
+
+test("shared statuses survive a saturated diagnostic ring without posting messages", () => {
+  const statusBuffer = createExecutionStatusRing();
+  const statusRing = openExecutionStatusRing(statusBuffer);
+  const { buffer, ring } = processorOutputRing(0, 0);
+  const processor = new Processor({ processorOptions: {
+    wasmBytes: processFailureWasm, metadata: metadata(), executionOutputRing: buffer,
+    executionStatusRing: statusBuffer, delegateCapacityBytes: 0, printCapacityBytes: 0,
+  } });
+  while (writeExecutionOutputRing(ring, processor.executionOutputEntry, null, null)) {}
+  processor.port.postMessage = () => assert.fail("status must use shared storage");
+  const output = new Float32Array([1, 2, 3]);
+  processor.process([], [[output]]);
+  processor.process([], [[output]]);
+  assert.deepEqual([...output], [0, 0, 0]);
+  const received = [];
+  drainExecutionStatusRing(statusRing, (...entry) => received.push(entry));
+  assert.deepEqual(received, [[0, 1, 1]]);
+  processor.handleMessage({ type: "init", mode: 1, requestId: 1 });
+  drainExecutionStatusRing(statusRing, (...entry) => received.push(entry));
+  assert.deepEqual(received.at(-1), [1, 2, 0]);
+  processor.process([], [[output]]);
+  drainExecutionStatusRing(statusRing, (...entry) => received.push(entry));
+  assert.deepEqual(received.at(-1), [0, 1, 1]);
+});
+
+test("unexpected Wasm traps and malformed callback shapes silence and invalidate the worklet", () => {
+  for (const trap of [false, true]) {
+    const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: metadata() } });
+    const messages = [];
+    processor.port.postMessage = (message) => messages.push(structuredClone(message));
+    if (trap) processor.exports = { ...processor.exports, onda_process() { throw new WebAssembly.RuntimeError("unreachable"); } };
+    const outputs = [[new Float32Array([1, 2]), new Float32Array(trap ? 2 : 3).fill(1)]];
+    assert.equal(processor.process([], outputs), true);
+    for (const channel of outputs[0]) assert.ok(channel.every((sample) => sample === 0));
+    assert.equal(processor.initialized, false);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].status, trap ? ERROR.UNEXPECTED_FAILURE : ERROR.INVALID_AUDIO_SHAPE);
+    processor.process([], outputs);
+    assert.equal(messages.length, 1);
+    processor.exports = { ...processor.exports, onda_process: () => 0 };
+    processor.handleMessage({ type: "init", mode: 1, requestId: 2 });
+    assert.equal(processor.initialized, true);
+  }
+});
+
+test("worklet rejects a complete parameter array before changing any element", () => {
+  const descriptor = metadata();
+  descriptor.runtime.param_size_bytes = 16;
+  descriptor.metadata.params = [{ name: "values", scalar: "i64", type_repr: "i64[2]", array_len: 2, byte_offset: 0, byte_size: 16 }];
+  const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: descriptor } });
+  processor.setParam("values", [11n, 22n]);
+  const messages = [];
+  processor.port.postMessage = (message) => messages.push(structuredClone(message));
+  for (const invalid of [1n << 63n, {}, Number.MAX_SAFE_INTEGER + 1]) {
+    processor.handleMessage({ type: "set-param", param: "values", value: [99n, invalid], requestId: 1 });
+    assert.equal(messages.at(-1).status, ERROR.INVALID_PARAMETER);
+    assert.equal(processor.memoryView().getBigInt64(processor.paramsPtr, true), 11n);
+    assert.equal(processor.memoryView().getBigInt64(processor.paramsPtr + 8, true), 22n);
+    assert.equal(processor.initialized, true);
+  }
+});
+
+test("event rejection preserves state while generated failure and init failure require recovery", () => {
+  const descriptor = metadata();
+  descriptor.metadata.events = [{ name: "check", export: "event_check", params: [] }];
+  const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: descriptor } });
+  let status = 2;
+  processor.exports = { ...processor.exports, event_check: () => status };
+  const received = [];
+  processor.port.postMessage = (message) => received.push(structuredClone(message));
+  const trigger = () => processor.handleMessage({ type: "event", event: "check", payload: new Uint8Array(), requestId: 10 });
+  trigger();
+  assert.equal(received.at(-1).status, 2);
+  assert.equal(processor.initialized, true);
+  status = 1;
+  trigger();
+  assert.equal(received.at(-1).status, 1);
+  assert.equal(processor.initialized, false);
+  trigger();
+  assert.equal(received.at(-1).status, ERROR.UNINITIALIZED);
+  processor.handleMessage({ type: "init", mode: 1, requestId: 11 });
+  assert.equal(received.at(-1).status, 0);
+  status = 0;
+  trigger();
+  assert.equal(received.at(-1).status, 0);
+  processor.exports = { ...processor.exports, onda_processor_init: () => 1 };
+  processor.handleMessage({ type: "init", mode: 1, requestId: 12 });
+  assert.equal(received.at(-1).status, 1);
+  assert.equal(processor.initialized, false);
+});
+
+test("status overflow silences the processor permanently", () => {
+  const buffer = createExecutionStatusRing();
+  const ring = openExecutionStatusRing(buffer);
+  const processor = new Processor({ processorOptions: {
+    wasmBytes: wasm, metadata: metadata(), executionStatusRing: buffer,
+  } });
+  for (let id = 1; id <= 65; id += 1) processor.handleMessage({ type: "init", mode: 1, requestId: id });
+  assert.equal(processor.initialized, false);
+  const received = [];
+  drainExecutionStatusRing(ring, (...entry) => received.push(entry));
+  assert.equal(received.at(-1)[2], ERROR.TRANSPORT_OVERFLOW);
+  processor.handleMessage({ type: "init", mode: 1, requestId: 66 });
+  assert.equal(processor.initialized, false);
+});
+
+function connectedHost({ shared = true, initialize = false, descriptor = metadata() } = {}) {
+  const statusBuffer = shared ? createExecutionStatusRing() : null;
+  const worklet = new Processor({ processorOptions: {
+    wasmBytes: wasm, metadata: descriptor, executionStatusRing: statusBuffer, initialize,
+  } });
+  const node = new EventTarget();
+  const listeners = new Set();
+  node.port = {
+    addEventListener(_, listener) { listeners.add(listener); },
+    removeEventListener(_, listener) { listeners.delete(listener); },
+    postMessage(message, transfer) { worklet.handleMessage(structuredClone(message, { transfer })); },
+  };
+  worklet.port.postMessage = (message) => {
+    const data = structuredClone(message);
+    queueMicrotask(() => { for (const listener of listeners) listener({ data }); });
+  };
+  const adapter = new OndaAudioProcessor(node, descriptor, undefined, null, statusBuffer);
+  return { worklet, adapter };
+}
+
+test("adapter and worklet settle burst requests, typed failures, snapshots and recovery on both transports", async () => {
+  for (const shared of [true, false]) {
+    const descriptor = metadata();
+    descriptor.metadata.events = [{ name: "check", export: "event_check", params: [] }];
+    const { adapter, worklet } = connectedHost({ shared, descriptor });
+    try {
+      let eventStatus = 0;
+      worklet.exports = { ...worklet.exports, event_check: () => eventStatus };
+      const errors = [];
+      adapter.onExecutionError((error) => errors.push(error));
+      await assert.rejects(adapter.init(0), (error) => error instanceof OndaRuntimeError && error.code === ERROR.UNINITIALIZED);
+      await adapter.init(1);
+      // More requests than shared-ring slots must be bounded, never dropped.
+      await Promise.all(Array.from({ length: 200 }, () => adapter.resetParams()));
+      assert.equal(adapter.pending.size, 0);
+      eventStatus = 2;
+      await assert.rejects(adapter.request("event", { event: "check", payload: new Uint8Array() }),
+        (error) => error instanceof OndaExecutionError && error.status === 2);
+      assert.equal(worklet.initialized, true);
+      assert.equal(errors.length, 0);
+      eventStatus = 1;
+      await assert.rejects(adapter.request("event", { event: "check", payload: new Uint8Array() }),
+        (error) => error instanceof OndaExecutionError && error.status === 1);
+      assert.equal(worklet.initialized, false);
+      await adapter.restoreSnapshot(new Uint8Array());
+      assert.equal(worklet.initialized, true);
+      assert.equal((await adapter.snapshot()).byteLength, 0);
+      for (const invalid of [null, {}, new Uint8Array(1)]) {
+        await assert.rejects(adapter.restoreSnapshot(invalid),
+          (error) => error instanceof OndaRuntimeError && error.code === ERROR.INVALID_SNAPSHOT);
+        assert.equal(worklet.initialized, true);
+      }
+      await assert.rejects(adapter.readBuffer("missing"),
+        (error) => error instanceof OndaRuntimeError && error.code === ERROR.UNKNOWN_BUFFER);
+      assert.equal(worklet.initialized, true);
+      worklet.exports = { ...worklet.exports, onda_process: () => 1 };
+      worklet.process([], [[new Float32Array(128)]]);
+      // Also exercise polling explicitly; the regular async reader may already have drained it.
+      adapter.drainExecutionStatus();
+      await Promise.resolve();
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0].status, 1);
+      assert.equal(worklet.initialized, false);
+      await adapter.init(1);
+      assert.equal(worklet.initialized, true);
+      await assert.rejects(adapter.request("unknown"), (error) => error instanceof OndaRuntimeError && error.code === ERROR.UNKNOWN_OPERATION);
+      assert.equal(worklet.initialized, true);
+    } finally {
+      adapter.close();
+    }
+  }
+});
+
+test("terminal status overflow closes the adapter and rejects every queued request", async () => {
+  const { adapter, worklet } = connectedHost();
+  try {
+    const failures = [];
+    adapter.onExecutionError((error) => failures.push(error));
+    // Hold the entire window so the remainder stays on the main-thread queue.
+    adapter.node.port.postMessage = () => {};
+    const rejected = Array.from({ length: 100 }, () => assert.rejects(
+      adapter.init(1), (error) => error.code === ERROR.TRANSPORT_OVERFLOW));
+    assert.ok(adapter.requestQueue.length > 0);
+    for (let id = 1000; id < 1065; id += 1) worklet.handleMessage({ type: "init", mode: 1, requestId: id });
+    adapter.drainExecutionStatus();
+    await Promise.all(rejected);
+    assert.equal(adapter.closed, true);
+    assert.equal(adapter.pending.size, 0);
+    assert.equal(adapter.requestQueue.length, 0);
+    assert.equal(failures.length, 1);
+    await assert.rejects(adapter.init(1), (error) => error.code === ERROR.TRANSPORT_OVERFLOW);
+  } finally {
+    adapter.close();
+  }
+});
+
+test("control bursts complete without polling and reserve space for recovery failures", async () => {
+  const original = Atomics.waitAsync;
+  Atomics.waitAsync = undefined;
+  const { adapter, worklet } = connectedHost({ initialize: true });
+  try {
+    // No timer ticks: command progress must come from control-path port wakes.
+    clearInterval(adapter.statusPoll);
+    const outgoing = [];
+    adapter.node.port.postMessage = (message) => outgoing.push(message);
+    const errors = [];
+    adapter.onExecutionError((error) => errors.push(error));
+    worklet.exports = { ...worklet.exports, onda_process: () => 1 };
+    const output = [[new Float32Array(128)]];
+    adapter.nextRequestId = 0xfffffff0; // Exercise u32 rollover within a burst.
+    const requests = Array.from({ length: 100 }, (_, index) => index >= MAX_IN_FLIGHT_REQUESTS && index % 3 === 0
+      ? assert.rejects(adapter.request("unknown"), (error) => error.code === ERROR.UNKNOWN_OPERATION)
+      : adapter.init(1));
+    const ids = [...adapter.pending.keys()];
+    assert.equal(outgoing.length, MAX_IN_FLIGHT_REQUESTS);
+    worklet.process([], output); // Failure of the already-running processor.
+    const received = [];
+    for (let batch = 0; batch < 4; batch += 1) {
+      assert.ok(outgoing.length <= MAX_IN_FLIGHT_REQUESTS);
+      for (const message of outgoing.splice(0)) {
+        received.push(message.requestId);
+        worklet.handleMessage(message);
+        worklet.process([], output); // Every recovery can fail before the next command.
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(received, ids);
+    assert.equal(adapter.pending.size, 0);
+    assert.equal(adapter.inFlightRequests.size, 0);
+    assert.equal(adapter.closed, false);
+    assert.equal(errors.length, 78);
+    await Promise.all(requests);
+  } finally {
+    adapter.close();
+    Atomics.waitAsync = original;
   }
 });

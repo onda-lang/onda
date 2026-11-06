@@ -1,3 +1,12 @@
+import {
+  ONDA_RUNTIME_ERROR, RUNTIME_ERROR_MESSAGES, STATUS_OPERATIONS,
+} from "./runtime-status.js";
+import {
+  createExecutionStatusRing, openExecutionStatusRing, drainExecutionStatusRing,
+  STATUS_WAKE, wakeExecutionStatusRing, MAX_IN_FLIGHT_REQUESTS,
+} from "./execution-status-ring.js";
+export { ONDA_RUNTIME_ERROR } from "./runtime-status.js";
+
 import { paramAddress, paramElementAddress, paramSmoothingSamples } from "./param-metadata.js";
 import {
   PayloadPlan,
@@ -44,6 +53,15 @@ export class OndaExecutionError extends Error {
     this.name = "OndaExecutionError";
     this.operation = operation;
     this.status = status;
+  }
+}
+
+export class OndaRuntimeError extends Error {
+  constructor(operation, code) {
+    super(`${operation}: ${RUNTIME_ERROR_MESSAGES[code] ?? "unknown runtime error"}`);
+    this.name = "OndaRuntimeError";
+    this.operation = operation;
+    this.code = code;
   }
 }
 
@@ -144,6 +162,7 @@ function audioWorkletNodeOptionsFromValidated(
       delegateCapacityBytes,
       printCapacityBytes,
       executionOutputRing,
+      executionStatusRing: createExecutionStatusRing(),
       printCollectionEnabled: options.onPrint !== undefined,
       printSubscriptionId: options.onPrint === undefined ? 0 : 1,
       initialize: options.initialize === true,
@@ -299,6 +318,7 @@ async function createOndaAudioProcessorImpl(context, artifact, options, initiali
     validated.metadata,
     options.onPrint,
     nodeOptions.processorOptions.executionOutputRing,
+    nodeOptions.processorOptions.executionStatusRing,
   );
   if (!initialize) return processor;
   try {
@@ -340,6 +360,7 @@ export class OndaAudioProcessor {
     metadata = null,
     initialPrintListener = undefined,
     executionOutputRing = null,
+    executionStatusRing = null,
   ) {
     if (
       initialPrintListener !== undefined
@@ -353,6 +374,16 @@ export class OndaAudioProcessor {
     this.eventPlans = new WeakMap();
     this.paramControls = new WeakMap();
     this.paramElements = new WeakMap();
+    this.executionStatusRing = executionStatusRing === null
+      ? null : openExecutionStatusRing(executionStatusRing);
+    this.statusPoll = null;
+    this.statusDrainActive = false;
+    this.statusNeedsWake = this.executionStatusRing !== null
+      && typeof Atomics.waitAsync !== "function";
+    this.requestQueue = [];
+    this.inFlightRequests = new Set();
+    this.sendingRequests = false;
+    this.requestPumpScheduled = false;
     this.nextRequestId = 1;
     this.pending = new Map();
     this.executionErrorListeners = new Set();
@@ -373,26 +404,24 @@ export class OndaAudioProcessor {
     this.executionOutputWaitGeneration = 0;
     this.executionOutputPoll = null;
     this.executionOutputDrainActive = false;
+    this.executionOutputReading = false;
     this.closed = false;
     this.closeReason = null;
     this.handleMessage = (event) => {
       const message = event.data ?? {};
-      const error = message.type === "onda-error"
-        ? Number.isInteger(message.status)
-          ? new OndaExecutionError(message.error, message.operation, message.status)
-          : new Error(message.error)
-        : null;
-      if (message.requestId === undefined) {
-        if (error instanceof OndaExecutionError) {
-          this.notifyListeners(this.executionErrorListeners, error);
-        }
+      if (message.type === "onda-status-ready") {
+        this.drainExecutionStatus();
+        return;
+      }
+      if (message.type === "onda-status") {
+        this.consumeExecutionStatus(message.requestId, message.operation, message.status);
         return;
       }
       const pending = this.pending.get(message.requestId);
       if (!pending) return;
       this.pending.delete(message.requestId);
-      if (error) pending.reject(error);
-      else pending.resolve(message);
+      pending.resolve(message);
+      this.finishRequest(message.requestId);
     };
     this.handleProcessorError = (event) => {
       const error = event.error instanceof Error
@@ -405,6 +434,105 @@ export class OndaAudioProcessor {
     node.port.addEventListener("message", this.handleMessage);
     node.port.start?.();
     if (this.printListeners.size !== 0) this.startExecutionOutputDrain();
+    this.startExecutionStatusDrain();
+  }
+
+  startExecutionStatusDrain() {
+    const ring = this.executionStatusRing;
+    if (!ring) return;
+    if (typeof Atomics.waitAsync !== "function") {
+      this.statusPoll = setInterval(() => this.drainExecutionStatus(), 16);
+      this.statusPoll.unref?.();
+      return;
+    }
+    const wait = async () => {
+      while (!this.closed) {
+        const expected = Atomics.load(ring, STATUS_WAKE);
+        this.drainExecutionStatus();
+        if (this.closed) return;
+        const result = Atomics.waitAsync(ring, STATUS_WAKE, expected);
+        if (result.async) await result.value;
+      }
+    };
+    void wait().catch((error) => this.close(error));
+  }
+
+  drainExecutionStatus() {
+    if (!this.executionStatusRing || this.closed || this.statusDrainActive) return 0;
+    this.statusDrainActive = true;
+    try {
+      return drainExecutionStatusRing(this.executionStatusRing,
+        (id, operation, status) => this.consumeExecutionStatus(id, operation, status));
+    } finally {
+      this.statusDrainActive = false;
+      if (this.requestQueue.length !== 0) this.scheduleRequests();
+    }
+  }
+
+  consumeExecutionStatus(requestId, operation, status) {
+    // Preserve diagnostic delivery before resolving/rejecting its execution call.
+    this.drainExecutionOutput();
+    const name = STATUS_OPERATIONS[operation] ?? "unknown";
+    const error = status < 0
+      ? new OndaRuntimeError(name, status)
+      : status > 0
+        ? new OndaExecutionError(
+          `${name} failed with Onda execution status ${status}`, name, status)
+        : null;
+    if (status === ONDA_RUNTIME_ERROR.TRANSPORT_OVERFLOW) {
+      this.notifyListeners(this.executionErrorListeners, error);
+      this.close(error);
+      return;
+    }
+    if (!requestId) {
+      if (error) this.notifyListeners(this.executionErrorListeners, error);
+      return;
+    }
+    const pending = this.pending.get(requestId);
+    if (!pending) return;
+    this.pending.delete(requestId);
+    if (error) pending.reject(error);
+    else pending.resolve({ type: "onda-ok", operation: name, requestId });
+    this.finishRequest(requestId);
+  }
+
+  finishRequest(requestId) {
+    if (this.inFlightRequests.delete(requestId)) this.scheduleRequests();
+  }
+
+  scheduleRequests() {
+    if (this.closed || this.requestPumpScheduled) return;
+    this.requestPumpScheduled = true;
+    queueMicrotask(() => {
+      this.requestPumpScheduled = false;
+      this.sendQueuedRequests();
+    });
+  }
+
+  sendQueuedRequests() {
+    if (this.closed || this.sendingRequests || this.statusDrainActive
+      || this.requestQueue.length === 0
+      || this.inFlightRequests.size >= MAX_IN_FLIGHT_REQUESTS) return;
+    this.sendingRequests = true;
+    try {
+      // Consume asynchronous failures before reusing credits, including when a
+      // data reply on the port (rather than a ring status) released the credit.
+      this.drainExecutionStatus();
+      while (!this.closed && this.requestQueue.length !== 0
+        && this.inFlightRequests.size < MAX_IN_FLIGHT_REQUESTS) {
+        const { message, transfer } = this.requestQueue.shift();
+        this.inFlightRequests.add(message.requestId);
+        try {
+          this.node.port.postMessage(message, transfer);
+        } catch (error) {
+          this.pending.get(message.requestId)?.reject(error);
+          this.pending.delete(message.requestId);
+          this.finishRequest(message.requestId);
+        }
+      }
+    } finally {
+      this.sendingRequests = false;
+    }
   }
 
   startExecutionOutputDrain() {
@@ -474,17 +602,19 @@ export class OndaAudioProcessor {
   }
 
   drainExecutionOutput() {
-    if (!this.executionOutputRing) return 0;
-    return drainExecutionOutputRing(
-      this.executionOutputRing,
-      (entry) => {
+    if (!this.executionOutputRing || this.executionOutputReading) return 0;
+    this.executionOutputReading = true;
+    try {
+      return drainExecutionOutputRing(this.executionOutputRing, (entry) => {
         try {
           this.consumeExecutionOutput(entry);
         } catch (error) {
           this.reportListenerError(error);
         }
-      },
-    );
+      });
+    } finally {
+      this.executionOutputReading = false;
+    }
   }
 
   consumeExecutionOutput(entry) {
@@ -641,15 +771,18 @@ export class OndaAudioProcessor {
     if (this.closed) {
       return Promise.reject(this.closeReason);
     }
-    const requestId = this.nextRequestId++;
+    // IDs travel as u32; never reuse an ID that still belongs to queued work.
+    let requestId;
+    do {
+      requestId = this.nextRequestId;
+      this.nextRequestId = (this.nextRequestId + 1) >>> 0 || 1;
+    } while (this.pending.has(requestId));
     return new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      try {
-        this.node.port.postMessage({ type, ...fields, requestId }, transfer);
-      } catch (error) {
-        this.pending.delete(requestId);
-        reject(error);
-      }
+      this.requestQueue.push({
+        message: { ...fields, type, requestId, notifyStatus: this.statusNeedsWake }, transfer,
+      });
+      this.sendQueuedRequests();
     });
   }
 
@@ -876,10 +1009,18 @@ export class OndaAudioProcessor {
   }
 
   restoreSnapshot(snapshot) {
-    const bytes = snapshot instanceof Uint8Array
-      ? snapshot.slice()
-      : new Uint8Array(snapshot.slice(0));
-    return this.request("restore-snapshot", { snapshot: bytes }, [bytes.buffer]);
+    try {
+      this.assertOpen();
+      if (!(snapshot instanceof Uint8Array) && !(snapshot instanceof ArrayBuffer)) {
+        throw new OndaRuntimeError("restore-snapshot", ONDA_RUNTIME_ERROR.INVALID_SNAPSHOT);
+      }
+      const bytes = snapshot instanceof Uint8Array
+        ? snapshot.slice()
+        : new Uint8Array(snapshot.slice(0));
+      return this.request("restore-snapshot", { snapshot: bytes }, [bytes.buffer]);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   async readControlOutputs() {
@@ -919,6 +1060,10 @@ export class OndaAudioProcessor {
     this.node.port.removeEventListener("message", this.handleMessage);
     this.node.removeEventListener("processorerror", this.handleProcessorError);
     this.stopExecutionOutputDrain();
+    if (this.statusPoll !== null) clearInterval(this.statusPoll);
+    if (this.executionStatusRing) wakeExecutionStatusRing(this.executionStatusRing);
+    this.requestQueue.length = 0;
+    this.inFlightRequests.clear();
     for (const pending of this.pending.values()) pending.reject(this.closeReason);
     this.pending.clear();
     this.executionErrorListeners.clear();

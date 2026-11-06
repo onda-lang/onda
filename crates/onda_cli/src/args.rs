@@ -38,11 +38,93 @@ pub(crate) fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, 
         "--version" | "-v" => Ok(Command::Version),
         "project" => parse_project_args(args),
         "compile" => parse_compile_args(args),
+        "bench" => parse_bench_args(args),
         "lsp" => parse_lsp_args(args),
         "run" => parse_run_args(args),
         "daemon" => parse_daemon_args(args),
         _ => Err(format!("unknown command '{cmd}'\n{}", usage())),
     }
+}
+
+fn parse_bench_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let input = args
+        .next()
+        .ok_or_else(|| format!("bench requires an input source or project\n\n{}", usage()))?;
+    if matches!(input.as_str(), "--help" | "-h") {
+        return Ok(Command::Help);
+    }
+    if input.starts_with('-') {
+        return Err("bench requires an input source or project before options".to_owned());
+    }
+    let mut options = crate::bench_cmd::BenchOptions::new(PathBuf::from(input));
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--fast-math" => {
+                options.fast_math = true;
+                continue;
+            }
+            "--meta" => {
+                options.show_meta = true;
+                continue;
+            }
+            "--json" => {
+                options.json = true;
+                continue;
+            }
+            "--help" | "-h" => return Ok(Command::Help),
+            _ => {}
+        }
+        let (option, inline) = arg
+            .split_once('=')
+            .map_or((arg.as_str(), None), |(option, value)| {
+                (option, Some(value))
+            });
+        let mut value = || {
+            inline
+                .map(str::to_owned)
+                .or_else(|| args.next())
+                .ok_or_else(|| format!("{option} requires a value"))
+        };
+        match option {
+            "--runs" | "-n" => options.runs = parse_bench_count(option, &value()?, false)?,
+            "--blocks" => options.blocks = parse_bench_count(option, &value()?, false)?,
+            "--warmup-blocks" => {
+                options.warmup_blocks = parse_bench_count(option, &value()?, true)?;
+            }
+            "--sample-rate" | "--sr" => {
+                options.sample_rate_hz = parse_sample_rate_hz(&value()?)?;
+            }
+            "--block-size" | "-b" => options.block_samples = parse_block_samples(&value()?)?,
+            "--opt-level" => options.opt_level = parse_target_opt_level(&value()?)?,
+            "--set" => options.param_sets.push(parse_param_setting(&value()?)?),
+            "--buffer" => options
+                .buffer_bindings
+                .push(parse_buffer_binding(&value()?)?),
+            _ => {
+                return Err(format!(
+                    "unknown option '{arg}' for onda bench\n\n{}",
+                    usage()
+                ))
+            }
+        }
+    }
+    options.validate()?;
+    Ok(Command::Bench(options))
+}
+
+fn parse_bench_count(option: &str, value: &str, allow_zero: bool) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|count| allow_zero || *count > 0)
+        .ok_or_else(|| {
+            let expected = if allow_zero {
+                "non-negative"
+            } else {
+                "positive"
+            };
+            format!("invalid {option} value '{value}', expected a {expected} integer")
+        })
 }
 
 fn parse_project_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {

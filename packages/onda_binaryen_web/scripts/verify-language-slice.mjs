@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   compileTrustedMir as compileMir,
-  createDefaultImports,
 } from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
 
@@ -52,7 +51,7 @@ try {
 
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process, onda_event_0 } =
     instance.exports;

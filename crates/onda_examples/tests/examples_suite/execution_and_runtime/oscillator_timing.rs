@@ -131,7 +131,14 @@ sample:
         for (actual, expected) in sine.iter().zip([0.0, 1.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0]) {
             assert_near(*actual, expected, 1e-6);
         }
-        process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none()).unwrap();
+        onda_runtime::process_checked_segment(
+            &mut instance,
+            0,
+            frames,
+            onda_runtime::PROCESSOR_FULL_BLOCK,
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .unwrap();
         assert_near(phase[0], 0.25, 1e-6);
         assert_near(sine[0], 1.0, 1e-6);
     }

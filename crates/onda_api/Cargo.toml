@@ -11,6 +11,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 path = "src/lib.rs"
 
 [dependencies]
+onda_realtime = { path = "../onda_realtime" }
 onda_frontend = { path = "../onda_frontend" }
 onda_project = { path = "../onda_project" }
 onda_mir = { path = "../onda_mir" }

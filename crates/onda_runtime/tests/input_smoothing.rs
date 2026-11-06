@@ -5,7 +5,7 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const FRAMES: usize = 8;
 
-fn instance(source: &str, inputs: usize) -> Instance {
+fn instance(source: &str, _inputs: usize) -> Instance {
     let typed = analyze_with_options(
         parse_program(source).unwrap(),
         AnalysisOptions {
@@ -16,15 +16,15 @@ fn instance(source: &str, inputs: usize) -> Instance {
     .unwrap_or_else(|errors| panic!("{source}\n{errors:?}"));
     let mir = lower_program_to_optimized_mir(&typed).unwrap();
     let program = jit_program_from_optimized_mir(mir).unwrap();
-    create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 1000.0,
-            frames_per_block: FRAMES,
-            in_channels: inputs,
-            out_channels: 1,
-        },
-    )
+    (|| -> Result<_, onda_frontend::Diagnostic> {
+        let mut instance = onda_runtime::create_instance(program, None)?;
+        onda_codegen_llvm::check_execution_status(onda_runtime::init_checked(
+            &mut instance,
+            onda_runtime::InitMode::Full,
+            onda_runtime::ExecutionOutput::none(),
+        )?)?;
+        Ok(instance)
+    })()
     .unwrap()
 }
 
@@ -41,7 +41,14 @@ fn render(source: &str, input: &[f32; FRAMES]) -> [f32; FRAMES] {
         )
         .unwrap();
     }
-    process_checked(&mut instance, FRAMES, ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        FRAMES,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     output
 }
 
@@ -112,7 +119,14 @@ fn array_elements_have_independent_state_and_all_reads_use_the_cache() {
         )
         .unwrap();
     }
-    process_checked(&mut instance, FRAMES, ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        FRAMES,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     assert_close(&output, &[7.75, 5.5, 3.25, 1.0, 1.0, 1.0, 1.0, 1.0]);
 }
 
@@ -160,8 +174,20 @@ fn segments_snapshots_and_reinitialization_preserve_the_smoothing_lifecycle() {
     )
     .unwrap();
     assert_close(&output[2..], &[0.75, 1.0, 1.0, 1.0, 1.0, 1.0]);
-    init_checked(&mut instance, InitMode::Full).unwrap();
-    process_checked(&mut instance, FRAMES, ExecutionOutput::none()).unwrap();
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        FRAMES,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     assert_close(&output, &[0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0]);
 }
 

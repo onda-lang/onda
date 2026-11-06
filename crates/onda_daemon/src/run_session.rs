@@ -9,10 +9,10 @@ use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
     bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
-    format_decoded_print_occurrences, init_checked_with_output, prepare_unchecked_process,
+    format_decoded_print_occurrences, init_checked, prepare_process, process_unchecked,
     process_unchecked_segment, set_param_by_index, trigger_event_by_index_unchecked,
-    validate_process_segment, DelegateBatch, ExecutionOutput, InitMode, Instance, InstanceConfig,
-    PrintBatch, PrintValue, DELEGATE_RECORD_HEADER_SIZE,
+    validate_process_segment, DelegateBatch, ExecutionOutput, InitMode, Instance, PrintBatch,
+    PrintValue, DELEGATE_RECORD_HEADER_SIZE,
 };
 use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
@@ -455,7 +455,6 @@ impl RunSession {
             let mut prints = Self::next_print_batch(&mut print_storage, 0);
             let instance_result = create_bound_instance(
                 &jit,
-                options,
                 &mut input_buffers,
                 &mut output_buffers,
                 &mut buffer_bindings,
@@ -819,6 +818,33 @@ impl RunSession {
         Ok(channels)
     }
 
+    /// Prepares direct full-block processing, settling and disabling host parameter smoothing.
+    ///
+    /// The returned function exclusively borrows the session's prepared instance and keeps its
+    /// bindings alive. Calls preserve processor state without clearing or interleaving output
+    /// buffers, collecting prints/delegates, or running host block bookkeeping.
+    pub fn prepare_processing(
+        &mut self,
+    ) -> Result<impl FnMut() -> Result<(), Diagnostic> + '_, Diagnostic> {
+        self.set_param_smoothing_seconds(0.0)?;
+        prepare_process(&self.instance)?;
+        let instance = &mut self.instance;
+        Ok(move || {
+            if !instance.is_initialized() {
+                return Err(Diagnostic::runtime(
+                    "processor must be reinitialized after an execution failure",
+                    0,
+                    0,
+                ));
+            }
+            // SAFETY: preparation validates the initialized instance and its bindings. The
+            // exclusive session borrow prevents rebinding or moving their backing allocations.
+            unsafe { process_unchecked(instance, ExecutionOutput::none()) }
+                .map_err(Diagnostic::from)
+                .and_then(check_execution_status)
+        })
+    }
+
     /// Renders directly into a caller-owned interleaved buffer.
     ///
     /// The buffer must contain exactly one block. Once the session has been
@@ -1025,9 +1051,12 @@ impl RunSession {
             print_result,
             sequence_base,
         );
-        result.and_then(check_execution_status).inspect_err(|_| {
-            self.begin_delegate_batch();
-        })?;
+        result
+            .map_err(Diagnostic::from)
+            .and_then(check_execution_status)
+            .inspect_err(|_| {
+                self.begin_delegate_batch();
+            })?;
         Ok(output_sequence_count(batch_result, print_result))
     }
 
@@ -1066,6 +1095,7 @@ impl RunSession {
                 },
             )
         }
+        .map_err(Diagnostic::from)
         .and_then(check_execution_status);
         let batch_result = batch.as_ref().map_or((0, 0, 0), |batch| {
             (batch.used_bytes, batch.record_count, batch.overflow_count)
@@ -1202,14 +1232,18 @@ impl RunSession {
     }
 
     pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
-        self.instance.snapshot_state_bytes()
+        self.instance
+            .snapshot_state_bytes()
+            .map_err(Diagnostic::from)
     }
 
     pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
         let result = self
             .instance
             .restore_state_bytes(bytes)
-            .and_then(|()| prepare_unchecked_process(&mut self.instance));
+            .map_err(Diagnostic::from)
+            .and_then(check_execution_status)
+            .and_then(|()| prepare_process(&self.instance).map_err(Diagnostic::from));
         self.begin_delegate_batch();
         self.begin_print_batch();
         result
@@ -1377,7 +1411,6 @@ impl RunSession {
         let mut prints = Self::next_print_batch(&mut self.print_storage, 0);
         let result = create_bound_instance(
             &self.jit,
-            self.options,
             &mut self.input_buffers,
             &mut self.output_buffers,
             &mut self.buffer_bindings,
@@ -1537,7 +1570,6 @@ fn proportional_index(index: usize, length: usize, divisions: usize) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn create_bound_instance(
     jit: &JitProgram,
-    options: RunOptions,
     input_buffers: &mut [Vec<f32>],
     output_buffers: &mut [Vec<f32>],
     buffer_bindings: &mut [Option<RunBufferBinding>],
@@ -1545,13 +1577,8 @@ fn create_bound_instance(
     param_values: &HashMap<String, crate::RunParamValue>,
     output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
-    let config = InstanceConfig {
-        sample_rate: options.sample_rate,
-        frames_per_block: options.block_size,
-        in_channels: jit.required_in_channels(),
-        out_channels: jit.required_out_channels(),
-    };
-    let mut instance = create_instance(jit.clone(), config)?;
+    onda_realtime::configure_current_thread_audio_fp_mode();
+    let mut instance = create_instance(jit.clone(), None)?;
 
     for (index, buffer) in input_buffers.iter_mut().enumerate() {
         unsafe {
@@ -1602,8 +1629,8 @@ fn create_bound_instance(
         onda_runtime::set_param_element_by_index(&mut instance, index, element, bytes.as_slice())?;
     }
 
-    init_checked_with_output(&mut instance, InitMode::Full, output)?;
-    prepare_unchecked_process(&mut instance)?;
+    check_execution_status(init_checked(&mut instance, InitMode::Full, output)?)?;
+    prepare_process(&instance)?;
     Ok(instance)
 }
 
@@ -2060,6 +2087,72 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn prepared_processing_settles_params_and_preserves_state_without_collecting_prints() {
+        let path = std::env::temp_dir().join("onda_prepared_processing_test.onda");
+        let mut analysis = AnalysisSession::default();
+        analysis.open_document(
+            &path,
+            DocumentVersion(1),
+            r#"
+params:
+  gain = 0.0 {0.0, 1.0}
+init:
+  count = 0
+block:
+  count += 1
+  print("block", count)
+sample:
+  out1 = gain + f32(count) + in1
+  out2 = gain * 2.0
+  print("sample")
+"#
+            .to_owned(),
+        );
+        let mut run = RunSession::build(
+            &analysis,
+            &path,
+            RunOptions {
+                block_size: 4,
+                param_smoothing_seconds: 0.1,
+                ..RunOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(run.render_block().unwrap()[0], vec![1.0; 4]);
+        assert!(!run.take_print_batch().unwrap().entries.is_empty());
+        run.set_param_f64("gain", 1.0).unwrap();
+        {
+            let mut process = run.prepare_processing().unwrap();
+            process().unwrap();
+            process().unwrap();
+        }
+        assert_eq!(run.options().param_smoothing_seconds, 0.0);
+        assert_eq!(run.output_buffers[0], vec![4.0; 4]);
+        assert_eq!(run.output_buffers[1], vec![2.0; 4]);
+        assert!(run.take_print_batch().unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn prepared_processing_rejects_reuse_after_execution_failure() {
+        let path = std::env::temp_dir().join("onda_prepared_processing_failure_test.onda");
+        let mut analysis = AnalysisSession::default();
+        analysis.open_document(
+            &path,
+            DocumentVersion(1),
+            "init:\n  count = 0\nblock:\n  count += 1\n  check = 1 / (2 - count)\nsample:\n  out1 = f32(check)\n"
+                .to_owned(),
+        );
+        let mut run = RunSession::build(&analysis, &path, RunOptions::default()).unwrap();
+        {
+            let mut process = run.prepare_processing().unwrap();
+            process().unwrap();
+            assert!(process().is_err());
+            assert!(process().is_err());
+        }
+        assert!(run.prepare_processing().is_err());
+    }
 
     #[test]
     fn display_path_strips_windows_verbatim_prefix() {

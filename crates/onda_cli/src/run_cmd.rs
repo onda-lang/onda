@@ -5,10 +5,8 @@ use std::time::Duration;
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions, RunPrintBatch,
-    INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+    DaemonConfig, DaemonSession, RunOptions, RunPrintBatch, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
-use onda_project::ProjectLimits;
 use onda_run::{
     format_run_param_info, play_run_realtime, PlaybackLaunch, ProjectBufferBinding, RunHostOptions,
 };
@@ -29,6 +27,7 @@ pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
 }
 
 pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
+    onda_realtime::configure_current_thread_audio_fp_mode();
     match cmd {
         RunCommand::Play {
             input,
@@ -256,22 +255,10 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     };
     let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));
 
-    let mut initial_buffers =
-        Vec::with_capacity(project_buffer_bindings.len() + buffer_bindings.len());
-    initial_buffers.extend(
-        project_buffer_bindings
-            .iter()
-            .map(|(name, asset, loaded_path)| {
-                InitialBufferBinding::from_asset(name.clone(), asset.clone(), loaded_path.clone())
-            }),
-    );
-    for (name, path) in buffer_bindings {
-        initial_buffers.push(
-            InitialBufferBinding::load_file(name.clone(), path, ProjectLimits::default()).map_err(
-                |error| format!("failed to load buffer asset '{}': {error}", path.display()),
-            )?,
-        );
-    }
+    let initial_buffers = crate::project_cmd::load_initial_buffers(
+        project_buffer_bindings.iter().cloned(),
+        buffer_bindings,
+    )?;
 
     session
         .start_run_with_options_inputs_and_initial_buffers(

@@ -120,8 +120,7 @@ FMA performs one correctly rounded operation without an allocating JavaScript `B
 `npm run build:math-kernel` regenerates the embedded module, while `npm run test:fma-oracle`
 compares targeted edge cases and deterministic random bit patterns against Rust's native
 `mul_add` oracle. Binaryen removes unused helper functions, so a program pays code size only for
-the math closure it calls. `createDefaultImports()` remains as a compatibility convenience and now
-returns an empty object.
+the math closure it calls. Generated modules need no default host imports.
 
 Compilation defaults to Binaryen O4 for speed, strict floating-point optimization, WebAssembly
 SIMD enabled, and Binaryen's ordinary inlining policy. Options are explicit and recorded in

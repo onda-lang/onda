@@ -1,5 +1,5 @@
 use onda::*;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString};
 
 #[test]
 fn enum_json_queries_expose_choices_without_changing_scalar_storage() {
@@ -55,34 +55,29 @@ block:
         }
         let program = Program(raw);
         onda_diag_dispose(&mut diagnostic);
-        for query in [
-            onda_param_enum_json_copy,
-            onda_control_output_enum_json_copy,
-        ] {
-            let size = query(program.0, 0, std::ptr::null_mut(), 0);
-            assert!(size > 0);
-            let mut bytes = vec![0x55 as c_char; size as usize];
-            assert_eq!(query(program.0, 0, bytes.as_mut_ptr(), size - 1), size);
-            assert!(bytes.iter().all(|byte| *byte == 0x55));
-            assert_eq!(query(program.0, 0, bytes.as_mut_ptr(), size), size);
+        for query in [onda_param_info, onda_control_output_info] {
+            let info = &*query(program.0, 0);
+            assert_eq!(
+                info.enumeration_json,
+                (*query(program.0, 0)).enumeration_json
+            );
             let metadata: serde_json::Value =
-                serde_json::from_str(CStr::from_ptr(bytes.as_ptr()).to_str().unwrap()).unwrap();
+                serde_json::from_str(CStr::from_ptr(info.enumeration_json).to_str().unwrap())
+                    .unwrap();
             assert_eq!(metadata["name"], "Mode");
             assert_eq!(metadata["members"][0]["label"], "Low Pass");
             assert_eq!(metadata["members"][1]["label"], "High-pass");
         }
-        assert_eq!(
-            onda_param_enum_json_copy(program.0, 1, std::ptr::null_mut(), 0),
-            0
-        );
-        assert_eq!(
-            onda_param_enum_json_copy(program.0, -1, std::ptr::null_mut(), 0),
-            -1
-        );
+        assert!((*onda_param_info(program.0, 1)).enumeration_json.is_null());
+        assert!(onda_param_info(program.0, -1).is_null());
         let schema: serde_json::Value = serde_json::from_str(
-            CStr::from_ptr(onda_event_schema_json(program.0, 0))
-                .to_str()
-                .unwrap(),
+            CStr::from_ptr(
+                onda_event_info(program.0, 0)
+                    .as_ref()
+                    .map_or(std::ptr::null(), |info| info.schema_json),
+            )
+            .to_str()
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(schema["params"][0]["ty"]["encoding"], "i32");
@@ -176,7 +171,12 @@ sample:
         options.const_inputs = onda_compile_constants_inputs(constants);
         let program = onda_compile(source.as_ptr(), &options, &mut diagnostic);
         assert!(!program.is_null());
-        assert_eq!(onda_param_default_f64(program, 0), 2.0);
+        assert_eq!(
+            onda_param_info(program, 0)
+                .as_ref()
+                .map_or(f64::NAN, |info| info.default_f64),
+            2.0
+        );
         onda_program_destroy(program);
         onda_compile_constants_destroy(constants);
         onda_diag_dispose(&mut diagnostic);

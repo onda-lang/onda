@@ -369,8 +369,14 @@ sample:
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
 

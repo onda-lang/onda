@@ -72,7 +72,14 @@ fn run_f64_outputs(source: &str, frames: usize, channels: usize) -> Vec<Vec<f64>
     for (i, values) in output.iter_mut().enumerate() {
         bind_output(&mut instance, i, values.as_mut_ptr().cast(), frames * 8).unwrap();
     }
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .unwrap();
     output
 }
 

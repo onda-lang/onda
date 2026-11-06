@@ -1,4 +1,4 @@
-use onda_frontend::Diagnostic;
+use crate::{RuntimeError, RuntimeSurface};
 use onda_mir::{BufferChannels, Program, TypeId};
 
 use crate::BufferDescriptorTables;
@@ -25,92 +25,61 @@ pub(super) fn validate_audio_abi(
     program: &Program,
     input_ptrs: &[*const u8],
     output_ptrs: &[*mut u8],
-) -> Result<(), Diagnostic> {
+) -> Result<(), RuntimeError> {
     validate_audio_table(
         program,
-        "input",
-        program
-            .interface
-            .inputs
-            .iter()
-            .map(|port| (port.name.as_str(), port.ty)),
+        RuntimeSurface::Input,
+        program.interface.inputs.iter().map(|port| port.ty),
         input_ptrs.len(),
         |index| input_ptrs[index],
     )?;
     validate_audio_table(
         program,
-        "output",
-        program
-            .interface
-            .outputs
-            .iter()
-            .map(|port| (port.name.as_str(), port.ty)),
+        RuntimeSurface::Output,
+        program.interface.outputs.iter().map(|port| port.ty),
         output_ptrs.len(),
         |index| output_ptrs[index].cast_const(),
     )
 }
 
-fn validate_audio_table<'a, I>(
+fn validate_audio_table<I>(
     program: &Program,
-    direction: &str,
+    surface: RuntimeSurface,
     ports: I,
     pointer_count: usize,
     mut pointer_at: impl FnMut(usize) -> *const u8,
-) -> Result<(), Diagnostic>
+) -> Result<(), RuntimeError>
 where
-    I: Iterator<Item = (&'a str, TypeId)> + Clone,
+    I: Iterator<Item = TypeId> + Clone,
 {
-    let expected = ports.clone().try_fold(0usize, |count, (_, ty)| {
-        let (_, width) = audio_port_shape(program, ty).ok_or_else(|| {
-            Diagnostic::runtime(
-                format!("native MIR {direction} interface contains a non-scalar audio port"),
-                0,
-                0,
-            )
-        })?;
-        count.checked_add(width).ok_or_else(|| {
-            Diagnostic::runtime(
-                format!("native MIR {direction} channel count exceeds usize"),
-                0,
-                0,
-            )
-        })
+    let expected = ports.clone().try_fold(0usize, |count, ty| {
+        let (_, width) = audio_port_shape(program, ty).ok_or(RuntimeError::InvalidStorage)?;
+        count.checked_add(width).ok_or(RuntimeError::InvalidStorage)
     })?;
     if pointer_count != expected {
-        return Err(Diagnostic::runtime(
-            format!("runtime {direction} pointer count is {pointer_count}; expected {expected}"),
-            0,
-            0,
-        ));
+        return Err(RuntimeError::InvalidShape { surface, index: 0 });
     }
 
     let mut flat_index = 0usize;
-    for (name, ty) in ports {
+    for ty in ports {
         let (scalar, width) = audio_port_shape(program, ty)
             .expect("the first audio-interface traversal validated every port type");
         let alignment = usize::try_from(scalar_store_size(scalar))
             .expect("primitive scalar alignment fits usize");
-        for channel in 0..width {
+        for _ in 0..width {
             let pointer = pointer_at(flat_index);
             if pointer.is_null() {
-                return Err(audio_channel_error(
-                    direction,
-                    flat_index,
-                    name,
-                    channel,
-                    width,
-                    "pointer is null",
-                ));
+                return Err(RuntimeError::MissingBinding {
+                    surface,
+                    index: flat_index,
+                });
             }
             if !pointer.addr().is_multiple_of(alignment) {
-                return Err(audio_channel_error(
-                    direction,
-                    flat_index,
-                    name,
-                    channel,
-                    width,
-                    &format!("pointer requires {alignment}-byte alignment"),
-                ));
+                return Err(RuntimeError::Misaligned {
+                    surface,
+                    index: flat_index,
+                    alignment,
+                });
             }
             flat_index += 1;
         }
@@ -118,47 +87,17 @@ where
     Ok(())
 }
 
-fn audio_channel_error(
-    direction: &str,
-    flat_index: usize,
-    name: &str,
-    channel: usize,
-    width: usize,
-    problem: &str,
-) -> Diagnostic {
-    let name = if width == 1 {
-        name.to_owned()
-    } else {
-        format!("{name}[{channel}]")
-    };
-    Diagnostic::runtime(
-        format!("runtime {direction} channel {flat_index} (`{name}`) {problem}"),
-        0,
-        0,
-    )
-}
-
 pub(super) fn validate_buffer_abi(
     program: &Program,
     buffers: BufferDescriptorTables<'_>,
-) -> Result<(), Diagnostic> {
+) -> Result<(), RuntimeError> {
     let expected = program.interface.buffers.len();
     if buffers.pointers.len() != expected
         || buffers.frames.len() != expected
         || buffers.channels.len() != expected
         || buffers.sample_rates.len() != expected
     {
-        return Err(Diagnostic::runtime(
-            format!(
-                "runtime buffer metadata count mismatch: ptrs={}, frames={}, chans={}, samplerates={}, expected={expected}",
-                buffers.pointers.len(),
-                buffers.frames.len(),
-                buffers.channels.len(),
-                buffers.sample_rates.len(),
-            ),
-            0,
-            0,
-        ));
+        return Err(RuntimeError::InvalidStorage);
     }
 
     for index in 0..expected {
@@ -167,33 +106,24 @@ pub(super) fn validate_buffer_abi(
         let pointer_is_null = buffers.pointers[index].is_null();
         let sample_rate = buffers.sample_rates[index];
         if !sample_rate.is_finite() || sample_rate <= 0.0 {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "runtime buffer {index} requires finite positive sample rate, got {sample_rate}"
-                ),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::InvalidSampleRate);
         }
         if frames <= 0 || channels <= 0 {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "runtime buffer {index} requires positive dimensions; got {frames} * {channels}"
-                ),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::InvalidShape {
+                surface: RuntimeSurface::Buffer,
+                index,
+            });
         }
 
         let alignment =
             usize::try_from(scalar_store_size(program.interface.buffers[index].element))
                 .expect("primitive scalar alignment fits usize");
         if !pointer_is_null && !buffers.pointers[index].addr().is_multiple_of(alignment) {
-            return Err(Diagnostic::runtime(
-                format!("runtime buffer {index} pointer requires {alignment}-byte alignment"),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::Misaligned {
+                surface: RuntimeSurface::Buffer,
+                index,
+                alignment,
+            });
         }
 
         let expected_channels = match program.interface.buffers[index].channels {
@@ -203,21 +133,14 @@ pub(super) fn validate_buffer_abi(
         };
         if let Some(expected_channels) = expected_channels {
             if u32::try_from(channels) != Ok(expected_channels) {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "runtime buffer {index} requires {expected_channels} channels, got {channels}"
-                    ),
-                    0,
-                    0,
-                ));
+                return Err(RuntimeError::InvalidShape {
+                    surface: RuntimeSurface::Buffer,
+                    index,
+                });
             }
         }
         if frames.checked_mul(channels).is_none() {
-            return Err(Diagnostic::runtime(
-                format!("runtime buffer {index} element count {frames} * {channels} exceeds i32"),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::SizeOverflow);
         }
         let element_size =
             i32::try_from(scalar_store_size(program.interface.buffers[index].element))
@@ -227,13 +150,7 @@ pub(super) fn validate_buffer_abi(
             .and_then(|elements| elements.checked_mul(element_size))
             .is_none()
         {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "runtime buffer {index} byte extent {frames} * {channels} * {element_size} exceeds i32"
-                ),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::SizeOverflow);
         }
     }
     Ok(())

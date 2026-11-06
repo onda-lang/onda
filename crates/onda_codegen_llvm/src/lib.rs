@@ -21,8 +21,10 @@ mod mir_metadata;
 #[cfg(feature = "llvm-orc")]
 mod orc_backend;
 mod primitives;
+mod runtime_error;
 mod runtime_metadata;
 mod runtime_validation;
+pub use runtime_error::{RuntimeError, RuntimeSurface};
 mod target_config;
 
 pub use aot_artifact::{
@@ -1412,7 +1414,7 @@ sample:
                 }),
             )
         };
-        assert!(result.is_err(), "out-of-bounds event should fail");
+        assert_eq!(result.unwrap(), PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
             (0, 0, 0)
@@ -1458,7 +1460,7 @@ sample:
             )
         };
 
-        assert!(result.is_err(), "out-of-bounds event should fail");
+        assert_eq!(result.unwrap(), PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
         assert_eq!(
             (batch.used_bytes, batch.record_count, batch.overflow_count),
             (16, 1, 0)

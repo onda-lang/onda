@@ -1,27 +1,16 @@
 //! Small, backend-independent realtime execution utilities.
 
-use std::cell::Cell;
-
-thread_local! {
-    static AUDIO_FP_MODE_CONFIGURED: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Configures the current thread for predictable realtime floating-point DSP.
 ///
 /// On x86 this enables both flush-to-zero for subnormal results and
 /// denormals-are-zero for subnormal inputs. Feedback filters otherwise suffer
 /// severe, core-dependent stalls as their state decays through the subnormal
-/// range. The mode is thread-local and installed at most once per thread.
+/// range. Every call establishes the mode on the current thread and leaves it installed.
+/// Hosts own when to call this function and whether to restore their previous mode.
 /// Other architectures currently require no explicit setup.
 #[inline]
 pub fn configure_current_thread_audio_fp_mode() {
-    AUDIO_FP_MODE_CONFIGURED.with(|configured| {
-        if configured.get() {
-            return;
-        }
-        configure_audio_fp_mode();
-        configured.set(true);
-    });
+    configure_audio_fp_mode();
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -56,17 +45,30 @@ fn configure_audio_fp_mode() {}
 mod tests {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[test]
-    fn configures_x86_ftz_and_daz() {
-        super::configure_current_thread_audio_fp_mode();
-        let mut current = 0_u32;
-        unsafe {
-            std::arch::asm!(
-                "stmxcsr [{}]",
-                in(reg) &mut current,
-                options(nostack, preserves_flags),
-            );
+    fn explicit_setup_reapplies_policy_and_preserves_other_control_bits() {
+        unsafe fn read() -> u32 {
+            let mut value = 0;
+            std::arch::asm!("stmxcsr [{}]", in(reg) &mut value, options(nostack, preserves_flags));
+            value
         }
-        assert_ne!(current & (1 << 6), 0);
-        assert_ne!(current & (1 << 15), 0);
+        unsafe fn write(value: u32) {
+            std::arch::asm!("ldmxcsr [{}]", in(reg) &value, options(nostack, preserves_flags));
+        }
+        struct Restore(u32);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                unsafe { write(self.0) }
+            }
+        }
+        let original = Restore(unsafe { read() });
+        let policy = (1 << 6) | (1 << 15);
+        for _ in 0..2 {
+            let cleared = original.0 & !policy;
+            unsafe {
+                write(cleared);
+            }
+            super::configure_current_thread_audio_fp_mode();
+            assert_eq!(unsafe { read() }, cleared | policy);
+        }
     }
 }

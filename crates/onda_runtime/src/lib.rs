@@ -3,11 +3,12 @@ use onda_codegen_llvm::{
     RuntimeState, UninitializedRuntimeState,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
-use onda_realtime::configure_current_thread_audio_fp_mode;
 use std::fmt::{self, Write as _};
 use std::marker::PhantomData;
 
-pub use onda_codegen_llvm::{EventTensorView, ParamDomain, ParamScalarType, ParamScale};
+pub use onda_codegen_llvm::{
+    EventTensorView, ParamDomain, ParamScalarType, ParamScale, RuntimeError, RuntimeSurface,
+};
 pub use onda_processor_abi::{
     InitMode, PROCESSOR_BEGIN_BLOCK, PROCESSOR_END_BLOCK, PROCESSOR_EXECUTION_INPUT_REJECTED,
     PROCESSOR_EXECUTION_OK, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE, PROCESSOR_FULL_BLOCK,
@@ -285,20 +286,6 @@ impl<'storage> PrintBatch<'storage> {
         self.capacity_bytes
     }
 
-    /// Returns one decoded occurrence by zero-based record index.
-    ///
-    /// The complete batch is validated even when the requested record is found early.
-    pub fn occurrence(&self, index: u32) -> Result<Option<PrintOccurrence<'_>>, BatchDecodeError> {
-        let mut selected = None;
-        for (current, occurrence) in self.occurrences().enumerate() {
-            let occurrence = occurrence?;
-            if current == index as usize {
-                selected = Some(occurrence);
-            }
-        }
-        Ok(selected)
-    }
-
     /// Iterates the complete occurrences produced by the most recent successful call.
     ///
     /// Malformed input yields one [`BatchDecodeError`] and then ends the fused iterator.
@@ -404,21 +391,6 @@ impl<'storage> DelegateBatch<'storage> {
         self.capacity_bytes
     }
 
-    /// Returns one decoded occurrence by zero-based record index.
-    pub fn occurrence(
-        &self,
-        index: u32,
-    ) -> Result<Option<DelegateOccurrence<'_>>, BatchDecodeError> {
-        let mut selected = None;
-        for (current, occurrence) in self.occurrences().enumerate() {
-            let occurrence = occurrence?;
-            if current == index as usize {
-                selected = Some(occurrence);
-            }
-        }
-        Ok(selected)
-    }
-
     /// Iterates the complete occurrences produced by the most recent successful call.
     ///
     /// The iterator is allocation-free and borrows the batch, preventing its storage from being
@@ -469,6 +441,15 @@ fn with_processor_execution_output<T>(
         f(Some(&mut processor_output))
     }
 }
+
+mod parameters;
+pub use parameters::{
+    read_control_output_bytes, set_param_by_index, set_param_element_by_index,
+    set_param_element_normalized, set_param_element_plain_f64, set_param_normalized,
+    set_param_plain_f64,
+};
+mod bindings;
+pub use bindings::{bind_buffer, bind_input, bind_output, prepare_process};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PrintValue {
@@ -937,32 +918,21 @@ pub fn format_decoded_print_occurrences(occurrences: &[DecodedPrintOccurrence<'_
     text
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct InstanceConfig {
-    pub sample_rate: f32,
-    pub frames_per_block: usize,
-    pub in_channels: usize,
-    pub out_channels: usize,
-}
-
 #[derive(Debug)]
 pub struct Instance {
     pub(crate) program: JitProgram,
-    pub(crate) config: InstanceConfig,
     pub(crate) params: RuntimeBuffer<u8>,
     state: InstanceState,
-    pub(crate) input_bindings: RuntimeBuffer<Option<BoundInput>>,
-    pub(crate) output_bindings: RuntimeBuffer<Option<BoundOutput>>,
-    pub(crate) buffer_bindings: RuntimeBuffer<Option<BoundBuffer>>,
+    input_bound: RuntimeBuffer<bool>,
+    output_bound: RuntimeBuffer<bool>,
+    missing_inputs: usize,
+    missing_outputs: usize,
     pub(crate) input_ptrs: RuntimeBuffer<*const u8>,
     pub(crate) output_ptrs: RuntimeBuffer<*mut u8>,
     pub(crate) buffer_ptrs: RuntimeBuffer<*mut u8>,
     pub(crate) buffer_frames: RuntimeBuffer<i32>,
     pub(crate) buffer_channels: RuntimeBuffer<i32>,
     pub(crate) buffer_sample_rates: RuntimeBuffer<f32>,
-    pub(crate) inputs_validated: bool,
-    pub(crate) outputs_validated: bool,
-    pub(crate) buffers_validated: bool,
 }
 
 #[derive(Debug)]
@@ -980,8 +950,8 @@ struct AllocatedState {
 impl AllocatedState {
     fn attempt_status(
         &mut self,
-        operation: impl FnOnce(&mut RuntimeState) -> Result<u32, Diagnostic>,
-    ) -> Result<u32, Diagnostic> {
+        operation: impl FnOnce(&mut RuntimeState) -> Result<u32, RuntimeError>,
+    ) -> Result<u32, RuntimeError> {
         // Generated entry points mutate the live image in place. Invalidate it
         // before entering generated code so errors and unwinding cannot leave
         // partially mutated state observable as ready.
@@ -992,20 +962,12 @@ impl AllocatedState {
     }
 }
 
-fn uninitialized_instance_error() -> Diagnostic {
-    Diagnostic::runtime(
-        "instance requires full initialization before this operation",
-        0,
-        0,
-    )
+fn uninitialized_instance_error() -> RuntimeError {
+    RuntimeError::Uninitialized
 }
 
-fn invalid_instance_error() -> Diagnostic {
-    Diagnostic::runtime(
-        "instance state is invalid after failed execution; run full initialization or restore state before this operation",
-        0,
-        0,
-    )
+fn invalid_instance_error() -> RuntimeError {
+    RuntimeError::Invalidated
 }
 
 // SAFETY: Instance is an exclusive mutable runtime owner. Its raw pointers are non-owning host
@@ -1016,33 +978,13 @@ fn invalid_instance_error() -> Diagnostic {
 // instance allocation; explicit workspace reservation happens outside realtime execution.
 unsafe impl Send for Instance {}
 
-#[derive(Debug, Clone, Copy)]
-pub struct BoundInput {
-    ptr: *const u8,
-    bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct BoundOutput {
-    ptr: *mut u8,
-    bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct BoundBuffer {
-    ptr: *mut u8,
-    frames_i32: i32,
-    channels_i32: i32,
-    sample_rate_hz: f32,
-}
-
 impl Instance {
     pub fn in_channels(&self) -> usize {
-        self.config.in_channels
+        self.program.required_in_channels()
     }
 
     pub fn out_channels(&self) -> usize {
-        self.config.out_channels
+        self.program.required_out_channels()
     }
 
     pub fn input_count(&self) -> usize {
@@ -1280,7 +1222,7 @@ impl Instance {
         )
     }
 
-    fn initialized_state(&self) -> Result<&RuntimeState, Diagnostic> {
+    fn initialized_state(&self) -> Result<&RuntimeState, RuntimeError> {
         match &self.state {
             InstanceState::Allocated(state) if state.initialized => Ok(&state.storage),
             InstanceState::Allocated(_) => Err(invalid_instance_error()),
@@ -1288,33 +1230,24 @@ impl Instance {
         }
     }
 
-    pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
+    pub fn snapshot_state_bytes(&self) -> Result<Vec<u8>, RuntimeError> {
         let state = self.initialized_state()?;
         let mut snapshot = vec![0_u8; self.program.state_size_bytes()];
         self.program.write_state_snapshot(state, &mut snapshot)?;
         Ok(snapshot)
     }
 
-    pub fn write_snapshot_state_bytes(&self, destination: &mut [u8]) -> Result<(), Diagnostic> {
+    pub fn write_snapshot_state_bytes(&self, destination: &mut [u8]) -> Result<(), RuntimeError> {
         self.program
             .write_state_snapshot(self.initialized_state()?, destination)
     }
 
-    pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<(), Diagnostic> {
-        let status = self.restore_state_bytes_with_status(bytes)?;
-        onda_codegen_llvm::check_execution_status(status)
-    }
-
     /// Restores a state snapshot while preserving a generated initialization failure status.
-    pub fn restore_state_bytes_with_status(&mut self, bytes: &[u8]) -> Result<u32, Diagnostic> {
-        configure_current_thread_audio_fp_mode();
+    pub fn restore_state_bytes(&mut self, bytes: &[u8]) -> Result<u32, RuntimeError> {
         self.program.validate_state_snapshot(bytes)?;
-        if !self.buffers_validated {
-            validate_buffers(self)?;
-        }
         let was_pending = matches!(self.state, InstanceState::Pending(_));
         if was_pending {
-            let status = init_checked_with_status(self, InitMode::Full, ExecutionOutput::none())?;
+            let status = init_checked(self, InitMode::Full, ExecutionOutput::none())?;
             if status != PROCESSOR_EXECUTION_OK {
                 return Ok(status);
             }
@@ -1330,7 +1263,7 @@ impl Instance {
                 // SAFETY: buffer bindings were validated above, and their
                 // pointees remain valid under the instance binding contract.
                 unsafe {
-                    self.program.restore_state_snapshot_with_status(
+                    self.program.restore_state_snapshot(
                         &self.params,
                         state,
                         bytes,
@@ -1347,171 +1280,14 @@ impl Instance {
     }
 }
 
-/// Allocates an instance and writes its parameter defaults without running Onda initialization.
-/// Call [`init_checked`] with [`InitMode::Full`] before using any stateful operation.
+/// Allocates storage and parameter defaults without executing authored initialization.
+/// Bind memory and set parameters, then call [`init_checked`] with [`InitMode::Full`].
+/// All DSP configuration is derived from the immutable compiled program.
 pub fn create_instance(
     program: JitProgram,
-    config: InstanceConfig,
-) -> Result<Instance, Diagnostic> {
-    create_instance_inner(program, config, None)
-}
-
-/// Allocator-backed equivalent of [`create_instance`].
-pub fn create_instance_with_allocator(
-    program: JitProgram,
-    config: InstanceConfig,
-    allocator: RuntimeAllocator,
-) -> Result<Instance, Diagnostic> {
-    create_instance_inner(program, config, Some(allocator))
-}
-
-/// Creates an instance and performs [`InitMode::Full`] initialization.
-pub fn create_instance_initialized(
-    program: JitProgram,
-    config: InstanceConfig,
-) -> Result<Instance, Diagnostic> {
-    create_instance_initialized_with_output(program, config, ExecutionOutput::none())
-}
-
-/// Creates an instance, performs [`InitMode::Full`] initialization, and collects successful
-/// initialization output.
-///
-/// If initialization fails, both output batches are cleared and the diagnostic is the only result.
-/// Create an uninitialized instance and call [`init_checked_with_output`] to retain prints emitted before a
-/// failing initializer.
-pub fn create_instance_initialized_with_output(
-    program: JitProgram,
-    config: InstanceConfig,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<Instance, Diagnostic> {
-    initialize_new_instance(create_instance(program, config), output)
-}
-
-/// Allocator-backed equivalent of [`create_instance_initialized`].
-pub fn create_instance_initialized_with_allocator(
-    program: JitProgram,
-    config: InstanceConfig,
-    allocator: RuntimeAllocator,
-) -> Result<Instance, Diagnostic> {
-    create_instance_initialized_with_allocator_and_output(
-        program,
-        config,
-        allocator,
-        ExecutionOutput::none(),
-    )
-}
-
-/// Allocator-backed equivalent of [`create_instance_initialized_with_output`], including its
-/// failure-output behavior.
-pub fn create_instance_initialized_with_allocator_and_output(
-    program: JitProgram,
-    config: InstanceConfig,
-    allocator: RuntimeAllocator,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<Instance, Diagnostic> {
-    initialize_new_instance(
-        create_instance_with_allocator(program, config, allocator),
-        output,
-    )
-}
-
-fn initialize_new_instance(
-    instance: Result<Instance, Diagnostic>,
-    mut output: ExecutionOutput<'_, '_>,
-) -> Result<Instance, Diagnostic> {
-    let mut instance = match instance {
-        Ok(instance) => instance,
-        Err(error) => {
-            output.reset();
-            return Err(error);
-        }
-    };
-    let result = init_checked_with_output(
-        &mut instance,
-        InitMode::Full,
-        ExecutionOutput {
-            delegate_batch: output.delegate_batch.as_deref_mut(),
-            print_batch: output.print_batch.as_deref_mut(),
-        },
-    );
-    if let Err(error) = result {
-        output.reset();
-        return Err(error);
-    }
-    Ok(instance)
-}
-
-fn create_instance_inner(
-    program: JitProgram,
-    config: InstanceConfig,
     allocator: Option<RuntimeAllocator>,
 ) -> Result<Instance, Diagnostic> {
-    if !config.sample_rate.is_finite() || config.sample_rate <= 0.0 {
-        return Err(Diagnostic::runtime(
-            "instance sample_rate must be finite and greater than zero",
-            0,
-            0,
-        ));
-    }
-    if config.sample_rate.to_bits() != program.sample_rate().to_bits() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "instance sample_rate ({}) must match program compile-time sample rate ({})",
-                config.sample_rate,
-                program.sample_rate(),
-            ),
-            0,
-            0,
-        ));
-    }
-    if config.frames_per_block == 0 {
-        return Err(Diagnostic::runtime(
-            "frames_per_block must be greater than zero",
-            0,
-            0,
-        ));
-    }
-    if config.out_channels == 0 && program.required_out_channels() > 0 {
-        return Err(Diagnostic::runtime(
-            "out_channels must be greater than zero when the program has audio outputs",
-            0,
-            0,
-        ));
-    }
-    if config.in_channels < program.required_in_channels() {
-        return Err(Diagnostic::runtime(
-            "configured input channels are fewer than program inputs",
-            0,
-            0,
-        ));
-    }
-    if config.out_channels < program.required_out_channels() {
-        return Err(Diagnostic::runtime(
-            "configured output channels are fewer than program outputs",
-            0,
-            0,
-        ));
-    }
-
-    if config.frames_per_block != program.block_size() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "instance frames_per_block ({}) must match program compile-time block size ({})",
-                config.frames_per_block,
-                program.block_size()
-            ),
-            0,
-            0,
-        ));
-    }
-    u32::try_from(config.frames_per_block).map_err(|_| {
-        Diagnostic::runtime(
-            "frames_per_block does not fit u32 runtime/JIT process entrypoint",
-            0,
-            0,
-        )
-    })?;
-
+    u32::try_from(program.block_size()).map_err(|_| RuntimeError::SizeOverflow)?;
     let required_in_channels = program.required_in_channels();
     let required_out_channels = program.required_out_channels();
 
@@ -1527,10 +1303,10 @@ fn create_instance_inner(
     let mut buffer_frames = RuntimeBuffer::try_from_elem_in(buffer_count, 1_i32, allocator)?;
     let mut buffer_channels = RuntimeBuffer::try_from_elem_in(buffer_count, 1_i32, allocator)?;
     let mut buffer_sample_rates =
-        RuntimeBuffer::try_from_elem_in(buffer_count, config.sample_rate, allocator)?;
+        RuntimeBuffer::try_from_elem_in(buffer_count, program.sample_rate(), allocator)?;
     prepare_unbound_buffer_descriptors(
         program.buffers(),
-        config.sample_rate,
+        program.sample_rate(),
         &mut buffer_ptrs,
         &mut buffer_frames,
         &mut buffer_channels,
@@ -1539,12 +1315,12 @@ fn create_instance_inner(
 
     Ok(Instance {
         program,
-        config,
         params,
         state,
-        input_bindings: RuntimeBuffer::try_from_elem_in(input_count, None, allocator)?,
-        output_bindings: RuntimeBuffer::try_from_elem_in(output_count, None, allocator)?,
-        buffer_bindings: RuntimeBuffer::try_from_elem_in(buffer_count, None, allocator)?,
+        input_bound: RuntimeBuffer::try_from_elem_in(input_count, false, allocator)?,
+        output_bound: RuntimeBuffer::try_from_elem_in(output_count, false, allocator)?,
+        missing_inputs: input_count,
+        missing_outputs: output_count,
         input_ptrs: RuntimeBuffer::try_from_elem_in(
             required_in_channels,
             std::ptr::null(),
@@ -1559,46 +1335,22 @@ fn create_instance_inner(
         buffer_frames,
         buffer_channels,
         buffer_sample_rates,
-        inputs_validated: required_in_channels == 0,
-        outputs_validated: required_out_channels == 0,
-        buffers_validated: true,
     })
 }
 
-/// Runs the program initializer using the requested state-retention mode.
-/// Full initialization is required before any stateful instance operation.
-/// A failed live initialization invalidates the state image until a later full
-/// initialization or snapshot restore succeeds.
-pub fn init_checked(instance: &mut Instance, mode: InitMode) -> Result<(), Diagnostic> {
-    init_checked_with_output(instance, mode, ExecutionOutput::none())
-}
-
-pub fn init_checked_with_output(
-    instance: &mut Instance,
-    mode: InitMode,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<(), Diagnostic> {
-    let status = init_checked_with_status(instance, mode, output)?;
-    onda_codegen_llvm::check_execution_status(status)
-}
-
 /// Runs checked initialization while preserving the generated execution status.
-pub fn init_checked_with_status(
+pub fn init_checked(
     instance: &mut Instance,
     mode: InitMode,
     mut output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
+) -> Result<u32, RuntimeError> {
     output.reset();
-    if !instance.buffers_validated {
-        validate_buffers(instance)?;
-    }
     with_processor_execution_output(output, |output| match (&mut instance.state, mode) {
         (InstanceState::Pending(state), InitMode::Full) => {
             // SAFETY: validated bindings retain their host-memory contract;
             // execution output borrows exclusive storage and was reset above.
             let result = unsafe {
-                instance.program.initialize_allocated_state_with_status(
+                instance.program.initialize_allocated_state(
                     &instance.params,
                     state,
                     BufferDescriptorTables::new(
@@ -1631,710 +1383,53 @@ pub fn init_checked_with_status(
             // SAFETY: the same validated host bindings and exclusive, reset
             // output storage are used as for first initialization above.
             unsafe {
-                instance
-                    .program
-                    .initialize_state_in_place_checked_with_status(
-                        &instance.params,
-                        state,
-                        mode,
-                        BufferDescriptorTables::new(
-                            &instance.buffer_ptrs,
-                            &instance.buffer_frames,
-                            &instance.buffer_channels,
-                            &instance.buffer_sample_rates,
-                        ),
-                        output,
-                    )
+                instance.program.initialize_state_in_place_unchecked(
+                    &instance.params,
+                    state,
+                    mode,
+                    BufferDescriptorTables::new(
+                        &instance.buffer_ptrs,
+                        &instance.buffer_frames,
+                        &instance.buffer_channels,
+                        &instance.buffer_sample_rates,
+                    ),
+                    output,
+                )
             }
         }),
     })
 }
 
-/// Reruns initialization without binding validation or allocating diagnostics
-/// on generated failure. Full mode can recover storage invalidated by a failed
-/// call; preserve-pinned mode requires currently initialized state.
-///
-/// # Safety
-///
-/// The instance must have completed full initialization at least once. Its
-/// current buffer descriptors must have been validated since the last rebind,
-/// and all bound storage must retain its lifetime, extent, alignment, and
-/// exclusive-access guarantees. No other instance operation may overlap.
-pub unsafe fn init_unchecked(
-    instance: &mut Instance,
-    mode: InitMode,
-    mut output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
-    output.reset();
-    debug_assert!(
-        instance.buffers_validated,
-        "init_unchecked requires validated buffers"
-    );
-    let state = match &mut instance.state {
-        InstanceState::Allocated(state) if mode == InitMode::Full || state.initialized => state,
-        InstanceState::Allocated(_) => return Err(invalid_instance_error()),
-        InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
-    };
-    state.attempt_status(|state| {
-        // SAFETY: storage belongs to this instance's program, and the caller
-        // guarantees that the prepared buffer bindings remain valid.
-        with_processor_execution_output(output, |output| unsafe {
-            instance.program.initialize_state_in_place_unchecked(
-                &instance.params,
-                state,
-                mode,
-                BufferDescriptorTables::new(
-                    &instance.buffer_ptrs,
-                    &instance.buffer_frames,
-                    &instance.buffer_channels,
-                    &instance.buffer_sample_rates,
-                ),
-                output,
-            )
-        })
-    })
-}
-
-pub fn set_param_by_index(
-    instance: &mut Instance,
-    index: usize,
-    value_bytes: &[u8],
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.param_descriptor(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown parameter index {index}"),
-            0,
-            0,
-        ));
-    };
-    let expected_bytes = desc.byte_size();
-    if value_bytes.len() != expected_bytes {
-        return Err(Diagnostic::runtime(
-            format!(
-                "parameter '{}' expects {} bytes, got {}",
-                desc.name(),
-                expected_bytes,
-                value_bytes.len()
-            ),
-            0,
-            0,
-        ));
-    }
-    let start = desc.byte_offset();
-    let end = start.saturating_add(expected_bytes);
-    if end > instance.params.len() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "parameter '{}' byte range [{start}, {end}) is out of bounds for runtime storage ({})",
-                desc.name(),
-                instance.params.len()
-            ),
-            0,
-            0,
-        ));
-    }
-    instance.params[start..end].copy_from_slice(value_bytes);
-    Ok(())
-}
-
-/// Writes one primitive parameter element without touching its siblings.
-pub fn set_param_element_by_index(
-    instance: &mut Instance,
-    index: usize,
-    element: usize,
-    value_bytes: &[u8],
-) -> Result<(), Diagnostic> {
-    let desc = instance
-        .program
-        .param_descriptor(index)
-        .ok_or_else(|| Diagnostic::runtime(format!("unknown parameter index {index}"), 0, 0))?;
-    let width = desc.byte_size() / desc.array_len();
-    if element >= desc.array_len() || value_bytes.len() != width {
-        return Err(Diagnostic::runtime(
-            format!(
-                "invalid element {element} or value size for parameter '{}'",
-                desc.name()
-            ),
-            0,
-            0,
-        ));
-    }
-    let start = desc.byte_offset() + element * width;
-    let storage = instance
-        .params
-        .get_mut(start..start + width)
-        .ok_or_else(|| {
-            Diagnostic::runtime(
-                "parameter element storage is out of bounds".to_owned(),
-                0,
-                0,
-            )
-        })?;
-    storage.copy_from_slice(value_bytes);
-    Ok(())
-}
-
-pub fn set_param_plain_f64(
-    instance: &mut Instance,
-    index: usize,
-    plain: f64,
-) -> Result<(), Diagnostic> {
-    set_param_control_f64(instance, index, None, ParamControlInput::Plain(plain))
-}
-
-/// Constrains and writes one primitive parameter element in its plain domain.
-pub fn set_param_element_plain_f64(
-    instance: &mut Instance,
-    index: usize,
-    element: usize,
-    plain: f64,
-) -> Result<(), Diagnostic> {
-    set_param_control_f64(
-        instance,
-        index,
-        Some(element),
-        ParamControlInput::Plain(plain),
-    )
-}
-
-pub fn set_param_normalized(
-    instance: &mut Instance,
-    index: usize,
-    normalized: f64,
-) -> Result<(), Diagnostic> {
-    set_param_control_f64(
-        instance,
-        index,
-        None,
-        ParamControlInput::Normalized(normalized),
-    )
-}
-
-/// Maps and writes one primitive parameter element from a normalized host value.
-pub fn set_param_element_normalized(
-    instance: &mut Instance,
-    index: usize,
-    element: usize,
-    normalized: f64,
-) -> Result<(), Diagnostic> {
-    set_param_control_f64(
-        instance,
-        index,
-        Some(element),
-        ParamControlInput::Normalized(normalized),
-    )
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ParamControlInput {
-    Plain(f64),
-    Normalized(f64),
-}
-
-fn set_param_control_f64(
-    instance: &mut Instance,
-    index: usize,
-    element: Option<usize>,
-    input: ParamControlInput,
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.param_descriptor(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown parameter index {index}"),
-            0,
-            0,
-        ));
-    };
-    if element.is_none() && desc.is_array() {
-        return Err(Diagnostic::runtime(
-            format!("parameter '{}' is not a scalar", desc.name()),
-            0,
-            0,
-        ));
-    }
-    if element.is_some_and(|element| element >= desc.array_len()) {
-        return Err(Diagnostic::runtime(
-            format!("parameter '{}' element is out of bounds", desc.name()),
-            0,
-            0,
-        ));
-    }
-    let ty = desc.elem_ty();
-    let value = match ty {
-        PrimitiveType::Bool => match input {
-            ParamControlInput::Plain(value) | ParamControlInput::Normalized(value) => {
-                if value >= 0.5 {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-        },
-        _ => {
-            let domain = desc.param_domain().ok_or_else(|| {
-                Diagnostic::runtime(
-                    format!("parameter '{}' has no numeric control domain", desc.name()),
-                    0,
-                    0,
-                )
-            })?;
-            match input {
-                ParamControlInput::Plain(value) => domain.constrain_plain(value),
-                ParamControlInput::Normalized(value) => domain.normalized_to_plain(value),
-            }
-        }
-    };
-    let mut bytes = [0_u8; 8];
-    let len = match ty {
-        PrimitiveType::F32 => {
-            bytes[..4].copy_from_slice(&(value as f32).to_ne_bytes());
-            4
-        }
-        PrimitiveType::F64 => {
-            bytes.copy_from_slice(&value.to_ne_bytes());
-            8
-        }
-        PrimitiveType::I32 | PrimitiveType::Enum(_) => {
-            bytes[..4].copy_from_slice(&(value.round() as i32).to_ne_bytes());
-            4
-        }
-        PrimitiveType::I64 => {
-            bytes.copy_from_slice(&(value.round() as i64).to_ne_bytes());
-            8
-        }
-        PrimitiveType::Bool => {
-            bytes[0] = u8::from(value != 0.0);
-            1
-        }
-    };
-    match element {
-        Some(element) => set_param_element_by_index(instance, index, element, &bytes[..len]),
-        None => set_param_by_index(instance, index, &bytes[..len]),
-    }
-}
-
-pub fn read_control_output_bytes(
-    instance: &Instance,
-    index: usize,
-    out: &mut [u8],
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.control_output_descriptor(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown control output index {index}"),
-            0,
-            0,
-        ));
-    };
-    let expected_bytes = desc.byte_size();
-    if out.len() != expected_bytes {
-        return Err(Diagnostic::runtime(
-            format!(
-                "control output '{}' expects {} destination bytes, got {}",
-                desc.name(),
-                expected_bytes,
-                out.len()
-            ),
-            0,
-            0,
-        ));
-    }
-    let Some(start) = instance.program.control_output_storage_byte_offset(index) else {
-        return Err(Diagnostic::runtime(
-            format!("control output '{}' has no runtime storage", desc.name()),
-            0,
-            0,
-        ));
-    };
-    let end = start.saturating_add(expected_bytes);
-    let state = instance.initialized_state()?.bytes();
-    if end > state.len() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "control output '{}' byte range [{start}, {end}) is out of bounds for runtime storage ({})",
-                desc.name(),
-                state.len()
-            ),
-            0,
-            0,
-        ));
-    }
-    out.copy_from_slice(&state[start..end]);
-    Ok(())
-}
-
-/// Binds borrowed host input memory without copying it.
-///
-/// # Safety
-///
-/// `ptr` must remain readable for `bytes` bytes at a stable address until the
-/// slot is rebound/unbound or the instance is destroyed. The pointer must have
-/// the natural alignment of the declared primitive element type; this function
-/// validates the address before retaining it. Bound input, output, and
-/// external-buffer regions must not overlap while processing.
-pub unsafe fn bind_input(
-    instance: &mut Instance,
-    index: usize,
-    ptr: *const u8,
-    bytes: usize,
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.inputs().get(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown input index {index}"),
-            0,
-            0,
-        ));
-    };
-    if ptr.is_null() {
-        if bytes == 0 {
-            instance.input_bindings[index] = None;
-            instance.inputs_validated = false;
-            return Ok(());
-        }
-        return Err(Diagnostic::runtime(
-            format!("input '{}' binding pointer is null", desc.name()),
-            0,
-            0,
-        ));
-    }
-    validate_pointer_alignment(ptr, desc.elem_ty(), "input", desc.name())?;
-    let expected = desc
-        .byte_size()
-        .saturating_mul(instance.config.frames_per_block);
-    if bytes != expected {
-        return Err(Diagnostic::runtime(
-            format!(
-                "input '{}' expects {} bytes for one block, got {}",
-                desc.name(),
-                expected,
-                bytes
-            ),
-            0,
-            0,
-        ));
-    }
-    instance.input_bindings[index] = Some(BoundInput { ptr, bytes });
-    instance.inputs_validated = false;
-    Ok(())
-}
-
-/// Binds borrowed host output memory without copying it.
-///
-/// # Safety
-///
-/// `ptr` must remain writable for `bytes` bytes at a stable address until the
-/// slot is rebound/unbound or the instance is destroyed. The pointer must have
-/// the natural alignment of the declared primitive element type; this function
-/// validates the address before retaining it. Bound input, output, and
-/// external-buffer regions must not overlap while processing.
-pub unsafe fn bind_output(
-    instance: &mut Instance,
-    index: usize,
-    ptr: *mut u8,
-    bytes: usize,
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.outputs().get(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown output index {index}"),
-            0,
-            0,
-        ));
-    };
-    if ptr.is_null() {
-        if bytes == 0 {
-            instance.output_bindings[index] = None;
-            instance.outputs_validated = false;
-            return Ok(());
-        }
-        return Err(Diagnostic::runtime(
-            format!("output '{}' binding pointer is null", desc.name()),
-            0,
-            0,
-        ));
-    }
-    validate_pointer_alignment(ptr.cast_const(), desc.elem_ty(), "output", desc.name())?;
-    let expected = desc
-        .byte_size()
-        .saturating_mul(instance.config.frames_per_block);
-    if bytes != expected {
-        return Err(Diagnostic::runtime(
-            format!(
-                "output '{}' expects {} bytes for one block, got {}",
-                desc.name(),
-                expected,
-                bytes
-            ),
-            0,
-            0,
-        ));
-    }
-    instance.output_bindings[index] = Some(BoundOutput { ptr, bytes });
-    instance.outputs_validated = false;
-    Ok(())
-}
-
-/// Binds borrowed external-buffer memory without copying it.
-///
-/// A zero `sample_rate_hz` unbinds the slot regardless of pointer and shape. A null pointer with
-/// zero frames and channels also unbinds the slot. Unbound slots remain processable through their
-/// prepared neutral descriptor. Otherwise the binding must be nonempty and `sample_rate_hz` must
-/// be finite and positive.
-///
-/// # Safety
-///
-/// When this call binds the slot, `ptr` must remain valid for `frames * channels` elements of
-/// `elem_ty`, with the element's required alignment, until rebound/unbound or instance destruction.
-/// A replacement is visible to subsequent init, event, and processing calls; rebinding does not
-/// itself rerun initialization. The region must be writable when buffer-write analysis reports a
-/// reachable write, and all bound host regions must be mutually non-overlapping while accessed.
-/// Unbind calls do not access `ptr`.
-pub unsafe fn bind_buffer(
-    instance: &mut Instance,
-    index: usize,
-    ptr: *mut u8,
-    frames: usize,
-    channels: usize,
-    sample_rate_hz: f32,
-    elem_ty: PrimitiveType,
-) -> Result<(), Diagnostic> {
-    let Some(desc) = instance.program.buffers().get(index) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown buffer index {index}"),
-            0,
-            0,
-        ));
-    };
-    if sample_rate_hz == 0.0 || (ptr.is_null() && frames == 0 && channels == 0) {
-        instance.buffer_bindings[index] = None;
-        instance.buffers_validated = false;
-        return Ok(());
-    }
-    if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
-        return Err(Diagnostic::runtime(
-            format!(
-                "buffer '{}' requires finite sample_rate > 0, got {}",
-                desc.name(),
-                sample_rate_hz
-            ),
-            0,
-            0,
-        ));
-    }
-    if elem_ty != desc.elem_ty() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "buffer '{}' element type mismatch: expected {:?}, got {:?}",
-                desc.name(),
-                desc.elem_ty(),
-                elem_ty
-            ),
-            0,
-            0,
-        ));
-    }
-    if frames == 0 || channels == 0 || ptr.is_null() {
-        return Err(Diagnostic::runtime(
-            format!(
-                "buffer '{}' must be unbound with null + zero frames/channels or bound with a non-null pointer and positive frames/channels",
-                desc.name()
-            ),
-            0,
-            0,
-        ));
-    }
-    validate_pointer_alignment(ptr.cast_const(), elem_ty, "buffer", desc.name())?;
-    match desc.channels() {
-        DeclaredBufferChannels::Mono => {
-            if channels != 1 {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "buffer '{}' expects mono (1 channel), got {}",
-                        desc.name(),
-                        channels
-                    ),
-                    0,
-                    0,
-                ));
-            }
-        }
-        DeclaredBufferChannels::Static(expected) => {
-            if channels != expected {
-                return Err(Diagnostic::runtime(
-                    format!(
-                        "buffer '{}' expects {} channels, got {}",
-                        desc.name(),
-                        expected,
-                        channels
-                    ),
-                    0,
-                    0,
-                ));
-            }
-        }
-        DeclaredBufferChannels::Dynamic => {}
-    }
-    let frames_i32 = i32::try_from(frames).map_err(|_| {
-        Diagnostic::runtime(
-            format!(
-                "buffer '{}' frames {} exceed i32 runtime limit",
-                desc.name(),
-                frames
-            ),
-            0,
-            0,
-        )
-    })?;
-    let channels_i32 = i32::try_from(channels).map_err(|_| {
-        Diagnostic::runtime(
-            format!(
-                "buffer '{}' channels {} exceed i32 runtime limit",
-                desc.name(),
-                channels
-            ),
-            0,
-            0,
-        )
-    })?;
-    validate_buffer_byte_extent(frames_i32, channels_i32, elem_ty, desc.name())?;
-    instance.buffer_bindings[index] = Some(BoundBuffer {
-        ptr,
-        frames_i32,
-        channels_i32,
-        sample_rate_hz,
-    });
-    instance.buffers_validated = false;
-    Ok(())
-}
-
-pub fn validate_inputs(instance: &mut Instance) -> Result<(), Diagnostic> {
-    let frames = instance.config.frames_per_block;
-    prepare_input_ptrs_from_bindings(instance, frames)?;
-    instance.inputs_validated = true;
-    Ok(())
-}
-
-pub fn validate_outputs(instance: &mut Instance) -> Result<(), Diagnostic> {
-    let frames = instance.config.frames_per_block;
-    for (out_idx, desc) in instance.program.outputs().iter().enumerate() {
-        let Some(binding) = instance.output_bindings.get(out_idx).and_then(|b| *b) else {
-            return Err(Diagnostic::runtime(
-                format!("required output '{}' is not bound", desc.name()),
-                0,
-                0,
-            ));
-        };
-        let expected = desc.byte_size().saturating_mul(frames);
-        if binding.bytes != expected {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "output '{}' bound buffer size {} does not match expected {}",
-                    desc.name(),
-                    binding.bytes,
-                    expected
-                ),
-                0,
-                0,
-            ));
-        }
-    }
-    prepare_output_ptrs_for_process(instance, frames)?;
-    instance.outputs_validated = true;
-    Ok(())
-}
-
-pub fn validate_buffers(instance: &mut Instance) -> Result<(), Diagnostic> {
-    prepare_buffer_ptrs_from_bindings(instance)?;
-    instance.buffers_validated = true;
-    Ok(())
-}
-
-pub fn validate_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
-    validate_buffers(instance)?;
-    validate_inputs(instance)?;
-    validate_outputs(instance)?;
-    Ok(())
-}
-
-/// Processes one complete block and optionally collects delegate and print occurrences.
+/// Processes exactly one compiled block, returning the generated execution status.
 pub fn process_checked(
     instance: &mut Instance,
-    frames: usize,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<(), Diagnostic> {
-    let status = process_checked_with_status(instance, frames, output)?;
-    onda_codegen_llvm::check_execution_status(status)
+    mut output: ExecutionOutput<'_, '_>,
+) -> Result<u32, RuntimeError> {
+    output.reset();
+    prepare_process(instance)?;
+    unsafe {
+        execute_process(
+            instance,
+            0,
+            instance.program.block_size() as u32,
+            PROCESSOR_FULL_BLOCK,
+            output,
+        )
+    }
 }
 
-/// Processes one checked block while preserving the generated execution status.
-pub fn process_checked_with_status(
-    instance: &mut Instance,
-    frames: usize,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    process_checked_segment_with_status(instance, 0, frames, PROCESSOR_FULL_BLOCK, output)
-}
-
-/// Processes a validated segment, optionally collects delegate and print occurrences, and
-/// invalidates the instance if generated execution fails.
-/// A later full initialization or snapshot restore is required before state can be used again.
+/// Processes a checked segment while preserving the generated execution status.
 pub fn process_checked_segment(
     instance: &mut Instance,
     start_frame: usize,
     frames: usize,
     flags: u32,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<(), Diagnostic> {
-    let status = process_checked_segment_with_status(instance, start_frame, frames, flags, output)?;
-    onda_codegen_llvm::check_execution_status(status)
-}
-
-/// Processes a checked segment while preserving the generated execution status.
-pub fn process_checked_segment_with_status(
-    instance: &mut Instance,
-    start_frame: usize,
-    frames: usize,
-    flags: u32,
     mut output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
+) -> Result<u32, RuntimeError> {
     output.reset();
     validate_process_segment(instance, start_frame, frames, flags)?;
-    validate_bindings_for_process(instance)?;
-    let start_frame = u32::try_from(start_frame)
-        .map_err(|_| Diagnostic::runtime("process start frame does not fit u32", 0, 0))?;
-    let frames = u32::try_from(frames)
-        .map_err(|_| Diagnostic::runtime("process frame count does not fit u32", 0, 0))?;
-    let state = match &mut instance.state {
-        InstanceState::Allocated(state) if state.initialized => state,
-        InstanceState::Allocated(_) => return Err(invalid_instance_error()),
-        InstanceState::Pending(_) => return Err(uninitialized_instance_error()),
-    };
-    state.attempt_status(|state| {
-        with_processor_execution_output(output, |output| unsafe {
-            instance.program.process_unchecked(
-                state,
-                &instance.params,
-                start_frame,
-                frames,
-                flags,
-                &instance.input_ptrs,
-                &instance.output_ptrs,
-                &instance.buffer_ptrs,
-                &instance.buffer_frames,
-                &instance.buffer_channels,
-                &instance.buffer_sample_rates,
-                output,
-            )
-        })
-    })
-}
-
-/// Validates the current host bindings for unchecked processing.
-///
-/// This is not a stale-binding snapshot operation. Call it again after rebinding before entering
-/// an unchecked processing loop; MIR backends consume the current validated buffer table directly.
-pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnostic> {
-    instance.initialized_state()?;
-    validate_bindings_for_process(instance)
+    prepare_process(instance)?;
+    unsafe { execute_process(instance, start_frame as u32, frames as u32, flags, output) }
 }
 
 /// Processes one complete block without revalidating host bindings and optionally collects
@@ -2342,21 +1437,21 @@ pub fn prepare_unchecked_process(instance: &mut Instance) -> Result<(), Diagnost
 ///
 /// # Safety
 ///
-/// The instance's input, output, and buffer bindings must have been successfully prepared with
-/// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
-/// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
-/// the duration of this call, without aliases that violate Rust's memory rules. Preparation must
-/// occur after successful full initialization; violating that lifecycle contract is undefined
-/// behavior in release builds.
+/// The instance must satisfy [`prepare_process`]: initialized state and complete audio bindings.
+/// Successful rebinds preserve readiness; unbinding required audio or a generated failure revokes it.
+/// Bound memory must retain its validated extent/alignment, lifetime and non-aliasing guarantees.
+/// Violating this contract is undefined behavior.
 pub unsafe fn process_unchecked(
     instance: &mut Instance,
-    output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
+    mut output: ExecutionOutput<'_, '_>,
+) -> Result<u32, RuntimeError> {
+    output.reset();
+    debug_assert!(prepare_process(instance).is_ok());
     unsafe {
-        process_unchecked_segment(
+        execute_process(
             instance,
             0,
-            instance.config.frames_per_block,
+            instance.program.block_size() as u32,
             PROCESSOR_FULL_BLOCK,
             output,
         )
@@ -2371,44 +1466,31 @@ pub unsafe fn process_unchecked(
 ///
 /// # Safety
 ///
-/// The instance's input, output, and buffer bindings must have been successfully prepared with
-/// [`prepare_unchecked_process`] (or the equivalent validation functions) after their most recent
-/// mutation. Every bound region must remain valid, correctly sized, and appropriately aligned for
-/// the duration of this call, without aliases that violate Rust's memory rules. Preparation must
-/// occur after successful full initialization; violating that lifecycle contract is undefined
-/// behavior in release builds.
+/// The instance must satisfy [`prepare_process`]: initialized state and complete audio bindings.
+/// Successful rebinds preserve readiness; unbinding required audio or a generated failure revokes it.
+/// Bound memory must retain its validated extent/alignment, lifetime and non-aliasing guarantees.
+/// Violating this contract is undefined behavior.
 pub unsafe fn process_unchecked_segment(
     instance: &mut Instance,
     start_frame: usize,
     frames: usize,
     flags: u32,
     mut output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
+) -> Result<u32, RuntimeError> {
     output.reset();
     validate_process_segment(instance, start_frame, frames, flags)?;
-    debug_assert!(
-        instance.is_initialized(),
-        "process_unchecked called before full initialization; this is UB in release builds"
-    );
-    debug_assert!(
-        instance.inputs_validated && instance.outputs_validated && instance.buffers_validated,
-        "process_unchecked called without validating required input/output/buffer bindings; this is UB in release builds"
-    );
-    let start_frame = u32::try_from(start_frame).map_err(|_| {
-        Diagnostic::runtime(
-            "start frame does not fit u32 runtime/JIT process entrypoint",
-            0,
-            0,
-        )
-    })?;
-    let frames = u32::try_from(frames).map_err(|_| {
-        Diagnostic::runtime(
-            "frame count does not fit u32 runtime/JIT process entrypoint",
-            0,
-            0,
-        )
-    })?;
+    debug_assert!(prepare_process(instance).is_ok());
+    unsafe { execute_process(instance, start_frame as u32, frames as u32, flags, output) }
+}
+
+#[inline]
+unsafe fn execute_process(
+    instance: &mut Instance,
+    start_frame: u32,
+    frames: u32,
+    flags: u32,
+    output: ExecutionOutput<'_, '_>,
+) -> Result<u32, RuntimeError> {
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) | InstanceState::Pending(_) => unsafe {
@@ -2444,41 +1526,17 @@ pub fn validate_process_segment(
     start_frame: usize,
     frames: usize,
     flags: u32,
-) -> Result<(), Diagnostic> {
-    let Some(end_frame) = start_frame.checked_add(frames) else {
-        return Err(Diagnostic::runtime(
-            "segment frame range overflows usize",
-            0,
-            0,
-        ));
-    };
-    if end_frame > instance.config.frames_per_block {
-        return Err(Diagnostic::runtime(
-            "segment start frame + frame count must be less than or equal to fixed instance block size",
-            0,
-            0,
-        ));
+) -> Result<(), RuntimeError> {
+    let block_size = instance.program.block_size();
+    if start_frame > block_size || frames > block_size - start_frame {
+        return Err(RuntimeError::InvalidSegment {
+            start: start_frame,
+            frames,
+            block_size,
+        });
     }
-    let unknown_flags = flags & !PROCESSOR_FULL_BLOCK;
-    if unknown_flags != 0 {
-        return Err(Diagnostic::runtime(
-            format!("unknown process flags 0x{unknown_flags:x}"),
-            0,
-            0,
-        ));
-    }
-    Ok(())
-}
-
-fn validate_bindings_for_process(instance: &mut Instance) -> Result<(), Diagnostic> {
-    if !instance.buffers_validated {
-        validate_buffers(instance)?;
-    }
-    if !instance.inputs_validated {
-        validate_inputs(instance)?;
-    }
-    if !instance.outputs_validated {
-        validate_outputs(instance)?;
+    if flags & !PROCESSOR_FULL_BLOCK != 0 {
+        return Err(RuntimeError::InvalidFlags { flags });
     }
     Ok(())
 }
@@ -2487,43 +1545,12 @@ fn event_status_invalidates_state(status: u32) -> bool {
     status != PROCESSOR_EXECUTION_OK && status != PROCESSOR_EXECUTION_INPUT_REJECTED
 }
 
-/// Dispatches an event, optionally collects delegate and print occurrences, and invalidates the
-/// instance if generated execution fails.
-/// Input rejection preserves the instance; execution failure requires full initialization or restore.
 pub fn trigger_event_by_index_checked(
     instance: &mut Instance,
     event_index: usize,
     payload: &[u8],
-    output: ExecutionOutput<'_, '_>,
-) -> Result<(), Diagnostic> {
-    let status = trigger_event_by_index_impl(instance, event_index, payload, output)?;
-    onda_codegen_llvm::check_execution_status(status)
-}
-
-/// Dispatches an event while preserving the generated execution status.
-/// Input rejection returns status 2 without invalidating the instance.
-pub fn trigger_event_by_index_checked_with_status(
-    instance: &mut Instance,
-    event_index: usize,
-    payload: &[u8],
-    output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    trigger_event_by_index_impl(instance, event_index, payload, output)
-}
-
-fn trigger_event_by_index_impl(
-    instance: &mut Instance,
-    event_index: usize,
-    payload: &[u8],
     mut output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
-    if !instance.buffers_validated {
-        if let Err(error) = validate_buffers(instance) {
-            output.reset();
-            return Err(error);
-        }
-    }
+) -> Result<u32, RuntimeError> {
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) => {
@@ -2558,9 +1585,8 @@ fn trigger_event_by_index_impl(
     Ok(status)
 }
 
-/// Dispatches an event from native tensor views without copying their contents
-/// into the event workspace. Structural shape, alignment, and logical-value
-/// invariants are checked before the handler executes.
+/// Dispatches an event from checked native tensor views while preserving the
+/// generated execution status.
 ///
 /// # Safety
 ///
@@ -2571,35 +1597,8 @@ pub unsafe fn trigger_event_views_by_index_checked(
     instance: &mut Instance,
     event_index: usize,
     views: &[EventTensorView],
-    output: ExecutionOutput<'_, '_>,
-) -> Result<(), Diagnostic> {
-    let status = unsafe {
-        trigger_event_views_by_index_checked_with_status(instance, event_index, views, output)?
-    };
-    onda_codegen_llvm::check_execution_status(status)
-}
-
-/// Dispatches an event from checked native tensor views while preserving the
-/// generated execution status.
-///
-/// # Safety
-///
-/// Every nonempty view must describe live readable storage for the duration of
-/// the synchronous call. That storage must not be mutated concurrently or
-/// overlap memory written by the event.
-pub unsafe fn trigger_event_views_by_index_checked_with_status(
-    instance: &mut Instance,
-    event_index: usize,
-    views: &[EventTensorView],
     mut output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
-    if !instance.buffers_validated {
-        if let Err(error) = validate_buffers(instance) {
-            output.reset();
-            return Err(error);
-        }
-    }
+) -> Result<u32, RuntimeError> {
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
         InstanceState::Allocated(_) => {
@@ -2655,15 +1654,10 @@ pub unsafe fn trigger_event_views_by_index_unchecked(
     event_index: usize,
     views: *const EventTensorView,
     output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
+) -> Result<u32, RuntimeError> {
     debug_assert!(
         instance.is_initialized(),
         "trigger_event_views_by_index_unchecked called before full initialization; this is UB in release builds"
-    );
-    debug_assert!(
-        instance.buffers_validated,
-        "trigger_event_views_by_index_unchecked called without preparing buffer descriptors"
     );
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
@@ -2708,15 +1702,10 @@ pub unsafe fn trigger_event_by_index_unchecked(
     event_index: usize,
     payload: &[u8],
     output: ExecutionOutput<'_, '_>,
-) -> Result<u32, Diagnostic> {
-    configure_current_thread_audio_fp_mode();
+) -> Result<u32, RuntimeError> {
     debug_assert!(
         instance.is_initialized(),
         "trigger_event_by_index_unchecked called before full initialization; this is UB in release builds"
-    );
-    debug_assert!(
-        instance.buffers_validated,
-        "trigger_event_by_index_unchecked called without preparing buffer descriptors"
     );
     let state = match &mut instance.state {
         InstanceState::Allocated(state) if state.initialized => state,
@@ -2741,23 +1730,6 @@ pub unsafe fn trigger_event_by_index_unchecked(
         state.initialized = false;
     }
     Ok(status)
-}
-
-fn prepare_buffer_ptrs_from_bindings(instance: &mut Instance) -> Result<(), Diagnostic> {
-    for (idx, desc) in instance.program.buffers().iter().enumerate() {
-        if let Some(bound) = instance.buffer_bindings.get(idx).and_then(|v| *v) {
-            instance.buffer_ptrs[idx] = bound.ptr;
-            instance.buffer_frames[idx] = bound.frames_i32;
-            instance.buffer_channels[idx] = bound.channels_i32;
-            instance.buffer_sample_rates[idx] = bound.sample_rate_hz;
-        } else {
-            instance.buffer_ptrs[idx] = std::ptr::null_mut();
-            instance.buffer_frames[idx] = 1;
-            instance.buffer_channels[idx] = fallback_channels(desc)?;
-            instance.buffer_sample_rates[idx] = instance.config.sample_rate;
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2809,144 +1781,6 @@ fn primitive_type_alignment(ty: PrimitiveType) -> usize {
         PrimitiveType::I64 => std::mem::align_of::<i64>(),
         PrimitiveType::Bool => std::mem::align_of::<u8>(),
     }
-}
-
-fn validate_pointer_alignment(
-    ptr: *const u8,
-    ty: PrimitiveType,
-    surface: &str,
-    name: &str,
-) -> Result<(), Diagnostic> {
-    let required = primitive_type_alignment(ty);
-    if (ptr as usize).is_multiple_of(required) {
-        return Ok(());
-    }
-    Err(Diagnostic::runtime(
-        format!("{surface} '{name}' binding pointer requires {required}-byte alignment for {ty:?}"),
-        0,
-        0,
-    ))
-}
-
-fn validate_buffer_byte_extent(
-    frames: i32,
-    channels: i32,
-    element: PrimitiveType,
-    name: &str,
-) -> Result<i32, Diagnostic> {
-    let element_size =
-        i32::try_from(primitive_type_bytes(element)).expect("primitive element sizes fit i32");
-    frames
-        .checked_mul(channels)
-        .and_then(|elements| elements.checked_mul(element_size))
-        .ok_or_else(|| {
-        Diagnostic::runtime(
-            format!(
-                "buffer '{name}' byte extent {frames} * {channels} * {element_size} exceeds i32 runtime limit"
-            ),
-            0,
-            0,
-        )
-    })
-}
-
-fn prepare_input_ptrs_from_bindings(
-    instance: &mut Instance,
-    frames: usize,
-) -> Result<(), Diagnostic> {
-    let required_in_channels = instance.program.required_in_channels();
-    if instance.input_ptrs.len() != required_in_channels {
-        return Err(Diagnostic::runtime(
-            "runtime input channel pointer storage does not match compiled program",
-            0,
-            0,
-        ));
-    }
-
-    for (in_idx, desc) in instance.program.inputs().iter().enumerate() {
-        let Some(binding) = instance.input_bindings.get(in_idx).and_then(|b| *b) else {
-            return Err(Diagnostic::runtime(
-                format!("required input '{}' is not bound", desc.name()),
-                0,
-                0,
-            ));
-        };
-        if binding.bytes != desc.byte_size().saturating_mul(frames) {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "input '{}' bound buffer size {} does not match expected {}",
-                    desc.name(),
-                    binding.bytes,
-                    desc.byte_size().saturating_mul(frames)
-                ),
-                0,
-                0,
-            ));
-        }
-        let elem_bytes = primitive_type_bytes(desc.elem_ty());
-        for ch in 0..desc.array_len() {
-            let in_channel = desc.slot_offset().saturating_add(ch);
-            let src_off = ch.saturating_mul(frames).saturating_mul(elem_bytes);
-            instance.input_ptrs[in_channel] = unsafe { binding.ptr.add(src_off) };
-        }
-    }
-    Ok(())
-}
-
-fn prepare_output_ptrs_for_process(
-    instance: &mut Instance,
-    frames: usize,
-) -> Result<(), Diagnostic> {
-    let required_out_channels = instance.program.required_out_channels();
-    if instance.output_ptrs.len() != required_out_channels {
-        return Err(Diagnostic::runtime(
-            "runtime output channel pointer storage does not match compiled program",
-            0,
-            0,
-        ));
-    }
-    instance.output_ptrs.fill(std::ptr::null_mut());
-
-    for (out_idx, desc) in instance.program.outputs().iter().enumerate() {
-        let Some(binding) = instance.output_bindings.get(out_idx).and_then(|b| *b) else {
-            return Err(Diagnostic::runtime(
-                format!("required output '{}' is not bound", desc.name()),
-                0,
-                0,
-            ));
-        };
-        if binding.bytes != desc.byte_size().saturating_mul(frames) {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "output '{}' bound buffer size {} does not match expected {}",
-                    desc.name(),
-                    binding.bytes,
-                    desc.byte_size().saturating_mul(frames)
-                ),
-                0,
-                0,
-            ));
-        }
-        let elem_bytes = primitive_type_bytes(desc.elem_ty());
-        for ch in 0..desc.array_len() {
-            let out_channel = desc.slot_offset().saturating_add(ch);
-            let dst_off = ch.saturating_mul(frames).saturating_mul(elem_bytes);
-            instance.output_ptrs[out_channel] = unsafe { binding.ptr.add(dst_off) };
-        }
-    }
-    for desc in instance.program.outputs() {
-        for ch in 0..desc.array_len() {
-            let out_channel = desc.slot_offset().saturating_add(ch);
-            if instance.output_ptrs[out_channel].is_null() {
-                return Err(Diagnostic::runtime(
-                    format!("output '{}' channel pointer is null", desc.name()),
-                    0,
-                    0,
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

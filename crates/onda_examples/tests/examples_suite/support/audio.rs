@@ -126,7 +126,7 @@ fn process_interleaved(
         out_buffers.push(bytes);
     }
 
-    process_checked(instance, frames, onda_runtime::ExecutionOutput::none())?;
+    onda_runtime::process_checked_segment(instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none()).map_err(Diagnostic::from).and_then(onda_codegen_llvm::check_execution_status)?;
 
     for (idx, desc) in out_descs.iter().copied().enumerate() {
         let bytes = &out_buffers[idx];

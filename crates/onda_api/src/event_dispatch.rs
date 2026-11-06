@@ -22,7 +22,7 @@ pub unsafe extern "C" fn onda_trigger_event_by_index_checked(
         std::slice::from_raw_parts(payload_ptr.cast::<u8>(), payload_bytes as usize)
     };
     execution_status_to_c(with_runtime_execution_output(output, |output| {
-        onda_runtime::trigger_event_by_index_checked_with_status(
+        onda_runtime::trigger_event_by_index_checked(
             &mut (*instance).inner,
             index as usize,
             payload,
@@ -82,12 +82,7 @@ pub unsafe extern "C" fn onda_trigger_event_views_by_index_checked(
         )
     };
     execution_status_to_c(with_runtime_execution_output(output, |output| unsafe {
-        trigger_event_views_by_index_checked_with_status(
-            &mut (*instance).inner,
-            index as usize,
-            views,
-            output,
-        )
+        trigger_event_views_by_index_checked(&mut (*instance).inner, index as usize, views, output)
     }))
 }
 

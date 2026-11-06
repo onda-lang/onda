@@ -121,6 +121,8 @@ impl NativeBenchmark {
                 None,
             )
         }
+        .map_err(onda_frontend::Diagnostic::from)
+        .and_then(onda_codegen_llvm::check_execution_status)
         .map_err(|error| format!("checked process failed: {error:?}").into())
     }
 

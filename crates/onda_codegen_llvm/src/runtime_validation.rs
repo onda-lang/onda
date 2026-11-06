@@ -1,3 +1,4 @@
+use crate::{RuntimeError, RuntimeSurface};
 use onda_frontend::Diagnostic;
 
 use crate::{
@@ -357,17 +358,14 @@ impl JitProgram {
         &self,
         state: &RuntimeState,
         destination: &mut [u8],
-    ) -> Result<(), Diagnostic> {
+    ) -> Result<(), RuntimeError> {
         if destination.len() != self.snapshot_size_bytes {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "state snapshot byte size mismatch: expected {}, got {}",
-                    self.snapshot_size_bytes,
-                    destination.len()
-                ),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::SizeMismatch {
+                surface: RuntimeSurface::Snapshot,
+                index: 0,
+                expected: self.snapshot_size_bytes,
+                actual: destination.len(),
+            });
         }
         let state_bytes = state.bytes();
         for segment in self.snapshot_segments.iter() {
@@ -375,9 +373,7 @@ impl JitProgram {
                 .state_offset
                 .checked_add(segment.byte_size)
                 .filter(|end| *end <= state_bytes.len())
-                .ok_or_else(|| {
-                    Diagnostic::internal("snapshot segment exceeds physical state storage")
-                })?;
+                .ok_or(RuntimeError::InvalidStorage)?;
             let snapshot_end = segment.snapshot_offset + segment.byte_size;
             copy_snapshot_segment(
                 &state_bytes[segment.state_offset..state_end],
@@ -388,7 +384,7 @@ impl JitProgram {
         Ok(())
     }
 
-    /// Reinitializes state with the current buffers before applying a snapshot.
+    /// Reinitializes state before applying a snapshot while preserving generated status.
     ///
     /// # Safety
     ///
@@ -400,28 +396,10 @@ impl JitProgram {
         state: &mut RuntimeState,
         snapshot: &[u8],
         buffers: BufferDescriptorTables<'_>,
-    ) -> Result<(), Diagnostic> {
-        let status =
-            unsafe { self.restore_state_snapshot_with_status(params, state, snapshot, buffers) }?;
-        crate::check_execution_status(status)
-    }
-
-    /// Reinitializes state before applying a snapshot while preserving generated status.
-    ///
-    /// # Safety
-    ///
-    /// The buffer pointees must satisfy [`Self::initialize_state_in_place_checked`]'s
-    /// lifetime, extent, alignment, and aliasing requirements.
-    pub unsafe fn restore_state_snapshot_with_status(
-        &self,
-        params: &[u8],
-        state: &mut RuntimeState,
-        snapshot: &[u8],
-        buffers: BufferDescriptorTables<'_>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         self.validate_state_snapshot(snapshot)?;
         let status = unsafe {
-            self.initialize_state_in_place_checked_with_status(
+            self.initialize_state_in_place_checked(
                 params,
                 state,
                 crate::InitMode::Full,
@@ -435,17 +413,14 @@ impl JitProgram {
         Ok(status)
     }
 
-    pub fn validate_state_snapshot(&self, snapshot: &[u8]) -> Result<(), Diagnostic> {
+    pub fn validate_state_snapshot(&self, snapshot: &[u8]) -> Result<(), RuntimeError> {
         if snapshot.len() != self.snapshot_size_bytes {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "state snapshot byte size mismatch: expected {}, got {}",
-                    self.snapshot_size_bytes,
-                    snapshot.len()
-                ),
-                0,
-                0,
-            ));
+            return Err(RuntimeError::SizeMismatch {
+                surface: RuntimeSurface::Snapshot,
+                index: 0,
+                expected: self.snapshot_size_bytes,
+                actual: snapshot.len(),
+            });
         }
         Ok(())
     }
@@ -455,7 +430,7 @@ impl JitProgram {
         &self,
         state: &mut RuntimeState,
         snapshot: &[u8],
-    ) -> Result<(), Diagnostic> {
+    ) -> Result<(), RuntimeError> {
         self.validate_state_snapshot(snapshot)?;
         // SAFETY: the only externally supplied bytes are copied and normalized
         // before this function returns the state to its caller.
@@ -465,9 +440,7 @@ impl JitProgram {
                 .state_offset
                 .checked_add(segment.byte_size)
                 .filter(|end| *end <= state_bytes.len())
-                .ok_or_else(|| {
-                    Diagnostic::internal("snapshot segment exceeds physical state storage")
-                })?;
+                .ok_or(RuntimeError::InvalidStorage)?;
             let snapshot_end = segment.snapshot_offset + segment.byte_size;
             copy_snapshot_segment(
                 &snapshot[segment.snapshot_offset..snapshot_end],
@@ -578,38 +551,19 @@ impl JitProgram {
         state: &mut UninitializedRuntimeState,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<RuntimeState, Diagnostic> {
-        unsafe { self.initialize_allocated_state_with_status(params, state, buffers, output) }
-            .and_then(crate::StateInitialization::into_result)
-    }
-
-    /// Initializes previously allocated state while preserving generated status.
-    ///
-    /// # Safety
-    ///
-    /// Host buffers and output storage must satisfy
-    /// [`Self::initialize_allocated_state`]'s safety requirements.
-    pub unsafe fn initialize_allocated_state_with_status(
-        &self,
-        params: &[u8],
-        state: &mut UninitializedRuntimeState,
-        buffers: BufferDescriptorTables<'_>,
-        output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<crate::StateInitialization, Diagnostic> {
+    ) -> Result<crate::StateInitialization, RuntimeError> {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
                 self.compiled
-                    .initialize_allocated_state_with_status(params, state, buffers, output)
+                    .initialize_allocated_state(params, state, buffers, output)
             }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
             reset_execution_output(output);
             let _ = (params, state, buffers);
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -627,42 +581,19 @@ impl JitProgram {
         mode: crate::InitMode,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<(), Diagnostic> {
-        let status = unsafe {
-            self.initialize_state_in_place_checked_with_status(params, state, mode, buffers, output)
-        }?;
-        crate::check_execution_status(status)
-    }
-
-    /// Validates hosted regions, then preserves the generated initialization status.
-    ///
-    /// # Safety
-    ///
-    /// Host buffers and output storage must satisfy
-    /// [`Self::initialize_allocated_state`]'s safety requirements.
-    pub unsafe fn initialize_state_in_place_checked_with_status(
-        &self,
-        params: &[u8],
-        state: &mut RuntimeState,
-        mode: crate::InitMode,
-        buffers: BufferDescriptorTables<'_>,
-        output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.initialize_state_in_place_checked_with_status(
-                    params, state, mode, buffers, output,
-                )
+                self.compiled
+                    .initialize_state_in_place_checked(params, state, mode, buffers, output)
             }
         }
         #[cfg(not(feature = "llvm-orc"))]
         {
             reset_execution_output(output);
             let _ = (params, state, mode, buffers);
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -681,7 +612,7 @@ impl JitProgram {
         mode: crate::InitMode,
         buffers: BufferDescriptorTables<'_>,
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         #[cfg(feature = "llvm-orc")]
         {
             Ok(unsafe {
@@ -692,9 +623,7 @@ impl JitProgram {
         #[cfg(not(feature = "llvm-orc"))]
         {
             let _ = (params, state, mode, buffers, output);
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -722,51 +651,11 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<(), Diagnostic> {
-        let status = unsafe {
-            self.process_checked_with_status(
-                state,
-                params,
-                start_frame,
-                frames,
-                flags,
-                in_ptrs,
-                out_ptrs,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            )
-        }?;
-        crate::check_execution_status(status)
-    }
-
-    /// Validates ABI shape before entering generated code while preserving its execution status.
-    ///
-    /// # Safety
-    ///
-    /// Host regions must satisfy [`Self::process_checked`]'s safety requirements.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn process_checked_with_status(
-        &self,
-        state: &mut RuntimeState,
-        params: &[u8],
-        start_frame: usize,
-        frames: usize,
-        flags: u32,
-        in_ptrs: &[*const u8],
-        out_ptrs: &[*mut u8],
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
-        output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.process_checked_with_status(
+                self.compiled.process_checked(
                     state,
                     params,
                     start_frame,
@@ -798,9 +687,7 @@ impl JitProgram {
                 buffer_channels,
                 buffer_sample_rates,
             );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -827,7 +714,7 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         #[cfg(feature = "llvm-orc")]
         {
             Ok(unsafe {
@@ -863,9 +750,7 @@ impl JitProgram {
                 buffer_sample_rates,
                 output,
             );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -889,44 +774,7 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<(), Diagnostic> {
-        let status = unsafe {
-            self.trigger_event_by_index_checked_with_status(
-                state,
-                params,
-                event_index,
-                payload,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            )?
-        };
-        crate::check_execution_status(status)
-    }
-
-    /// Validates hosted memory regions, then returns the generated execution status.
-    /// Payload rejection is reported by the generated entry after it resets
-    /// execution output but before it mutates workspace or processor state.
-    ///
-    /// # Safety
-    ///
-    /// Raw external-buffer pointers must satisfy their complete binding
-    /// contract and remain valid for the duration of the call.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_by_index_checked_with_status(
-        &self,
-        state: &mut RuntimeState,
-        params: &[u8],
-        event_index: usize,
-        payload: &[u8],
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
-        output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
             return Ok(crate::PROCESSOR_EXECUTION_OK);
@@ -934,7 +782,7 @@ impl JitProgram {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled.trigger_event_by_index_checked_with_status(
+                self.compiled.trigger_event_by_index_checked(
                     state,
                     params,
                     event_index,
@@ -960,9 +808,7 @@ impl JitProgram {
                 buffer_channels,
                 buffer_sample_rates,
             );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -986,44 +832,7 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<(), Diagnostic> {
-        let status = unsafe {
-            self.trigger_event_views_by_index_checked_with_status(
-                state,
-                params,
-                event_index,
-                views,
-                buffer_ptrs,
-                buffer_frames,
-                buffer_channels,
-                buffer_sample_rates,
-                output,
-            )?
-        };
-        crate::check_execution_status(status)
-    }
-
-    /// Dispatches an event from checked native tensor views while preserving
-    /// the generated execution status.
-    ///
-    /// # Safety
-    ///
-    /// Every nonempty view must describe live readable storage for the call.
-    /// The storage must not be mutated concurrently or alias memory written by
-    /// the event.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn trigger_event_views_by_index_checked_with_status(
-        &self,
-        state: &mut RuntimeState,
-        params: &[u8],
-        event_index: usize,
-        views: &[onda_processor_abi::EventTensorView],
-        buffer_ptrs: &[*mut u8],
-        buffer_frames: &[i32],
-        buffer_channels: &[i32],
-        buffer_sample_rates: &[f32],
-        output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
             return Ok(crate::PROCESSOR_EXECUTION_OK);
@@ -1031,18 +840,17 @@ impl JitProgram {
         #[cfg(feature = "llvm-orc")]
         {
             unsafe {
-                self.compiled
-                    .trigger_event_views_by_index_checked_with_status(
-                        state,
-                        params,
-                        event_index,
-                        views,
-                        buffer_ptrs,
-                        buffer_frames,
-                        buffer_channels,
-                        buffer_sample_rates,
-                        output,
-                    )
+                self.compiled.trigger_event_views_by_index_checked(
+                    state,
+                    params,
+                    event_index,
+                    views,
+                    buffer_ptrs,
+                    buffer_frames,
+                    buffer_channels,
+                    buffer_sample_rates,
+                    output,
+                )
             }
         }
         #[cfg(not(feature = "llvm-orc"))]
@@ -1058,9 +866,7 @@ impl JitProgram {
                 buffer_channels,
                 buffer_sample_rates,
             );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -1110,7 +916,7 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
             return Ok(crate::PROCESSOR_EXECUTION_OK);
@@ -1144,9 +950,7 @@ impl JitProgram {
                 buffer_channels,
                 buffer_sample_rates,
             );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 
@@ -1171,7 +975,7 @@ impl JitProgram {
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
         output: Option<&mut onda_processor_abi::ExecutionOutput>,
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         if self.event_descriptor(event_index).is_none() {
             reset_execution_output(output);
             return Ok(crate::PROCESSOR_EXECUTION_OK);
@@ -1205,9 +1009,7 @@ impl JitProgram {
                 buffer_channels,
                 buffer_sample_rates,
             );
-            Err(Diagnostic::internal(
-                "ORC backend is required but not enabled at build time",
-            ))
+            Err(RuntimeError::BackendUnavailable)
         }
     }
 }

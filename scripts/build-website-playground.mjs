@@ -79,6 +79,8 @@ const [playgroundBuild] = await Promise.all([
     resolve(assetsRoot, "processor-constants.js"),
   ),
   cp(resolve(webAudioRoot, "src/param-metadata.js"), resolve(assetsRoot, "param-metadata.js")),
+  cp(resolve(webAudioRoot, "src/runtime-status.js"), resolve(assetsRoot, "runtime-status.js")),
+  cp(resolve(webAudioRoot, "src/execution-status-ring.js"), resolve(assetsRoot, "execution-status-ring.js")),
   cp(
     resolve(webAudioRoot, "src/execution-output-ring.js"),
     resolve(assetsRoot, "execution-output-ring.js"),

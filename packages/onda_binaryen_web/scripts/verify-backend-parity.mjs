@@ -19,7 +19,6 @@ import { fileURLToPath } from "node:url";
 import {
   PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   compileTrustedMir as compileMir,
-  createDefaultImports,
 } from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
 import { scalarSize, writeParameterDefaults } from "./wasm-memory.mjs";
@@ -786,7 +785,7 @@ async function renderWasmBlocks(artifact, scenario) {
   }
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const metadata = artifact.metadata;

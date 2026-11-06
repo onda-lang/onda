@@ -91,6 +91,8 @@ sed 's/from "binaryen"/from ".\/binaryen.js"/' \
   "$compiler_package/dist/backend/index.js" > "$compiler_out/dist/backend/index.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$compiler_package/dist/backend/artifact.js" > "$compiler_out/dist/backend/artifact.js"
+cp "$webaudio_package/src/runtime-status.js" "$webaudio_out/runtime-status.js"
+cp "$webaudio_package/src/execution-status-ring.js" "$webaudio_out/execution-status-ring.js"
 cp "$webaudio_package/src/worklet.js" "$webaudio_out/worklet.js"
 cp "$webaudio_package/src/processor-constants.js" \
   "$webaudio_out/processor-constants.js"
@@ -103,6 +105,7 @@ cp "$abi_package/src/enum-metadata.js" "$webaudio_out/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$webaudio_out/payload.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$webaudio_package/src/index.js" > "$webaudio_out/index.js"
+node "$repo_root/scripts/verify-webaudio-stage.mjs" "$webaudio_out/index.js" "$webaudio_out/worklet.js"
 node "$repo_root/scripts/stage-gpu-ui.mjs" "$demo_dir/gpu"
 node "$repo_root/scripts/bundle-web-playground.mjs" "$demo_dir/playground.js" \
   "$compiler_out/src/worker.js"
