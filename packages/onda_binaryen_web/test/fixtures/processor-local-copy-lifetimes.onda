@@ -1,0 +1,38 @@
+proc Voice:
+  buffers:
+    result: f32
+  init:
+    before: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before)
+    result[0] += 10.0
+def step(voice) -> f32:
+  return voice() + voice()
+def exercise(source: Voice, mode: i32) -> f32:
+  if mode == 0:
+    copy: Voice = source
+    return step(copy)
+  else:
+    copies: Voice[1] = [source]
+    alias = copies[0]
+    if mode == 1:
+      return step(alias)
+    for i in 0..3:
+      local: Voice = alias
+      step(local)
+      if mode == 2:
+        continue
+      break
+    return 2.0
+buffers:
+  result: f32
+init:
+  voice = Voice(result = result)
+  frame: i32 = 0
+sample:
+  out1 = exercise(voice, frame % 4)
+  out2 = result[0]
+  out3 = f32(voice.before)
+  frame += 1

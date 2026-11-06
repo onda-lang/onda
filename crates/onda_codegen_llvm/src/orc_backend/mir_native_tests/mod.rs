@@ -1,6 +1,8 @@
 use super::*;
 
+mod buffer_maps;
 mod control_flow;
+mod reference_alignment;
 mod structured_data;
 
 use onda_frontend::parse_program;

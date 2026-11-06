@@ -1,0 +1,38 @@
+proc Voice:
+  buffers:
+    clip: f32
+  delegate fired(value: i32)
+  init:
+    before: i32 = 0
+    after: i32 = 0
+    count: i32 = 0
+  block:
+    before += 1
+    fired(10)
+    sample:
+      count += 1
+      fired(1)
+      out1 = clip[0] + f32(before * 100 + after * 10 + count)
+    after += 1
+    fired(100)
+proc Bank:
+  buffers:
+    clips: f32 {3}
+  init:
+    voices: Voice[3] = [Voice(clip = clips[0]), Voice(clip = clips[1]), Voice(clip = clips[2])]
+    total: i32 = 0
+  when voices[1].fired(value):
+    total += value
+def step(voice) -> f32:
+  return voice()
+buffers:
+  clips: f32 {3}
+init:
+  bank = Bank(clips = clips)
+  start: i32 = 1
+  window = bank.voices[start:3]
+sample:
+  selected = window[0]
+  out1 = step(selected)
+  out2 = f32(bank.total)
+  out3 = selected.out1

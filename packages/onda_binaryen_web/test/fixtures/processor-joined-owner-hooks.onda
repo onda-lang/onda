@@ -1,0 +1,36 @@
+proc Voice:
+  init:
+    count: i32 = 0
+  block:
+    count += 1
+    sample:
+      out1 = f32(count)
+    count += 10
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    count: i32 = 0
+  block:
+    count += 100
+    sample:
+      out1 = f32(count)
+    count += 1000
+def step(voice) -> f32:
+  return voice()
+def choose(left, right, first: bool) -> f32:
+  if first:
+    owner = left[0]
+    selected = owner.voices[0]
+  else:
+    owner = right[1]
+    selected = owner.voices[1]
+  return step(selected)
+init:
+  left: Bank[2] = Bank()
+  right: Bank[2] = Bank()
+  selector: i32 = 0
+sample:
+  out1 = choose(left, right, (selector == 0))
+  out2 = left[0]()
+  out3 = right[1]()
+  selector = 1 - selector

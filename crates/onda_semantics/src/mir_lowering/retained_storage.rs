@@ -132,7 +132,7 @@ pub(super) fn retain_storage(
     let mut owned = retained.iter().copied().collect::<Vec<_>>();
     owned.sort();
     for local in owned {
-        if !planner.is_slice(local) && !derived_lengths.contains(&local) {
+        if !planner.is_descriptor(local) && !derived_lengths.contains(&local) {
             let slot = planner.slot(local, "storage")?;
             planner.owned.insert(local, slot);
         }
@@ -185,9 +185,35 @@ impl DependencyCollector<'_> {
             match &statement.kind {
                 StatementKind::Assign { destination, value }
                     if matches!(destination.base, PlaceBase::Local(local) if retained.contains(&local)
-                        && matches!(self.types[self.locals[local.index()].ty.index()], MirType::Slice { .. })) =>
+                        && matches!(self.types[self.locals[local.index()].ty.index()], MirType::Slice { .. } | MirType::Buffer { .. } | MirType::BufferSpan { .. } | MirType::BufferMap { .. })) =>
                 {
                     let source = match value {
+                        Rvalue::MakeBuffer {
+                            source: argument, ..
+                        } => match argument {
+                            CallArgument::Buffer(_)
+                            | CallArgument::BufferSpan(
+                                onda_mir::BufferSpanRef::Interface { .. }
+                                | onda_mir::BufferSpanRef::MappedInterface { .. },
+                            ) => None,
+                            CallArgument::BufferParam(reference) => reference
+                                .local()
+                                .map(PlaceBase::Local)
+                                .or_else(|| reference.parameter().map(PlaceBase::Parameter)),
+                            CallArgument::BufferSpan(onda_mir::BufferSpanRef::Local {
+                                collection,
+                                ..
+                            }) => Some(PlaceBase::Local(*collection)),
+                            CallArgument::BufferSpan(onda_mir::BufferSpanRef::Parameter {
+                                span,
+                                ..
+                            }) => Some(PlaceBase::Parameter(*span)),
+                            CallArgument::Place(place) => Some(place.base),
+                            CallArgument::Value(Value::Local(local)) => {
+                                Some(PlaceBase::Local(*local))
+                            }
+                            _ => return Err(escape_error(statement.source, self.source_files)),
+                        },
                         Rvalue::MakeSlice {
                             source: onda_mir::SliceSource::Place(place),
                             ..
@@ -368,10 +394,13 @@ impl Planner<'_> {
         Ok(LocalId::new(id))
     }
 
-    fn is_slice(&self, local: LocalId) -> bool {
+    fn is_descriptor(&self, local: LocalId) -> bool {
         matches!(
             self.types[self.locals[local.index()].ty.index()],
             MirType::Slice { .. }
+                | MirType::Buffer { .. }
+                | MirType::BufferSpan { .. }
+                | MirType::BufferMap { .. }
         )
     }
 
@@ -412,7 +441,7 @@ impl Planner<'_> {
         let Value::Local(local) = *value else {
             return Ok(());
         };
-        if self.is_slice(local) {
+        if self.is_descriptor(local) {
             return Ok(());
         }
         let slot = self.slot(local, "selection")?;
@@ -445,7 +474,7 @@ impl Planner<'_> {
         for mut statement in std::mem::take(&mut block.statements) {
             let source = statement.source;
             match &mut statement.kind {
-                StatementKind::Assign { destination, value } if matches!(destination.base, PlaceBase::Local(local) if self.retained.contains(&local) && self.is_slice(local)) =>
+                StatementKind::Assign { destination, value } if matches!(destination.base, PlaceBase::Local(local) if self.retained.contains(&local) && self.is_descriptor(local)) =>
                 {
                     let destination = destination.clone();
                     let mut value = value.clone();
@@ -479,6 +508,37 @@ impl Planner<'_> {
                                         )?;
                                     }
                                 }
+                            }
+                        }
+                        Rvalue::MakeBuffer {
+                            source: argument, ..
+                        } => {
+                            let selected = match argument {
+                                CallArgument::Buffer(onda_mir::BufferRef::ArrayElement {
+                                    selector,
+                                    bounds,
+                                    ..
+                                })
+                                | CallArgument::BufferParam(
+                                    onda_mir::BufferParamRef::ArrayElement {
+                                        selector, bounds, ..
+                                    }
+                                    | onda_mir::BufferParamRef::LocalElement {
+                                        selector, bounds, ..
+                                    },
+                                ) => Some((selector, bounds)),
+                                CallArgument::BufferSpan(onda_mir::BufferSpanRef::Local {
+                                    start,
+                                    bounds,
+                                    ..
+                                }) => Some((start, bounds)),
+                                _ => None,
+                            };
+                            if let Some((selection, bounds)) = selected {
+                                if *bounds == BoundsMode::Unchecked {
+                                    *bounds = BoundsMode::Checked;
+                                }
+                                self.capture(selection, &mut coordinates, &mut restore, source)?;
                             }
                         }
                         Rvalue::Use(_) | Rvalue::Load(_) => {}

@@ -3503,7 +3503,12 @@ sample:
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3608,7 +3613,12 @@ sample:
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]

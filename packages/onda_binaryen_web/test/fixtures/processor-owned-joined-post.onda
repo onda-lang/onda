@@ -1,0 +1,37 @@
+proc Voice:
+  buffers:
+    clip: f32
+  block:
+    sample:
+      out1 = clip[0]
+    clip[0] += 1.0
+proc BankA:
+  buffers:
+    clip: f32
+  init:
+    voices: Voice[1] = Voice(clip = clip)
+proc BankB:
+  buffers:
+    clips: f32 {2}
+  init:
+    voices: Voice[1] = Voice(clip = clips[1])
+buffers:
+  left: f32
+  right: f32 {2}
+params:
+  select: i32 = 1
+def step(voice) -> f32:
+  return voice()
+init:
+  a = BankA(clip = left)
+  b = BankB(clips = right)
+block:
+  if select == 0:
+    source = a.voices
+  else:
+    source = b.voices
+  copies: Voice[1] = source
+  sample:
+    out1 = step(copies[0])
+    out2 = left[0]
+    out3 = right[1][0]

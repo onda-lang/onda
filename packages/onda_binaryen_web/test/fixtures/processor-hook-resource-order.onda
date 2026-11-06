@@ -1,0 +1,30 @@
+struct Selection:
+  calls: i32
+proc Voice:
+  buffers:
+    clip: f32
+  block:
+    sample:
+      out1 = 0.0
+    clip[0] += 1.0
+proc Bank:
+  buffers:
+    clip: f32
+  init:
+    voices: Voice[2] = Voice(clip = clip)
+  block:
+    sample:
+      voices[0]()
+      out1 = 0.0
+    clip[0] += 100.0
+def choose(selection: Selection) -> i32:
+  selection.calls += 1
+  return selection.calls % 2
+buffers:
+  clips: f32 {2}
+init:
+  selection = Selection(0)
+  bank = Bank(clip = clips[choose(selection)])
+sample:
+  bank()
+  out1 = f32(selection.calls)

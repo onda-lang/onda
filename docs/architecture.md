@@ -243,6 +243,37 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     each `await`. Reset invalidates only the program counter, leaving frame initialization to the
     next start.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
+    `declarations` shares normalized ports, parameters and buffers across nominal and physical
+    shape planning, child-surface checks, nested call signatures and delegate validation. Whole
+    input defaults remain available alongside expanded slots, and buffer metadata uses the
+    ordinary typed buffer declaration. It also owns shared processor init-scope setup.
+    `logical_types` describes source processor fields before
+    physical flattening. `view_catalog`
+    registers declared projections, generated operations and ordered resource captures;
+    `storage_projections` supplies exact typed storage plans to `proc_storage`. Uniform arrays
+    retain one declaration and constructor binding, with counted initialization and lifecycle loops.
+    `projection_callbacks` composes enclosing callback handlers, and `projection_resources` shares
+    the ordered capture plan between signatures and calls.
+    `resource_recipes` interns root selection recipes independently of buffer identities. Helpers
+    forward the base collections and resolve selectors in the declaration's scope at the selected
+    operation, sharing the same recipe path as inherited child resources. Calls in these recipes
+    use ordinary dependency selection and compile-context materialization.
+    MIR `processor_resource_recipes` discovers an operation's inherited dependencies before
+    preparing each owner frame once in declaration order, preserving shared binding identity
+    and selector effects inside the selected branch.
+    `mir_lowering/processor_elements` keeps explicit owned-array element sources as deferred
+    resource environments. Selecting a copied row uses the same ordered recipe planner;
+    copying its storage does not evaluate selectors or copy host descriptor pointers.
+    Deferred expressions participate in the ordinary overload and monomorphization fixed point
+    in their declaration scope. Dependency selection uses the shared recipe lookup for root and
+    inherited bindings, so selector helpers retain each operation's compile context.
+  - `processor_views.rs` — complete processor shapes and capture recipes used by call inference,
+    specialization and MIR. Shapes contain declared projections and resource layouts; physical root
+    instances and captured coordinates are values. Specialization and compile-context materialization
+    retain the required shared owner adapters without constructing fake source calls.
+    Lexical resource captures record the owner declaration ordinal and actual parameter at signature
+    generation, including task resume helpers. Lowering consumes that metadata without recovering
+    ownership from parameter names; lexical bindings retain their normal shadowing rules.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
 - `processor_lowering/entry_adapter.rs` — automatic construction and host-interface
   projection of an ordinary `Main` proc. Delegate exports are prepared before
@@ -280,6 +311,16 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     reads so unused arrays and length-only views do not allocate snapshots.
   - `mir_lowering/audio_outputs.rs` — per-sample audio-output cache initialization and single ordered
     commit, kept separate as the optimization-facing output transaction boundary.
+  - `mir_lowering/processor_lifecycle.rs` — lifecycle-slot references reconstructed from captured
+    processor roots and coordinates, including activation through selected-instance helper calls
+    and block-boundary completion when a borrowed child's parent is not stepped. Scalar children
+    share a single activation slot across their direct, borrowed, and enclosing parent hooks.
+    A selected post operation completes active descendants before entering its owner's post body
+    or task guard, including descendants borrowed through an inactive intermediate owner.
+    Scalar root hooks use the existing BEGIN/END scheduler; dependency propagation follows
+    forwarding and aliases back to owning storage, without adding activation checks to sample calls.
+    Retained owned processor copies carry their resource environments separately from their new
+    storage roots and participate in the same boundary scheduling as constructor-owned roots.
   - `mir_lowering/tests.rs` — complete-program lowering regression coverage.
 
 ### `onda_mir` (`crates/onda_mir/src`)
@@ -290,15 +331,19 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `call_graph.rs` — iterative call-graph traversal and dependency worklists.
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
+  `analysis/resource_aliases` retains collection windows as a symbolic graph and translates
+  demanded slot intervals through it, preserving precise resource identity without per-slot
+  provenance expansion for dynamic windows.
 - `memory.rs` — storage origins across slice definitions, reference arguments, and returns.
 - `loops.rs`, `loops/facts.rs` — counted-loop recognition and reusable per-function facts for
   pointwise audio, memory independence and native loop-cost queries.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
   bounds and proven-safe slice-copy overlap.
-- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion,loop_distribution}.rs` — backend-neutral
+- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion,loop_distribution,loop_peeling}.rs` — backend-neutral
   canonicalization, integer-range-based bounds proofs, conservative scalar CSE, bounded
-  alias-safe scalar-state promotion, cleanup, and selective ordered-reduction distribution.
+  alias-safe scalar-state promotion, dead-value/parameter cleanup, and backend-selected loop
+  distribution and first-iteration peeling with proven remainder-predicate folding.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
 - The production contract is documented in the [MIR reference](mir.md).
 
@@ -659,7 +704,9 @@ and invalidation in detail. The main opportunities exposed to backends are:
 - MIR storage origins preserve owned-object identities and possible contiguous element ranges through
   views and calls, including different views passed to the same helper. MIR folds common descriptor
   lengths and removes proven slice construction and window checks. Native lowering computes
-  reference alignment from the recorded element offsets; overlapping views keep the same identity.
+  reference alignment from exact element offsets or a proven common power-of-two offset divisor;
+  dynamic aligned windows retain that proof even when their exact ranges are unknown. Alignment
+  never implies disjointness; overlapping views keep the same identity.
   LLVM alias scopes share proven disjoint groups of accessed origins, avoiding a full complement
   list per state object. Overlapping unions refine those groups without discarding disjointness
   facts; mixed origins receive only negative alias facts. Pointwise audio proofs allow a native
@@ -687,6 +734,17 @@ and invalidation in detail. The main opportunities exposed to backends are:
   and coupled reductions prevent distribution. Unchanged programs are borrowed; changed programs
   are revalidated with fresh analysis facts. Binaryen retains the fused schedule while its array
   math remains scalar, avoiding the cost of an extra traversal without vector-math gains.
+- Native scheduling also separates the first iteration of large fixed counted loops when an
+  equality/inequality predicate distinguishes that iteration. Shared MIR summaries follow value
+  arguments through helpers, without relying on processor names, array capacities or reference
+  exclusivity. Peeling copies the original operations and increment in order, retaining failures,
+  aliases and synchronous effects; modified/escaped induction variables and early exits reject it.
+  The summaries guide profitability only. The counted-loop proof also folds equality/inequality
+  comparisons against the initial index within the remainder, following local copies only while
+  every incoming path preserves their identity. Writes, reference arguments, and call results
+  invalidate copy facts; no loop-carried copy is assumed. The first iteration retains its original
+  comparisons. LLVM's ordinary inlining and dependence analysis decide whether the remaining loop
+  can vectorize. Binaryen keeps the original schedule.
 - The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
   `DecayEnv`, and `Pan3db` cache results only while their source parameters remain equal, with
   explicit validity state for initialization and recomputation at each changed assignment.
@@ -793,3 +851,47 @@ all input before writing aligned workspace; synchronous internal forwarding borr
 Logical host encoding/decoding and workspace provisioning happen outside realtime execution.
 Typed nominal structs retain only their directly declared fields; semantic passes recursively walk
 those references when they need leaf paths rather than storing duplicated dotted descendants.
+Processor arrays follow the same layout at top level and inside other processors: each primitive
+field is one tensor whose axes include the enclosing array dimensions. Selecting an instance
+captures its coordinate once and borrows the corresponding scalar elements or history windows.
+Shared child wrappers take the owner view and coordinates, so homogeneous runtime calls do not
+dispatch across every instance. The physical helper ABI remains one reference per live field,
+independent of array capacity; MIR retains per-field effects and backend parameter pruning.
+Processor slices retain their runtime length and a captured row offset alongside the complete
+view environment. Nested slices add offsets, and selecting a row rebases its lifecycle, resource
+and callback coordinates once. Owned copies rebase storage and lifecycle coordinates to zero while
+retaining a separate source-row offset for indexed resources. Identity resource-forwarding frames
+and explicit element selections are collapsed across successive owned copies. Their symbolic joins
+capture coordinates without evaluating resource recipes. Function- and sample-local copies activate
+on first use and complete before return or the end of a loop iteration; forwarding borrows that same
+lifecycle. Untaken declarations do not evaluate cleanup captures. Init- and block-retained copies
+keep their segmented block lifecycle. Operation dependencies use the ordinary lexical
+call-typing walker for boundaries and helper bodies, retaining both activation and completion hooks
+through runtime aliases, branch joins and bindings carried from block pre into sample.
+Scalar root hook requirements reuse the recursion check's callee-before-caller order,
+visiting each helper body once regardless of declaration order.
+Read-only parameter inference revisits only callers affected by changed callee permissions.
+The declaration and operation catalogs use indexed lookup with immutable definition keys;
+resource recipe rewrites do not invalidate those indexes.
+Borrowed scalar children and arrays share this logical view model, while scalar children may
+remain physically flattened. A view carries root storage, captured coordinates, lifecycle identity,
+resources and enclosing callback environments. Joins retain a flat set of distinct alternatives,
+one remapped selector and private binding metadata for captured local roots. Repeated joins reuse
+those alternatives rather than expanding nested selection trees. Calls and lifecycle completion share
+the selected-environment dispatch, reconstructing owners and resources inside the matching branch
+from persistent, parameter, or owned local storage. Writable
+references remain overlapping capabilities, with no exclusivity promise. MIR legalization uses
+ordinary references and direct calls, preserving live-field pruning and alignment facts.
+Heterogeneous bound buffers can still require resource selection. Their selection reuses the
+captured coordinate and resolves the current host binding rather than persisting native pointers.
+MIR `BufferMap` collections represent non-contiguous interface selections with an immutable table
+of symbolic resource identities. LLVM and Binaryen borrow that map alongside the current descriptor
+tables; forwarding and subviews copy a constant-size handle, and selection performs an indexed
+lookup without gathering descriptor tables. Ordinary buffers and contiguous `BufferSpan`
+collections retain their existing direct representation. Resource effects follow each mapped slot
+through calls and subviews, including repeated entries and unrelated interleaved interface types.
+When constructor bindings come from unrelated owner parameters, the view forwards those existing
+buffer or contiguous-span descriptors. A balanced branch selects one typed local descriptor before
+the child call. This finite choice needs no descriptor table construction during processing.
+Descriptor locals remain ephemeral: retained initialization aliases save selector values and
+reconstruct descriptors from current logical bindings after restore.

@@ -108,6 +108,7 @@ mod proc_call_support;
 mod proc_resolution;
 mod proc_state_rewrite;
 mod processor_lowering;
+pub mod processor_views;
 mod stmt_analysis;
 mod task_lowering;
 pub use aggregate_layout::{
@@ -132,6 +133,7 @@ use expr_validation::*;
 use generic_specialization::*;
 use index_access::*;
 pub(crate) use internal_names::runtime_proc_array_active_symbol;
+use internal_names::PROCESSOR_RESOURCE_SELECT;
 use io_state_helpers::*;
 pub use mir_lowering::{
     lower_program_to_optimized_mir, lower_program_to_validated_mir, MirLoweringError,
@@ -144,8 +146,7 @@ pub use pipeline::{
 use port_coercion::*;
 use proc_call_rewrite::*;
 use proc_call_support::{
-    rewrite_proc_alias_calls_for_validation, rewrite_proc_alias_calls_in_expr, split_dot_path,
-    ProcArrayAliasInfo,
+    rewrite_proc_alias_calls_for_validation, split_dot_path, ProcArrayAliasInfo,
 };
 use proc_resolution::*;
 use proc_state_rewrite::*;
@@ -200,6 +201,7 @@ pub struct TypedProgram {
     pub def_sample_oversample_factors: HashMap<String, usize>,
     pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub proc_instance_oversample_factors: HashMap<String, usize>,
+    pub(crate) proc_array_hook_types: HashSet<String>,
     pub init: Vec<Stmt>,
     pub block_pre: Vec<Stmt>,
     pub sample_oversample_factor: usize,
@@ -219,6 +221,8 @@ pub struct TypedProgram {
     /// fields. MIR uses this semantic map to resolve nested indexed processor
     /// references without interpreting generated storage names.
     pub nested_proc_arrays: Vec<TypedNestedProcArray>,
+    /// Complete processor environments, shared by source specialization and MIR.
+    pub processor_views: processor_views::ProcessorViewCatalog,
     pub ins_explicit: bool,
     pub audio_outs_explicit: bool,
     pub control_outs_explicit: bool,
@@ -397,6 +401,9 @@ pub struct CompileConstDescriptor {
 
 #[derive(Debug, Clone)]
 pub struct ProcStepOversampleMeta {
+    /// Generated reference bindings evaluated once per outer processor call,
+    /// before filter state is resolved and before the oversampled substeps.
+    pub reference_prologue_len: usize,
     pub input_state_fields: HashMap<String, ProcInputOversampleStateFields>,
     pub output_state_fields: HashMap<String, ProcOutputOversampleStateFields>,
 }
@@ -825,7 +832,8 @@ pub struct TypedNestedProcArray {
     pub owner_struct: String,
     pub field_name: String,
     pub proc_name: String,
-    pub slots: Vec<String>,
+    pub len: usize,
+    pub active_field: String,
 }
 
 #[derive(Debug, Clone)]

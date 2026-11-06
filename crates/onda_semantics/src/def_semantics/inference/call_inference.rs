@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
-    untyped_literal_type, PROC_INDEX_BASE_ARG, PROC_INDEX_BUFFER_SELECT_SENTINEL,
-    PROC_INDEX_EXPR_ARG,
+    untyped_literal_type, PROCESSOR_RESOURCE_SELECT, PROC_INDEX_BASE_ARG, PROC_INDEX_EXPR_ARG,
 };
 use onda_frontend::SourceLoc;
 
@@ -46,7 +45,9 @@ pub(super) fn infer_stmt_calls(
                 if let Some(info) = infer_array_binding_from_assignment(expr) {
                     array_bindings.insert(name.clone(), info);
                 }
-                if let Some(info) = infer_buffer_binding_from_assignment(expr, buffer_bindings) {
+                if let Some(info) =
+                    infer_buffer_binding(expr, buffer_bindings).filter(|binding| !binding.is_array)
+                {
                     buffer_bindings.insert(name.clone(), info);
                 }
             }
@@ -239,12 +240,12 @@ pub(super) fn infer_stmt_calls(
     });
 }
 
-fn infer_buffer_binding_from_assignment(
+fn infer_buffer_binding(
     expr: &Expr,
     bindings: &HashMap<String, InferredBufferBinding>,
 ) -> Option<InferredBufferBinding> {
     match expr {
-        Expr::Var { name, .. } => bindings.get(name).filter(|info| !info.is_array).cloned(),
+        Expr::Var { name, .. } => bindings.get(name).cloned(),
         Expr::Index { base, .. } => {
             bindings
                 .get(base)
@@ -288,6 +289,12 @@ fn infer_expr_calls(
                         for (idx, arg) in resolved.into_iter().enumerate() {
                             if let Some(arg) = arg {
                                 if let Some(slot) = param_kinds.get_mut(idx) {
+                                    if crate::processor_views::is_bound_resource_argument(
+                                        arg,
+                                        sig.param_types.get(idx).and_then(Option::as_ref),
+                                    ) {
+                                        continue;
+                                    }
                                     if let Some(struct_name) = slot.method_self_struct.clone() {
                                         // A synthesized method `self` parameter has an authoritative
                                         // owner shape. Method/index sugar can turn its call-site
@@ -386,7 +393,7 @@ fn infer_expr_calls(
                                             name: selector_name,
                                             args: selector_args,
                                             ..
-                                        } if selector_name == PROC_INDEX_BUFFER_SELECT_SENTINEL => {
+                                        } if selector_name == PROCESSOR_RESOURCE_SELECT => {
                                             let mut saw_any_buffer = false;
                                             let mut saw_invalid_slot = false;
                                             for selector_arg in selector_args {
@@ -397,12 +404,10 @@ fn infer_expr_calls(
                                                 {
                                                     continue;
                                                 }
-                                                let Expr::Var { name: v, .. } = &selector_arg.expr
-                                                else {
-                                                    saw_invalid_slot = true;
-                                                    continue;
-                                                };
-                                                if let Some(binding) = buffer_bindings.get(v) {
+                                                if let Some(binding) = infer_buffer_binding(
+                                                    &selector_arg.expr,
+                                                    buffer_bindings,
+                                                ) {
                                                     saw_any_buffer = true;
                                                     for buffer_info in &binding.candidates {
                                                         push_buffer_observation(

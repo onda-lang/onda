@@ -305,13 +305,14 @@ fn proc_constructors_preserve_single_element_parameter_arrays() {
         };
         // Exercise both top-level construction and construction inside a proc.
         for (prefix, indent) in [("", ""), ("proc Main:\n", "  ")] {
-            compile(&format!("{proc}{prefix}{indent}init:\n{indent}  {constructor}\n{indent}sample:\n{indent}  out1 = {output}\n"));
+            let source = format!("{proc}{prefix}{indent}init:\n{indent}  {constructor}\n{indent}sample:\n{indent}  out1 = {output}\n");
+            compile(&source);
+            assert_analyze_error_contains(
+                &source.replace("values = [7]", "values = 7"),
+                "array argument requires an array literal or array symbol",
+            );
         }
     }
-    assert_analyze_error_contains(
-        &format!("{proc}init:\n  voice = Voice(values = 7)\nsample:\n  out1 = voice()\n"),
-        "array argument requires an array literal or array symbol",
-    );
 }
 
 #[test]

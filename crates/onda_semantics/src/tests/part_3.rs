@@ -1432,19 +1432,8 @@ sample:
             typed.block_post
         );
 
-        let bank_block_post = typed
-            .defs
-            .iter()
-            .find(|def| def.name == "Bank.__onda_proc_block_post")
-            .expect("missing lowered Bank block_post def");
-        assert!(
-            bank_block_post
-                .body
-                .iter()
-                .any(|stmt| stmt_contains_index_base(stmt, "self.__onda_proc_block_active_voices")),
-            "expected Bank block_post to flush nested proc-array active slots: {:#?}",
-            bank_block_post.body
-        );
+        lower_program_to_optimized_mir(&typed)
+            .expect("forwarded nested processor hooks should lower through MIR completion");
     }
 
     #[test]

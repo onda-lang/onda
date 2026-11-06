@@ -1,4 +1,5 @@
 use super::*;
+use processor_captures::processor_capture_roots;
 use retained_storage::{load_scalar_uses, retain_storage, ViewExtent};
 
 /// A compact entry prelude and its lexical bindings. Locals are private to
@@ -52,7 +53,51 @@ pub(super) fn retain_init_bindings(
             MirType::Slice { .. }
         )
     });
-    bindings.retain(|name, _| has_matching_root(name, |root| views.contains_key(root)));
+    // Index only captured roots, including their lexical ancestors. Ordinary
+    // data aliases have no capture dependencies and require no binding scans.
+    let mut dependencies = HashMap::<&str, Vec<String>>::new();
+    for (name, binding) in &bindings {
+        let captures = processor_capture_roots(binding);
+        if captures.is_empty() {
+            continue;
+        }
+        for end in std::iter::once(name.len()).chain(name.match_indices('.').map(|(i, _)| i)) {
+            dependencies
+                .entry(&name[..end])
+                .or_default()
+                .extend(captures.iter().cloned());
+        }
+    }
+    let mut retention_roots = views.keys().cloned().collect::<HashSet<_>>();
+    retention_roots.extend(
+        bindings
+            .iter()
+            .filter(|(_, binding)| {
+                matches!(
+                    binding,
+                    Binding::StructView {
+                        processor: Some(_),
+                        ..
+                    } | Binding::StructArrayParameter {
+                        processor: Some(_),
+                        ..
+                    } | Binding::ProcArrayParameter {
+                        processor: Some(_),
+                        ..
+                    }
+                )
+            })
+            .map(|(name, _)| name.clone()),
+    );
+    let mut pending = retention_roots.iter().cloned().collect::<Vec<_>>();
+    while let Some(root) = pending.pop() {
+        for capture in dependencies.get(root.as_str()).into_iter().flatten() {
+            if retention_roots.insert(capture.clone()) {
+                pending.push(capture.clone());
+            }
+        }
+    }
+    bindings.retain(|name, _| has_matching_root(name, |root| retention_roots.contains(root)));
     let mut retained = HashSet::new();
     for binding in bindings.values_mut() {
         visit_binding_locals(binding, &mut |local| {
@@ -143,6 +188,36 @@ pub(super) fn retain_init_bindings(
             _ => {}
         }
     }
+    // Some captured values are consumed directly from binding metadata, such
+    // as an owner's selected row or an environment tag. They need an entry
+    // load even when no reconstructed descriptor reads them in the prelude.
+    let mut captured_values = HashSet::new();
+    for binding in bindings.values_mut() {
+        visit_binding_locals(binding, &mut |local| {
+            if owned.contains_key(local)
+                && matches!(
+                    types[init.locals[local.index()].ty.index()],
+                    MirType::Scalar(_)
+                )
+            {
+                captured_values.insert(*local);
+            }
+        });
+    }
+    let mut captured_values = captured_values.into_iter().collect::<Vec<_>>();
+    captured_values.sort();
+    restore
+        .statements
+        .extend(captured_values.into_iter().map(|local| Statement {
+            kind: StatementKind::Assign {
+                destination: Place::local(local),
+                value: Rvalue::Load(Place {
+                    base: PlaceBase::State(owned[&local]),
+                    projections: Vec::new(),
+                }),
+            },
+            source: init.source,
+        }));
     // Compact before sharing the prelude: unrelated init temporaries must not
     // inflate every process, event, and runtime helper's local frame.
     let mut live = onda_mir::referenced_locals(&restore);
@@ -190,6 +265,7 @@ pub(super) fn view_extents(
             struct_name,
             length: StructArrayLength::Local(length),
             fields,
+            ..
         } = binding
         else {
             continue;
@@ -230,9 +306,32 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
             visit(local);
         }
     }
+    if let Some(processor) = binding.processor_view_mut() {
+        processor.visit_values(&mut |capture| value(capture, visit));
+    }
     match binding {
         Binding::Local(local, _) | Binding::Array(local, _, _) | Binding::Slice(local, _, _, _) => {
             visit(local)
+        }
+        Binding::BufferValue(local, _) => visit(local),
+        Binding::BufferCollectionValue { local, start, .. } => {
+            visit(local);
+            value(start, visit);
+        }
+        Binding::BufferAlias(
+            BufferBindingReference::Interface(onda_mir::BufferRef::ArrayElement {
+                selector, ..
+            }),
+            _,
+        )
+        | Binding::BufferAlias(
+            BufferBindingReference::Parameter(onda_mir::BufferParamRef::ArrayElement {
+                selector,
+                ..
+            }),
+            _,
+        ) => {
+            value(selector, visit);
         }
         Binding::SliceElementAlias { slice, index, .. } => {
             visit(slice);
@@ -268,7 +367,9 @@ fn visit_binding_locals(binding: &mut Binding, visit: &mut impl FnMut(&mut Local
             }
         }
         Binding::ProcArrayParameter { active, fields, .. } => {
-            visit(active);
+            if let Some(active) = active {
+                visit(active);
+            }
             for (_, local, _) in fields {
                 visit(local);
             }

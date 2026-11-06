@@ -289,6 +289,10 @@ fn target_read(target: &AssignTarget, loc: Span) -> Result<Expr, Vec<Diagnostic>
                             name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
                             expr: Expr::var(field.clone()),
                         },
+                        CallArg {
+                            name: Some(PROC_CACHED_FIELD_ARG.to_owned()),
+                            expr: Expr::bool(true),
+                        },
                     ],
                 )
             };

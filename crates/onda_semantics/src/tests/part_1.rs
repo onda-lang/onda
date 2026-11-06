@@ -720,56 +720,65 @@ sample:
 "#;
         let program = parse_program(src).expect("parse should succeed");
         let typed = analyze(program).expect("dynamic child array bind propagation should analyze");
-        let helper = typed
+        let parent_hook = typed
             .defs
             .iter()
-            .find(|def| {
-                def.name.starts_with("Parent.__arr_write_clamp_")
-                    && def.body.iter().any(|stmt| {
-                        stmt_contains_user_call_name(
-                            stmt,
-                            "Parent.__onda_proc_local__nested__children_0___update",
-                        )
-                    })
-                    && def.body.iter().any(|stmt| {
-                        stmt_contains_user_call_name(
-                            stmt,
-                            "Parent.__onda_proc_local__nested__children_1___update",
-                        )
-                    })
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "missing dynamic child array write helper with cascade hooks: {:?}",
-                    typed
-                        .defs
-                        .iter()
-                        .filter(|def| def.name.starts_with("Parent.__arr_write_clamp_"))
-                        .map(|def| (&def.name, &def.body))
-                        .collect::<Vec<_>>()
-                )
-            });
-
+            .find(|def| def.name == "Parent.__onda_proc_local__update")
+            .expect("parent bind hook should exist");
+        let [Stmt::For { var, body, .. }] = parent_hook.body.as_slice() else {
+            panic!(
+                "parent hook should retain one indexed loop: {:?}",
+                parent_hook.body
+            );
+        };
+        let [Stmt::Assign {
+            target: AssignTarget::Var(receiver),
+            expr: Expr::Index { base, index, .. },
+            ..
+        }, Stmt::Assign {
+            target: AssignTarget::Var(destination),
+            ..
+        }, Stmt::Expr {
+            expr: Expr::UserCall { name, args, .. },
+            ..
+        }] = body.as_slice()
+        else {
+            panic!("each iteration should select, write, then call one hook: {body:?}");
+        };
+        assert_eq!(base, "self.children");
+        assert!(matches!(index.as_ref(), Expr::Var { name, .. } if name == var));
+        assert_eq!(destination, &format!("{receiver}.gain"));
         assert!(
-            helper.body.iter().any(|stmt| {
-                stmt_contains_user_call_name(
-                    stmt,
-                    "Parent.__onda_proc_local__nested__children_0___update",
-                )
-            }),
-            "missing slot 0 cascade hook in {:?}",
-            helper.body
+            name.starts_with("Parent.__onda_proc_local__nested____onda_family_children__")
+                && name.ends_with("__update"),
+            "the selected child should use one shared family hook: {name}"
+        );
+        assert!(matches!(args.as_slice(), [
+                CallArg { expr: Expr::Var { name, .. }, .. },
+                CallArg { expr: Expr::Call { func: BuiltinFn::RangeClamp, args, .. }, .. },
+            ] if name == "self" && matches!(args.as_slice(), [
+                Expr::Cast { to: PrimitiveType::I32, expr, .. },
+                Expr::Int { value: 0, .. }, Expr::Int { value: 1, .. },
+            ] if matches!(expr.as_ref(), Expr::Var { name, .. } if name == var))));
+        let helpers = typed
+            .defs
+            .iter()
+            .filter(|def| def.name == *name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            helpers.len(),
+            1,
+            "all elements should share one cascade hook"
         );
         assert!(
-            helper.body.iter().any(|stmt| {
-                stmt_contains_user_call_name(
-                    stmt,
-                    "Parent.__onda_proc_local__nested__children_1___update",
-                )
-            }),
-            "missing slot 1 cascade hook in {:?}",
-            helper.body
-        );
+                helpers[0].body.iter().any(|statement| matches!(statement,
+                    Stmt::Assign { target: AssignTarget::Var(target), expr, .. }
+                        if target.ends_with(".cached")
+                            && expr.walk().any(|node| matches!(node, Expr::Var { name, .. } if name.ends_with(".gain")))
+                )),
+                "the shared cascade hook must update the selected child's cache: {:?}",
+                helpers[0].body
+            );
     }
 
     #[test]
@@ -1454,6 +1463,28 @@ sample:
         let program = parse_program(src).expect("parse should succeed");
         analyze(program)
             .expect("a nested child event should retain authority over its private params");
+    }
+
+    #[test]
+    fn proc_array_constructors_accept_private_params_and_events() {
+        let src = r#"
+proc Child:
+  params:
+    private value = 0.0
+  event set(value_v: f32):
+    value = value_v
+  sample:
+    out1 = value
+init:
+  children: Child[2]
+sample:
+  children[0].set(0.5)
+  for i in 0..2:
+    children[i].set(0.75)
+  out1 = children[1]()
+"#;
+        analyze(parse_program(src).expect("parse should succeed"))
+            .expect("array events should retain authority over their private params");
     }
 
     #[test]

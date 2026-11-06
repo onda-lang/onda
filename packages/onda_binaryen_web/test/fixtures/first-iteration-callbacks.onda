@@ -1,0 +1,38 @@
+proc Voice:
+  init:
+    phase = 0.0
+  delegate fired(value: f32)
+  sample:
+    phase += 0.125
+    fired(phase)
+    out1 = phase
+def forward(voices, index: i32):
+  return voices[index]()
+proc Bank:
+  init:
+    voices: Voice[128] = Voice()
+    rendered: f32[128]
+    observed = 0.0
+    previous = 0.0
+    last = 0.0
+    expected = 0.0
+  when voices[0].fired(value):
+    observed = value
+  sample:
+    for i in 0..128:
+      if i == 0:
+        previous = voices[0].out1
+        last = voices[127].out1
+      rendered[i] = forward(voices, i)
+    total = 0.0
+    for i in 0..128:
+      total += rendered[i]
+    expected += 0.125
+    out1 = total / 128.0 - expected
+    out2 = observed - expected
+    out3 = previous - (expected - 0.125)
+    out4 = last - previous
+init:
+  bank = Bank()
+sample:
+  out1, out2, out3, out4 = bank()

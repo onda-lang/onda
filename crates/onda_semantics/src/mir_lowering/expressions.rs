@@ -463,6 +463,11 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
+        if !self.bindings.contains_key(name) {
+            if let Some((owner, _)) = name.rsplit_once('.') {
+                self.prepare_scalar_processor_view(owner, block, location.clone())?;
+            }
+        }
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
                 Binding::PlaceAlias(place, ty) => Ok(self.emit_temp(block, ty, Rvalue::Load(place), location)),
@@ -516,7 +521,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("buffer parameter '{name}' used where a scalar value is required"),
                     location,
                 )),
-                Binding::BufferAlias(_, _) => Err(self.error(
+                Binding::BufferAlias(_, _) | Binding::BufferValue(_, _) | Binding::BufferCollectionValue { .. } => Err(self.error(
                     format!("buffer-reference alias '{name}' used where a scalar value is required"),
                     location,
                 )),

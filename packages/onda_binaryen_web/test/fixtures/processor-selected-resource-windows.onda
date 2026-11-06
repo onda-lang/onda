@@ -1,0 +1,29 @@
+proc Voice:
+  buffers:
+    source: f32 {2}
+  sample:
+    source[0][0] += 1.0
+    out1 = source[0][0] + source[1][0]
+proc Rack:
+  buffers:
+    source: f32 {4}
+  init:
+    voice = Voice(source = source[1:3])
+  sample:
+    out1 = 0.0
+def step(voice) -> f32:
+  return voice()
+def exercise(racks, first: bool) -> f32:
+  if first:
+    owner = racks[0]
+  else:
+    owner = racks[1]
+  return step(owner.voice)
+buffers:
+  clips: f32 {8}
+init:
+  racks: Rack[2] = [Rack(source = clips[0:4]), Rack(source = clips[4:8])]
+  first = true
+sample:
+  out1 = exercise(racks, first)
+  first = !first

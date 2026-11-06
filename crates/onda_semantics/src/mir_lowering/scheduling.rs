@@ -2,6 +2,14 @@ use super::*;
 use crate::def_semantics::call_types::StatementFlow;
 
 impl<'a> FunctionLowerer<'a> {
+    fn proc_state_binding_name(&self, name: &str) -> String {
+        if self.bindings.contains_key(name) {
+            name.to_owned()
+        } else {
+            format!("self.{name}")
+        }
+    }
+
     pub(super) fn lower_oversampled_proc_step(
         &mut self,
         meta: &ProcStepOversampleMeta,
@@ -27,6 +35,12 @@ impl<'a> FunctionLowerer<'a> {
                 location,
             ));
         }
+        let (reference_prologue, sample_body) = self
+            .function
+            .body
+            .split_at_checked(meta.reference_prologue_len)
+            .ok_or_else(|| self.error("invalid processor reference prologue", location.clone()))?;
+        self.lower_statements(reference_prologue, destination, ContinueMode::None)?;
         let expected_stages = factor.trailing_zeros() as usize;
         let factor_u32 = u32::try_from(factor).map_err(|_| {
             self.error(
@@ -89,7 +103,7 @@ impl<'a> FunctionLowerer<'a> {
                 );
                 let stages = stage_meta
                     .iter()
-                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location.clone()))
+                    .map(|stage| self.proc_sinc_stage_references(stage, ty, location.clone()))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.emit_interpolation_stages(
                     destination,
@@ -128,8 +142,8 @@ impl<'a> FunctionLowerer<'a> {
         output_names.sort();
         let mut outputs = Vec::with_capacity(output_names.len());
         for name in output_names {
-            let binding_name = format!("self.{name}");
-            let (place, ty) = self.reference_binding_place(&binding_name, location.clone())?;
+            let binding_name = self.proc_state_binding_name(&name);
+            let (reference, ty) = self.scalar_reference_binding(&binding_name, location.clone())?;
             let stage_meta = &meta.output_state_fields[&name].down_stages;
             let down_stages = if matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
                 if stage_meta.len() != expected_stages {
@@ -144,7 +158,7 @@ impl<'a> FunctionLowerer<'a> {
                 }
                 stage_meta
                     .iter()
-                    .map(|stage| self.proc_sinc_stage_places(stage, ty, location.clone()))
+                    .map(|stage| self.proc_sinc_stage_references(stage, ty, location.clone()))
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 if !stage_meta.is_empty() {
@@ -162,7 +176,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.new_array_local(Some(format!("$oversample.{name}.values")), ty, factor_u32);
             outputs.push(OversampledOutputRuntime {
                 ty,
-                destination: OversampledOutputDestination::Place(place),
+                destination: OversampledOutputDestination::State(reference),
                 values,
                 down_stages,
             });
@@ -200,13 +214,19 @@ impl<'a> FunctionLowerer<'a> {
             });
             self.assign_value(&mut substep_body, *parameter_local, value, location.clone());
         }
-        self.lower_statements(&self.function.body, &mut substep_body, ContinueMode::None)?;
+        let processor_scope = self.scoped_processors.len();
+        self.lower_statements(sample_body, &mut substep_body, ContinueMode::None)?;
+        self.finish_scoped_processors(processor_scope, &mut substep_body, location.clone())?;
         for output in &outputs {
-            let OversampledOutputDestination::Place(place) = &output.destination else {
+            let OversampledOutputDestination::State(reference) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
             };
-            let value =
-                self.load_place_value(&mut substep_body, output.ty, place, location.clone());
+            let value = self.load_scalar_reference(
+                &mut substep_body,
+                output.ty,
+                reference,
+                location.clone(),
+            );
             self.store_local_array_value(
                 &mut substep_body,
                 output.values,
@@ -226,10 +246,10 @@ impl<'a> FunctionLowerer<'a> {
         for output in &outputs {
             let decimated =
                 self.emit_decimation_stages(output, factor, destination, location.clone());
-            let OversampledOutputDestination::Place(place) = &output.destination else {
+            let OversampledOutputDestination::State(reference) = &output.destination else {
                 unreachable!("processor oversampling outputs target processor state")
             };
-            self.assign_place_value(destination, place.clone(), decimated, location.clone());
+            self.store_scalar_reference(destination, reference, decimated, location.clone());
         }
         Ok(())
     }
@@ -297,18 +317,32 @@ impl<'a> FunctionLowerer<'a> {
         );
     }
 
-    pub(super) fn reference_binding_place(
+    pub(super) fn scalar_reference_binding(
         &self,
         name: &str,
         location: SourceLoc,
-    ) -> Result<(Place, PrimitiveType), MirLoweringError> {
+    ) -> Result<(ScalarReference, PrimitiveType), MirLoweringError> {
         match self.bindings.get(name) {
             Some(Binding::ReferenceParameter(parameter, ty)) => Ok((
-                Place {
+                ScalarReference::Place(Place {
                     base: PlaceBase::Parameter(*parameter),
                     projections: Vec::new(),
-                },
+                }),
                 *ty,
+            )),
+            Some(Binding::PlaceAlias(place, ty)) => {
+                Ok((ScalarReference::Place(place.clone()), *ty))
+            }
+            Some(Binding::SliceElementAlias {
+                slice,
+                element,
+                index,
+            }) => Ok((
+                ScalarReference::SliceElement {
+                    slice: *slice,
+                    index: *index,
+                },
+                *element,
             )),
             _ => Err(self.error(
                 format!(
@@ -320,19 +354,19 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    pub(super) fn proc_sinc_stage_places(
+    pub(super) fn proc_sinc_stage_references(
         &self,
         stage: &ProcSincStageStateFields,
         expected_ty: PrimitiveType,
         location: SourceLoc,
-    ) -> Result<[Place; 8], MirLoweringError> {
+    ) -> Result<[ScalarReference; 8], MirLoweringError> {
         let names = [
             &stage.a0, &stage.a1, &stage.a2, &stage.a3, &stage.b0, &stage.b1, &stage.b2, &stage.b3,
         ];
-        let mut places = Vec::with_capacity(8);
+        let mut references = Vec::with_capacity(8);
         for name in names {
-            let binding_name = format!("self.{name}");
-            let (place, ty) = self.reference_binding_place(&binding_name, location.clone())?;
+            let binding_name = self.proc_state_binding_name(name);
+            let (reference, ty) = self.scalar_reference_binding(&binding_name, location.clone())?;
             if ty != expected_ty {
                 return Err(self.error(
                     format!(
@@ -344,9 +378,9 @@ impl<'a> FunctionLowerer<'a> {
                     location,
                 ));
             }
-            places.push(place);
+            references.push(reference);
         }
-        places.try_into().map_err(|_| {
+        references.try_into().map_err(|_| {
             self.error(
                 format!(
                     "processor step '{}' filter stage does not contain eight state taps",
@@ -413,6 +447,14 @@ impl<'a> FunctionLowerer<'a> {
             process_location.clone(),
         );
         let mut block_pre_body = MirBlock::default();
+        self.local_processor_lifetimes = false;
+        self.processor_boundary_hooks(
+            false,
+            sample,
+            block_post,
+            &mut block_pre_body,
+            process_location.clone(),
+        )?;
         let block_local_start = self.locals.len();
         let abortable = crate::task_lowering::contains_task_abort(block_pre);
         if abortable {
@@ -435,7 +477,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         let block_pre_index = body.statements.len();
         let extents = retained_bindings::view_extents(&self.bindings, self.aggregate_layouts)?;
-        let block_region = retained_storage::BlockRegion {
+        let mut block_region = retained_storage::BlockRegion {
             statement: block_pre_index,
             locals: block_local_start..self.locals.len(),
             extents,
@@ -483,6 +525,7 @@ impl<'a> FunctionLowerer<'a> {
             process_location.clone(),
         );
         self.current_frame = Some(Value::Local(logical_frame));
+        self.local_processor_lifetimes = true;
         let sample_result = if sample_oversample_factor.max(1) > 1 {
             self.lower_top_level_oversampled_sample(
                 sample,
@@ -496,6 +539,7 @@ impl<'a> FunctionLowerer<'a> {
             let result = self
                 .lower_sample_with_input_smoothing(sample, &mut sample_block)
                 .and_then(|_| {
+                    self.finish_scoped_processors(0, &mut sample_block, process_location.clone())?;
                     self.commit_audio_output_frame(
                         &mut sample_block,
                         Value::Local(logical_frame),
@@ -558,7 +602,16 @@ impl<'a> FunctionLowerer<'a> {
             process_location.clone(),
         );
         let mut block_post_body = MirBlock::default();
+        let post_scope = self.scoped_processors.len();
         self.lower_statements(block_post, &mut block_post_body, ContinueMode::None)?;
+        self.finish_scoped_processors(post_scope, &mut block_post_body, process_location.clone())?;
+        self.processor_boundary_hooks(
+            true,
+            sample,
+            block_post,
+            &mut block_post_body,
+            process_location.clone(),
+        )?;
         self.push_statement(
             &mut body,
             StatementKind::If {
@@ -568,6 +621,7 @@ impl<'a> FunctionLowerer<'a> {
             },
             process_location.clone(),
         );
+        block_region.statement += self.initialize_scoped_processors(&mut body);
         let source = self.source_span(process_location);
         let i32_type = intern_scalar_type(self.types, PrimitiveType::I32);
         Ok((
@@ -738,7 +792,10 @@ impl<'a> FunctionLowerer<'a> {
                     ty,
                     Value::Local(raw),
                     values,
-                    &stages.iter().map(mir_sinc_stage_places).collect::<Vec<_>>(),
+                    &stages
+                        .iter()
+                        .map(mir_sinc_stage_references)
+                        .collect::<Vec<_>>(),
                     factor,
                     location.clone(),
                 );
@@ -799,7 +856,7 @@ impl<'a> FunctionLowerer<'a> {
                     current,
                 },
                 values,
-                down_stages: stages.iter().map(mir_sinc_stage_places).collect(),
+                down_stages: stages.iter().map(mir_sinc_stage_references).collect(),
             });
         }
 
@@ -853,6 +910,7 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
 
+        let processor_scope = self.scoped_processors.len();
         if let Err(error) = self.lower_sample_with_input_smoothing(sample, &mut substep_body) {
             self.config = host_config;
             self.oversampled_inputs.clear();
@@ -863,6 +921,7 @@ impl<'a> FunctionLowerer<'a> {
             self.audio_output_array_caches.clear();
             return Err(error);
         }
+        self.finish_scoped_processors(processor_scope, &mut substep_body, location.clone())?;
         for output in &outputs {
             let OversampledOutputDestination::Interface { current, .. } = &output.destination
             else {

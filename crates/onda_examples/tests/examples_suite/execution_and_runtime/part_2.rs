@@ -3683,7 +3683,12 @@ fn proc_array_dynamic_index_runs_block_hooks_only_for_active_slot_per_block() {
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3710,7 +3715,12 @@ fn proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_active_slo
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3738,7 +3748,12 @@ fn nested_proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_act
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]

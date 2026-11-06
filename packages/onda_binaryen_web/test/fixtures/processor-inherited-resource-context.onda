@@ -1,0 +1,25 @@
+proc Voice:
+  buffers:
+    clip: f32
+  sample:
+    out1 = clip[0]
+def choose() -> i32:
+  return i32(SR / 48000.0) - 1
+proc Bank:
+  buffers:
+    clips: f32 {2}
+  init:
+    voice = Voice(clip = clips[choose()])
+  sample:
+    out1 = 0.0
+def step(voice) -> f32:
+  return voice()
+buffers:
+  clips: f32 {2}
+init:
+  bank = Bank(clips = clips)
+sample 2:
+  clips[0][0] = 2.0
+  clips[1][0] = 7.0
+  out1 = step(bank.voice)
+  out2 = clips[choose()][0]

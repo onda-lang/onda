@@ -1547,9 +1547,10 @@ Supported features:
   definitions are rejected without exhausting compiler resources.
 - Resolved aggregate layouts may contain at most 65,536 expanded shape nodes across a program.
   Fixed array lengths remain tensor dimensions and do not increase this count.
-- One aggregate may lower to at most 512 canonical primitive leaf tensors. Array extents remain
-  within a tensor and do not increase this count. A lowered function may contain at most 1,024
-  positional parameters and 32,768 locals, including compiler-generated aggregate components.
+- Aggregate width and lowered function parameter count have no separate fixed limit. Arrays of
+  processors retain their dimensions at every nesting level; increasing the number of instances
+  does not multiply the receiver's fields or function parameters. A lowered function may contain
+  at most 32,768 locals, including compiler-generated aggregate components.
 
 Field declarations have three forms:
 
@@ -2194,6 +2195,9 @@ Rules:
 
 - Runtime indices are clamped to the valid slot range.
 - Aliasing such as `v = voices[i]`, then `v(...)`, is supported.
+- An alias captures its selector once at creation; later changes to `i` do not select another voice.
+- Cached output reads such as `voices[i].out1` and `v.out1` do not step the processor.
+- Arrays nested inside processors retain the same capacity behavior as top-level arrays.
 - Proc-array buffer refs resolve through the current validated buffer tables.
 - A proc cannot directly instantiate its own type in its own state.
 
@@ -2201,6 +2205,20 @@ If the proc defines a `block` section, indexed proc-array calls use active-slot
 block-hook semantics: block-pre runs lazily on the first `()` call to that slot
 in the current block, and block-post runs once at block end for each called slot.
 Plain slot retrieval does not trigger hooks.
+
+Helper parameters can borrow processor arrays and selected instances, including nested children
+with owner `when` handlers and constructor-bound buffers. Forwarding and branch-selected aliases
+preserve the selected state, lifecycle hooks, resources, and callback owner. Several instances of
+the same processor type share the helper implementation; their state remains independent.
+Buffer rebinding remains visible through forwarded references.
+
+```onda
+def step_voice(voice) -> f32:
+  return voice()
+
+def step_bank(voices, index: i32) -> f32:
+  return step_voice(voices[index])
+```
 
 ## 11. Events, Printing, and Delegates
 

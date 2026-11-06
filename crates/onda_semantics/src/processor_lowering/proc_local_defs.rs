@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{proc_buffer_fn_param_type, ProcBufferSpec};
+use super::{proc_buffer_fn_param_type, TypedBufferDecl};
 use crate::push_semantic;
 use onda_frontend::ast::*;
 use onda_frontend::{DiagCtx, Diagnostic};
@@ -16,16 +16,16 @@ pub(super) fn nested_wrapper_local_def_name(
     nested_path: &str,
     local_name: &str,
 ) -> String {
-    let nested_component = nested_path
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
+    let nested_component = if nested_path.contains("[]") {
+        // A family must never share a helper with an authored scalar child
+        // whose underscores happen to match the sanitized array spelling.
+        format!(
+            "__onda_family_{}",
+            crate::internal_names::encode_internal_symbol_component(nested_path)
+        )
+    } else {
+        crate::internal_names::sanitize_runtime_symbol_component(nested_path)
+    };
     format!("{owner_proc}{PROC_LOCAL_DEF_FN_PREFIX}nested__{nested_component}__{local_name}")
 }
 
@@ -43,7 +43,7 @@ pub(super) fn unique_proc_local_defs(proc: &ProcessorDef) -> Vec<FunctionDef> {
 pub(super) fn pre_desugar_proc_local_hidden_def(
     owner_proc: &str,
     local_def: &FunctionDef,
-    captured_buffers: &[ProcBufferSpec],
+    captured_buffers: &[TypedBufferDecl],
 ) -> FunctionDef {
     FunctionDef {
         loc: Default::default(),
@@ -71,7 +71,7 @@ pub(super) fn pre_desugar_proc_local_hidden_def(
 pub(super) fn owner_proc_local_hidden_def(
     owner_proc: &str,
     local_def: &FunctionDef,
-    captured_buffers: &[ProcBufferSpec],
+    captured_buffers: &[TypedBufferDecl],
     body: Vec<Stmt>,
 ) -> FunctionDef {
     FunctionDef {
@@ -90,7 +90,7 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
     owner_proc: &str,
     nested_path: &str,
     local_def: &FunctionDef,
-    captured_buffers: &[ProcBufferSpec],
+    captured_buffers: &[TypedBufferDecl],
     body: Vec<Stmt>,
 ) -> FunctionDef {
     FunctionDef {
@@ -108,7 +108,7 @@ pub(super) fn nested_wrapper_proc_local_hidden_def(
 fn proc_local_hidden_def_params(
     owner_proc: &str,
     local_def: &FunctionDef,
-    captured_buffers: &[ProcBufferSpec],
+    captured_buffers: &[TypedBufferDecl],
 ) -> Vec<FnParamDecl> {
     let mut params =
         Vec::<FnParamDecl>::with_capacity(local_def.params.len() + captured_buffers.len() + 1);
@@ -160,7 +160,11 @@ pub(super) fn rewrite_nested_wrapper_local_calls(
     );
 }
 
-pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<Diagnostic>) {
+pub(crate) fn rewrite_proc_local_defs(
+    proc: &mut ProcessorDef,
+    proc_symbols: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
     if proc.local_defs.is_empty() {
         return;
     }
@@ -193,25 +197,31 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
         );
     }
 
-    let local_names = def_map.keys().cloned().collect::<HashSet<_>>();
-    let buffer_capturing_names = local_names
-        .iter()
-        .filter(|name| super::is_generated_proc_delegate_local(proc, name))
-        .cloned()
-        .collect::<HashSet<_>>();
+    let buffer_capturing_names = super::local_resources::captures(proc, proc_symbols);
     let captured_buffers = proc
         .buffers
         .iter()
         .map(|buffer| buffer.name.clone())
         .collect::<Vec<_>>();
+    let local_captures = def_map
+        .iter()
+        .map(|(name, def)| {
+            let parameters = if buffer_capturing_names.contains(name) {
+                captured_buffers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, buffer)| {
+                        super::local_resources::parameter_name(def, buffer, index)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (name.clone(), parameters)
+        })
+        .collect::<HashMap<_, _>>();
     let rewrite = |stmts: &mut Vec<Stmt>| {
-        rewrite_stmt_list_local_calls(
-            stmts,
-            &local_names,
-            &buffer_capturing_names,
-            &captured_buffers,
-            &proc.name,
-        )
+        rewrite_stmt_list_local_calls(stmts, &local_captures, &captured_buffers, &proc.name)
     };
     rewrite(&mut proc.init.body);
     rewrite(&mut proc.block_pre);
@@ -227,7 +237,12 @@ pub(crate) fn rewrite_proc_local_defs(proc: &mut ProcessorDef, errors: &mut Vec<
         rewrite(&mut task.body);
     }
     for def in &mut proc.local_defs {
-        rewrite(&mut def.body);
+        rewrite_stmt_list_local_calls(
+            &mut def.body,
+            &local_captures,
+            &local_captures[&def.name],
+            &proc.name,
+        );
     }
 }
 
@@ -410,298 +425,30 @@ fn collect_local_def_calls_in_expr(
 }
 
 fn rewrite_stmt_list_local_calls(
-    stmts: &mut Vec<Stmt>,
-    local_names: &HashSet<String>,
-    buffer_capturing_names: &HashSet<String>,
+    stmts: &mut [Stmt],
+    local_captures: &HashMap<String, Vec<String>>,
     captured_buffers: &[String],
     owner_proc: &str,
 ) {
     for stmt in stmts {
-        rewrite_stmt_local_calls(
-            stmt,
-            local_names,
-            buffer_capturing_names,
-            captured_buffers,
-            owner_proc,
-        );
-    }
-}
-
-fn rewrite_stmt_local_calls(
-    stmt: &mut Stmt,
-    local_names: &HashSet<String>,
-    buffer_capturing_names: &HashSet<String>,
-    captured_buffers: &[String],
-    owner_proc: &str,
-) {
-    match stmt {
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-        Stmt::Assign { target, expr, .. } => {
-            rewrite_target_local_calls(
-                target,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            rewrite_expr_local_calls(
-                expr,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_expr_local_calls(
-                expr,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                rewrite_expr_local_calls(
-                    value,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-        }
-        Stmt::If {
-            cond,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rewrite_expr_local_calls(
-                cond,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            rewrite_stmt_list_local_calls(
-                then_branch,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            rewrite_stmt_list_local_calls(
-                else_branch,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            rewrite_expr_local_calls(
-                start,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            rewrite_expr_local_calls(
-                end,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            if let Some(step) = step {
-                rewrite_expr_local_calls(
-                    step,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-            rewrite_stmt_list_local_calls(
-                body,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-        Stmt::While { cond, body, .. } => {
-            rewrite_expr_local_calls(
-                cond,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            rewrite_stmt_list_local_calls(
-                body,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-    }
-}
-
-fn rewrite_target_local_calls(
-    target: &mut AssignTarget,
-    local_names: &HashSet<String>,
-    buffer_capturing_names: &HashSet<String>,
-    captured_buffers: &[String],
-    owner_proc: &str,
-) {
-    target.visit_selectors_mut(|selector| {
-        rewrite_expr_local_calls(
-            selector,
-            local_names,
-            buffer_capturing_names,
-            captured_buffers,
-            owner_proc,
-        )
-    });
-}
-
-fn rewrite_expr_local_calls(
-    expr: &mut Expr,
-    local_names: &HashSet<String>,
-    buffer_capturing_names: &HashSet<String>,
-    captured_buffers: &[String],
-    owner_proc: &str,
-) {
-    match expr {
-        Expr::UserCall {
-            name,
-            type_args: _,
-            args,
-            ..
-        } => {
-            for arg in args.iter_mut() {
-                rewrite_expr_local_calls(
-                    &mut arg.expr,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-            if local_names.contains(name) {
-                if buffer_capturing_names.contains(name) {
-                    args.extend(captured_buffers.iter().map(|buffer| CallArg {
-                        name: None,
-                        expr: Expr::var(buffer.clone()),
-                    }));
+        stmt.visit_exprs_mut(|expr| {
+            expr.visit_mut(|node| {
+                if let Expr::UserCall { name, args, .. } = node {
+                    if let Some(parameters) = local_captures.get(name) {
+                        // Named captures leave authored defaults and evaluation order
+                        // to the ordinary call binder, even when buffers are shadowed.
+                        args.extend(parameters.iter().zip(captured_buffers).map(
+                            |(parameter, buffer)| CallArg {
+                                name: Some(parameter.clone()),
+                                expr: Expr::var(buffer.clone()),
+                            },
+                        ));
+                        *name = proc_local_hidden_def_name(owner_proc, name);
+                    }
                 }
-                *name = proc_local_hidden_def_name(owner_proc, name);
-            }
-        }
-        Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
-            for arg in args {
-                rewrite_expr_local_calls(
-                    arg,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-        }
-        Expr::Compare { lhs, rhs, .. }
-        | Expr::Logical { lhs, rhs, .. }
-        | Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr_local_calls(
-                lhs,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            rewrite_expr_local_calls(
-                rhs,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-        Expr::Cast { expr, .. } | Expr::UnaryNot { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            rewrite_expr_local_calls(
-                expr,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-        }
-        Expr::Index { index, .. } => rewrite_expr_local_calls(
-            index,
-            local_names,
-            buffer_capturing_names,
-            captured_buffers,
-            owner_proc,
-        ),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
-        } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                rewrite_expr_local_calls(
-                    coordinate,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-        }
-        Expr::ArrayCtor { spec, init, .. } => {
-            rewrite_expr_local_calls(
-                &mut spec.size,
-                local_names,
-                buffer_capturing_names,
-                captured_buffers,
-                owner_proc,
-            );
-            if let Some(init) = init {
-                for expr in init {
-                    rewrite_expr_local_calls(
-                        expr,
-                        local_names,
-                        buffer_capturing_names,
-                        captured_buffers,
-                        owner_proc,
-                    );
-                }
-            }
-        }
-        Expr::Tuple { values, .. } => {
-            for v in values {
-                rewrite_expr_local_calls(
-                    v,
-                    local_names,
-                    buffer_capturing_names,
-                    captured_buffers,
-                    owner_proc,
-                );
-            }
-        }
-        Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
+                true
+            });
+        });
     }
 }
 
@@ -1027,10 +774,17 @@ fn rewrite_nested_wrapper_local_calls_in_expr(
                         expr: Expr::var("self"),
                     },
                 );
-                args.extend(delegate_context_args.iter().map(|buffer| CallArg {
-                    name: None,
-                    expr: Expr::var(buffer.clone()),
-                }));
+                // Outer slices keep the caller's numbering; parameter names
+                // restart at zero in the callee's callback environment.
+                args.extend(
+                    delegate_context_args
+                        .iter()
+                        .enumerate()
+                        .map(|(index, buffer)| CallArg {
+                            name: Some(super::delegate_owner_buffer_param_name(index)),
+                            expr: Expr::var(buffer.clone()),
+                        }),
+                );
             }
         }
         Expr::Call { args, .. } | Expr::ArrayLiteral { values: args, .. } => {
@@ -1151,5 +905,37 @@ impl super::ProcLoweringShape {
             .retain(|name, _| visible(name));
         result.nested_fields.retain(|name, _| visible(name));
         result
+    }
+}
+
+#[cfg(test)]
+mod family_names {
+    #[test]
+    fn array_family_and_scalar_child_with_matching_underscores_compile_independently() {
+        let source = r#"
+proc Child:
+  params:
+    gain = 0.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain
+  sample:
+    out1 = cached
+proc Parent:
+  init:
+    voices: Child[2] = Child(gain = 2.0)
+    voices__ = Child(gain = 7.0)
+  sample:
+    out1 = voices[0]() + voices__()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()
+"#;
+        let program = onda_frontend::parse_program(source).expect("valid source");
+        let typed = crate::analyze(program).expect("distinct child identities");
+        crate::mir_lowering::lower_program_to_validated_mir(&typed)
+            .expect("distinct bound parameter hooks reach MIR");
     }
 }

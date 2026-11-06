@@ -167,7 +167,7 @@ impl EntryAdapter {
             let Some(first) = spec.slots.first() else {
                 continue;
             };
-            let array = spec.is_array;
+            let array = !spec.is_scalar;
             let binding = self.bind_interface(
                 "param",
                 index,

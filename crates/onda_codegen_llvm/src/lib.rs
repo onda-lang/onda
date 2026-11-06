@@ -2016,9 +2016,11 @@ proc Voice:
   init:
     phase = 0.0
 
-  sample:
-    phase = phase + 1.0
-    out1 = phase
+  block:
+    phase = phase + 0.25
+    sample:
+      phase = phase + 1.0
+      out1 = phase
 
 def step_at(voices, index: i32):
   return voices[index]()

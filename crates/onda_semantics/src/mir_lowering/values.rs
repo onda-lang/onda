@@ -194,6 +194,8 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
+                | Binding::BufferValue(_, _)
+                | Binding::BufferCollectionValue { .. }
                 | Binding::BufferParameterArray(_, _, _)
                 | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
@@ -248,6 +250,8 @@ impl<'a> FunctionLowerer<'a> {
                 | Binding::EventParameter(_, _)
                 | Binding::EventArrayParameter(_, _, _)
                 | Binding::BufferParameter(_, _)
+                | Binding::BufferValue(_, _)
+                | Binding::BufferCollectionValue { .. }
                 | Binding::BufferParameterArray(_, _, _)
                 | Binding::BufferAlias(_, _)
                 | Binding::Array(_, _, _)
@@ -537,6 +541,55 @@ impl<'a> FunctionLowerer<'a> {
         );
     }
 
+    pub(super) fn load_scalar_reference(
+        &mut self,
+        block: &mut MirBlock,
+        ty: PrimitiveType,
+        reference: &ScalarReference,
+        location: SourceLoc,
+    ) -> Value {
+        match reference {
+            ScalarReference::Place(place) => self.load_place_value(block, ty, place, location),
+            ScalarReference::SliceElement { slice, index } => {
+                self.emit_temp(
+                    block,
+                    ty,
+                    Rvalue::SliceLoad {
+                        slice: Value::Local(*slice),
+                        index: *index,
+                        bounds: BoundsMode::Unchecked,
+                    },
+                    location,
+                )
+                .value
+            }
+        }
+    }
+
+    pub(super) fn store_scalar_reference(
+        &mut self,
+        block: &mut MirBlock,
+        reference: &ScalarReference,
+        value: Value,
+        location: SourceLoc,
+    ) {
+        match reference {
+            ScalarReference::Place(place) => {
+                self.assign_place_value(block, place.clone(), value, location);
+            }
+            ScalarReference::SliceElement { slice, index } => self.push_statement(
+                block,
+                StatementKind::SliceStore {
+                    slice: Value::Local(*slice),
+                    index: *index,
+                    value,
+                    bounds: BoundsMode::Unchecked,
+                },
+                location,
+            ),
+        }
+    }
+
     pub(super) fn local_array_place(array: LocalId, index: Value) -> Place {
         Place {
             base: PlaceBase::Local(array),
@@ -608,12 +661,12 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         block: &mut MirBlock,
         ty: PrimitiveType,
-        taps: &[Place; 8],
+        taps: &[ScalarReference; 8],
         input: Value,
         location: SourceLoc,
     ) -> (Value, Value) {
         let old: [Value; 8] = std::array::from_fn(|index| {
-            self.load_place_value(block, ty, &taps[index], location.clone())
+            self.load_scalar_reference(block, ty, &taps[index], location.clone())
         });
         let a1 = self.emit_sinc_multiply_add(
             block,
@@ -669,12 +722,12 @@ impl<'a> FunctionLowerer<'a> {
             SINC_B3_COEFF,
             location.clone(),
         );
-        for (place, value) in taps
+        for (reference, value) in taps
             .iter()
             .cloned()
             .zip([input, a1, a2, a3, input, b1, b2, b3])
         {
-            self.assign_place_value(block, place, value, location.clone());
+            self.store_scalar_reference(block, &reference, value, location.clone());
         }
         (a3, b3)
     }
@@ -683,13 +736,13 @@ impl<'a> FunctionLowerer<'a> {
         &mut self,
         block: &mut MirBlock,
         ty: PrimitiveType,
-        taps: &[Place; 8],
+        taps: &[ScalarReference; 8],
         input1: Value,
         input2: Value,
         location: SourceLoc,
     ) -> Value {
         let old: [Value; 8] = std::array::from_fn(|index| {
-            self.load_place_value(block, ty, &taps[index], location.clone())
+            self.load_scalar_reference(block, ty, &taps[index], location.clone())
         });
         let a1 = self.emit_sinc_multiply_add(
             block,
@@ -745,12 +798,12 @@ impl<'a> FunctionLowerer<'a> {
             SINC_B3_COEFF,
             location.clone(),
         );
-        for (place, value) in taps
+        for (reference, value) in taps
             .iter()
             .cloned()
             .zip([input2, a1, a2, a3, input1, b1, b2, b3])
         {
-            self.assign_place_value(block, place, value, location.clone());
+            self.store_scalar_reference(block, &reference, value, location.clone());
         }
         let sum = self.emit_binary_value(block, ty, MirBinaryOp::Add, a3, b3, location.clone());
         self.emit_binary_value(
@@ -770,7 +823,7 @@ impl<'a> FunctionLowerer<'a> {
         ty: PrimitiveType,
         raw: Value,
         values: LocalId,
-        taps: &[Place; 8],
+        taps: &[ScalarReference; 8],
         stage_index: usize,
         index: Value,
         paired_index: Value,
@@ -794,7 +847,7 @@ impl<'a> FunctionLowerer<'a> {
         ty: PrimitiveType,
         raw: Value,
         values: LocalId,
-        stages: &[[Place; 8]],
+        stages: &[[ScalarReference; 8]],
         factor: usize,
         location: SourceLoc,
     ) {

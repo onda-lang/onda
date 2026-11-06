@@ -1,0 +1,67 @@
+proc Voice:
+  buffers:
+    source: f32
+  params:
+    tag: i32 = 0
+  delegate fired(value: i32)
+  sample:
+    source[0] += f32(tag)
+    fired(tag)
+    out1 = source[0]
+
+def step_voice(voice) -> f32:
+  return voice()
+
+def step_voices(voices, index: i32) -> f32:
+  return step_voice(voices[index])
+
+proc Bank:
+  buffers:
+    clips: f32 {2}
+    tally: f32
+  delegate changed(value: f32)
+  init:
+    voices: Voice[2] = [Voice(tag = 2, source = clips[0]), Voice(tag = 7, source = clips[1])]
+  when voices[0].fired(value):
+    tally[0] += f32(value)
+    changed(tally[0])
+  when voices[1].fired(value):
+    tally[0] += f32(value)
+    changed(tally[0])
+  sample:
+    out1 = 0.0
+
+def step_bank(bank: Bank, voice: i32) -> f32:
+  return step_voices(bank.voices, voice)
+
+def step_banks(banks, bank: i32, voice: i32) -> f32:
+  return step_bank(banks[bank], voice)
+
+proc Rack:
+  buffers:
+    clips: f32 {4}
+    tallies: f32 {2}
+    total: f32
+  init:
+    banks: Bank[2] = [Bank(clips = clips[0:2], tally = tallies[0]), Bank(clips = clips[2:4], tally = tallies[1])]
+    bank: i32 = 0
+    voice: i32 = 0
+  when banks[0].changed(value):
+    total[0] += value
+  when banks[1].changed(value):
+    total[0] += value * 10.0
+  sample:
+    step_banks(banks, bank, voice)
+    bank = 1 - bank
+    if bank == 0:
+      voice = 1 - voice
+    out1 = total[0]
+
+buffers:
+  clips: f32 {4}
+  tallies: f32 {2}
+  total: f32
+init:
+  rack = Rack(clips = clips, tallies = tallies, total = total)
+sample:
+  out1 = rack()

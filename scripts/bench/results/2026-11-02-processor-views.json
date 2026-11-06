@@ -1,0 +1,3333 @@
+{
+  "date": "2026-11-02",
+  "baseline_source": "21f642058427d18191013e7a4f31194151bc69e5",
+  "phase1_source": "85f9da5ee3de2252ab37bfb780a7732c27bb3f7f",
+  "worker_sha256": {
+    "original": "7b0fcb9de86468a9d24af9420b05e52fff4556780b33b7e4779fcb5f290d440d",
+    "phase1": "bb1be8438c86d78a3cb863eeac4ae914051243f3aba6826f06e06ba99d828886",
+    "complete": "9c7990e1e2fd8dce3bcc0e1464aaf17dd09c8dde9de962c49103b2bdf425dac4"
+  },
+  "machine": {
+    "platform": "Linux-7.3.1-1-cachyos-x86_64-with-glibc2.44",
+    "cpu": "Intel(R) Core(TM) i9-14900HX",
+    "affinity_cpu": 0
+  },
+  "settings": {
+    "sample_rate": 48000,
+    "block_size": 128,
+    "repetitions": 5,
+    "round_ms": 75.0,
+    "warmup_blocks": 32,
+    "validation_blocks": 4,
+    "latency_blocks": 128,
+    "bitwise": true,
+    "opt_level": 3,
+    "wasm_opt_level": 4
+  },
+  "sequential": true,
+  "runtime": {
+    "original": {
+      "native": [
+        {
+          "name": "nested-16",
+          "block_max_us": 1.715,
+          "block_p50_us": 1.6789999999999998,
+          "block_p99_us": 1.705,
+          "cold_max_us": 2.246,
+          "frontend_allocations": null,
+          "frontend_ms": 27.816909000000003,
+          "init_ms": 0.0009739999999999999,
+          "inputs": [],
+          "iterations": 65536,
+          "jit_allocations": null,
+          "jit_ms": 29.018257,
+          "mad_ns": 0.030628085136413574,
+          "max_ns": 13.036975145339966,
+          "min_ns": 12.94839346408844,
+          "ns_per_frame": 13.006347060203552,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.814677,
+            "mir_optimization_ms": 0.590122,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 3,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 2,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 0.891281,
+            "semantics_ms": 25.496496
+          },
+          "rounds_ns_per_frame": [
+            12.94839346408844,
+            12.958650708198547,
+            13.006347060203552,
+            13.019227981567383,
+            13.036975145339966
+          ],
+          "shape": {
+            "effect_function_visits": 23,
+            "functions": 23,
+            "mir_bytes": 67276,
+            "range_function_visits": 23,
+            "state_entries": 50
+          },
+          "state_bytes": 260,
+          "validation": "finite",
+          "source_fingerprint": "ef81c8a711b652550e61bb7be5dc160e099ce4f7f011d09e6b4d70e8de07af54",
+          "mir_sha256": "59367a244fd89430cf29bbb8219d49ea3e660ebabe700258e010c9790c6556ba",
+          "llvm_ir_sha256": "e9e26046369e35c67e712cd91cf6a54694dc2768152086a750b95b130700ef9d"
+        },
+        {
+          "name": "nested-64",
+          "block_max_us": 8.545,
+          "block_p50_us": 7.5329999999999995,
+          "block_p99_us": 7.6,
+          "cold_max_us": 8.666,
+          "frontend_allocations": null,
+          "frontend_ms": 76.99896700000001,
+          "init_ms": 0.000764,
+          "inputs": [],
+          "iterations": 16384,
+          "jit_allocations": null,
+          "jit_ms": 262.98367499999995,
+          "mad_ns": 0.09646034240722656,
+          "max_ns": 59.381526470184326,
+          "min_ns": 59.09487867355347,
+          "ns_per_frame": 59.28503465652466,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 5.190022,
+            "mir_optimization_ms": 2.5014909999999997,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 3,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 2,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 1.8389579999999999,
+            "semantics_ms": 67.419888
+          },
+          "rounds_ns_per_frame": [
+            59.381526470184326,
+            59.28503465652466,
+            59.37790250778198,
+            59.09487867355347,
+            59.18857431411743
+          ],
+          "shape": {
+            "effect_function_visits": 71,
+            "functions": 71,
+            "mir_bytes": 220033,
+            "range_function_visits": 71,
+            "state_entries": 194
+          },
+          "state_bytes": 1088,
+          "validation": "finite",
+          "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+          "mir_sha256": "93faaac19ce3a12431c1154d6b7f956c3a06e3a4d9bd80e9ce3e86dcab3565cc",
+          "llvm_ir_sha256": "9b634c3737dc94dd4626ccd0caf437f61d6d60a01af335ce174b41a773473385"
+        },
+        {
+          "name": "top-128",
+          "block_max_us": 6.028,
+          "block_p50_us": 4.8740000000000006,
+          "block_p99_us": 5.879,
+          "cold_max_us": 11.572000000000001,
+          "frontend_allocations": null,
+          "frontend_ms": 17.989646,
+          "init_ms": 0.000894,
+          "inputs": [],
+          "iterations": 16384,
+          "jit_allocations": null,
+          "jit_ms": 22.831882,
+          "mad_ns": 0.01640796661376953,
+          "max_ns": 38.129263401031494,
+          "min_ns": 38.04998302459717,
+          "ns_per_frame": 38.08881330490112,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.81222,
+            "mir_optimization_ms": 0.5557510000000001,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 259,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 0.580175,
+            "semantics_ms": 16.014598000000003
+          },
+          "rounds_ns_per_frame": [
+            38.08881330490112,
+            38.09407567977905,
+            38.04998302459717,
+            38.129263401031494,
+            38.07240533828735
+          ],
+          "shape": {
+            "effect_function_visits": 5,
+            "functions": 5,
+            "mir_bytes": 81527,
+            "range_function_visits": 5,
+            "state_entries": 4
+          },
+          "state_bytes": 2048,
+          "validation": "finite",
+          "source_fingerprint": "0d05592f69be44e9008e9e31ca1424d24bd058007ba155fb6bb23ed5476172ed",
+          "mir_sha256": "83e3613ff7f435380e451e3c4a01d43bbcefbf71112edcfff2e2e5ee13af8d6d",
+          "llvm_ir_sha256": "7f99b640740285142951f44cd8406c84666261bbb801f72bfd79dd56cef73f7d"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "nested-16",
+          "compile_ms": 498.601743,
+          "compile_includes_text": true,
+          "wasm_bytes": 2517,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.15418799999997646,
+          "init_ms": 0.036398999999960324,
+          "state_bytes": 272,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 16384,
+          "ns_per_frame": 49.63875198364253,
+          "rounds_ns_per_frame": [
+            49.474027633666985,
+            49.63875198364253,
+            49.65242481231691,
+            49.65504884719844,
+            49.60269308090207
+          ],
+          "mad_ns": 0.016296863555908203,
+          "min_ns": 49.474027633666985,
+          "max_ns": 49.65504884719844,
+          "block_p50_us": 6.5509999999449064,
+          "block_p99_us": 7.792000000108601,
+          "block_max_us": 8.033999999952357,
+          "cold_max_us": 60.69200000001729,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 3.816502185730977,
+          "source_fingerprint": "ef81c8a711b652550e61bb7be5dc160e099ce4f7f011d09e6b4d70e8de07af54",
+          "mir_sha256": "59367a244fd89430cf29bbb8219d49ea3e660ebabe700258e010c9790c6556ba",
+          "wasm_sha256": "6ffc79e3c49a169f8db08b002e544fca08c1415f99c053fc62b180f0af511d05"
+        },
+        {
+          "name": "nested-64",
+          "compile_ms": 889.980097,
+          "compile_includes_text": true,
+          "wasm_bytes": 7994,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.16195399999992333,
+          "init_ms": 0.04651400000011563,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 2048,
+          "ns_per_frame": 329.6790733337404,
+          "rounds_ns_per_frame": [
+            330.471920013428,
+            329.48350524902423,
+            330.6018600463864,
+            329.6790733337404,
+            328.5467987060543
+          ],
+          "mad_ns": 0.7928466796876137,
+          "min_ns": 328.5467987060543,
+          "max_ns": 330.6018600463864,
+          "block_p50_us": 41.99500000004264,
+          "block_p99_us": 44.73299999995106,
+          "block_max_us": 45.669000000089,
+          "cold_max_us": 1454.5520000001488,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.560915587614611,
+          "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+          "mir_sha256": "93faaac19ce3a12431c1154d6b7f956c3a06e3a4d9bd80e9ce3e86dcab3565cc",
+          "wasm_sha256": "4e4bfbd9a0a1c66d7700fe92ae06924c61317e4b9ad27038461a711aa099a777"
+        },
+        {
+          "name": "top-128",
+          "compile_ms": 506.31721300000004,
+          "compile_includes_text": true,
+          "wasm_bytes": 4576,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.16462200000000848,
+          "init_ms": 0.044423000000051616,
+          "state_bytes": 2048,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 135.67419433593744,
+          "rounds_ns_per_frame": [
+            136.00804519653323,
+            135.3414068222046,
+            135.67419433593744,
+            135.79335308074948,
+            135.4842672348024
+          ],
+          "mad_ns": 0.18992710113505495,
+          "min_ns": 135.3414068222046,
+          "max_ns": 136.00804519653323,
+          "block_p50_us": 17.32399999991685,
+          "block_p99_us": 19.29300000006151,
+          "block_max_us": 20.054999999956635,
+          "cold_max_us": 391.31800000006933,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 3.5620483434299963,
+          "source_fingerprint": "0d05592f69be44e9008e9e31ca1424d24bd058007ba155fb6bb23ed5476172ed",
+          "mir_sha256": "83e3613ff7f435380e451e3c4a01d43bbcefbf71112edcfff2e2e5ee13af8d6d",
+          "wasm_sha256": "c433376aeb394ee87136bd06bdd0a05ec0a996ac8e298138065bc2546927a144"
+        }
+      ]
+    },
+    "phase1": {
+      "native": [
+        {
+          "name": "nested-16",
+          "block_max_us": 2.368,
+          "block_p50_us": 0.46699999999999997,
+          "block_p99_us": 0.58,
+          "cold_max_us": 2.3539999999999996,
+          "frontend_allocations": null,
+          "frontend_ms": 24.667514,
+          "init_ms": 0.000764,
+          "inputs": [],
+          "iterations": 262144,
+          "jit_allocations": null,
+          "jit_ms": 12.804004,
+          "mad_ns": 0.01135629415512085,
+          "max_ns": 3.413394421339035,
+          "min_ns": 3.3757791817188263,
+          "ns_per_frame": 3.402038127183914,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.386385,
+            "mir_optimization_ms": 0.449721,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 1.240683,
+            "semantics_ms": 22.575463
+          },
+          "rounds_ns_per_frame": [
+            3.386020988225937,
+            3.3757791817188263,
+            3.402038127183914,
+            3.413394421339035,
+            3.413033574819565
+          ],
+          "shape": {
+            "effect_function_visits": 8,
+            "functions": 8,
+            "mir_bytes": 31353,
+            "range_function_visits": 9,
+            "state_entries": 5
+          },
+          "state_bytes": 260,
+          "validation": "finite",
+          "source_fingerprint": "ef81c8a711b652550e61bb7be5dc160e099ce4f7f011d09e6b4d70e8de07af54",
+          "mir_sha256": "dab87760414c7e34678998f9456ed156f3e360cb579f43fde548e56761532de3",
+          "llvm_ir_sha256": "cc7cb9703a315ef5027b796b49e5a59d402a5970fd7ea79aeeab5e1867b99c60"
+        },
+        {
+          "name": "nested-64",
+          "block_max_us": 2.856,
+          "block_p50_us": 1.801,
+          "block_p99_us": 1.831,
+          "cold_max_us": 3.693,
+          "frontend_allocations": null,
+          "frontend_ms": 21.196993,
+          "init_ms": 0.0007999999999999999,
+          "inputs": [],
+          "iterations": 65536,
+          "jit_allocations": null,
+          "jit_ms": 14.310297,
+          "mad_ns": 0.0018836259841918945,
+          "max_ns": 13.59058666229248,
+          "min_ns": 13.331070899963379,
+          "ns_per_frame": 13.33295452594757,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.372978,
+            "mir_optimization_ms": 0.438925,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 0.634439,
+            "semantics_ms": 19.736493
+          },
+          "rounds_ns_per_frame": [
+            13.332578897476196,
+            13.331070899963379,
+            13.59058666229248,
+            13.549327611923218,
+            13.33295452594757
+          ],
+          "shape": {
+            "effect_function_visits": 8,
+            "functions": 8,
+            "mir_bytes": 31353,
+            "range_function_visits": 9,
+            "state_entries": 5
+          },
+          "state_bytes": 1088,
+          "validation": "finite",
+          "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+          "mir_sha256": "10c1cec1572d613b80631cb7fd16d0bfea412fa26ac633c4e924fae5f2c938ab",
+          "llvm_ir_sha256": "3ec496303b94898f084fd0db1f29a95f59a6318d6b66edbb282036b326764656"
+        },
+        {
+          "name": "nested-128",
+          "block_max_us": 9.89,
+          "block_p50_us": 4.898000000000001,
+          "block_p99_us": 5.396,
+          "cold_max_us": 12.415000000000001,
+          "frontend_allocations": null,
+          "frontend_ms": 17.941622000000002,
+          "init_ms": 0.000875,
+          "inputs": [],
+          "iterations": 16384,
+          "jit_allocations": null,
+          "jit_ms": 12.683823,
+          "mad_ns": 0.28264856338500977,
+          "max_ns": 40.269973278045654,
+          "min_ns": 39.1206259727478,
+          "ns_per_frame": 39.987324714660645,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.39137,
+            "mir_optimization_ms": 0.44159499999999996,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 0.5799839999999999,
+            "semantics_ms": 16.515565
+          },
+          "rounds_ns_per_frame": [
+            39.1206259727478,
+            40.269973278045654,
+            40.03614044189453,
+            39.44525384902954,
+            39.987324714660645
+          ],
+          "shape": {
+            "effect_function_visits": 8,
+            "functions": 8,
+            "mir_bytes": 31377,
+            "range_function_visits": 9,
+            "state_entries": 5
+          },
+          "state_bytes": 2112,
+          "validation": "finite",
+          "source_fingerprint": "cc327c4a007d8ae8097c45ece7d6b42ff672b4deb54821f230a925ab319f9abb",
+          "mir_sha256": "44b5fa0d21ca627fb5dff9692bc82ef3f202c581333c46605ec6e2b5d008be3d",
+          "llvm_ir_sha256": "4a565e3c67bf28a7322954c1be865462e6684e22ad820acbacabce0c03dc57d1"
+        },
+        {
+          "name": "nested-1024",
+          "block_max_us": 66.757,
+          "block_p50_us": 58.915,
+          "block_p99_us": 65.696,
+          "cold_max_us": 76.302,
+          "frontend_allocations": null,
+          "frontend_ms": 29.178625,
+          "init_ms": 0.001105,
+          "inputs": [],
+          "iterations": 2048,
+          "jit_allocations": null,
+          "jit_ms": 10.999783,
+          "mad_ns": 0.3404273986816406,
+          "max_ns": 472.24242782592773,
+          "min_ns": 464.21696853637695,
+          "ns_per_frame": 465.1557083129883,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.357655,
+            "mir_optimization_ms": 0.427306,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 1.728479,
+            "semantics_ms": 26.647221
+          },
+          "rounds_ns_per_frame": [
+            472.24242782592773,
+            465.4846534729004,
+            465.1557083129883,
+            464.21696853637695,
+            464.81528091430664
+          ],
+          "shape": {
+            "effect_function_visits": 8,
+            "functions": 8,
+            "mir_bytes": 31413,
+            "range_function_visits": 9,
+            "state_entries": 5
+          },
+          "state_bytes": 16448,
+          "validation": "finite",
+          "source_fingerprint": "203239de5644e3664dabdb81c83aaf669c9e43018faf0a4af3dba589a7ad2e78",
+          "mir_sha256": "de4f0a66278797a18a1392163534266d2f8ce165e74742cb4a36679cbf57f56e",
+          "llvm_ir_sha256": "07c52157e92d0c572c7859d7d127e58e0dfe4f20b882c5a3d932122e6e0d7f07"
+        },
+        {
+          "name": "top-128",
+          "block_max_us": 4.957,
+          "block_p50_us": 4.872999999999999,
+          "block_p99_us": 4.919,
+          "cold_max_us": 7.285,
+          "frontend_allocations": null,
+          "frontend_ms": 21.033584,
+          "init_ms": 0.0010559999999999999,
+          "inputs": [],
+          "iterations": 16384,
+          "jit_allocations": null,
+          "jit_ms": 24.12706,
+          "mad_ns": 0.0734410285949707,
+          "max_ns": 38.60430097579956,
+          "min_ns": 38.258081912994385,
+          "ns_per_frame": 38.331522941589355,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.8000740000000001,
+            "mir_optimization_ms": 0.581531,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 259,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 1.045617,
+            "semantics_ms": 18.572941
+          },
+          "rounds_ns_per_frame": [
+            38.469882011413574,
+            38.331522941589355,
+            38.29961156845093,
+            38.258081912994385,
+            38.60430097579956
+          ],
+          "shape": {
+            "effect_function_visits": 5,
+            "functions": 5,
+            "mir_bytes": 81527,
+            "range_function_visits": 5,
+            "state_entries": 4
+          },
+          "state_bytes": 2048,
+          "validation": "finite",
+          "source_fingerprint": "0d05592f69be44e9008e9e31ca1424d24bd058007ba155fb6bb23ed5476172ed",
+          "mir_sha256": "83e3613ff7f435380e451e3c4a01d43bbcefbf71112edcfff2e2e5ee13af8d6d",
+          "llvm_ir_sha256": "7f99b640740285142951f44cd8406c84666261bbb801f72bfd79dd56cef73f7d"
+        },
+        {
+          "name": "random-history-16",
+          "block_max_us": 0.19999999999999998,
+          "block_p50_us": 0.187,
+          "block_p99_us": 0.19899999999999998,
+          "cold_max_us": 0.78,
+          "frontend_allocations": null,
+          "frontend_ms": 24.943097,
+          "init_ms": 0.000685,
+          "inputs": [],
+          "iterations": 524288,
+          "jit_allocations": null,
+          "jit_ms": 10.133898,
+          "mad_ns": 0.003471076488494873,
+          "max_ns": 1.4179427176713943,
+          "min_ns": 1.3998619318008423,
+          "ns_per_frame": 1.4144716411828995,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.388423,
+            "mir_optimization_ms": 0.476411,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 9,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 3.384547,
+            "semantics_ms": 20.675902999999998
+          },
+          "rounds_ns_per_frame": [
+            1.3998619318008423,
+            1.4027028679847717,
+            1.4164140224456787,
+            1.4179427176713943,
+            1.4144716411828995
+          ],
+          "shape": {
+            "effect_function_visits": 8,
+            "functions": 8,
+            "mir_bytes": 34823,
+            "range_function_visits": 9,
+            "state_entries": 5
+          },
+          "state_bytes": 448,
+          "validation": "finite",
+          "source_fingerprint": "a8584bbc4298ac33a386990360d9b3def9fc376d3f59c8039dd23b1bf3899c6b",
+          "mir_sha256": "99587b25bf00c3dea6242cc777ff5de591d153d3cd45334fa4484d75935b559a",
+          "llvm_ir_sha256": "a987f95c329dc9d61249385ad323cc7d1be5bf44416f5b35e3f578e054ee3d9d"
+        },
+        {
+          "name": "random-history-1024",
+          "block_max_us": 0.205,
+          "block_p50_us": 0.192,
+          "block_p99_us": 0.204,
+          "cold_max_us": 0.621,
+          "frontend_allocations": null,
+          "frontend_ms": 27.25919,
+          "init_ms": 0.001809,
+          "inputs": [],
+          "iterations": 524288,
+          "jit_allocations": null,
+          "jit_ms": 12.16849,
+          "mad_ns": 0.0015595704317092896,
+          "max_ns": 1.4022976011037827,
+          "min_ns": 1.396731287240982,
+          "ns_per_frame": 1.3982908576726913,
+          "outputs": [
+            "f32"
+          ],
+          "phases": {
+            "mir_lowering_ms": 0.39956200000000003,
+            "mir_optimization_ms": 0.521373,
+            "mir_passes": {
+              "distributed_loops": 0,
+              "eliminated_bounds_checks": 9,
+              "eliminated_common_subexpressions": 0,
+              "iterations": 3,
+              "removed_functions": 0,
+              "removed_parameters": 0
+            },
+            "parse_load_ms": 1.657249,
+            "semantics_ms": 24.665538
+          },
+          "rounds_ns_per_frame": [
+            1.4014770686626434,
+            1.396731287240982,
+            1.4022976011037827,
+            1.3982908576726913,
+            1.3978217393159866
+          ],
+          "shape": {
+            "effect_function_visits": 8,
+            "functions": 8,
+            "mir_bytes": 34879,
+            "range_function_visits": 9,
+            "state_entries": 5
+          },
+          "state_bytes": 24640,
+          "validation": "finite",
+          "source_fingerprint": "a7b79f1b4a0a9b39e511f0ab0c42c7fb604352d2522e503b6b485be3522c8acb",
+          "mir_sha256": "5545a793fb5fa8917811af7e8cac7d264d591686a2c34f1a4204f5d06e6a2c96",
+          "llvm_ir_sha256": "e9a663c363cbbc8ae09121ac52b1ecb5597a830a94e620cc7bea9d7862f3d640"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "nested-16",
+          "compile_ms": 489.07951900000006,
+          "compile_includes_text": true,
+          "wasm_bytes": 1212,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 7.213196000000039,
+          "init_ms": 0.0367909999999938,
+          "state_bytes": 272,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 65536,
+          "ns_per_frame": 17.587556362152103,
+          "rounds_ns_per_frame": [
+            17.645267009735107,
+            17.587556362152103,
+            17.527520775794976,
+            17.775732398033128,
+            17.500778079032916
+          ],
+          "mad_ns": 0.06003558635712736,
+          "min_ns": 17.500778079032916,
+          "max_ns": 17.775732398033128,
+          "block_p50_us": 2.3469999998724234,
+          "block_p99_us": 5.47099999994316,
+          "block_max_us": 7.215999999971245,
+          "cold_max_us": 37.527999999952044,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.169711715344723,
+          "source_fingerprint": "ef81c8a711b652550e61bb7be5dc160e099ce4f7f011d09e6b4d70e8de07af54",
+          "mir_sha256": "dab87760414c7e34678998f9456ed156f3e360cb579f43fde548e56761532de3",
+          "wasm_sha256": "5847d162f178c32bf34b03a321f4d769cce63c7db0825858a7d1d4e89170a571"
+        },
+        {
+          "name": "nested-64",
+          "compile_ms": 475.138639,
+          "compile_includes_text": true,
+          "wasm_bytes": 1217,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 7.111041999999998,
+          "init_ms": 0.029365999999981796,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 73.76758480072019,
+          "rounds_ns_per_frame": [
+            74.74218845367426,
+            73.95133209228514,
+            73.4153318405151,
+            73.76758480072019,
+            73.72033882141102
+          ],
+          "mad_ns": 0.18374729156495562,
+          "min_ns": 73.4153318405151,
+          "max_ns": 74.74218845367426,
+          "block_p50_us": 9.397999999919193,
+          "block_p99_us": 10.277999999971144,
+          "block_max_us": 10.884000000032756,
+          "cold_max_us": 57.04800000000887,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.532726047865789,
+          "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+          "mir_sha256": "10c1cec1572d613b80631cb7fd16d0bfea412fa26ac633c4e924fae5f2c938ab",
+          "wasm_sha256": "281a3b708154cfcafa38423bf08cd735a5e775395b1b79e935d22c168b00a937"
+        },
+        {
+          "name": "nested-128",
+          "compile_ms": 464.99723600000004,
+          "compile_includes_text": true,
+          "wasm_bytes": 1225,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 4.024929000000043,
+          "init_ms": 0.02770799999996143,
+          "state_bytes": 2064,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 4096,
+          "ns_per_frame": 147.54139328002935,
+          "rounds_ns_per_frame": [
+            148.1929149627684,
+            147.54139328002935,
+            148.62300491333002,
+            147.14728927612327,
+            146.89945411682123
+          ],
+          "mad_ns": 0.6419391632081215,
+          "min_ns": 146.89945411682123,
+          "max_ns": 148.62300491333002,
+          "block_p50_us": 18.43800000006013,
+          "block_p99_us": 20.966000000044005,
+          "block_max_us": 23.721999999906984,
+          "cold_max_us": 406.16800000009334,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 3.6897040332867257,
+          "source_fingerprint": "cc327c4a007d8ae8097c45ece7d6b42ff672b4deb54821f230a925ab319f9abb",
+          "mir_sha256": "44b5fa0d21ca627fb5dff9692bc82ef3f202c581333c46605ec6e2b5d008be3d",
+          "wasm_sha256": "55af08a07018e8b71076a4a98e7e985bac067b76e1e153877631dde7b1238cc1"
+        },
+        {
+          "name": "nested-1024",
+          "compile_ms": 474.25587299999995,
+          "compile_includes_text": true,
+          "wasm_bytes": 1231,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 3.7445169999999735,
+          "init_ms": 0.03159200000004603,
+          "state_bytes": 16400,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 512,
+          "ns_per_frame": 1193.1640319824237,
+          "rounds_ns_per_frame": [
+            1204.0162048339853,
+            1194.5787048339846,
+            1192.305053710938,
+            1188.7294769287114,
+            1193.1640319824237
+          ],
+          "mad_ns": 1.4146728515609084,
+          "min_ns": 1188.7294769287114,
+          "max_ns": 1204.0162048339853,
+          "block_p50_us": 153.85199999991528,
+          "block_p99_us": 161.90300000016578,
+          "block_max_us": 162.12399999994886,
+          "cold_max_us": 1524.2540000000417,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.565085219118889,
+          "source_fingerprint": "203239de5644e3664dabdb81c83aaf669c9e43018faf0a4af3dba589a7ad2e78",
+          "mir_sha256": "de4f0a66278797a18a1392163534266d2f8ce165e74742cb4a36679cbf57f56e",
+          "wasm_sha256": "c4d8cfc4eb0198323daa8d31a0d0c38639e38ed45683f40327bfb27a2d20969e"
+        },
+        {
+          "name": "top-128",
+          "compile_ms": 538.375126,
+          "compile_includes_text": true,
+          "wasm_bytes": 4576,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.17341400000009344,
+          "init_ms": 0.05550400000004174,
+          "state_bytes": 2048,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 4096,
+          "ns_per_frame": 147.2474117279049,
+          "rounds_ns_per_frame": [
+            147.11845397949236,
+            148.45682334899894,
+            148.8857688903807,
+            147.2474117279049,
+            146.92482948303228
+          ],
+          "mad_ns": 0.32258224487262055,
+          "min_ns": 146.92482948303228,
+          "max_ns": 148.8857688903807,
+          "block_p50_us": 18.73199999999997,
+          "block_p99_us": 21.09399999994821,
+          "block_max_us": 21.537000000080297,
+          "cold_max_us": 422.89400000004207,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 3.8414182486901085,
+          "source_fingerprint": "0d05592f69be44e9008e9e31ca1424d24bd058007ba155fb6bb23ed5476172ed",
+          "mir_sha256": "83e3613ff7f435380e451e3c4a01d43bbcefbf71112edcfff2e2e5ee13af8d6d",
+          "wasm_sha256": "c433376aeb394ee87136bd06bdd0a05ec0a996ac8e298138065bc2546927a144"
+        },
+        {
+          "name": "random-history-16",
+          "compile_ms": 491.164234,
+          "compile_includes_text": true,
+          "wasm_bytes": 1074,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 6.170064000000025,
+          "init_ms": 0.033154999999965185,
+          "state_bytes": 400,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 262144,
+          "ns_per_frame": 3.0479108989238752,
+          "rounds_ns_per_frame": [
+            2.9820228517055503,
+            3.0479108989238752,
+            3.0544056296348563,
+            3.030066072940823,
+            3.110600352287288
+          ],
+          "mad_ns": 0.01784482598305237,
+          "min_ns": 2.9820228517055503,
+          "max_ns": 3.110600352287288,
+          "block_p50_us": 0.4650000000765431,
+          "block_p99_us": 3.317000000151893,
+          "block_max_us": 3.553999999894586,
+          "cold_max_us": 32.094000000029155,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.1548052362329138,
+          "source_fingerprint": "a8584bbc4298ac33a386990360d9b3def9fc376d3f59c8039dd23b1bf3899c6b",
+          "mir_sha256": "99587b25bf00c3dea6242cc777ff5de591d153d3cd45334fa4484d75935b559a",
+          "wasm_sha256": "6ac8c4777538b3a90f6cb340855f5619e6d0613f3cade6491e20d72c805e3d91"
+        },
+        {
+          "name": "random-history-1024",
+          "compile_ms": 482.413222,
+          "compile_includes_text": true,
+          "wasm_bytes": 1086,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 7.107175999999981,
+          "init_ms": 0.037759999999934735,
+          "state_bytes": 24592,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 262144,
+          "ns_per_frame": 3.0081482231616996,
+          "rounds_ns_per_frame": [
+            3.0081482231616996,
+            3.0815955996513344,
+            3.0695188343524955,
+            2.9666905105113983,
+            2.9599240422248814
+          ],
+          "mad_ns": 0.04822418093681824,
+          "min_ns": 2.9599240422248814,
+          "max_ns": 3.0815955996513344,
+          "block_p50_us": 0.45599999998557905,
+          "block_p99_us": 2.7549999999791908,
+          "block_max_us": 2.975000000105865,
+          "cold_max_us": 31.77000000005137,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.1513036480610674,
+          "source_fingerprint": "a7b79f1b4a0a9b39e511f0ab0c42c7fb604352d2522e503b6b485be3522c8acb",
+          "mir_sha256": "5545a793fb5fa8917811af7e8cac7d264d591686a2c34f1a4204f5d06e6a2c96",
+          "wasm_sha256": "fd97aae5e8cf1f8af989f1635489ad71070b5dbe88287b71e751a31af5c1b275"
+        }
+      ]
+    },
+    "complete": {
+      "native": [
+        {
+          "name": "nested-16",
+          "frontend_ms": 19.535453,
+          "phases": {
+            "parse_load_ms": 0.641787,
+            "semantics_ms": 17.941252000000002,
+            "mir_lowering_ms": 0.477651,
+            "mir_optimization_ms": 0.44459000000000004,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 2,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 12.155904,
+          "init_ms": 0.000917,
+          "shape": {
+            "effect_function_visits": 8,
+            "range_function_visits": 9,
+            "functions": 8,
+            "state_entries": 5,
+            "mir_bytes": 31353
+          },
+          "state_bytes": 260,
+          "iterations": 262144,
+          "ns_per_frame": 3.2216934859752655,
+          "rounds_ns_per_frame": [
+            3.2216934859752655,
+            3.223640948534012,
+            3.213871955871582,
+            3.226905018091202,
+            3.216735452413559
+          ],
+          "mad_ns": 0.004958033561706543,
+          "min_ns": 3.213871955871582,
+          "max_ns": 3.226905018091202,
+          "block_p50_us": 0.426,
+          "block_p99_us": 0.437,
+          "block_max_us": 1.565,
+          "cold_max_us": 1.9120000000000001,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "ef81c8a711b652550e61bb7be5dc160e099ce4f7f011d09e6b4d70e8de07af54",
+          "mir_sha256": "dab87760414c7e34678998f9456ed156f3e360cb579f43fde548e56761532de3",
+          "llvm_ir_sha256": "cc7cb9703a315ef5027b796b49e5a59d402a5970fd7ea79aeeab5e1867b99c60"
+        },
+        {
+          "name": "nested-64",
+          "frontend_ms": 21.938748,
+          "phases": {
+            "parse_load_ms": 1.360295,
+            "semantics_ms": 19.623948,
+            "mir_lowering_ms": 0.470493,
+            "mir_optimization_ms": 0.435749,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 2,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 13.116785,
+          "init_ms": 0.0007,
+          "shape": {
+            "effect_function_visits": 8,
+            "range_function_visits": 9,
+            "functions": 8,
+            "state_entries": 5,
+            "mir_bytes": 31353
+          },
+          "state_bytes": 1088,
+          "iterations": 65536,
+          "ns_per_frame": 12.719664335250854,
+          "rounds_ns_per_frame": [
+            12.719664335250854,
+            12.70677125453949,
+            12.722445845603943,
+            12.714859008789062,
+            12.733960151672363
+          ],
+          "mad_ns": 0.004805326461791992,
+          "min_ns": 12.70677125453949,
+          "max_ns": 12.733960151672363,
+          "block_p50_us": 1.6440000000000001,
+          "block_p99_us": 1.654,
+          "block_max_us": 1.661,
+          "cold_max_us": 5.003,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+          "mir_sha256": "10c1cec1572d613b80631cb7fd16d0bfea412fa26ac633c4e924fae5f2c938ab",
+          "llvm_ir_sha256": "3ec496303b94898f084fd0db1f29a95f59a6318d6b66edbb282036b326764656"
+        },
+        {
+          "name": "nested-128",
+          "frontend_ms": 24.034387000000002,
+          "phases": {
+            "parse_load_ms": 1.943314,
+            "semantics_ms": 21.131293999999997,
+            "mir_lowering_ms": 0.474969,
+            "mir_optimization_ms": 0.426291,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 2,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 12.19898,
+          "init_ms": 0.001031,
+          "shape": {
+            "effect_function_visits": 8,
+            "range_function_visits": 9,
+            "functions": 8,
+            "state_entries": 5,
+            "mir_bytes": 31377
+          },
+          "state_bytes": 2112,
+          "iterations": 16384,
+          "ns_per_frame": 38.61830234527588,
+          "rounds_ns_per_frame": [
+            38.792948722839355,
+            38.65585994720459,
+            38.581106185913086,
+            38.61830234527588,
+            38.616944789886475
+          ],
+          "mad_ns": 0.03719615936279297,
+          "min_ns": 38.581106185913086,
+          "max_ns": 38.792948722839355,
+          "block_p50_us": 4.887,
+          "block_p99_us": 4.913,
+          "block_max_us": 4.94,
+          "cold_max_us": 11.473,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "cc327c4a007d8ae8097c45ece7d6b42ff672b4deb54821f230a925ab319f9abb",
+          "mir_sha256": "44b5fa0d21ca627fb5dff9692bc82ef3f202c581333c46605ec6e2b5d008be3d",
+          "llvm_ir_sha256": "4a565e3c67bf28a7322954c1be865462e6684e22ad820acbacabce0c03dc57d1"
+        },
+        {
+          "name": "nested-1024",
+          "frontend_ms": 22.71173,
+          "phases": {
+            "parse_load_ms": 1.624938,
+            "semantics_ms": 20.118741,
+            "mir_lowering_ms": 0.47722,
+            "mir_optimization_ms": 0.429332,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 2,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 8,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.156704999999999,
+          "init_ms": 0.001209,
+          "shape": {
+            "effect_function_visits": 8,
+            "range_function_visits": 9,
+            "functions": 8,
+            "state_entries": 5,
+            "mir_bytes": 31413
+          },
+          "state_bytes": 16448,
+          "iterations": 2048,
+          "ns_per_frame": 459.5159606933594,
+          "rounds_ns_per_frame": [
+            459.14661407470703,
+            460.9115104675293,
+            459.76430892944336,
+            459.4661560058594,
+            459.5159606933594
+          ],
+          "mad_ns": 0.24834823608398438,
+          "min_ns": 459.14661407470703,
+          "max_ns": 460.9115104675293,
+          "block_p50_us": 58.578,
+          "block_p99_us": 64.353,
+          "block_max_us": 68.68900000000001,
+          "cold_max_us": 76.008,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "203239de5644e3664dabdb81c83aaf669c9e43018faf0a4af3dba589a7ad2e78",
+          "mir_sha256": "de4f0a66278797a18a1392163534266d2f8ce165e74742cb4a36679cbf57f56e",
+          "llvm_ir_sha256": "07c52157e92d0c572c7859d7d127e58e0dfe4f20b882c5a3d932122e6e0d7f07"
+        },
+        {
+          "name": "top-128",
+          "frontend_ms": 18.454348999999997,
+          "phases": {
+            "parse_load_ms": 0.7604620000000001,
+            "semantics_ms": 17.159307,
+            "mir_lowering_ms": 0.316638,
+            "mir_optimization_ms": 0.189948,
+            "mir_passes": {
+              "iterations": 2,
+              "removed_functions": 0,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 5,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.861453,
+          "init_ms": 0.001014,
+          "shape": {
+            "effect_function_visits": 5,
+            "range_function_visits": 5,
+            "functions": 5,
+            "state_entries": 4,
+            "mir_bytes": 20201
+          },
+          "state_bytes": 2048,
+          "iterations": 16384,
+          "ns_per_frame": 38.57526254653931,
+          "rounds_ns_per_frame": [
+            39.816659450531006,
+            39.38984775543213,
+            38.57526254653931,
+            38.52900552749634,
+            38.51085090637207
+          ],
+          "mad_ns": 0.06441164016723633,
+          "min_ns": 38.51085090637207,
+          "max_ns": 39.816659450531006,
+          "block_p50_us": 4.877,
+          "block_p99_us": 6.093999999999999,
+          "block_max_us": 6.148000000000001,
+          "cold_max_us": 12.049,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "0d05592f69be44e9008e9e31ca1424d24bd058007ba155fb6bb23ed5476172ed",
+          "mir_sha256": "b1068db46a7800465cf39adf22b01fe8f27d48a50bd6b62f9136be6eca963b8a",
+          "llvm_ir_sha256": "f0e66b3dc3530d37db738d6001c88bc41e98e75bdf2d2b56c59e1edf114f48f2"
+        },
+        {
+          "name": "random-history-16",
+          "frontend_ms": 18.176182999999998,
+          "phases": {
+            "parse_load_ms": 0.693321,
+            "semantics_ms": 16.45101,
+            "mir_lowering_ms": 0.500423,
+            "mir_optimization_ms": 0.501883,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 2,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 9,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.40479,
+          "init_ms": 0.000888,
+          "shape": {
+            "effect_function_visits": 8,
+            "range_function_visits": 9,
+            "functions": 8,
+            "state_entries": 5,
+            "mir_bytes": 34823
+          },
+          "state_bytes": 448,
+          "iterations": 524288,
+          "ns_per_frame": 1.3602169156074524,
+          "rounds_ns_per_frame": [
+            1.3400424718856812,
+            1.3429531902074814,
+            1.3674831837415695,
+            1.4625957012176514,
+            1.3602169156074524
+          ],
+          "mad_ns": 0.01726372539997101,
+          "min_ns": 1.3400424718856812,
+          "max_ns": 1.4625957012176514,
+          "block_p50_us": 0.19,
+          "block_p99_us": 0.20900000000000002,
+          "block_max_us": 0.238,
+          "cold_max_us": 0.5379999999999999,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "a8584bbc4298ac33a386990360d9b3def9fc376d3f59c8039dd23b1bf3899c6b",
+          "mir_sha256": "99587b25bf00c3dea6242cc777ff5de591d153d3cd45334fa4484d75935b559a",
+          "llvm_ir_sha256": "a987f95c329dc9d61249385ad323cc7d1be5bf44416f5b35e3f578e054ee3d9d"
+        },
+        {
+          "name": "random-history-1024",
+          "frontend_ms": 18.824206999999998,
+          "phases": {
+            "parse_load_ms": 1.007328,
+            "semantics_ms": 16.782428,
+            "mir_lowering_ms": 0.519027,
+            "mir_optimization_ms": 0.48372699999999996,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 2,
+              "removed_parameters": 0,
+              "eliminated_bounds_checks": 9,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 12.533408,
+          "init_ms": 0.0020310000000000003,
+          "shape": {
+            "effect_function_visits": 8,
+            "range_function_visits": 9,
+            "functions": 8,
+            "state_entries": 5,
+            "mir_bytes": 34879
+          },
+          "state_bytes": 24640,
+          "iterations": 524288,
+          "ns_per_frame": 1.4546587318181992,
+          "rounds_ns_per_frame": [
+            1.5335835367441177,
+            1.4755177646875381,
+            1.4546587318181992,
+            1.439703956246376,
+            1.4423648416996002
+          ],
+          "mad_ns": 0.01495477557182312,
+          "min_ns": 1.439703956246376,
+          "max_ns": 1.5335835367441177,
+          "block_p50_us": 0.19399999999999998,
+          "block_p99_us": 0.207,
+          "block_max_us": 0.216,
+          "cold_max_us": 0.6010000000000001,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "a7b79f1b4a0a9b39e511f0ab0c42c7fb604352d2522e503b6b485be3522c8acb",
+          "mir_sha256": "5545a793fb5fa8917811af7e8cac7d264d591686a2c34f1a4204f5d06e6a2c96",
+          "llvm_ir_sha256": "e9a663c363cbbc8ae09121ac52b1ecb5597a830a94e620cc7bea9d7862f3d640"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "nested-16",
+          "compile_ms": 455.17135300000007,
+          "compile_includes_text": true,
+          "wasm_bytes": 1212,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.14712599999995746,
+          "init_ms": 0.024577000000022053,
+          "state_bytes": 272,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 65536,
+          "ns_per_frame": 16.257505893707272,
+          "rounds_ns_per_frame": [
+            16.257505893707272,
+            16.233431935310374,
+            16.260023236274705,
+            16.417589783668532,
+            16.160340189933766
+          ],
+          "mad_ns": 0.02407395839689741,
+          "min_ns": 16.160340189933766,
+          "max_ns": 16.417589783668532,
+          "block_p50_us": 2.161999999998443,
+          "block_p99_us": 4.156999999850086,
+          "block_max_us": 5.073000000038519,
+          "cold_max_us": 31.56100000001061,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.046260907339491,
+          "source_fingerprint": "ef81c8a711b652550e61bb7be5dc160e099ce4f7f011d09e6b4d70e8de07af54",
+          "mir_sha256": "dab87760414c7e34678998f9456ed156f3e360cb579f43fde548e56761532de3",
+          "wasm_sha256": "5847d162f178c32bf34b03a321f4d769cce63c7db0825858a7d1d4e89170a571"
+        },
+        {
+          "name": "nested-64",
+          "compile_ms": 445.95547000000005,
+          "compile_includes_text": true,
+          "wasm_bytes": 1217,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.15685099999996055,
+          "init_ms": 0.025243999999929656,
+          "state_bytes": 1040,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 16384,
+          "ns_per_frame": 69.23597478866576,
+          "rounds_ns_per_frame": [
+            69.19277191162108,
+            69.23597478866576,
+            69.22595024108885,
+            69.29066324234002,
+            69.2996096611023
+          ],
+          "mad_ns": 0.043202877044677734,
+          "min_ns": 69.19277191162108,
+          "max_ns": 69.2996096611023,
+          "block_p50_us": 8.832999999867752,
+          "block_p99_us": 9.927000000061525,
+          "block_max_us": 10.119999999915308,
+          "cold_max_us": 48.63799999998264,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 5.443223418780595,
+          "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+          "mir_sha256": "10c1cec1572d613b80631cb7fd16d0bfea412fa26ac633c4e924fae5f2c938ab",
+          "wasm_sha256": "281a3b708154cfcafa38423bf08cd735a5e775395b1b79e935d22c168b00a937"
+        },
+        {
+          "name": "nested-128",
+          "compile_ms": 448.31664299999994,
+          "compile_includes_text": true,
+          "wasm_bytes": 1225,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.3020000000000209,
+          "init_ms": 0.025382000000035987,
+          "state_bytes": 2064,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 138.36296939849848,
+          "rounds_ns_per_frame": [
+            138.4972743988036,
+            138.39374542236328,
+            138.0611124038697,
+            138.20296096801744,
+            138.36296939849848
+          ],
+          "mad_ns": 0.13430500030511894,
+          "min_ns": 138.0611124038697,
+          "max_ns": 138.4972743988036,
+          "block_p50_us": 17.728000000033717,
+          "block_p99_us": 19.33999999982916,
+          "block_max_us": 20.151000000169006,
+          "cold_max_us": 473.308999999972,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 3.5828340707841657,
+          "source_fingerprint": "cc327c4a007d8ae8097c45ece7d6b42ff672b4deb54821f230a925ab319f9abb",
+          "mir_sha256": "44b5fa0d21ca627fb5dff9692bc82ef3f202c581333c46605ec6e2b5d008be3d",
+          "wasm_sha256": "55af08a07018e8b71076a4a98e7e985bac067b76e1e153877631dde7b1238cc1"
+        },
+        {
+          "name": "nested-1024",
+          "compile_ms": 431.98695899999996,
+          "compile_includes_text": true,
+          "wasm_bytes": 1231,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 1.0587249999999813,
+          "init_ms": 0.03167400000006637,
+          "state_bytes": 16400,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 1024,
+          "ns_per_frame": 1138.7558975219733,
+          "rounds_ns_per_frame": [
+            1123.7862319946291,
+            1124.212944030761,
+            1138.7558975219733,
+            1143.663902282715,
+            1145.4455947875979
+          ],
+          "mad_ns": 6.689697265624545,
+          "min_ns": 1123.7862319946291,
+          "max_ns": 1145.4455947875979,
+          "block_p50_us": 147.8500000000622,
+          "block_p99_us": 152.02799999997296,
+          "block_max_us": 153.17800000002535,
+          "cold_max_us": 3871.592000000078,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.478163970199675,
+          "source_fingerprint": "203239de5644e3664dabdb81c83aaf669c9e43018faf0a4af3dba589a7ad2e78",
+          "mir_sha256": "de4f0a66278797a18a1392163534266d2f8ce165e74742cb4a36679cbf57f56e",
+          "wasm_sha256": "c4d8cfc4eb0198323daa8d31a0d0c38639e38ed45683f40327bfb27a2d20969e"
+        },
+        {
+          "name": "top-128",
+          "compile_ms": 445.7146610000001,
+          "compile_includes_text": true,
+          "wasm_bytes": 1056,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 7.072011999999972,
+          "init_ms": 0.026321000000052663,
+          "state_bytes": 2048,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 8192,
+          "ns_per_frame": 140.56591510772705,
+          "rounds_ns_per_frame": [
+            142.3928213119507,
+            141.3708839416504,
+            140.55889606475847,
+            140.56591510772705,
+            139.66101455688468
+          ],
+          "mad_ns": 0.8049688339233398,
+          "min_ns": 139.66101455688468,
+          "max_ns": 142.3928213119507,
+          "block_p50_us": 17.7129999999579,
+          "block_p99_us": 20.442000000002736,
+          "block_max_us": 21.778999999924054,
+          "cold_max_us": 382.87900000000263,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 3.6439392975780955,
+          "source_fingerprint": "0d05592f69be44e9008e9e31ca1424d24bd058007ba155fb6bb23ed5476172ed",
+          "mir_sha256": "b1068db46a7800465cf39adf22b01fe8f27d48a50bd6b62f9136be6eca963b8a",
+          "wasm_sha256": "6fe843d55132560a90bcce1d57478fca1fe16654fe8da63f0153e3f3883ff2b3"
+        },
+        {
+          "name": "random-history-16",
+          "compile_ms": 460.479593,
+          "compile_includes_text": true,
+          "wasm_bytes": 1074,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 6.613702000000103,
+          "init_ms": 0.02627699999993638,
+          "state_bytes": 400,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 262144,
+          "ns_per_frame": 3.041013300418858,
+          "rounds_ns_per_frame": [
+            2.9100368916988373,
+            3.1907741129398315,
+            3.1133098900318097,
+            3.041013300418858,
+            2.8954295814037323
+          ],
+          "mad_ns": 0.13097640872002092,
+          "min_ns": 2.8954295814037323,
+          "max_ns": 3.1907741129398315,
+          "block_p50_us": 0.4340000000411237,
+          "block_p99_us": 3.371000000015556,
+          "block_max_us": 3.709999999955471,
+          "cold_max_us": 28.371999999990294,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.2356826073294256,
+          "source_fingerprint": "a8584bbc4298ac33a386990360d9b3def9fc376d3f59c8039dd23b1bf3899c6b",
+          "mir_sha256": "99587b25bf00c3dea6242cc777ff5de591d153d3cd45334fa4484d75935b559a",
+          "wasm_sha256": "6ac8c4777538b3a90f6cb340855f5619e6d0613f3cade6491e20d72c805e3d91"
+        },
+        {
+          "name": "random-history-1024",
+          "compile_ms": 464.168982,
+          "compile_includes_text": true,
+          "wasm_bytes": 1086,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 5.99174000000005,
+          "init_ms": 0.03769599999998263,
+          "state_bytes": 24592,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 262144,
+          "ns_per_frame": 2.9336991012096387,
+          "rounds_ns_per_frame": [
+            2.9336991012096387,
+            2.9815107285976388,
+            2.9854497611522643,
+            2.86015558242798,
+            2.8599564135074607
+          ],
+          "mad_ns": 0.05175065994262562,
+          "min_ns": 2.8599564135074607,
+          "max_ns": 2.9854497611522643,
+          "block_p50_us": 0.4360000000360742,
+          "block_p99_us": 2.891000000090571,
+          "block_max_us": 3.181999999924301,
+          "cold_max_us": 28.546000000005733,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.0167610705108583,
+          "source_fingerprint": "a7b79f1b4a0a9b39e511f0ab0c42c7fb604352d2522e503b6b485be3522c8acb",
+          "mir_sha256": "5545a793fb5fa8917811af7e8cac7d264d591686a2c34f1a4204f5d06e6a2c96",
+          "wasm_sha256": "fd97aae5e8cf1f8af989f1635489ad71070b5dbe88287b71e751a31af5c1b275"
+        }
+      ]
+    },
+    "helper_callbacks": {
+      "native": [
+        {
+          "name": "helper-callback-16",
+          "frontend_ms": 27.495668000000002,
+          "phases": {
+            "parse_load_ms": 1.706171,
+            "semantics_ms": 24.192284,
+            "mir_lowering_ms": 0.894118,
+            "mir_optimization_ms": 0.6595359999999999,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 3,
+              "removed_parameters": 1,
+              "eliminated_bounds_checks": 10,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 10.571434,
+          "init_ms": 0.0008929999999999999,
+          "shape": {
+            "effect_function_visits": 13,
+            "range_function_visits": 25,
+            "functions": 13,
+            "state_entries": 8,
+            "mir_bytes": 51861
+          },
+          "state_bytes": 392,
+          "iterations": 65536,
+          "ns_per_frame": 11.195598840713501,
+          "rounds_ns_per_frame": [
+            11.195598840713501,
+            11.179473757743835,
+            11.18971598148346,
+            11.241430401802063,
+            11.222146391868591
+          ],
+          "mad_ns": 0.016125082969665527,
+          "min_ns": 11.179473757743835,
+          "max_ns": 11.241430401802063,
+          "block_p50_us": 1.452,
+          "block_p99_us": 1.467,
+          "block_max_us": 1.4729999999999999,
+          "cold_max_us": 1.6589999999999998,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "900855f3e373fd77f7d803bb65567788cff6b915adea984db725af97402adf6f",
+          "mir_sha256": "646cee0958fb8cefecbeb9c03b5a11f432a3c2c472267b5ca0e630347aa3e11b",
+          "llvm_ir_sha256": "397e37f19262b6a8435e9405764628f456de51a3a9145ef47d2cdbe28cbb8a05"
+        },
+        {
+          "name": "helper-callback-128",
+          "frontend_ms": 28.369638,
+          "phases": {
+            "parse_load_ms": 2.6975919999999998,
+            "semantics_ms": 24.045549,
+            "mir_lowering_ms": 0.878455,
+            "mir_optimization_ms": 0.6776869999999999,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 3,
+              "removed_parameters": 1,
+              "eliminated_bounds_checks": 10,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 11.430677,
+          "init_ms": 0.000833,
+          "shape": {
+            "effect_function_visits": 13,
+            "range_function_visits": 25,
+            "functions": 13,
+            "state_entries": 8,
+            "mir_bytes": 51905
+          },
+          "state_bytes": 3136,
+          "iterations": 8192,
+          "ns_per_frame": 120.84099006652833,
+          "rounds_ns_per_frame": [
+            120.18208026885986,
+            120.20094585418701,
+            120.84099006652833,
+            121.35693550109862,
+            121.5740213394165
+          ],
+          "mad_ns": 0.6400442123413228,
+          "min_ns": 120.18208026885986,
+          "max_ns": 121.5740213394165,
+          "block_p50_us": 15.729000000000001,
+          "block_p99_us": 16.898999999999997,
+          "block_max_us": 18.389,
+          "cold_max_us": 14.928,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "c67e86e5cc01e4d97cd31e6e02bc2ab480c0cc71ef37d0cc2ecc06a722818c93",
+          "mir_sha256": "c831414bde9edffdb296f82aa2120cf45be3d047b8360a232dc1a12aff2fc64e",
+          "llvm_ir_sha256": "2a8bc003979aa4a6a542a139a2d7499a32352166fb39520218af3d49b841adb3"
+        },
+        {
+          "name": "helper-callback-1024",
+          "frontend_ms": 24.603045,
+          "phases": {
+            "parse_load_ms": 0.7825300000000001,
+            "semantics_ms": 22.129172,
+            "mir_lowering_ms": 0.9131570000000001,
+            "mir_optimization_ms": 0.741477,
+            "mir_passes": {
+              "iterations": 3,
+              "removed_functions": 3,
+              "removed_parameters": 1,
+              "eliminated_bounds_checks": 10,
+              "eliminated_common_subexpressions": 0,
+              "distributed_loops": 0
+            }
+          },
+          "frontend_allocations": null,
+          "jit_allocations": null,
+          "jit_ms": 13.595528000000002,
+          "init_ms": 0.0012330000000000002,
+          "shape": {
+            "effect_function_visits": 13,
+            "range_function_visits": 25,
+            "functions": 13,
+            "state_entries": 8,
+            "mir_bytes": 51965
+          },
+          "state_bytes": 24640,
+          "iterations": 1024,
+          "ns_per_frame": 1024.0636749267578,
+          "rounds_ns_per_frame": [
+            1034.239273071289,
+            1029.0724258422852,
+            1023.7964859008789,
+            1024.0636749267578,
+            1012.4153366088866
+          ],
+          "mad_ns": 5.008750915527344,
+          "min_ns": 1012.4153366088866,
+          "max_ns": 1034.239273071289,
+          "block_p50_us": 128.971,
+          "block_p99_us": 135.99200000000002,
+          "block_max_us": 136.488,
+          "cold_max_us": 140.209,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "validation": "finite",
+          "source_fingerprint": "2d572696abd8f98af199331f4812911616c2cf1b87f97365bcc13e42951d80b6",
+          "mir_sha256": "db5bf42b4ed506032e8a9e3ee8b3ea26fcf17a3e5b30992402d3acbe2cd102b9",
+          "llvm_ir_sha256": "a775e8f69a367673bb68d5c977d9719c6d20485d8f9d93b09edad4bbe6a0f11e"
+        }
+      ],
+      "wasm": [
+        {
+          "name": "helper-callback-16",
+          "compile_ms": 494.69904199999996,
+          "compile_includes_text": true,
+          "wasm_bytes": 1525,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 2.9114510000000564,
+          "init_ms": 0.035286000000041895,
+          "state_bytes": 400,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 32768,
+          "ns_per_frame": 32.188006877899184,
+          "rounds_ns_per_frame": [
+            32.188006877899184,
+            32.283123731613145,
+            32.16128158569335,
+            31.745757341384934,
+            32.86576938629147
+          ],
+          "mad_ns": 0.09511685371396084,
+          "min_ns": 31.745757341384934,
+          "max_ns": 32.86576938629147,
+          "block_p50_us": 4.083000000036918,
+          "block_p99_us": 7.237999999915701,
+          "block_max_us": 7.279000000153246,
+          "cold_max_us": 40.467000000035114,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 2.8750589705702447,
+          "source_fingerprint": "900855f3e373fd77f7d803bb65567788cff6b915adea984db725af97402adf6f",
+          "mir_sha256": "646cee0958fb8cefecbeb9c03b5a11f432a3c2c472267b5ca0e630347aa3e11b",
+          "wasm_sha256": "6f7978d39f8be9939d12db7f8ba6ed9e8f70f1192147c01c3d417490a1274497"
+        },
+        {
+          "name": "helper-callback-128",
+          "compile_ms": 493.92748000000006,
+          "compile_includes_text": true,
+          "wasm_bytes": 1546,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 0.16585600000007616,
+          "init_ms": 0.029914999999959946,
+          "state_bytes": 3088,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 4096,
+          "ns_per_frame": 223.08847236633287,
+          "rounds_ns_per_frame": [
+            215.03450012207028,
+            223.08847236633287,
+            226.87537384033203,
+            226.17666244506822,
+            222.8468532562253
+          ],
+          "mad_ns": 3.0881900787353516,
+          "min_ns": 215.03450012207028,
+          "max_ns": 226.87537384033203,
+          "block_p50_us": 29.888000000028114,
+          "block_p99_us": 33.809999999903084,
+          "block_max_us": 37.83800000019255,
+          "cold_max_us": 416.9849999999542,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 1.846132444326323,
+          "source_fingerprint": "c67e86e5cc01e4d97cd31e6e02bc2ab480c0cc71ef37d0cc2ecc06a722818c93",
+          "mir_sha256": "c831414bde9edffdb296f82aa2120cf45be3d047b8360a232dc1a12aff2fc64e",
+          "wasm_sha256": "ad6bf4821d3c8a4440ca0f7174f04af05133199e98e82037a065a2ea75789f5a"
+        },
+        {
+          "name": "helper-callback-1024",
+          "compile_ms": 517.424167,
+          "compile_includes_text": true,
+          "wasm_bytes": 1556,
+          "node_version": "v26.12.1",
+          "v8_version": "14.6.202.34-node.40",
+          "instantiate_ms": 6.800227999999947,
+          "init_ms": 0.04157999999995354,
+          "state_bytes": 24592,
+          "inputs": [],
+          "outputs": [
+            "f32"
+          ],
+          "iterations": 512,
+          "ns_per_frame": 1709.378707885744,
+          "rounds_ns_per_frame": [
+            1701.5597381591797,
+            1779.9976654052728,
+            1758.4382019042964,
+            1709.378707885744,
+            1699.5797424316402
+          ],
+          "mad_ns": 9.798965454103836,
+          "min_ns": 1699.5797424316402,
+          "max_ns": 1779.9976654052728,
+          "block_p50_us": 215.1329999999234,
+          "block_p99_us": 224.12499999995816,
+          "block_max_us": 240.2510000001712,
+          "cold_max_us": 923.9499999999907,
+          "validation_samples": 1024,
+          "parity_max_abs": 0,
+          "validation": "native-parity",
+          "wasm_to_native": 1.6692113486087676,
+          "source_fingerprint": "2d572696abd8f98af199331f4812911616c2cf1b87f97365bcc13e42951d80b6",
+          "mir_sha256": "db5bf42b4ed506032e8a9e3ee8b3ea26fcf17a3e5b30992402d3acbe2cd102b9",
+          "wasm_sha256": "b4e1f81521aec771c7d707b8c21dddbed085c9e9d8fde80235efda241cdb7477"
+        }
+      ]
+    }
+  },
+  "compiler_original": [
+    {
+      "name": "passthrough",
+      "frontend": {
+        "before": {
+          "median_ms": 14.316721,
+          "mad_ms": 1.8013589999999997,
+          "samples_ms": [
+            16.11808,
+            14.316721,
+            12.894411999999999,
+            19.020318,
+            12.402096
+          ]
+        },
+        "after": {
+          "median_ms": 14.379698999999999,
+          "mad_ms": 0.6409519999999986,
+          "samples_ms": [
+            13.9205,
+            21.624669,
+            20.449182999999998,
+            13.738747,
+            14.379698999999999
+          ]
+        },
+        "change_percent": 0.43989122928356217
+      },
+      "jit": {
+        "before": {
+          "median_ms": 10.824781999999999,
+          "mad_ms": 0.11123000000000083,
+          "samples_ms": [
+            10.824781999999999,
+            10.880325999999998,
+            10.383784,
+            10.936012,
+            10.435788
+          ]
+        },
+        "after": {
+          "median_ms": 10.502566,
+          "mad_ms": 0.14520100000000014,
+          "samples_ms": [
+            10.502566,
+            10.831637,
+            10.351647999999999,
+            10.527887999999999,
+            10.357365
+          ]
+        },
+        "change_percent": -2.9766511695108466
+      },
+      "total": {
+        "before": {
+          "median_ms": 25.197046999999998,
+          "mad_ms": 1.9188509999999965,
+          "samples_ms": [
+            26.942861999999998,
+            25.197046999999998,
+            23.278196,
+            29.95633,
+            22.837884000000003
+          ]
+        },
+        "after": {
+          "median_ms": 24.737063999999997,
+          "mad_ms": 0.47042899999999577,
+          "samples_ms": [
+            24.423066,
+            32.456306,
+            30.800830999999995,
+            24.266635,
+            24.737063999999997
+          ]
+        },
+        "change_percent": -1.8255432868780286
+      }
+    },
+    {
+      "name": "osc-phasor",
+      "frontend": {
+        "before": {
+          "median_ms": 33.177546,
+          "mad_ms": 0.8702979999999982,
+          "samples_ms": [
+            36.752699,
+            33.177546,
+            28.266813,
+            32.924217,
+            34.047844
+          ]
+        },
+        "after": {
+          "median_ms": 37.250495,
+          "mad_ms": 0.6717009999999988,
+          "samples_ms": [
+            37.922196,
+            37.250495,
+            34.696631,
+            37.899346,
+            31.769470000000002
+          ]
+        },
+        "change_percent": 12.276221393830644
+      },
+      "jit": {
+        "before": {
+          "median_ms": 7.439156,
+          "mad_ms": 0.26059699999999975,
+          "samples_ms": [
+            7.8187299999999995,
+            7.339193,
+            7.178559,
+            7.439156,
+            8.121691
+          ]
+        },
+        "after": {
+          "median_ms": 7.519872,
+          "mad_ms": 0.05851000000000006,
+          "samples_ms": [
+            7.284042,
+            7.519872,
+            7.537337,
+            7.461362,
+            7.7118899999999995
+          ]
+        },
+        "change_percent": 1.0850155582165621
+      },
+      "total": {
+        "before": {
+          "median_ms": 40.516739,
+          "mad_ms": 1.652795999999995,
+          "samples_ms": [
+            44.571429,
+            40.516739,
+            35.445372,
+            40.363372999999996,
+            42.169534999999996
+          ]
+        },
+        "after": {
+          "median_ms": 44.770367,
+          "mad_ms": 0.5903410000000022,
+          "samples_ms": [
+            45.206238,
+            44.770367,
+            42.233968,
+            45.360708,
+            39.48136
+          ]
+        },
+        "change_percent": 10.498446086690238
+      }
+    },
+    {
+      "name": "filter-onepole",
+      "frontend": {
+        "before": {
+          "median_ms": 22.308024999999997,
+          "mad_ms": 0.35748299999999844,
+          "samples_ms": [
+            22.308024999999997,
+            23.350938000000003,
+            23.370226000000002,
+            22.299421,
+            21.950542
+          ]
+        },
+        "after": {
+          "median_ms": 22.4506,
+          "mad_ms": 0.2692779999999999,
+          "samples_ms": [
+            22.4506,
+            22.723485,
+            31.195887,
+            22.181322,
+            22.236288
+          ]
+        },
+        "change_percent": 0.6391197786447034
+      },
+      "jit": {
+        "before": {
+          "median_ms": 10.157229000000001,
+          "mad_ms": 0.03954599999999964,
+          "samples_ms": [
+            12.064423,
+            10.104853,
+            10.157229000000001,
+            10.117683000000001,
+            10.176876
+          ]
+        },
+        "after": {
+          "median_ms": 10.270837,
+          "mad_ms": 0.08394399999999891,
+          "samples_ms": [
+            10.186893000000001,
+            10.270837,
+            10.518493,
+            10.234468999999999,
+            10.401752
+          ]
+        },
+        "change_percent": 1.118494030212358
+      },
+      "total": {
+        "before": {
+          "median_ms": 33.455791000000005,
+          "mad_ms": 0.9166569999999936,
+          "samples_ms": [
+            34.372448,
+            33.455791000000005,
+            33.527455,
+            32.417104,
+            32.127418
+          ]
+        },
+        "after": {
+          "median_ms": 32.63804,
+          "mad_ms": 0.22224899999999792,
+          "samples_ms": [
+            32.637493000000006,
+            32.994322,
+            41.71438,
+            32.415791,
+            32.63804
+          ]
+        },
+        "change_percent": -2.4442733994841426
+      }
+    },
+    {
+      "name": "slice-fixed",
+      "frontend": {
+        "before": {
+          "median_ms": 18.790136,
+          "mad_ms": 1.765708,
+          "samples_ms": [
+            17.024428,
+            18.790136,
+            17.003654,
+            24.019098,
+            19.173845
+          ]
+        },
+        "after": {
+          "median_ms": 17.238339,
+          "mad_ms": 0.193836000000001,
+          "samples_ms": [
+            17.238339,
+            23.816239,
+            17.044503,
+            17.196328,
+            19.114376999999998
+          ]
+        },
+        "change_percent": -8.258572476537696
+      },
+      "jit": {
+        "before": {
+          "median_ms": 14.677448,
+          "mad_ms": 0.14367299999999972,
+          "samples_ms": [
+            14.677448,
+            14.533775,
+            14.138029,
+            14.811753000000001,
+            15.198707
+          ]
+        },
+        "after": {
+          "median_ms": 14.521066,
+          "mad_ms": 0.16781800000000047,
+          "samples_ms": [
+            14.688884,
+            17.707233,
+            14.521066,
+            14.350765999999998,
+            14.514228000000001
+          ]
+        },
+        "change_percent": -1.0654577008210153
+      },
+      "total": {
+        "before": {
+          "median_ms": 33.323911,
+          "mad_ms": 1.622035000000004,
+          "samples_ms": [
+            31.701876,
+            33.323911,
+            31.141683,
+            38.830851,
+            34.372552
+          ]
+        },
+        "after": {
+          "median_ms": 31.927222999999998,
+          "mad_ms": 0.3801289999999966,
+          "samples_ms": [
+            31.927222999999998,
+            41.523472,
+            31.565568999999996,
+            31.547094,
+            33.628605
+          ]
+        },
+        "change_percent": -4.191248740281428
+      }
+    },
+    {
+      "name": "state-window-array-f32",
+      "frontend": {
+        "before": {
+          "median_ms": 15.645672999999999,
+          "mad_ms": 1.7948959999999996,
+          "samples_ms": [
+            18.55484,
+            14.980608,
+            18.551365,
+            15.645672999999999,
+            13.850776999999999
+          ]
+        },
+        "after": {
+          "median_ms": 19.023215,
+          "mad_ms": 1.0467970000000015,
+          "samples_ms": [
+            20.070012000000002,
+            15.278388,
+            19.277836,
+            19.023215,
+            14.726989
+          ]
+        },
+        "change_percent": 21.587706709708176
+      },
+      "jit": {
+        "before": {
+          "median_ms": 12.672433,
+          "mad_ms": 0.16069000000000067,
+          "samples_ms": [
+            12.386622,
+            12.95153,
+            12.570319,
+            12.672433,
+            12.833123
+          ]
+        },
+        "after": {
+          "median_ms": 12.912268,
+          "mad_ms": 0.16418999999999961,
+          "samples_ms": [
+            12.678528,
+            13.076457999999999,
+            12.912268,
+            12.579253,
+            13.019332
+          ]
+        },
+        "change_percent": 1.8925726417334365
+      },
+      "total": {
+        "before": {
+          "median_ms": 28.318106,
+          "mad_ms": 1.634205999999999,
+          "samples_ms": [
+            30.941461999999998,
+            27.932138000000002,
+            31.121684000000002,
+            28.318106,
+            26.6839
+          ]
+        },
+        "after": {
+          "median_ms": 31.602468000000002,
+          "mad_ms": 1.1460720000000038,
+          "samples_ms": [
+            32.748540000000006,
+            28.354846,
+            32.190104,
+            31.602468000000002,
+            27.746321000000002
+          ]
+        },
+        "change_percent": 11.59809911015941
+      }
+    },
+    {
+      "name": "state-window-shared-array-f32",
+      "frontend": {
+        "before": {
+          "median_ms": 19.816119999999998,
+          "mad_ms": 0.30932200000000165,
+          "samples_ms": [
+            18.251817,
+            19.85959,
+            16.955111,
+            20.125442,
+            19.816119999999998
+          ]
+        },
+        "after": {
+          "median_ms": 20.631743,
+          "mad_ms": 1.710017999999998,
+          "samples_ms": [
+            18.921725000000002,
+            20.631743,
+            23.347277,
+            18.620563999999998,
+            22.212556000000003
+          ]
+        },
+        "change_percent": 4.1159571096662795
+      },
+      "jit": {
+        "before": {
+          "median_ms": 15.621583,
+          "mad_ms": 0.16038399999999875,
+          "samples_ms": [
+            21.736214,
+            15.461199,
+            15.634853000000001,
+            15.409243,
+            15.621583
+          ]
+        },
+        "after": {
+          "median_ms": 15.859096999999998,
+          "mad_ms": 0.04622799999999749,
+          "samples_ms": [
+            15.859096999999998,
+            15.860636000000001,
+            19.077721999999998,
+            15.658559999999998,
+            15.812869000000001
+          ]
+        },
+        "change_percent": 1.5204220980677752
+      },
+      "total": {
+        "before": {
+          "median_ms": 35.437703,
+          "mad_ms": 0.11691399999999419,
+          "samples_ms": [
+            39.988031,
+            35.320789000000005,
+            32.589964,
+            35.534684999999996,
+            35.437703
+          ]
+        },
+        "after": {
+          "median_ms": 36.492379,
+          "mad_ms": 1.711556999999999,
+          "samples_ms": [
+            34.780822,
+            36.492379,
+            42.424999,
+            34.279123999999996,
+            38.025425000000006
+          ]
+        },
+        "change_percent": 2.976140976180086
+      }
+    },
+    {
+      "name": "operator-reduction-f32",
+      "frontend": {
+        "before": {
+          "median_ms": 15.973182999999999,
+          "mad_ms": 0.7524659999999983,
+          "samples_ms": [
+            14.717427,
+            15.973182999999999,
+            16.725648999999997,
+            22.608465000000002,
+            15.353544
+          ]
+        },
+        "after": {
+          "median_ms": 14.739742,
+          "mad_ms": 0.23768699999999932,
+          "samples_ms": [
+            13.795518999999999,
+            15.107631,
+            14.502055,
+            14.739742,
+            14.951682000000002
+          ]
+        },
+        "change_percent": -7.7219487186742874
+      },
+      "jit": {
+        "before": {
+          "median_ms": 14.243804,
+          "mad_ms": 0.08339999999999925,
+          "samples_ms": [
+            14.603748,
+            14.016818,
+            14.327204,
+            14.224053,
+            14.243804
+          ]
+        },
+        "after": {
+          "median_ms": 14.463023,
+          "mad_ms": 0.2930949999999992,
+          "samples_ms": [
+            14.169928,
+            23.907432999999997,
+            14.463023,
+            14.798422,
+            14.293901
+          ]
+        },
+        "change_percent": 1.5390481362984154
+      },
+      "total": {
+        "before": {
+          "median_ms": 29.990001,
+          "mad_ms": 0.6688259999999993,
+          "samples_ms": [
+            29.321175,
+            29.990001,
+            31.052853,
+            36.832518,
+            29.597348
+          ]
+        },
+        "after": {
+          "median_ms": 29.245583000000003,
+          "mad_ms": 0.2925809999999984,
+          "samples_ms": [
+            27.965446999999998,
+            39.015063999999995,
+            28.965078,
+            29.538164000000002,
+            29.245583000000003
+          ]
+        },
+        "change_percent": -2.482220657478462
+      }
+    }
+  ],
+  "compiler_phase1": [
+    {
+      "name": "passthrough",
+      "frontend": {
+        "before": {
+          "median_ms": 17.857494000000003,
+          "mad_ms": 3.7756130000000034,
+          "samples_ms": [
+            13.650321,
+            14.081881,
+            22.869435,
+            18.091899,
+            17.857494000000003
+          ]
+        },
+        "after": {
+          "median_ms": 15.478798,
+          "mad_ms": 1.7016939999999998,
+          "samples_ms": [
+            20.543618,
+            14.31837,
+            15.478798,
+            19.489479,
+            13.777104
+          ]
+        },
+        "change_percent": -13.320435666953056
+      },
+      "jit": {
+        "before": {
+          "median_ms": 10.287818000000001,
+          "mad_ms": 0.14672200000000046,
+          "samples_ms": [
+            10.87347,
+            10.287818000000001,
+            10.61964,
+            10.240777,
+            10.141096000000001
+          ]
+        },
+        "after": {
+          "median_ms": 10.491283000000001,
+          "mad_ms": 0.10066999999999915,
+          "samples_ms": [
+            10.591953,
+            10.491283000000001,
+            10.916037999999999,
+            10.484679999999999,
+            10.333685000000001
+          ]
+        },
+        "change_percent": 1.9777274442452253
+      },
+      "total": {
+        "before": {
+          "median_ms": 27.998590000000004,
+          "mad_ms": 3.4747990000000044,
+          "samples_ms": [
+            24.523791,
+            24.369699,
+            33.489075,
+            28.332676,
+            27.998590000000004
+          ]
+        },
+        "after": {
+          "median_ms": 26.394835999999998,
+          "mad_ms": 2.2840469999999975,
+          "samples_ms": [
+            31.135571,
+            24.809653,
+            26.394835999999998,
+            29.974159,
+            24.110789
+          ]
+        },
+        "change_percent": -5.727981301915586
+      }
+    },
+    {
+      "name": "osc-phasor",
+      "frontend": {
+        "before": {
+          "median_ms": 34.963869,
+          "mad_ms": 1.2016129999999947,
+          "samples_ms": [
+            31.660204999999998,
+            36.382731,
+            34.034348,
+            36.165482,
+            34.963869
+          ]
+        },
+        "after": {
+          "median_ms": 38.700018,
+          "mad_ms": 1.1148960000000017,
+          "samples_ms": [
+            39.969474,
+            37.311932999999996,
+            38.94905,
+            38.700018,
+            37.585122
+          ]
+        },
+        "change_percent": 10.68574247317995
+      },
+      "jit": {
+        "before": {
+          "median_ms": 7.1593230000000005,
+          "mad_ms": 0.17951100000000064,
+          "samples_ms": [
+            7.689586,
+            7.389123,
+            7.064427,
+            6.979812,
+            7.1593230000000005
+          ]
+        },
+        "after": {
+          "median_ms": 7.450169000000001,
+          "mad_ms": 0.05275400000000108,
+          "samples_ms": [
+            7.859093,
+            7.450169000000001,
+            7.22977,
+            7.497842,
+            7.397415
+          ]
+        },
+        "change_percent": 4.062479091947657
+      },
+      "total": {
+        "before": {
+          "median_ms": 42.123192,
+          "mad_ms": 1.0244169999999997,
+          "samples_ms": [
+            39.349790999999996,
+            43.771854,
+            41.098775,
+            43.145294,
+            42.123192
+          ]
+        },
+        "after": {
+          "median_ms": 46.17882,
+          "mad_ms": 1.196283000000001,
+          "samples_ms": [
+            47.828567,
+            44.762102,
+            46.17882,
+            46.19786,
+            44.982537
+          ]
+        },
+        "change_percent": 9.62801679416887
+      }
+    },
+    {
+      "name": "filter-onepole",
+      "frontend": {
+        "before": {
+          "median_ms": 23.169706,
+          "mad_ms": 1.6463960000000029,
+          "samples_ms": [
+            25.341775000000002,
+            21.52331,
+            23.476199,
+            23.169706,
+            21.038892
+          ]
+        },
+        "after": {
+          "median_ms": 24.227379,
+          "mad_ms": 1.5100070000000017,
+          "samples_ms": [
+            28.111406,
+            24.227379,
+            22.799035,
+            25.737386,
+            22.233501999999998
+          ]
+        },
+        "change_percent": 4.564896075936398
+      },
+      "jit": {
+        "before": {
+          "median_ms": 10.209017000000001,
+          "mad_ms": 0.19023000000000145,
+          "samples_ms": [
+            10.698831,
+            10.018787,
+            10.093955999999999,
+            10.209017000000001,
+            10.496062
+          ]
+        },
+        "after": {
+          "median_ms": 10.246495,
+          "mad_ms": 0.07541999999999938,
+          "samples_ms": [
+            10.979076000000001,
+            10.246495,
+            10.227696,
+            16.183835000000002,
+            10.171075
+          ]
+        },
+        "change_percent": 0.3671068429017099
+      },
+      "total": {
+        "before": {
+          "median_ms": 33.378723,
+          "mad_ms": 1.8366260000000025,
+          "samples_ms": [
+            36.040606000000004,
+            31.542097,
+            33.570155,
+            33.378723,
+            31.534954
+          ]
+        },
+        "after": {
+          "median_ms": 34.473873999999995,
+          "mad_ms": 2.069296999999999,
+          "samples_ms": [
+            39.090482,
+            34.473873999999995,
+            33.026731,
+            41.921221,
+            32.404576999999996
+          ]
+        },
+        "change_percent": 3.280985315106255
+      }
+    },
+    {
+      "name": "slice-fixed",
+      "frontend": {
+        "before": {
+          "median_ms": 18.340118,
+          "mad_ms": 3.521542,
+          "samples_ms": [
+            18.340118,
+            22.068941000000002,
+            21.86166,
+            16.366136,
+            13.858693
+          ]
+        },
+        "after": {
+          "median_ms": 17.862848,
+          "mad_ms": 0.24815500000000057,
+          "samples_ms": [
+            17.789234,
+            20.498784999999998,
+            17.614693,
+            17.862848,
+            18.445402
+          ]
+        },
+        "change_percent": -2.602327858523057
+      },
+      "jit": {
+        "before": {
+          "median_ms": 15.128604000000001,
+          "mad_ms": 0.4540960000000016,
+          "samples_ms": [
+            15.18272,
+            16.482763000000002,
+            14.674508,
+            14.647797,
+            15.128604000000001
+          ]
+        },
+        "after": {
+          "median_ms": 14.913767,
+          "mad_ms": 0.3110999999999997,
+          "samples_ms": [
+            15.351201999999999,
+            14.478367,
+            14.997595,
+            14.602667,
+            14.913767
+          ]
+        },
+        "change_percent": -1.420071541300183
+      },
+      "total": {
+        "before": {
+          "median_ms": 33.522838,
+          "mad_ms": 3.0133300000000034,
+          "samples_ms": [
+            33.522838,
+            38.551704,
+            36.536168,
+            31.013933,
+            28.987297
+          ]
+        },
+        "after": {
+          "median_ms": 33.140436,
+          "mad_ms": 0.5281480000000016,
+          "samples_ms": [
+            33.140436,
+            34.977152,
+            32.612288,
+            32.465514999999996,
+            33.359169
+          ]
+        },
+        "change_percent": -1.1407208423105386
+      }
+    },
+    {
+      "name": "state-window-array-f32",
+      "frontend": {
+        "before": {
+          "median_ms": 18.56079,
+          "mad_ms": 1.2222650000000002,
+          "samples_ms": [
+            19.783055,
+            18.56079,
+            16.798163000000002,
+            13.257461,
+            18.821625
+          ]
+        },
+        "after": {
+          "median_ms": 19.350911,
+          "mad_ms": 0.7559900000000006,
+          "samples_ms": [
+            19.350911,
+            18.594921,
+            20.195081000000002,
+            19.930843,
+            16.930312999999998
+          ]
+        },
+        "change_percent": 4.256936261872468
+      },
+      "jit": {
+        "before": {
+          "median_ms": 12.842757,
+          "mad_ms": 0.2311160000000001,
+          "samples_ms": [
+            13.135756,
+            12.498125,
+            13.020413999999999,
+            12.842757,
+            12.611641
+          ]
+        },
+        "after": {
+          "median_ms": 12.688804999999999,
+          "mad_ms": 0.0410730000000008,
+          "samples_ms": [
+            13.010458000000002,
+            12.656057,
+            12.688804999999999,
+            12.480436,
+            12.729878
+          ]
+        },
+        "change_percent": -1.1987457210317243
+      },
+      "total": {
+        "before": {
+          "median_ms": 31.058915,
+          "mad_ms": 1.2403379999999977,
+          "samples_ms": [
+            32.918811000000005,
+            31.058915,
+            29.818577,
+            26.100217999999998,
+            31.433266000000003
+          ]
+        },
+        "after": {
+          "median_ms": 32.361369,
+          "mad_ms": 0.5225170000000006,
+          "samples_ms": [
+            32.361369,
+            31.250978,
+            32.883886000000004,
+            32.411279,
+            29.660190999999998
+          ]
+        },
+        "change_percent": 4.193494846809709
+      }
+    },
+    {
+      "name": "state-window-shared-array-f32",
+      "frontend": {
+        "before": {
+          "median_ms": 19.446859,
+          "mad_ms": 1.1674849999999992,
+          "samples_ms": [
+            19.446859,
+            20.614344,
+            19.058508,
+            26.532047,
+            15.768303000000001
+          ]
+        },
+        "after": {
+          "median_ms": 19.527664,
+          "mad_ms": 0.21404000000000067,
+          "samples_ms": [
+            20.799087,
+            19.313624,
+            19.527664,
+            21.293930999999997,
+            19.354253
+          ]
+        },
+        "change_percent": 0.4155169737179776
+      },
+      "jit": {
+        "before": {
+          "median_ms": 15.688575,
+          "mad_ms": 0.35704400000000014,
+          "samples_ms": [
+            16.561474999999998,
+            15.688575,
+            15.565845999999999,
+            19.651555000000002,
+            15.331531
+          ]
+        },
+        "after": {
+          "median_ms": 16.039785000000002,
+          "mad_ms": 0.3372040000000016,
+          "samples_ms": [
+            16.039785000000002,
+            15.485747,
+            16.736397,
+            15.702581,
+            16.103890999999997
+          ]
+        },
+        "change_percent": 2.2386354401212394
+      },
+      "total": {
+        "before": {
+          "median_ms": 36.008334,
+          "mad_ms": 1.383980000000001,
+          "samples_ms": [
+            36.008334,
+            36.302919,
+            34.624354,
+            46.183602,
+            31.099834
+          ]
+        },
+        "after": {
+          "median_ms": 36.264061,
+          "mad_ms": 0.7324509999999975,
+          "samples_ms": [
+            36.838872,
+            34.799371,
+            36.264061,
+            36.996511999999996,
+            35.458144
+          ]
+        },
+        "change_percent": 0.710188369170317
+      }
+    },
+    {
+      "name": "operator-reduction-f32",
+      "frontend": {
+        "before": {
+          "median_ms": 16.725772,
+          "mad_ms": 1.0421660000000017,
+          "samples_ms": [
+            16.725772,
+            17.767938,
+            16.944095,
+            12.749757,
+            13.254706
+          ]
+        },
+        "after": {
+          "median_ms": 16.035409,
+          "mad_ms": 1.0553320000000017,
+          "samples_ms": [
+            18.29237,
+            18.182685,
+            16.035409,
+            15.237181000000001,
+            14.980077
+          ]
+        },
+        "change_percent": -4.127540420854703
+      },
+      "jit": {
+        "before": {
+          "median_ms": 14.240106,
+          "mad_ms": 0.274261000000001,
+          "samples_ms": [
+            14.65916,
+            13.965845,
+            14.216972,
+            14.240106,
+            14.611393
+          ]
+        },
+        "after": {
+          "median_ms": 14.538585,
+          "mad_ms": 0.3259760000000007,
+          "samples_ms": [
+            14.829084,
+            15.522045,
+            14.212608999999999,
+            14.538585,
+            14.143434
+          ]
+        },
+        "change_percent": 2.09604479067782
+      },
+      "total": {
+        "before": {
+          "median_ms": 31.161067000000003,
+          "mad_ms": 0.5727159999999998,
+          "samples_ms": [
+            31.384932,
+            31.733783000000003,
+            31.161067000000003,
+            26.989863,
+            27.866099
+          ]
+        },
+        "after": {
+          "median_ms": 30.248018000000002,
+          "mad_ms": 1.1245070000000013,
+          "samples_ms": [
+            33.121454,
+            33.70473,
+            30.248018000000002,
+            29.775766,
+            29.123511
+          ]
+        },
+        "change_percent": -2.930095429659074
+      }
+    }
+  ],
+  "allocations": {
+    "phase1": [
+      {
+        "name": "nested-64",
+        "block_max_us": 3.446,
+        "block_p50_us": 1.641,
+        "block_p99_us": 2.043,
+        "cold_max_us": 4.833,
+        "frontend_allocations": {
+          "process_peak_rss_kib": 44816,
+          "rust_allocation_calls": 175483,
+          "rust_requested_bytes": 19842778
+        },
+        "frontend_ms": 20.015946,
+        "init_ms": 0.000843,
+        "inputs": [],
+        "iterations": 65536,
+        "jit_allocations": {
+          "process_peak_rss_kib": 66952,
+          "rust_allocation_calls": 1369,
+          "rust_requested_bytes": 84828
+        },
+        "jit_ms": 14.016254,
+        "mad_ns": 0.005030274391174316,
+        "max_ns": 12.928093671798706,
+        "min_ns": 12.69472622871399,
+        "ns_per_frame": 12.699756503105164,
+        "outputs": [
+          "f32"
+        ],
+        "phases": {
+          "mir_lowering_ms": 0.368458,
+          "mir_optimization_ms": 0.462925,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 8,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 0.680886,
+          "semantics_ms": 18.490579999999998
+        },
+        "rounds_ns_per_frame": [
+          12.69472622871399,
+          12.699756503105164,
+          12.715374112129211,
+          12.698072671890259,
+          12.928093671798706
+        ],
+        "shape": {
+          "effect_function_visits": 8,
+          "functions": 8,
+          "mir_bytes": 31353,
+          "range_function_visits": 9,
+          "state_entries": 5
+        },
+        "state_bytes": 1088,
+        "validation": "finite",
+        "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+        "mir_sha256": "10c1cec1572d613b80631cb7fd16d0bfea412fa26ac633c4e924fae5f2c938ab"
+      },
+      {
+        "name": "nested-1024",
+        "block_max_us": 63.235,
+        "block_p50_us": 58.577,
+        "block_p99_us": 62.63100000000001,
+        "cold_max_us": 79.393,
+        "frontend_allocations": {
+          "process_peak_rss_kib": 46728,
+          "rust_allocation_calls": 424430,
+          "rust_requested_bytes": 40713526
+        },
+        "frontend_ms": 33.155913000000005,
+        "init_ms": 0.001129,
+        "inputs": [],
+        "iterations": 2048,
+        "jit_allocations": {
+          "process_peak_rss_kib": 68372,
+          "rust_allocation_calls": 1369,
+          "rust_requested_bytes": 84828
+        },
+        "jit_ms": 11.539710999999999,
+        "mad_ns": 0.10619354248046875,
+        "max_ns": 459.89796447753906,
+        "min_ns": 458.89695739746094,
+        "ns_per_frame": 459.0031509399414,
+        "outputs": [
+          "f32"
+        ],
+        "phases": {
+          "mir_lowering_ms": 0.362829,
+          "mir_optimization_ms": 0.4342,
+          "mir_passes": {
+            "distributed_loops": 0,
+            "eliminated_bounds_checks": 8,
+            "eliminated_common_subexpressions": 0,
+            "iterations": 3,
+            "removed_functions": 0,
+            "removed_parameters": 0
+          },
+          "parse_load_ms": 2.2143610000000002,
+          "semantics_ms": 30.127505999999997
+        },
+        "rounds_ns_per_frame": [
+          458.89695739746094,
+          459.89796447753906,
+          459.8899688720703,
+          458.9681510925293,
+          459.0031509399414
+        ],
+        "shape": {
+          "effect_function_visits": 8,
+          "functions": 8,
+          "mir_bytes": 31413,
+          "range_function_visits": 9,
+          "state_entries": 5
+        },
+        "state_bytes": 16448,
+        "validation": "finite",
+        "source_fingerprint": "203239de5644e3664dabdb81c83aaf669c9e43018faf0a4af3dba589a7ad2e78",
+        "mir_sha256": "de4f0a66278797a18a1392163534266d2f8ce165e74742cb4a36679cbf57f56e"
+      }
+    ],
+    "complete": [
+      {
+        "name": "nested-64",
+        "frontend_ms": 21.278980999999998,
+        "phases": {
+          "parse_load_ms": 0.836147,
+          "semantics_ms": 19.400106,
+          "mir_lowering_ms": 0.503027,
+          "mir_optimization_ms": 0.506949,
+          "mir_passes": {
+            "iterations": 3,
+            "removed_functions": 2,
+            "removed_parameters": 0,
+            "eliminated_bounds_checks": 8,
+            "eliminated_common_subexpressions": 0,
+            "distributed_loops": 0
+          }
+        },
+        "frontend_allocations": {
+          "rust_allocation_calls": 186321,
+          "rust_requested_bytes": 20077727,
+          "process_peak_rss_kib": 46200
+        },
+        "jit_allocations": {
+          "rust_allocation_calls": 1308,
+          "rust_requested_bytes": 70028,
+          "process_peak_rss_kib": 69996
+        },
+        "jit_ms": 14.463233,
+        "init_ms": 0.001054,
+        "shape": {
+          "effect_function_visits": 8,
+          "range_function_visits": 9,
+          "functions": 8,
+          "state_entries": 5,
+          "mir_bytes": 31353
+        },
+        "state_bytes": 1088,
+        "iterations": 65536,
+        "ns_per_frame": 12.955477714538574,
+        "rounds_ns_per_frame": [
+          13.083199262619019,
+          12.952415108680725,
+          13.098824977874756,
+          12.907283186912537,
+          12.955477714538574
+        ],
+        "mad_ns": 0.0481945276260376,
+        "min_ns": 12.907283186912537,
+        "max_ns": 13.098824977874756,
+        "block_p50_us": 1.6700000000000002,
+        "block_p99_us": 1.681,
+        "block_max_us": 1.682,
+        "cold_max_us": 3.3560000000000003,
+        "inputs": [],
+        "outputs": [
+          "f32"
+        ],
+        "validation": "finite",
+        "source_fingerprint": "3477a2add277f932145e972f766ec276ee63a133e07e4277b62dec47c0a1bbe3",
+        "mir_sha256": "10c1cec1572d613b80631cb7fd16d0bfea412fa26ac633c4e924fae5f2c938ab"
+      },
+      {
+        "name": "nested-1024",
+        "frontend_ms": 20.154459,
+        "phases": {
+          "parse_load_ms": 0.823456,
+          "semantics_ms": 18.31248,
+          "mir_lowering_ms": 0.5221089999999999,
+          "mir_optimization_ms": 0.46519900000000003,
+          "mir_passes": {
+            "iterations": 3,
+            "removed_functions": 2,
+            "removed_parameters": 0,
+            "eliminated_bounds_checks": 8,
+            "eliminated_common_subexpressions": 0,
+            "distributed_loops": 0
+          }
+        },
+        "frontend_allocations": {
+          "rust_allocation_calls": 186306,
+          "rust_requested_bytes": 20077743,
+          "process_peak_rss_kib": 46296
+        },
+        "jit_allocations": {
+          "rust_allocation_calls": 1308,
+          "rust_requested_bytes": 70028,
+          "process_peak_rss_kib": 69916
+        },
+        "jit_ms": 12.477583000000001,
+        "init_ms": 0.001075,
+        "shape": {
+          "effect_function_visits": 8,
+          "range_function_visits": 9,
+          "functions": 8,
+          "state_entries": 5,
+          "mir_bytes": 31413
+        },
+        "state_bytes": 16448,
+        "iterations": 2048,
+        "ns_per_frame": 462.8561820983887,
+        "rounds_ns_per_frame": [
+          461.513858795166,
+          468.8072090148926,
+          462.8561820983887,
+          467.26945877075195,
+          461.94682693481445
+        ],
+        "mad_ns": 1.3423233032226562,
+        "min_ns": 461.513858795166,
+        "max_ns": 468.8072090148926,
+        "block_p50_us": 58.925000000000004,
+        "block_p99_us": 65.79299999999999,
+        "block_max_us": 66.346,
+        "cold_max_us": 75.4,
+        "inputs": [],
+        "outputs": [
+          "f32"
+        ],
+        "validation": "finite",
+        "source_fingerprint": "203239de5644e3664dabdb81c83aaf669c9e43018faf0a4af3dba589a7ad2e78",
+        "mir_sha256": "de4f0a66278797a18a1392163534266d2f8ce165e74742cb4a36679cbf57f56e"
+      }
+    ]
+  },
+  "control_artifacts": [
+    {
+      "name": "passthrough",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    },
+    {
+      "name": "osc-phasor",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    },
+    {
+      "name": "filter-onepole",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    },
+    {
+      "name": "slice-fixed",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    },
+    {
+      "name": "state-window-array-f32",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    },
+    {
+      "name": "state-window-shared-array-f32",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    },
+    {
+      "name": "operator-reduction-f32",
+      "byte_identical_to_phase1": {
+        "mir": true,
+        "llvm": true,
+        "wasm": true
+      }
+    }
+  ],
+  "sources": {
+    "top-8": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\ninit:\n  voices: Voice[8]\n  rendered: f32[8]\nsample:\n  for i in 0..8:\n    rendered[i] = voices[i]()\n  total = 0.0\n  for i in 0..8:\n    total += rendered[i]\n  out1 = total / f32(8)\n",
+    "nested-8": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\nproc Bank:\n  init:\n    voices: Voice[8]\n    rendered: f32[8]\n  sample:\n    for i in 0..8:\n      rendered[i] = voices[i]()\n    total = 0.0\n    for i in 0..8:\n      total += rendered[i]\n    out1 = total / f32(8)\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "top-16": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\ninit:\n  voices: Voice[16]\n  rendered: f32[16]\nsample:\n  for i in 0..16:\n    rendered[i] = voices[i]()\n  total = 0.0\n  for i in 0..16:\n    total += rendered[i]\n  out1 = total / f32(16)\n",
+    "nested-16": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\nproc Bank:\n  init:\n    voices: Voice[16]\n    rendered: f32[16]\n  sample:\n    for i in 0..16:\n      rendered[i] = voices[i]()\n    total = 0.0\n    for i in 0..16:\n      total += rendered[i]\n    out1 = total / f32(16)\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "top-64": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\ninit:\n  voices: Voice[64]\n  rendered: f32[64]\nsample:\n  for i in 0..64:\n    rendered[i] = voices[i]()\n  total = 0.0\n  for i in 0..64:\n    total += rendered[i]\n  out1 = total / f32(64)\n",
+    "nested-64": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\nproc Bank:\n  init:\n    voices: Voice[64]\n    rendered: f32[64]\n  sample:\n    for i in 0..64:\n      rendered[i] = voices[i]()\n    total = 0.0\n    for i in 0..64:\n      total += rendered[i]\n    out1 = total / f32(64)\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "top-128": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\ninit:\n  voices: Voice[128]\n  rendered: f32[128]\nsample:\n  for i in 0..128:\n    rendered[i] = voices[i]()\n  total = 0.0\n  for i in 0..128:\n    total += rendered[i]\n  out1 = total / f32(128)\n",
+    "nested-128": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\nproc Bank:\n  init:\n    voices: Voice[128]\n    rendered: f32[128]\n  sample:\n    for i in 0..128:\n      rendered[i] = voices[i]()\n    total = 0.0\n    for i in 0..128:\n      total += rendered[i]\n    out1 = total / f32(128)\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "top-1024": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\ninit:\n  voices: Voice[1024]\n  rendered: f32[1024]\nsample:\n  for i in 0..1024:\n    rendered[i] = voices[i]()\n  total = 0.0\n  for i in 0..1024:\n    total += rendered[i]\n  out1 = total / f32(1024)\n",
+    "nested-1024": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\nproc Bank:\n  init:\n    voices: Voice[1024]\n    rendered: f32[1024]\n  sample:\n    for i in 0..1024:\n      rendered[i] = voices[i]()\n    total = 0.0\n    for i in 0..1024:\n      total += rendered[i]\n    out1 = total / f32(1024)\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "nested-1": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    out1 = phase\nproc Bank:\n  init:\n    voices: Voice[1]\n    rendered: f32[1]\n  sample:\n    for i in 0..1:\n      rendered[i] = voices[i]()\n    total = 0.0\n    for i in 0..1:\n      total += rendered[i]\n    out1 = total / f32(1)\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "random-history-16": "proc Voice:\n  init:\n    value: f32 = 0.0\n    history: f32[4]\n  sample:\n    previous = history[3]\n    for k in 0..3:\n      history[3-k] = history[2-k]\n    value += 0.125\n    history[0] = value\n    out1 = value + previous * 0.25\nproc Bank:\n  init:\n    voices: Voice[16]\n    selected: i32 = 0\n  sample:\n    selected = (selected + 17) % 16\n    voice = voices[selected]\n    out1 = voice()\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "random-history-32": "proc Voice:\n  init:\n    value: f32 = 0.0\n    history: f32[4]\n  sample:\n    previous = history[3]\n    for k in 0..3:\n      history[3-k] = history[2-k]\n    value += 0.125\n    history[0] = value\n    out1 = value + previous * 0.25\nproc Bank:\n  init:\n    voices: Voice[32]\n    selected: i32 = 0\n  sample:\n    selected = (selected + 17) % 32\n    voice = voices[selected]\n    out1 = voice()\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "random-history-128": "proc Voice:\n  init:\n    value: f32 = 0.0\n    history: f32[4]\n  sample:\n    previous = history[3]\n    for k in 0..3:\n      history[3-k] = history[2-k]\n    value += 0.125\n    history[0] = value\n    out1 = value + previous * 0.25\nproc Bank:\n  init:\n    voices: Voice[128]\n    selected: i32 = 0\n  sample:\n    selected = (selected + 17) % 128\n    voice = voices[selected]\n    out1 = voice()\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "random-history-1024": "proc Voice:\n  init:\n    value: f32 = 0.0\n    history: f32[4]\n  sample:\n    previous = history[3]\n    for k in 0..3:\n      history[3-k] = history[2-k]\n    value += 0.125\n    history[0] = value\n    out1 = value + previous * 0.25\nproc Bank:\n  init:\n    voices: Voice[1024]\n    selected: i32 = 0\n  sample:\n    selected = (selected + 17) % 1024\n    voice = voices[selected]\n    out1 = voice()\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "helper-callback-16": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  delegate fired(value: f32)\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    fired(phase)\n    out1 = phase\n\ndef step_voice(voice) -> f32:\n  return voice()\ndef forward_voice(voice) -> f32:\n  return step_voice(voice)\ndef forward_array(voices, index: i32) -> f32:\n  selected = voices[index]\n  return forward_voice(selected)\n\nproc Bank:\n  init:\n    voices: Voice[16] = Voice()\n    rendered: f32[16]\n    observed = 0.0\n  when voices[0].fired(value):\n    observed = value\n  sample:\n    for i in 0..16:\n      rendered[i] = forward_array(voices, i)\n    total = 0.0\n    for i in 0..16:\n      total += rendered[i]\n    out1 = total / f32(16) + observed\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "helper-callback-128": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  delegate fired(value: f32)\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    fired(phase)\n    out1 = phase\n\ndef step_voice(voice) -> f32:\n  return voice()\ndef forward_voice(voice) -> f32:\n  return step_voice(voice)\ndef forward_array(voices, index: i32) -> f32:\n  selected = voices[index]\n  return forward_voice(selected)\n\nproc Bank:\n  init:\n    voices: Voice[128] = Voice()\n    rendered: f32[128]\n    observed = 0.0\n  when voices[0].fired(value):\n    observed = value\n  sample:\n    for i in 0..128:\n      rendered[i] = forward_array(voices, i)\n    total = 0.0\n    for i in 0..128:\n      total += rendered[i]\n    out1 = total / f32(128) + observed\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n",
+    "helper-callback-1024": "proc Voice:\n  params:\n    frequency = 110.0\n  init:\n    phase = 0.0\n  delegate fired(value: f32)\n  sample:\n    phase += frequency / SR\n    if phase >= 1.0:\n      phase -= 1.0\n    fired(phase)\n    out1 = phase\n\ndef step_voice(voice) -> f32:\n  return voice()\ndef forward_voice(voice) -> f32:\n  return step_voice(voice)\ndef forward_array(voices, index: i32) -> f32:\n  selected = voices[index]\n  return forward_voice(selected)\n\nproc Bank:\n  init:\n    voices: Voice[1024] = Voice()\n    rendered: f32[1024]\n    observed = 0.0\n  when voices[0].fired(value):\n    observed = value\n  sample:\n    for i in 0..1024:\n      rendered[i] = forward_array(voices, i)\n    total = 0.0\n    for i in 0..1024:\n      total += rendered[i]\n    out1 = total / f32(1024) + observed\ninit:\n  bank = Bank()\nsample:\n  out1 = bank()\n"
+  },
+  "verification": {
+    "frontend": 282,
+    "semantics": 1140,
+    "mir_unit": 173,
+    "mir_scaling": 5,
+    "mir_buffers": 6,
+    "native_unit": 165,
+    "examples": 847,
+    "c_api_events": 57,
+    "binaryen": 109,
+    "parity_scenarios": 59,
+    "parity_configurations": 2,
+    "manual_oversampling": "passed",
+    "strict_clippy": "passed"
+  }
+}

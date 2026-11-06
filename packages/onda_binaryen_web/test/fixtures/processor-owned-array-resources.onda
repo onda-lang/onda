@@ -1,0 +1,36 @@
+proc Voice:
+  buffers:
+    clip: f32
+  init:
+    count: i32 = 0
+  sample:
+    count += 1
+    clip[0] += 1.0
+    out1 = clip[0] + f32(count)
+proc Bank:
+  buffers:
+    left: f32
+    right: f32
+  init:
+    voices: Voice[2] = [Voice(clip = left), Voice(clip = right)]
+def step(voice) -> f32:
+  return voice()
+def forward(voices, index: i32) -> f32:
+  return step(voices[index])
+def exercise(bank: Bank, index: i32) -> f32:
+  copies: Voice[2] = bank.voices
+  first = forward(copies, index)
+  return first + 10.0 * forward(copies, index)
+buffers:
+  left: f32
+  right: f32
+init:
+  bank = Bank(left = left, right = right)
+  index: i32 = 0
+sample:
+  left[0] = 2.0
+  right[0] = 7.0
+  out1 = exercise(bank, index)
+  out2 = f32(bank.voices[index].count)
+  out3 = left[0] + right[0]
+  index = 1 - index

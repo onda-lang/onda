@@ -1,0 +1,22 @@
+struct Selection:
+  index: i32
+proc Voice:
+  buffers:
+    clip: f32
+  sample:
+    out1 = clip[0]
+def use_voice(voice, selection: i32) -> f32:
+  return voice()
+def change_then_use(voice, selected: Selection) -> f32:
+  selected.index = 0
+  return use_voice(voice, 100)
+buffers:
+  clips: f32 {2}
+init:
+  selection = Selection(1)
+  voices: Voice[2] = Voice(clip = clips[selection.index])
+sample:
+  clips[0][0] = 7.0
+  clips[1][0] = 11.0
+  selection.index = 1
+  out1 = change_then_use(voices[0], selection)

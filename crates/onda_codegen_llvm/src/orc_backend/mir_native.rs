@@ -388,10 +388,17 @@ unsafe fn lower_type_recursive(
             ];
             LLVMStructTypeInContext(context, fields.as_mut_ptr(), fields.len() as u32, 0)
         }
-        Type::BufferSpan { .. } => {
+        Type::BufferSpan { .. } | Type::BufferMap { .. } => {
             let i8_ty = LLVMInt8TypeInContext(context);
             let pointer = LLVMPointerType(i8_ty, 0);
-            let mut fields = [pointer; 6];
+            let mut fields = vec![
+                pointer;
+                if matches!(program.types[index], Type::BufferMap { .. }) {
+                    7
+                } else {
+                    6
+                }
+            ];
             LLVMStructTypeInContext(context, fields.as_mut_ptr(), fields.len() as u32, 0)
         }
         unsupported => {
@@ -703,6 +710,7 @@ struct ModuleEmitter<'a> {
     execution_output_ty: LLVMTypeRef,
     functions: Vec<FunctionDecl>,
     const_globals: Vec<LLVMValueRef>,
+    buffer_map_globals: Vec<LLVMValueRef>,
     host_alias_scopes: HostAliasScopes,
     state_alias_scopes: state_alias::StateAliasScopes,
     range_metadata_kind: u32,
@@ -761,6 +769,7 @@ impl<'a> ModuleEmitter<'a> {
         let effects = program.effects();
         let ranges = program.ranges();
         let const_globals = build_const_globals(program, context, module)?;
+        let buffer_map_globals = build_buffer_map_globals(program, context, module)?;
         let functions = declare_functions(program, context, module, types, layouts)?;
         let source_debug = options
             .source_locations
@@ -787,6 +796,7 @@ impl<'a> ModuleEmitter<'a> {
             execution_output_ty,
             functions,
             const_globals,
+            buffer_map_globals,
             host_alias_scopes,
             state_alias_scopes,
             range_metadata_kind,
@@ -1233,6 +1243,37 @@ unsafe fn build_const_globals(
         globals.push(global);
     }
     Ok(globals)
+}
+
+unsafe fn build_buffer_map_globals(
+    program: &Program,
+    context: LLVMContextRef,
+    module: LLVMModuleRef,
+) -> Result<Vec<LLVMValueRef>, MirCodegenError> {
+    let element = LLVMInt32TypeInContext(context);
+    program
+        .buffer_maps
+        .iter()
+        .enumerate()
+        .map(|(index, map)| {
+            let mut entries = map
+                .buffers
+                .iter()
+                .map(|id| LLVMConstInt(element, u64::from(id.raw()), 0))
+                .collect::<Vec<_>>();
+            let array = LLVMArrayType2(element, entries.len() as u64);
+            let initializer = LLVMConstArray2(element, entries.as_mut_ptr(), entries.len() as u64);
+            let global = LLVMAddGlobal(
+                module,
+                array,
+                c_name(&format!("__onda_buffer_map_{index}"))?.as_ptr(),
+            );
+            LLVMSetInitializer(global, initializer);
+            LLVMSetGlobalConstant(global, 1);
+            LLVMSetLinkage(global, LLVMLinkage::LLVMInternalLinkage);
+            Ok(global)
+        })
+        .collect()
 }
 
 unsafe fn build_host_alias_scopes(context: LLVMContextRef) -> HostAliasScopes {
@@ -2205,7 +2246,7 @@ fn fixed_payload_type_size(
         Type::Buffer { .. } => Err(MirCodegenError::unsupported(
             "buffer values cannot be serialized in event payloads",
         )),
-        Type::BufferSpan { .. } => Err(MirCodegenError::unsupported(
+        Type::BufferSpan { .. } | Type::BufferMap { .. } => Err(MirCodegenError::unsupported(
             "buffer spans cannot be serialized in event payloads",
         )),
         Type::Tuple(_) | Type::Struct(_) => unreachable!("unsupported type rejected earlier"),
@@ -2376,7 +2417,9 @@ fn validate_backend_capabilities(program: &Program) -> Result<(), Vec<MirCodegen
                             "MIR function {function_index} buffer parameter {parameter_index} is not passed by reference"
                         )));
                     }
-                    Type::BufferSpan { .. } if parameter.mode != onda_mir::PassingMode::Value => {
+                    Type::BufferSpan { .. } | Type::BufferMap { .. }
+                        if parameter.mode != onda_mir::PassingMode::Value =>
+                    {
                         errors.push(MirCodegenError::unsupported(format!(
                             "MIR function {function_index} buffer span parameter {parameter_index} is not passed by value"
                         )));
@@ -2424,7 +2467,10 @@ fn type_contains_runtime_descriptor(
     }
     visiting[id.index()] = true;
     let result = match &program.types[id.index()] {
-        Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => true,
+        Type::Slice { .. }
+        | Type::Buffer { .. }
+        | Type::BufferSpan { .. }
+        | Type::BufferMap { .. } => true,
         Type::Array { element, .. } => {
             type_contains_runtime_descriptor(program, *element, visiting)
         }
@@ -2451,7 +2497,10 @@ fn require_fixed_type(
         Type::Array { element, .. } => require_fixed_type(program, *element, visiting),
         Type::Tuple(_) => Err("tuples are not implemented"),
         Type::Struct(_) => Err("struct aggregates and field projections are not implemented"),
-        Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => Ok(()),
+        Type::Slice { .. }
+        | Type::Buffer { .. }
+        | Type::BufferSpan { .. }
+        | Type::BufferMap { .. } => Ok(()),
     };
     visiting[id.index()] = false;
     result
@@ -2533,7 +2582,8 @@ fn inspect_place(function_index: usize, place: &Place, errors: &mut Vec<MirCodeg
 fn inspect_rvalue(function_index: usize, value: &Rvalue, errors: &mut Vec<MirCodegenError>) {
     match value {
         Rvalue::Load(place) => inspect_place(function_index, place, errors),
-        Rvalue::InitAll
+        Rvalue::MakeBuffer { .. }
+        | Rvalue::InitAll
         | Rvalue::Use(_)
         | Rvalue::Unary { .. }
         | Rvalue::Binary { .. }
@@ -3874,8 +3924,8 @@ unsafe fn build_native_module(
     source_locations: bool,
 ) -> Result<(LLVMModuleRef, LLVMContextRef, NativeLayouts), MirCodegenError> {
     // Keep target-profitable scheduling out of portable MIR: Binaryen cannot
-    // yet vectorize these math kernels and pays for the extra traversal.
-    let (scheduled, _) = onda_mir::distribute_loops(program).map_err(|errors| {
+    // yet exploit these loops and would pay for code growth or extra traversals.
+    let (scheduled, _) = onda_mir::schedule_vector_loops(program).map_err(|errors| {
         MirCodegenError::invalid(
             errors
                 .into_iter()

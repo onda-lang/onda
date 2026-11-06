@@ -1,0 +1,37 @@
+proc Voice:
+  buffers:
+    source: f32
+  params:
+    tag: i32 = 0
+  delegate fired(value: i32)
+  sample:
+    source[0] = f32(tag)
+    fired(tag)
+    out1 = source[0]
+def step_child(voice) -> f32:
+  return voice()
+def step_array(voices, index: i32) -> f32:
+  return step_child(voices[index])
+proc Bank:
+  buffers:
+    left: f32
+    right: f32
+  init:
+    voices: Voice[2] = [Voice(tag = 2, source = left), Voice(tag = 7, source = right)]
+    total: i32 = 0
+    selector: i32 = 0
+  when voices[0].fired(value):
+    total += value
+  when voices[1].fired(value):
+    total += value * 100
+  sample:
+    step_array(voices, selector)
+    selector = 1 - selector
+    out1 = f32(total) * 10000.0 + left[0] * 100.0 + right[0]
+buffers:
+  left: f32
+  right: f32
+init:
+  bank = Bank(left = left, right = right)
+sample:
+  out1 = bank()

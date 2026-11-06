@@ -34,6 +34,8 @@ impl<'a> FunctionLowerer<'a> {
         structs: &'a HashMap<String, Vec<TypedStructField>>,
         aggregate_layouts: &'a AggregateLayoutTable,
         nested_proc_arrays: &'a [TypedNestedProcArray],
+        processor_views: &'a ProcessorViewCatalog,
+        proc_array_hook_types: &'a HashSet<String>,
         const_arrays: &'a ConstDataCatalog<'a>,
         host_config: onda_mir::CompileConfig,
         config: onda_mir::CompileConfig,
@@ -53,6 +55,8 @@ impl<'a> FunctionLowerer<'a> {
             structs,
             aggregate_layouts,
             nested_proc_arrays,
+            processor_views,
+            proc_array_hook_types,
             const_arrays,
             host_config,
             config,
@@ -73,9 +77,12 @@ impl<'a> FunctionLowerer<'a> {
             results: Vec::new(),
             locals: Vec::new(),
             bindings: HashMap::new(),
+            local_processor_lifetimes: true,
+            scoped_processors: Vec::new(),
+            scoped_processor_bindings: HashMap::new(),
+            processor_loop_scopes: Vec::new(),
             data_initialization_sites,
             next_data_id: 0,
-            nested_proc_aliases: HashMap::new(),
             event_slice_parameters: Vec::new(),
             event_struct_slices: Vec::new(),
         }
@@ -106,6 +113,8 @@ impl<'a> FunctionLowerer<'a> {
             &globals.structs,
             &globals.aggregate_layouts,
             &globals.nested_proc_arrays,
+            &globals.processor_views,
+            &globals.proc_array_hook_types,
             globals.const_arrays.expect("runtime const catalog"),
             host_config,
             config,
@@ -124,6 +133,7 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn bind_init_all(&mut self, name: &str) {
         debug_assert!(self.runtime_globals.is_some());
+        self.local_processor_lifetimes = false;
         self.bindings.insert(name.to_owned(), Binding::InitAll);
     }
 
@@ -399,6 +409,7 @@ impl<'a> FunctionLowerer<'a> {
                 self.bindings.insert(
                     binding_name,
                     Binding::StructArrayParameter {
+                        processor: None,
                         struct_name: embedded.struct_name,
                         length: StructArrayLength::Fixed(embedded.len),
                         fields,
@@ -438,11 +449,20 @@ impl<'a> FunctionLowerer<'a> {
         let mut proc_array_parameters = Vec::new();
         let mut embedded_struct_array_parameters = Vec::new();
         let mut next_parameter_id = 0_u32;
-        for (name, kind) in self
+        let processor_parameters = self.processor_capture_parameters();
+        for (name, kind, resource) in self
             .function
             .params
             .iter()
             .zip(self.function.param_kinds.iter())
+            .map(|(name, kind)| (name, kind, None))
+            .chain(processor_parameters.iter().map(|parameter| {
+                (
+                    &parameter.name,
+                    &parameter.kind,
+                    parameter.resource.as_ref(),
+                )
+            }))
         {
             match kind {
                 TypedFnParam::Scalar { ty } => {
@@ -564,13 +584,17 @@ impl<'a> FunctionLowerer<'a> {
                             function_location(self.function),
                         ));
                     }
-                    let type_id = intern_buffer_span_type(
-                        self.types,
-                        *elem_ty,
-                        channels,
-                        onda_mir::AccessMode::ReadWrite,
-                        len,
-                    );
+                    let type_id = if let Some(resource) = resource {
+                        self.processor_resource_type(resource, function_location(self.function))?
+                    } else {
+                        intern_buffer_span_type(
+                            self.types,
+                            *elem_ty,
+                            channels,
+                            onda_mir::AccessMode::ReadWrite,
+                            len,
+                        )
+                    };
                     let span = ParameterId::new(next_parameter_id);
                     self.params.push(onda_mir::FunctionParam {
                         name: name.clone(),
@@ -706,6 +730,7 @@ impl<'a> FunctionLowerer<'a> {
                                 format!("{name}.{}", field.name),
                                 Binding::StructParameter {
                                     struct_name: nested_struct.clone(),
+                                    processor: None,
                                 },
                             );
                         }
@@ -776,6 +801,7 @@ impl<'a> FunctionLowerer<'a> {
                         name.clone(),
                         Binding::StructParameter {
                             struct_name: struct_name.clone(),
+                            processor: None,
                         },
                     );
                 }
@@ -842,27 +868,29 @@ impl<'a> FunctionLowerer<'a> {
                     });
                     next_parameter_id += 1;
 
-                    let active_name = runtime_proc_array_active_symbol(name);
-                    let active_parameter = ParameterId::new(next_parameter_id);
-                    let active_type = intern_slice_type(
-                        self.types,
-                        PrimitiveType::Bool,
-                        onda_mir::AccessMode::ReadWrite,
-                    );
-                    self.params.push(onda_mir::FunctionParam {
-                        name: active_name.clone(),
-                        ty: active_type,
-                        mode: onda_mir::PassingMode::Value,
-                        integer_range: None,
-                    });
-                    slice_parameters.push((
-                        active_name,
-                        active_parameter,
-                        PrimitiveType::Bool,
-                        onda_mir::AccessMode::ReadWrite,
-                        None,
-                    ));
-                    next_parameter_id += 1;
+                    if self.proc_array_hook_types.contains(proc_name) {
+                        let active_name = runtime_proc_array_active_symbol(name);
+                        let active_parameter = ParameterId::new(next_parameter_id);
+                        let active_type = intern_slice_type(
+                            self.types,
+                            PrimitiveType::Bool,
+                            onda_mir::AccessMode::ReadWrite,
+                        );
+                        self.params.push(onda_mir::FunctionParam {
+                            name: active_name.clone(),
+                            ty: active_type,
+                            mode: onda_mir::PassingMode::Value,
+                            integer_range: None,
+                        });
+                        slice_parameters.push((
+                            active_name,
+                            active_parameter,
+                            PrimitiveType::Bool,
+                            onda_mir::AccessMode::ReadWrite,
+                            None,
+                        ));
+                        next_parameter_id += 1;
+                    }
 
                     let shapes =
                         self.proc_array_field_shapes(proc_name, function_location(self.function))?;
@@ -1013,6 +1041,7 @@ impl<'a> FunctionLowerer<'a> {
             self.bindings.insert(
                 name,
                 Binding::StructArrayParameter {
+                    processor: None,
                     struct_name,
                     length: fixed_len
                         .map(StructArrayLength::Fixed)
@@ -1061,6 +1090,7 @@ impl<'a> FunctionLowerer<'a> {
             self.bindings.insert(
                 embedded.name,
                 Binding::StructArrayParameter {
+                    processor: None,
                     struct_name: embedded.struct_name,
                     length: StructArrayLength::Fixed(embedded.len),
                     fields,
@@ -1068,24 +1098,29 @@ impl<'a> FunctionLowerer<'a> {
             );
         }
         for (name, proc_name, fixed_len, length, fields) in proc_array_parameters {
-            let active_name = runtime_proc_array_active_symbol(&name);
-            let (active, active_element) = lowered_slice_parameters
-                .get(&active_name)
-                .copied()
-                .ok_or_else(|| {
-                    self.error(
-                        format!(
-                            "proc-array parameter '{name}' is missing lowered active-slot storage"
-                        ),
+            let active = if self.proc_array_hook_types.contains(&proc_name) {
+                let active_name = runtime_proc_array_active_symbol(&name);
+                let (active, active_element) = lowered_slice_parameters
+                    .get(&active_name)
+                    .copied()
+                    .ok_or_else(|| {
+                        self.error(
+                            format!(
+                                "proc-array parameter '{name}' is missing lowered active-slot storage"
+                            ),
+                            function_location(self.function),
+                        )
+                    })?;
+                if active_element != PrimitiveType::Bool {
+                    return Err(self.error(
+                        format!("proc-array parameter '{name}' active-slot storage is not bool"),
                         function_location(self.function),
-                    )
-                })?;
-            if active_element != PrimitiveType::Bool {
-                return Err(self.error(
-                    format!("proc-array parameter '{name}' active-slot storage is not bool"),
-                    function_location(self.function),
-                ));
-            }
+                    ));
+                }
+                Some(active)
+            } else {
+                None
+            };
 
             let mut lowered_fields = Vec::with_capacity(fields.len());
             for (field_name, _, element) in fields {
@@ -1116,12 +1151,14 @@ impl<'a> FunctionLowerer<'a> {
                 Binding::ProcArrayParameter {
                     proc_name,
                     fixed_len,
+                    processor: None,
                     length,
                     active,
                     fields: lowered_fields,
                 },
             );
         }
+        self.bind_processor_parameters()?;
         for (name, parameter, element) in self.event_slice_parameters.clone() {
             let access = onda_mir::AccessMode::ReadOnly;
             let slice = self.emit_slice_temp(
@@ -1143,6 +1180,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         self.bind_event_struct_slices(&mut body)?;
         self.bind_runtime_embedded_struct_arrays(&mut body)?;
+        self.finish_processor_function_children(&mut body)?;
         // A first assignment is only an introduction when no binding owns the
         // name on entry. Runtime state is planned before init, but becomes an
         // existing owner for every function lowered after init.
@@ -1164,8 +1202,12 @@ impl<'a> FunctionLowerer<'a> {
                 .unwrap_or(1);
             self.lower_oversampled_proc_step(&meta, factor, &mut body)?;
         } else {
-            self.lower_statements(&self.function.body, &mut body, ContinueMode::None)?;
+            let flow = self.lower_statements(&self.function.body, &mut body, ContinueMode::None)?;
+            if flow == crate::def_semantics::call_types::StatementFlow::Continues {
+                self.finish_scoped_processors(0, &mut body, function_location(self.function))?;
+            }
         }
+        self.initialize_scoped_processors(&mut body);
         let source = self.source_span(function_location(self.function));
         Ok((
             onda_mir::Function {

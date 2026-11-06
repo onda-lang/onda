@@ -1,0 +1,20 @@
+proc Child:
+  init:
+    progress: i32 = 0
+  task load():
+    progress += 1
+    yield
+    progress += 10
+  block:
+    await load()
+    sample:
+      out1 = f32(progress)
+proc Parent:
+  init:
+    children: Child[2] = Child()
+  sample:
+    out1 = children[0]() + children[1]()
+init:
+  parent = Parent()
+sample:
+  out1 = parent()

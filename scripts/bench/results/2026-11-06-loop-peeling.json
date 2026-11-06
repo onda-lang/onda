@@ -1,0 +1,396 @@
+{
+  "date": "2026-11-06",
+  "change": "Generic MIR first-iteration peeling selected by native code generation",
+  "baseline": "Same working tree, including pre-existing unstaged changes, before this optimization. This is not a comparison against 5da474a.",
+  "head": "6964c23cc505d680a9de338eee8d74b5be3627de",
+  "llvm": "21.1.2",
+  "workers": {
+    "before": {
+      "path": "/tmp/onda-loop-optimization/before-worker",
+      "sha256": "a51bbe30cd81af683c4b4e78666d76dcc1a5f10b466413020665156e887bab7d"
+    },
+    "after": {
+      "path": "/home/francesco/Sources/onda-proc-state/target/debug/examples/benchmark_dsp",
+      "sha256": "a1549c1f6fae46cfec6c8e69b1176158297071f3d88b3d18f609b0c31378d72e"
+    }
+  },
+  "artifacts": "/tmp/onda-loop-optimization",
+  "method": {
+    "harness": "scripts/bench/run.py",
+    "opt_level": 3,
+    "fast_math": false,
+    "sample_rate": 48000,
+    "block_size": 128,
+    "repetitions_per_run": 7,
+    "round_ms": 150,
+    "warmup_blocks": 64,
+    "validation_blocks": 8,
+    "latency_blocks": 128,
+    "order": [
+      "before",
+      "after",
+      "after",
+      "before"
+    ],
+    "reported_statistic": "median of 14 per-round ns/frame values (two runs); generic plain-array probe uses seven rounds per version",
+    "host_build": "debug; generated DSP uses LLVM O3",
+    "cpu": 0,
+    "command_template": "python3 scripts/bench/run.py --source <case.onda-or-mir.json> --trust-mir --runner <before-or-after-worker> --backend native --output <new-directory> --ir --repetitions 7 --round-ms 150 --warmup-blocks 64 --validation-blocks 8 --latency-blocks 128 --timeout-seconds 180"
+  },
+  "cases": [
+    {
+      "name": "large-bank-flat",
+      "before_ns_per_frame": 8878.409530639648,
+      "after_ns_per_frame": 8949.428573608398,
+      "speedup": 0.9920644047399648,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          8873.63931274414,
+          8903.12515258789
+        ],
+        "after": [
+          9018.352752685547,
+          8898.583801269531
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          10.676848,
+          11.000134
+        ],
+        "after": [
+          10.509659,
+          11.159986
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "a08555be3c889e3b56d7cdf13f14b49274f2a6ddc451a7561d0a2aa4d457de15",
+        "after": "a08555be3c889e3b56d7cdf13f14b49274f2a6ddc451a7561d0a2aa4d457de15"
+      },
+      "state_bytes": {
+        "before": 196608,
+        "after": 196608
+      }
+    },
+    {
+      "name": "large-bank-processor",
+      "before_ns_per_frame": 9843.821746826172,
+      "after_ns_per_frame": 9967.119262695312,
+      "speedup": 0.9876295735388042,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          9820.598571777344,
+          9844.712524414062
+        ],
+        "after": [
+          9956.526763916016,
+          9977.71176147461
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          13.127381,
+          13.630981
+        ],
+        "after": [
+          12.866086000000001,
+          13.43672
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "1040f91a92c1b2919af07442e7c75a0117431c95657f7f1d2bd1d0c86e362f48",
+        "after": "1040f91a92c1b2919af07442e7c75a0117431c95657f7f1d2bd1d0c86e362f48"
+      },
+      "state_bytes": {
+        "before": 262208,
+        "after": 262208
+      }
+    },
+    {
+      "name": "large-callback-flat",
+      "before_ns_per_frame": 8891.065490722656,
+      "after_ns_per_frame": 9028.699172973633,
+      "speedup": 0.9847559787280357,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          8899.39614868164,
+          8886.396545410156
+        ],
+        "after": [
+          9032.3125,
+          9025.085845947266
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          10.646832,
+          10.956179
+        ],
+        "after": [
+          10.685342,
+          10.834014
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "7aa171b6dc5279a8aa951ca6e81231d70cf77eaf6a3186267b60f105c7876988",
+        "after": "7aa171b6dc5279a8aa951ca6e81231d70cf77eaf6a3186267b60f105c7876988"
+      },
+      "state_bytes": {
+        "before": 196608,
+        "after": 196608
+      }
+    },
+    {
+      "name": "large-callback-processor",
+      "before_ns_per_frame": 19421.101501464844,
+      "after_ns_per_frame": 12102.014999389648,
+      "speedup": 1.6047824682455216,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          19670.447967529297,
+          19296.795623779297
+        ],
+        "after": [
+          12082.698791503906,
+          12113.211334228516
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          13.366507,
+          13.962923
+        ],
+        "after": [
+          17.936028,
+          17.327575000000003
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "5959ecbb895551756b030756aa6ee7ddd79f06be6d4e485c8bd1ccdb3a202d7f",
+        "after": "c9c1fccae0f6be14d4b4ae5f0e3a533d39aa0f033cf84fb9ca2343ff70dd8e3f"
+      },
+      "state_bytes": {
+        "before": 393280,
+        "after": 393280
+      }
+    },
+    {
+      "name": "proc-bank-128",
+      "before_ns_per_frame": 40.4651814699173,
+      "after_ns_per_frame": 41.53171133995056,
+      "speedup": 0.974320107801401,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          39.85371732711792,
+          40.9059693813324
+        ],
+        "after": [
+          41.25892996788025,
+          41.7529182434082
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          12.949156,
+          13.678465000000001
+        ],
+        "after": [
+          13.420806,
+          14.164988
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "164db6c0d3c918348bdeb1704278b4b4c1f1b0246cecd1563b50014c14c6f236",
+        "after": "164db6c0d3c918348bdeb1704278b4b4c1f1b0246cecd1563b50014c14c6f236"
+      },
+      "state_bytes": {
+        "before": 2112,
+        "after": 2112
+      }
+    },
+    {
+      "name": "proc-bank-16",
+      "before_ns_per_frame": 4.131174668669701,
+      "after_ns_per_frame": 4.186379015445709,
+      "speedup": 0.9868133423724103,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          4.105889603495598,
+          4.1566461622715
+        ],
+        "after": [
+          4.1665825098752975,
+          4.206191956996918
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          13.684909000000001,
+          13.886059
+        ],
+        "after": [
+          13.669183,
+          13.992101
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "36983f23ce58bf906d49f1d9fe7e03b57549d8e689f64a095357831e5f10d06b",
+        "after": "36983f23ce58bf906d49f1d9fe7e03b57549d8e689f64a095357831e5f10d06b"
+      },
+      "state_bytes": {
+        "before": 260,
+        "after": 260
+      }
+    },
+    {
+      "name": "proc-helper-callback-1024",
+      "before_ns_per_frame": 1096.8008003234863,
+      "after_ns_per_frame": 502.7572717666626,
+      "speedup": 2.181571231121901,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          1090.6064338684082,
+          1100.3175773620605
+        ],
+        "after": [
+          505.72150230407715,
+          497.7007637023926
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          12.915661,
+          13.605566
+        ],
+        "after": [
+          16.768135,
+          17.148391999999998
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "a3f1f1212e1d526f3983528b15ac871e7c91a3e5d24dac34ab11d924677675cb",
+        "after": "2f3d755247129ef9c38745e797502780478703fc3eff75899b21d7c6da81f53f"
+      },
+      "state_bytes": {
+        "before": 24640,
+        "after": 24640
+      }
+    },
+    {
+      "name": "proc-helper-callback-128",
+      "before_ns_per_frame": 131.5542118549347,
+      "after_ns_per_frame": 46.14556813240051,
+      "speedup": 2.850852577597059,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          130.7093801498413,
+          132.58601808547974
+        ],
+        "after": [
+          46.275532484054565,
+          46.10784363746643
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          12.409047,
+          13.091988
+        ],
+        "after": [
+          18.520997,
+          19.08047
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "f271b79dc876dc144bb6b0d71b3ddf60e697446ec97ac34c5ee2bc62432dbd19",
+        "after": "0261682e008c4b2940f249772538a829f52ee3852e623cfcf9883567e4136b14"
+      },
+      "state_bytes": {
+        "before": 3136,
+        "after": 3136
+      }
+    },
+    {
+      "name": "proc-helper-callback-16",
+      "before_ns_per_frame": 12.978853195905685,
+      "after_ns_per_frame": 13.356798678636551,
+      "speedup": 0.9717038871495931,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          12.844721972942352,
+          13.134396970272064
+        ],
+        "after": [
+          13.306066989898682,
+          13.446601271629333
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          11.734229000000001,
+          11.807784
+        ],
+        "after": [
+          11.683660999999999,
+          12.583392
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "86395767764fe4ae34ee08859993d7c7bbc82998e40c9e657b2e3284b48f2811",
+        "after": "86395767764fe4ae34ee08859993d7c7bbc82998e40c9e657b2e3284b48f2811"
+      },
+      "state_bytes": {
+        "before": 392,
+        "after": 392
+      }
+    }
+  ],
+  "validation": {
+    "rust_passed": 1347,
+    "rust_ignored": 1,
+    "rust_packages": [
+      "onda_mir",
+      "onda_codegen_llvm",
+      "onda_examples"
+    ],
+    "clippy": "passed with -D warnings",
+    "backend_parity_scenarios": 117,
+    "binaryen_configurations": 2,
+    "backend_parity_bit_exact_samples": 6160,
+    "backend_parity_approximate_samples": 4096,
+    "backend_parity_max_approximate_abs_error": 1.192e-07,
+    "all_benchmark_cold_and_warm_outputs": "bit exact before/after",
+    "large_processor_vs_array_outputs": "bit exact",
+    "saved_corpus_mir_programs": 159,
+    "saved_corpus_programs_selected_for_peeling": [
+      "proc-helper-callback-128",
+      "proc-helper-callback-1024"
+    ]
+  },
+  "limits": [
+    "Only fixed nonempty loops with an unmodified induction variable, no early exits or nested loops, and a predicate distinguishing the first iteration are selected. The 32-iteration minimum is a profitability threshold.",
+    "No processor names, field names, or specific array capacities drive selection. Existing counted-loop recognition, call graph, validation and analyses are reused.",
+    "No new memory-independence or writable-reference exclusivity assumption is introduced; all original operations keep their order.",
+    "The ordinary processor bank retains its cached-output stores and generated LLVM IR. Routing-state pruning and cached-output liveness remain separate work.",
+    "Some direct local-state recurrences remain scalar after peeling; the additional plain-array probe did not improve measurably.",
+    "The changed callback cases add approximately 4-6 ms to native JIT compilation in these runs. These are debug compiler measurements.",
+    "Timing noise in unchanged controls is not a generated-DSP regression: all six controls have identical LLVM IR. These measurements do not establish performance on every target or source program."
+  ],
+  "additional_generic_probe": {
+    "source": "const N = 16384\ninit:\n  frequency: f32[N]\n  phase: f32[N]\n  rendered: f32[N]\n  observed = 0.0\n  for i in 0..N:\n    frequency[i] = 110.0\nsample:\n  for i in 0..N:\n    phase[i] += frequency[i] / SR\n    if phase[i] >= 1.0:\n      phase[i] -= 1.0\n    if i == 0:\n      observed = phase[i]\n    rendered[i] = phase[i]\n  total = 0.0\n  for i in 0..N:\n    total += rendered[i]\n  out1 = total / f32(N) + observed\n",
+    "before_ns_per_frame": 16811.992797851562,
+    "after_ns_per_frame": 16820.853088378906,
+    "outputs": "bit exact",
+    "selected_loops": 1,
+    "result": "No measurable speedup; the remaining local-state recurrence stays scalar."
+  }
+}

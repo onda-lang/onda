@@ -15,6 +15,11 @@ pub(crate) use init_analysis::*;
 pub(crate) use runtime_stmt_analysis::*;
 pub(crate) use slice_lengths::*;
 
+/// Typed data declarations own a copy; slice declarations retain a view.
+pub(crate) fn data_declaration_owns_storage(decl_ty: Option<&DeclType>, typed: bool) -> bool {
+    typed && !matches!(decl_ty, Some(DeclType::Slice(_)))
+}
+
 /// The checked scope delta applied when executing a branch in a const def.
 #[derive(Debug, Default)]
 pub(crate) struct CheckedBranchScope {
@@ -394,8 +399,10 @@ pub(crate) fn merge_branch_scope_flow_state(
                 let else_alias = &else_state.local_proc_aliases[&name];
                 let then_struct = then_state.local_struct_aliases.get(&name);
                 let else_struct = else_state.local_struct_aliases.get(&name);
-                if then_alias.array_base != else_alias.array_base || then_struct != else_struct {
-                    incompatible!(&name, "processor aliases use different arrays");
+                if then_struct != else_struct
+                    || (then_struct.is_none() && then_alias.array_base != else_alias.array_base)
+                {
+                    incompatible!(&name, "processors have different nominal types");
                     continue;
                 }
                 local_proc_aliases.insert(name.clone(), then_alias.clone());

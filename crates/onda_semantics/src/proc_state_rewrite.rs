@@ -2,8 +2,8 @@ use super::*;
 
 pub(crate) const PROC_FIELD_SENTINEL_PREFIX: &str = "__onda_proc_field__";
 pub(crate) const PROC_FIELD_SENTINEL_ARG: &str = "__onda_proc_field";
+pub(crate) const PROC_CACHED_FIELD_ARG: &str = "__onda_proc_cached_field";
 pub(crate) const PROC_INDEX_CALL_SENTINEL: &str = "__onda_proc_index_call";
-pub(crate) const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str = "__onda_proc_index_buffer_select";
 pub(crate) const PROC_INDEX_BASE_ARG: &str = "__onda_proc_index_base";
 pub(crate) const PROC_INDEX_EXPR_ARG: &str = "__onda_proc_index_expr";
 pub(crate) const PROC_INDEX_UNCHECKED_ARG: &str = "__onda_proc_index_unchecked";
@@ -27,7 +27,7 @@ pub(crate) struct ProcApi {
     pub(crate) outputs: ProcOutputs,
     pub(crate) events: HashMap<String, ProcEventSpec>,
     pub(crate) delegates: HashMap<String, ProcEventSpec>,
-    pub(crate) buffers: Vec<ProcBufferSpec>,
+    pub(crate) buffers: Vec<TypedBufferDecl>,
     pub(crate) steppable: bool,
     pub(crate) has_block: bool,
     pub(crate) sample_oversample_factor: usize,
@@ -61,7 +61,7 @@ pub(crate) struct ProcParamSlotSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct ProcParamSpec {
     pub(crate) name: String,
-    pub(crate) is_array: bool,
+    pub(crate) is_scalar: bool,
     pub(crate) slots: Vec<ProcParamSlotSpec>,
 }
 
@@ -69,15 +69,6 @@ impl ProcParamSpec {
     pub(crate) fn is_private(&self) -> bool {
         self.slots.iter().any(|slot| slot.private)
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ProcBufferSpec {
-    pub(crate) name: String,
-    pub(crate) elem_ty: PrimitiveType,
-    pub(crate) channels: TypedBufferChannels,
-    pub(crate) array_len: usize,
-    pub(crate) is_array: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +154,102 @@ pub(crate) struct ProcNestedState {
 pub(crate) struct ProcNestedArrayState {
     pub(crate) proc_name: String,
     pub(crate) size_expr: Expr,
+}
+
+/// A processor-array surface. Uniform declarations and borrowed slices have
+/// one family binding; per-element constructors retain their actual bindings.
+#[derive(Debug, Clone)]
+pub(crate) struct ProcArrayDeclaration {
+    pub(crate) proc_name: String,
+    len: Option<usize>,
+    bindings: Vec<String>,
+}
+
+impl ProcArrayDeclaration {
+    pub(crate) fn new(base: String, proc_name: String, len: usize, uniform: bool) -> Self {
+        let bindings = (0..if uniform { usize::from(len != 0) } else { len })
+            .map(|index| format!("{base}[{index}]"))
+            .collect();
+        Self {
+            proc_name,
+            len: Some(len),
+            bindings,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+            .expect("a processor declaration has a fixed extent")
+    }
+
+    pub(crate) fn known_len(&self) -> Option<usize> {
+        self.len
+    }
+
+    pub(crate) fn borrowed(base: &str, proc_name: String) -> Self {
+        Self {
+            proc_name,
+            len: None,
+            bindings: vec![format!("{base}[0]")],
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == Some(0)
+    }
+    pub(crate) fn first_binding(&self) -> Option<&String> {
+        self.bindings.first()
+    }
+    pub(crate) fn binding(&self, index: usize) -> Option<&String> {
+        self.bindings.get(index)
+    }
+    pub(crate) fn binding_names(&self) -> std::slice::Iter<'_, String> {
+        self.bindings.iter()
+    }
+    pub(crate) fn prefixed(&self, prefix: &str) -> Self {
+        Self {
+            proc_name: self.proc_name.clone(),
+            len: self.len,
+            bindings: self
+                .bindings
+                .iter()
+                .map(|name| format!("{prefix}__{name}"))
+                .collect(),
+        }
+    }
+    pub(crate) fn qualified(&self, prefix: &str) -> Self {
+        Self {
+            proc_name: self.proc_name.clone(),
+            len: self.len,
+            bindings: self
+                .bindings
+                .iter()
+                .map(|name| format!("{prefix}.{name}"))
+                .collect(),
+        }
+    }
+}
+
+pub(crate) type ProcArrayDeclarations = HashMap<String, ProcArrayDeclaration>;
+
+pub(crate) fn declared_child_bindings<'a>(
+    state: &'a ProcStateFields,
+    arrays: &'a ProcArrayDeclarations,
+) -> impl Iterator<Item = (&'a String, &'a str)> {
+    state
+        .nested_procs
+        .iter()
+        .map(|(name, child)| (name, child.proc_name.as_str()))
+        .chain(
+            state
+                .nested_proc_arrays
+                .keys()
+                .filter_map(|name| arrays.get(name))
+                .flat_map(|array| {
+                    array
+                        .binding_names()
+                        .map(move |name| (name, array.proc_name.as_str()))
+                }),
+        )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

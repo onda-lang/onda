@@ -64,6 +64,7 @@ pub(crate) enum MonoParamKey {
     /// Resolved nominal array element type. Processor arrays retain their
     /// fixed capacity; data-struct arrays use a length-independent view ABI.
     ResolvedNominalArray(String, Option<usize>),
+    ResolvedProcessorView(crate::processor_views::ProcessorViewShape, usize),
     /// Resolved buffer element type + channels.
     ResolvedBuffer(PrimitiveType, TypedBufferChannels),
     /// Resolved fixed buffer-collection element type + per-buffer channels.
@@ -109,6 +110,13 @@ fn mono_def_name(base: &str, keys: &[MonoParamKey]) -> String {
                     Some(len) => suffix.push_str(&format!("_{len}")),
                     None => suffix.push_str("_view"),
                 }
+            }
+            MonoParamKey::ResolvedProcessorView(shape, identity) => {
+                suffix.push_str("__proc_view_");
+                suffix.push_str(&crate::internal_names::encode_internal_symbol_component(
+                    &shape.proc_name,
+                ));
+                suffix.push_str(&format!("_{identity}"));
             }
             MonoParamKey::ResolvedBuffer(prim, ch) => {
                 suffix.push_str("__buf_");
@@ -159,9 +167,50 @@ fn infer_mono_arg_key(
     env: &CallTypeEnv,
     generic_templates: &HashSet<String>,
     proc_types: &HashSet<String>,
+    processor_environment: bool,
     return_types: &HashMap<String, ReturnType>,
     struct_defs: &HashMap<String, Vec<TypedStructField>>,
 ) -> Option<MonoParamKey> {
+    let processor_parameter = match param_ty {
+        None | Some(FnParamType::Array(None)) => true,
+        Some(FnParamType::Struct(name) | FnParamType::ArrayGeneric(name)) => {
+            proc_types.contains(name)
+        }
+        Some(FnParamType::SizedArray {
+            generic_name: Some(name),
+            ..
+        }) => proc_types.contains(name),
+        _ => false,
+    };
+    if let Some(shape) = (processor_environment && processor_parameter)
+        .then(|| env.processor_view_shape(arg_expr))
+        .flatten()
+    {
+        let expected_name = match param_ty {
+            Some(FnParamType::Struct(name) | FnParamType::ArrayGeneric(name)) => Some(name),
+            Some(FnParamType::SizedArray {
+                generic_name: Some(name),
+                ..
+            }) => Some(name),
+            _ => None,
+        };
+        let matching_extent_kind = match param_ty {
+            Some(FnParamType::Struct(_)) => !shape.is_array(),
+            Some(
+                FnParamType::Array(_)
+                | FnParamType::ArrayGeneric(_)
+                | FnParamType::SizedArray { .. },
+            ) => shape.is_array(),
+            _ => true,
+        };
+        if shape.requires_environment()
+            && matching_extent_kind
+            && expected_name.is_none_or(|expected| expected == &shape.proc_name)
+        {
+            let identity = env.processor_views.borrow_mut().intern_shape(&shape);
+            return Some(MonoParamKey::ResolvedProcessorView(shape, identity));
+        }
+    }
     match param_ty {
         Some(FnParamType::Struct(struct_name)) if generic_templates.contains(struct_name) => {
             infer_struct_expr_type(
@@ -536,6 +585,32 @@ fn generate_mono_def(
                 }
                 if let Some(param_ty) = new_sig.param_types.get_mut(idx) {
                     *param_ty = Some(new_ty);
+                }
+            }
+            MonoParamKey::ResolvedProcessorView(shape, _) => {
+                let declared_size =
+                    match original.params.get(idx).and_then(|param| param.ty.as_ref()) {
+                        Some(FnParamType::SizedArray { size, .. }) => Some(size.clone()),
+                        _ => None,
+                    };
+                let ty = if let Some(size) =
+                    declared_size.or_else(|| shape.array_len().map(|len| Expr::int(len as i64)))
+                {
+                    FnParamType::SizedArray {
+                        elem: None,
+                        generic_name: Some(shape.proc_name.clone()),
+                        size,
+                    }
+                } else if shape.is_array() {
+                    FnParamType::ArrayGeneric(shape.proc_name.clone())
+                } else {
+                    FnParamType::Struct(shape.proc_name.clone())
+                };
+                if let Some(param) = new_def.params.get_mut(idx) {
+                    param.ty = Some(ty.clone());
+                }
+                if let Some(param) = new_sig.param_types.get_mut(idx) {
+                    *param = Some(ty);
                 }
             }
             MonoParamKey::ResolvedBuffer(elem_ty, channels) => {
@@ -1075,39 +1150,7 @@ pub(crate) fn monomorphize_calls_in_function(
         proc_types,
         return_type_env: env,
     };
-    let mut local_env = env.clone();
-    local_env.enter_function(&type_params);
-
-    for param in &mut def.params {
-        local_env.bind_function_param(param, &type_params);
-        if let Some(default) = &mut param.default {
-            let mut statement = vec![Stmt::Expr {
-                loc: default.loc().span(),
-                expr: default.clone(),
-            }];
-            monomorphize_calls_in_stmts(
-                &mut statement,
-                &local_env,
-                mono_eligible,
-                fn_signatures,
-                generic_templates,
-                struct_defs,
-                generated_defs,
-                generated_sigs,
-                mono_cache,
-                return_types,
-                errors,
-                owner,
-            );
-            if let Stmt::Expr { expr, .. } = &mut statement[0] {
-                *default = std::mem::replace(expr, Expr::int(0));
-            }
-        }
-    }
-
-    monomorphize_calls_in_stmts(
-        &mut def.body,
-        &local_env,
+    let mut rewriter = MonoRewriter {
         mono_eligible,
         fn_signatures,
         generic_templates,
@@ -1118,7 +1161,21 @@ pub(crate) fn monomorphize_calls_in_function(
         return_types,
         errors,
         owner,
-    );
+    };
+    let mut local_env = env.clone();
+    local_env.enter_function(&type_params);
+
+    for param in &mut def.params {
+        local_env.bind_function_param(param, &type_params);
+        if let Some(default) = &mut param.default {
+            rewriter.rewrite_expr(default, &local_env);
+        }
+    }
+
+    local_env.bind_processor_function_params(&def.name);
+
+    rewriter.rewrite_function_resource_recipes(&def.name, &local_env);
+    rewriter.rewrite_stmts(&mut def.body, &mut local_env);
 }
 
 struct MonoRewriter<'a> {
@@ -1135,6 +1192,10 @@ struct MonoRewriter<'a> {
 }
 
 impl CallTypeRewriter for MonoRewriter<'_> {
+    fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        crate::proc_call_rewrite::rewrite_processor_projection_statement(expr, env, self.errors);
+        self.rewrite_expr(expr, env);
+    }
     fn context(&self) -> CallTypeContext<'_> {
         CallTypeContext {
             return_types: self.return_types,
@@ -1142,6 +1203,7 @@ impl CallTypeRewriter for MonoRewriter<'_> {
         }
     }
     fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
+        crate::proc_call_rewrite::rewrite_processor_projection_calls(expr, env, self.errors);
         monomorphize_calls_in_expr(
             expr,
             env,
@@ -1180,6 +1242,25 @@ fn request_mono_instance(
     // Register before walking dependencies so recursive calls retain identity.
     mono_cache.instances.insert(key.clone(), name.clone());
     let (def, mut signature) = generate_mono_def(&original, sig, &key.1, &name, loc, errors);
+    let view_params = original
+        .params
+        .iter()
+        .zip(&key.1)
+        .filter_map(|(param, key)| match key {
+            MonoParamKey::ResolvedProcessorView(shape, _) => {
+                Some((param.name.clone(), shape.clone()))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    if !view_params.is_empty() {
+        owner
+            .return_type_env
+            .processor_views
+            .borrow_mut()
+            .function_params
+            .insert(name.clone(), view_params);
+    }
     if let Some(result) = super::call_types::declared_call_return_type(&def).or_else(|| {
         infer_known_def_return_type(
             &def,
@@ -1395,12 +1476,15 @@ fn monomorphize_calls_in_expr(
                     .flatten()
                     .or_else(|| sig.defaults.get(idx).and_then(Option::as_ref));
                 if let Some(arg_expr) = arg_expr {
+                    let processor_environment =
+                        env.processor_views.borrow().operation(name).is_none();
                     if let Some(key) = infer_mono_arg_key(
                         arg_expr,
                         param_ty,
                         env,
                         generic_templates,
                         owner.proc_types,
+                        processor_environment,
                         return_types,
                         struct_defs,
                     ) {

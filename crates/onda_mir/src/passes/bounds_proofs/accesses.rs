@@ -113,6 +113,7 @@ pub(super) fn visit(context: &Context<'_>, statement: &mut StatementKind, prove:
 
 fn rvalue(context: &Context<'_>, value: &mut Rvalue, prove: &mut Prove<'_>) {
     match value {
+        Rvalue::MakeBuffer { source, .. } => argument(context, source, prove),
         Rvalue::Load(source) => place(context, source, prove),
         Rvalue::InputLoad {
             input,
@@ -216,14 +217,16 @@ fn buffer_param(
     parameter: &mut crate::BufferParamRef,
     prove: &mut Prove<'_>,
 ) {
+    let ty = parameter.ty(context.function);
     if let crate::BufferParamRef::ArrayElement {
-        span,
-        selector,
-        bounds,
+        selector, bounds, ..
+    }
+    | crate::BufferParamRef::LocalElement {
+        selector, bounds, ..
     } = parameter
     {
-        if let Type::BufferSpan { len, .. } =
-            context.program.types[context.function.params[span.index()].ty.index()]
+        if let Some((_, _, _, len, _)) =
+            ty.and_then(|ty| context.program.types[ty.index()].buffer_collection())
         {
             prove(*selector, Limit::Fixed(len), bounds);
         }

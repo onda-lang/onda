@@ -1,0 +1,21 @@
+proc Voice:
+  buffers:
+    source: f32
+  init:
+    bias = 0.0
+  event set_bias(value: f32):
+    bias = source[0] + value
+  sample:
+    out1 = source[0] + bias
+buffers:
+  clips: f32 {4}
+init:
+  voices: Voice[2] = [Voice(source = clips[1]), Voice(source = clips[3])]
+  selector: i32 = 1
+sample:
+  voices[0].set_bias(1.0)
+  voices[selector].set_bias(2.0)
+  out1 = voices[0]()
+  out2 = voices[selector]()
+  out3 = voices[0].out1 + voices[1].out1
+  selector = 1 - selector

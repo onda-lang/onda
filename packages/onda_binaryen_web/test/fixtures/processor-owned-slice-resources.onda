@@ -1,0 +1,29 @@
+proc Voice:
+  buffers:
+    clip: f32
+  init:
+    count: i32 = 0
+  block:
+    count += 100
+    sample:
+      count += 1
+      out1 = clip[0] + f32(count)
+    clip[0] += 1.0
+proc Bank:
+  buffers:
+    clips: f32 {3}
+  init:
+    voices: Voice[3] = [Voice(clip = clips[0]), Voice(clip = clips[1]), Voice(clip = clips[2])]
+def step(voice) -> f32:
+  return voice()
+buffers:
+  clips: f32 {3}
+init:
+  bank = Bank(clips = clips)
+block:
+  copies: Voice[2] = bank.voices[1:3]
+  sample:
+    selected = copies[1]
+    out1 = step(selected)
+    out2 = clips[1][0]
+    out3 = selected.out1

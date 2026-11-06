@@ -1,0 +1,26 @@
+proc Voice:
+  delegate finished(value: i32)
+  init:
+    before: i32 = 0
+    after: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before * 10 + after)
+    after += 1
+    finished(after)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    completions: i32 = 0
+    observed: i32 = 0
+  when voices[0].finished(value):
+    completions = value
+  block:
+    sample:
+      out1 = voices[0]() + f32(observed * 100)
+    observed = completions
+init:
+  bank = Bank()
+sample:
+  out1 = bank()

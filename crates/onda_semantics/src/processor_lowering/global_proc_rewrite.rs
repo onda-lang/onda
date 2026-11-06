@@ -3,481 +3,8 @@ use super::*;
 #[derive(Debug, Clone)]
 struct RuntimeManagedProcArray {
     proc_name: String,
-    slots: Vec<String>,
+    slots: ProcArrayDeclaration,
     active_symbol: String,
-}
-
-fn rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-    mut stmt: Stmt,
-    proc_api: &HashMap<String, ProcApi>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-    runtime_managed_arrays: &mut HashMap<String, RuntimeManagedProcArray>,
-    temp_counter: &mut usize,
-) -> Vec<Stmt> {
-    fn temp_name(temp_counter: &mut usize, purpose: &str) -> String {
-        let id = *temp_counter;
-        *temp_counter += 1;
-        format!("__onda_dynamic_proc_{purpose}_{id}")
-    }
-
-    fn assign_temp(name: String, expr: Expr, ty: Option<PrimitiveType>) -> Stmt {
-        Stmt::Assign {
-            loc: Default::default(),
-            target_loc: Default::default(),
-            target: AssignTarget::Var(name),
-            decl_ty: ty.map(DeclType::Scalar),
-            generic_decl_ty: None,
-            is_typed_decl: ty.is_some(),
-            typed_decl_ty_loc: Default::default(),
-            expr,
-        }
-    }
-
-    fn collect_guards_from_expr(
-        expr: &mut Expr,
-        proc_api: &HashMap<String, ProcApi>,
-        proc_array_slots: &HashMap<String, Vec<String>>,
-        runtime_managed_arrays: &mut HashMap<String, RuntimeManagedProcArray>,
-        guards: &mut Vec<Stmt>,
-        temp_counter: &mut usize,
-    ) {
-        match expr {
-            Expr::Index { index, .. } => collect_guards_from_expr(
-                index,
-                proc_api,
-                proc_array_slots,
-                runtime_managed_arrays,
-                guards,
-                temp_counter,
-            ),
-            Expr::Slice {
-                selector,
-                channel,
-                start,
-                end,
-                ..
-            } => {
-                for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                    collect_guards_from_expr(
-                        coordinate,
-                        proc_api,
-                        proc_array_slots,
-                        runtime_managed_arrays,
-                        guards,
-                        temp_counter,
-                    );
-                }
-            }
-            Expr::ArrayCtor { spec, init, .. } => {
-                collect_guards_from_expr(
-                    &mut spec.size,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    guards,
-                    temp_counter,
-                );
-                if let Some(values) = init {
-                    for value in values {
-                        collect_guards_from_expr(
-                            value,
-                            proc_api,
-                            proc_array_slots,
-                            runtime_managed_arrays,
-                            guards,
-                            temp_counter,
-                        );
-                    }
-                }
-            }
-            Expr::Logical { op, lhs, rhs, .. } => {
-                collect_guards_from_expr(
-                    lhs,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    guards,
-                    temp_counter,
-                );
-                let mut rhs_guards = Vec::new();
-                collect_guards_from_expr(
-                    rhs,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    &mut rhs_guards,
-                    temp_counter,
-                );
-                if !rhs_guards.is_empty() {
-                    // Keep hook execution behind the language's short-circuit
-                    // boundary while still producing one expression result.
-                    let result = temp_name(temp_counter, "condition");
-                    guards.push(assign_temp(
-                        result.clone(),
-                        lhs.as_ref().clone(),
-                        Some(PrimitiveType::Bool),
-                    ));
-                    let branch_cond = match op {
-                        LogicalOp::And => Expr::var(result.clone()),
-                        LogicalOp::Or => Expr::UnaryNot {
-                            loc: Default::default(),
-                            expr: Box::new(Expr::var(result.clone())),
-                        },
-                    };
-                    rhs_guards.push(assign_temp(result.clone(), rhs.as_ref().clone(), None));
-                    guards.push(Stmt::If {
-                        loc: Default::default(),
-                        cond: branch_cond,
-                        then_branch: rhs_guards,
-                        else_branch: Vec::new(),
-                    });
-                    *expr = Expr::var(result);
-                }
-            }
-            Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
-                collect_guards_from_expr(
-                    lhs,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    guards,
-                    temp_counter,
-                );
-                collect_guards_from_expr(
-                    rhs,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    guards,
-                    temp_counter,
-                );
-            }
-            Expr::Call { args, .. } => {
-                for arg in args.iter_mut() {
-                    collect_guards_from_expr(
-                        arg,
-                        proc_api,
-                        proc_array_slots,
-                        runtime_managed_arrays,
-                        guards,
-                        temp_counter,
-                    );
-                }
-            }
-            Expr::UserCall { name: _, args, .. } => {
-                for arg in args.iter_mut() {
-                    collect_guards_from_expr(
-                        &mut arg.expr,
-                        proc_api,
-                        proc_array_slots,
-                        runtime_managed_arrays,
-                        guards,
-                        temp_counter,
-                    );
-                }
-                let Expr::UserCall { name, args, .. } = expr else {
-                    unreachable!();
-                };
-                let proc_name = if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
-                    step_proc
-                } else if let Some((call_proc, out_idx_raw)) =
-                    name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)
-                {
-                    if out_idx_raw.parse::<usize>().is_ok() {
-                        call_proc
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
-                };
-                let Some(api) = proc_api.get(proc_name) else {
-                    return;
-                };
-                if !proc_needs_block_hooks(api) {
-                    return;
-                }
-                let Some(CallArg {
-                    expr: Expr::Index { base, index, .. },
-                    ..
-                }) = args.first_mut()
-                else {
-                    return;
-                };
-                if matches!(index.as_ref(), Expr::Int { .. }) {
-                    return;
-                }
-                let array_base = base.clone();
-                let Some(slots) = proc_array_slots.get(&array_base) else {
-                    return;
-                };
-                runtime_managed_arrays
-                    .entry(array_base.clone())
-                    .or_insert_with(|| RuntimeManagedProcArray {
-                        proc_name: proc_name.to_owned(),
-                        slots: slots.clone(),
-                        active_symbol: runtime_proc_array_active_symbol(&array_base),
-                    });
-                let active_symbol = runtime_proc_array_active_symbol(&array_base);
-                // The selector participates in the hook and the original call;
-                // cache it so source evaluation still happens exactly once.
-                let selector = temp_name(temp_counter, "selector");
-                guards.push(assign_temp(selector.clone(), index.as_ref().clone(), None));
-                **index = Expr::var(selector.clone());
-                let input_slots = api.ins.iter().map(|port| port.slots.len()).sum::<usize>();
-                let buffer_start = 1 + input_slots;
-                let mut pre_args = Vec::<CallArg>::new();
-                pre_args.push(CallArg {
-                    name: None,
-                    expr: Expr::Index {
-                        loc: Default::default(),
-                        base: array_base,
-                        index: Box::new(Expr::var(selector.clone())),
-                    },
-                });
-                pre_args.extend(args.iter().skip(buffer_start).cloned());
-                guards.push(Stmt::If {
-                    loc: Default::default(),
-                    cond: Expr::UnaryNot {
-                        loc: Default::default(),
-                        expr: Box::new(Expr::Index {
-                            loc: Default::default(),
-                            base: active_symbol.clone(),
-                            index: Box::new(Expr::var(selector.clone())),
-                        }),
-                    },
-                    then_branch: vec![
-                        Stmt::Expr {
-                            loc: Default::default(),
-                            expr: Expr::UserCall {
-                                loc: Default::default(),
-                                name: format!("{proc_name}{PROC_BLOCK_PRE_FN_SUFFIX}"),
-                                type_args: Vec::new(),
-                                args: pre_args,
-                            },
-                        },
-                        Stmt::Assign {
-                            loc: Default::default(),
-                            target_loc: Default::default(),
-                            target: AssignTarget::Index {
-                                base: active_symbol,
-                                index: Expr::var(selector),
-                            },
-                            decl_ty: None,
-                            generic_decl_ty: None,
-                            is_typed_decl: false,
-                            typed_decl_ty_loc: Default::default(),
-                            expr: Expr::bool(true),
-                        },
-                    ],
-                    else_branch: Vec::new(),
-                });
-            }
-            Expr::Cast { expr: inner, .. }
-            | Expr::UnaryNot { expr: inner, .. }
-            | Expr::UnaryBitNot { expr: inner, .. } => {
-                collect_guards_from_expr(
-                    inner,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    guards,
-                    temp_counter,
-                );
-            }
-            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-                for value in values.iter_mut() {
-                    collect_guards_from_expr(
-                        value,
-                        proc_api,
-                        proc_array_slots,
-                        runtime_managed_arrays,
-                        guards,
-                        temp_counter,
-                    );
-                }
-            }
-            Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } | Expr::Var { .. } => {}
-        }
-    }
-
-    let mut guards = Vec::<Stmt>::new();
-    match &mut stmt {
-        Stmt::Expr { expr, .. } | Stmt::Assign { expr, .. } | Stmt::Return { expr, .. } => {
-            collect_guards_from_expr(
-                expr,
-                proc_api,
-                proc_array_slots,
-                runtime_managed_arrays,
-                &mut guards,
-                temp_counter,
-            );
-        }
-        _ => {}
-    }
-    if !guards.is_empty() {
-        let mut rewritten = guards;
-        rewritten.push(stmt);
-        return rewritten;
-    }
-
-    match stmt {
-        Stmt::If {
-            loc,
-            mut cond,
-            then_branch,
-            else_branch,
-        } => {
-            let mut cond_guards = Vec::<Stmt>::new();
-            collect_guards_from_expr(
-                &mut cond,
-                proc_api,
-                proc_array_slots,
-                runtime_managed_arrays,
-                &mut cond_guards,
-                temp_counter,
-            );
-            let mut rewritten_then = Vec::<Stmt>::new();
-            for nested in then_branch {
-                rewritten_then.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-                    nested,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    temp_counter,
-                ));
-            }
-            let mut rewritten_else = Vec::<Stmt>::new();
-            for nested in else_branch {
-                rewritten_else.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-                    nested,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    temp_counter,
-                ));
-            }
-            cond_guards.push(Stmt::If {
-                loc,
-                cond,
-                then_branch: rewritten_then,
-                else_branch: rewritten_else,
-            });
-            cond_guards
-        }
-        Stmt::For {
-            loc,
-            var,
-            var_ty,
-            mut start,
-            mut end,
-            mut step,
-            end_inclusive,
-            body,
-        } => {
-            let mut range_guards = Vec::<Stmt>::new();
-            collect_guards_from_expr(
-                &mut start,
-                proc_api,
-                proc_array_slots,
-                runtime_managed_arrays,
-                &mut range_guards,
-                temp_counter,
-            );
-            collect_guards_from_expr(
-                &mut end,
-                proc_api,
-                proc_array_slots,
-                runtime_managed_arrays,
-                &mut range_guards,
-                temp_counter,
-            );
-            if let Some(step_expr) = &mut step {
-                collect_guards_from_expr(
-                    step_expr,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    &mut range_guards,
-                    temp_counter,
-                );
-            }
-            let mut rewritten_body = Vec::<Stmt>::new();
-            for nested in body {
-                rewritten_body.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-                    nested,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    temp_counter,
-                ));
-            }
-            range_guards.push(Stmt::For {
-                loc,
-                var,
-                var_ty,
-                start,
-                end,
-                step,
-                end_inclusive,
-                body: rewritten_body,
-            });
-            range_guards
-        }
-        Stmt::While {
-            loc,
-            mut cond,
-            body,
-        } => {
-            let mut cond_guards = Vec::<Stmt>::new();
-            collect_guards_from_expr(
-                &mut cond,
-                proc_api,
-                proc_array_slots,
-                runtime_managed_arrays,
-                &mut cond_guards,
-                temp_counter,
-            );
-            let mut rewritten_body = Vec::<Stmt>::new();
-            for nested in body {
-                rewritten_body.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-                    nested,
-                    proc_api,
-                    proc_array_slots,
-                    runtime_managed_arrays,
-                    temp_counter,
-                ));
-            }
-            if cond_guards.is_empty() {
-                vec![Stmt::While {
-                    loc,
-                    cond,
-                    body: rewritten_body,
-                }]
-            } else {
-                // Condition hooks belong to each evaluation, including the one
-                // that terminates the loop.
-                cond_guards.push(Stmt::If {
-                    loc: Default::default(),
-                    cond: Expr::UnaryNot {
-                        loc: Default::default(),
-                        expr: Box::new(cond),
-                    },
-                    then_branch: vec![Stmt::Break {
-                        loc: Default::default(),
-                    }],
-                    else_branch: Vec::new(),
-                });
-                cond_guards.extend(rewritten_body);
-                vec![Stmt::While {
-                    loc,
-                    cond: Expr::bool(true),
-                    body: cond_guards,
-                }]
-            }
-        }
-        _ => vec![stmt],
-    }
 }
 
 fn is_static_block_hook_for_managed_array(
@@ -591,16 +118,18 @@ fn record_proc_instance_oversample_factor(
 }
 
 fn propagate_uniform_proc_array_oversample_factors(
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     factors: &mut HashMap<String, usize>,
 ) {
     for (base, slots) in proc_array_slots {
-        let mut slot_factors = slots.iter().filter_map(|slot| factors.get(slot).copied());
+        let mut slot_factors = slots
+            .binding_names()
+            .filter_map(|slot| factors.get(slot).copied());
         let Some(first) = slot_factors.next() else {
             continue;
         };
         if slots
-            .iter()
+            .binding_names()
             .all(|slot| factors.get(slot).copied() == Some(first))
         {
             factors.insert(base.clone(), first);
@@ -629,15 +158,12 @@ fn reject_explicit_oversampled_child_calls_in_context(
     let Some(shape) = lowering_shapes.get(proc_name) else {
         return;
     };
-    let nested_instances = shape
-        .state
-        .nested_procs
-        .iter()
-        .map(|(name, nested)| {
+    let nested_instances = declared_child_bindings(&shape.state, &shape.nested_proc_array_slots)
+        .map(|(name, proc_name)| {
             (
                 name.clone(),
                 ProcCallInstance {
-                    proc_name: nested.proc_name.clone(),
+                    proc_name: proc_name.to_owned(),
                     buffer_args: Vec::new(),
                     delegate_context_args: Vec::new(),
                     routes_owner_delegates: false,
@@ -689,6 +215,14 @@ fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
     let mut symbols = HashSet::new();
     for block in &program.blocks {
         match block {
+            Block::Buffers(buffers) => {
+                symbols.extend(
+                    buffers
+                        .iter()
+                        .filter(|buffer| buffer.array_size.is_some())
+                        .map(|buffer| buffer.name.clone()),
+                );
+            }
             Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
                 for port in ports.iter() {
                     if matches!(
@@ -738,6 +272,59 @@ fn top_level_constructor_array_symbols(program: &Program) -> HashSet<String> {
     symbols
 }
 
+/// Scalar projections expose calls on their existing owner storage. Keep this
+/// source surface separate from the independently initialized processor roots.
+fn projected_call_instances(
+    roots: &HashMap<String, ProcCallInstance>,
+    procs: &HashMap<String, ProcessorDef>,
+    shapes: &HashMap<String, ProcLoweringShape>,
+) -> HashMap<String, ProcCallInstance> {
+    let mut instances = roots.clone();
+    let mut pending = roots.keys().cloned().collect::<Vec<_>>();
+    while let Some(owner) = pending.pop() {
+        let instance = instances[&owner].clone();
+        let resources = instance
+            .buffer_args
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
+        let resource_names = shapes[&instance.proc_name]
+            .buffer_specs
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<Vec<_>>();
+        for (field, child) in &shapes[&instance.proc_name].state.nested_procs {
+            let name = format!("{owner}.{field}");
+            let buffer_args = view_catalog::constructor_resources(
+                &procs[&instance.proc_name],
+                field,
+                &shapes[&child.proc_name],
+            )
+            .iter()
+            .map(|expression| {
+                crate::processor_views::instantiate_resource_recipe(
+                    expression,
+                    Some(&Expr::var(&owner)),
+                    &resource_names,
+                    &resources,
+                )
+            })
+            .collect();
+            instances.insert(
+                name.clone(),
+                ProcCallInstance {
+                    proc_name: child.proc_name.clone(),
+                    buffer_args,
+                    delegate_context_args: Vec::new(),
+                    routes_owner_delegates: false,
+                },
+            );
+            pending.push(name);
+        }
+    }
+    instances
+}
+
 pub(super) fn rewrite_top_level_proc_calls(
     program: &mut Program,
     runtime_def_names: &HashSet<String>,
@@ -749,11 +336,11 @@ pub(super) fn rewrite_top_level_proc_calls(
 ) -> TopLevelProcRewriteMeta {
     let constructor_array_symbols = top_level_constructor_array_symbols(program);
     let mut global_proc_instances = HashMap::<String, ProcCallInstance>::new();
-    let mut global_proc_array_slots = HashMap::<String, Vec<String>>::new();
+    let mut call_instances = HashMap::new();
+    let mut global_proc_array_slots = ProcArrayDeclarations::new();
     let mut global_proc_instance_oversample_factors = HashMap::<String, usize>::new();
     let mut global_proc_array_broadcast_slots = HashMap::<String, (usize, usize)>::new();
     let mut runtime_managed_arrays = HashMap::<String, RuntimeManagedProcArray>::new();
-    let mut dynamic_hook_temp_counter = 0;
     let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
     if let Some(Block::Init(init)) = program
         .blocks
@@ -801,11 +388,25 @@ pub(super) fn rewrite_top_level_proc_calls(
                             });
                         }
                     }
-                    let slot_names = (0..len)
-                        .map(|idx| format!("{array_var}[{idx}]"))
-                        .collect::<Vec<_>>();
+                    let uniform = lowering_shapes.get(&proc_ctor).is_some_and(|shape| {
+                        proc_array_init::is_uniform(
+                            init,
+                            &constructor_array_symbols,
+                            &proc_array_init::per_slot_arguments(
+                                &shape.param_specs,
+                                &shape.buffer_specs,
+                            ),
+                        )
+                    });
+                    let slot_names = ProcArrayDeclaration::new(
+                        array_var.clone(),
+                        proc_ctor.clone(),
+                        len,
+                        uniform,
+                    );
                     global_proc_array_slots.insert(array_var.clone(), slot_names.clone());
-                    let mut expanded = Vec::<Stmt>::with_capacity(len + 1);
+                    let mut expanded =
+                        Vec::<Stmt>::with_capacity(slot_names.binding_names().len() + 1);
                     if let Some(mut decl_stmt) = pending_stmts.first().cloned() {
                         if let Stmt::Assign {
                             expr: Expr::ArrayCtor { init, .. },
@@ -820,7 +421,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         // aggregate defaults are only valid during a full init.
                         expanded.extend(mark_pinned_initializer_stmt(decl_stmt));
                     }
-                    for idx in 0..len {
+                    for idx in 0..if uniform { 1 } else { len } {
                         let mut args = Vec::<CallArg>::new();
                         let slot_var = format!("{array_var}[{idx}]");
                         if let Some(values) = init {
@@ -1032,6 +633,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     })
                                     .collect::<Vec<_>>();
                             }
+                            let setup_start = rewritten_init.len();
                             for assign in ctor_assigns {
                                 constructor_setup_indices.insert(rewritten_init.len());
                                 rewritten_init.push(assign);
@@ -1060,6 +662,19 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     args: init_args,
                                 },
                             });
+                            if let Some((array_base, _)) = &array_slot {
+                                let declaration = &global_proc_array_slots[array_base];
+                                if declaration.binding_names().len() == 1 {
+                                    let body = rewritten_init.split_off(setup_start);
+                                    constructor_setup_indices.retain(|index| *index < setup_start);
+                                    constructor_setup_indices.insert(setup_start);
+                                    rewritten_init.push(proc_array_init::top_level_setup(
+                                        array_base,
+                                        declaration.len(),
+                                        body,
+                                    ));
+                                }
+                            }
                         } else {
                             rewritten_init.push(Stmt::Expr {
                                 loc: Default::default(),
@@ -1090,9 +705,11 @@ pub(super) fn rewrite_top_level_proc_calls(
             }
         }
         init.body = rewritten_init;
-        rewrite_proc_calls_in_stmts_without_hooks(
+        call_instances =
+            projected_call_instances(&global_proc_instances, proc_defs_by_name, lowering_shapes);
+        call_instances = rewrite_proc_calls_in_stmts_without_hooks(
             &mut init.body,
-            &global_proc_instances,
+            &call_instances,
             &global_proc_array_slots,
             proc_api,
             errors,
@@ -1100,7 +717,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
             None,
             &mut init.body,
-            &global_proc_instances,
+            &call_instances,
             &global_proc_array_slots,
             proc_api,
             errors,
@@ -1109,10 +726,10 @@ pub(super) fn rewrite_top_level_proc_calls(
     }
 
     for (base, slots) in &global_proc_array_slots {
-        let Some(first_slot) = slots.first() else {
+        let Some(first_slot) = slots.first_binding() else {
             continue;
         };
-        let Some(instance) = global_proc_instances.get(first_slot) else {
+        let Some(instance) = call_instances.get(first_slot) else {
             continue;
         };
         let Some(api) = proc_api.get(&instance.proc_name) else {
@@ -1137,7 +754,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 if let Some(sample) = &exec.sample {
                     called_proc_instances.extend(collect_called_proc_instances_in_stmts(
                         sample,
-                        &global_proc_instances,
+                        &call_instances,
                         &global_proc_array_slots,
                     ));
                 }
@@ -1145,7 +762,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             Block::Sample(stmts) => {
                 called_proc_instances.extend(collect_called_proc_instances_in_stmts(
                     stmts,
-                    &global_proc_instances,
+                    &call_instances,
                     &global_proc_array_slots,
                 ));
             }
@@ -1160,7 +777,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             record_proc_instance_oversample_factor(
                 instance_name,
                 sample_oversample_factor,
-                &global_proc_instances,
+                &call_instances,
                 proc_api,
                 &mut global_proc_instance_oversample_factors,
                 errors,
@@ -1172,7 +789,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         );
         let mut rate_validation_visiting = HashSet::<(String, usize)>::new();
         for instance_name in &called_order {
-            let Some(instance) = global_proc_instances.get(instance_name) else {
+            let Some(instance) = call_instances.get(instance_name) else {
                 continue;
             };
             let Some(api) = proc_api.get(&instance.proc_name) else {
@@ -1197,7 +814,7 @@ pub(super) fn rewrite_top_level_proc_calls(
         let mut injected_block_pre = Vec::<Stmt>::new();
         let mut injected_block_post = Vec::<Stmt>::new();
         for instance_name in called_order {
-            let Some(instance) = global_proc_instances.get(&instance_name) else {
+            let Some(instance) = call_instances.get(&instance_name) else {
                 continue;
             };
             let Some(api) = proc_api.get(&instance.proc_name) else {
@@ -1298,7 +915,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             Block::Block(exec) => {
                 rewrite_proc_calls_in_stmts(
                     &mut exec.pre,
-                    &global_proc_instances,
+                    &call_instances,
                     &global_proc_array_slots,
                     proc_api,
                     errors,
@@ -1306,28 +923,15 @@ pub(super) fn rewrite_top_level_proc_calls(
                 if let Some(sample) = &mut exec.sample {
                     rewrite_proc_calls_in_stmts(
                         sample,
-                        &global_proc_instances,
+                        &call_instances,
                         &global_proc_array_slots,
                         proc_api,
                         errors,
                     );
-                    let mut rewritten_sample = Vec::<Stmt>::new();
-                    for stmt in std::mem::take(&mut sample.body) {
-                        rewritten_sample.extend(
-                            rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-                                stmt,
-                                proc_api,
-                                &global_proc_array_slots,
-                                &mut runtime_managed_arrays,
-                                &mut dynamic_hook_temp_counter,
-                            ),
-                        );
-                    }
-                    sample.body = rewritten_sample;
                 }
                 rewrite_proc_calls_in_stmts(
                     &mut exec.post,
-                    &global_proc_instances,
+                    &call_instances,
                     &global_proc_array_slots,
                     proc_api,
                     errors,
@@ -1336,27 +940,16 @@ pub(super) fn rewrite_top_level_proc_calls(
             Block::Sample(stmts) => {
                 rewrite_proc_calls_in_stmts(
                     stmts,
-                    &global_proc_instances,
+                    &call_instances,
                     &global_proc_array_slots,
                     proc_api,
                     errors,
                 );
-                let mut rewritten_sample = Vec::<Stmt>::new();
-                for stmt in std::mem::take(&mut stmts.body) {
-                    rewritten_sample.extend(rewrite_stmt_for_runtime_managed_dynamic_proc_blocks(
-                        stmt,
-                        proc_api,
-                        &global_proc_array_slots,
-                        &mut runtime_managed_arrays,
-                        &mut dynamic_hook_temp_counter,
-                    ));
-                }
-                stmts.body = rewritten_sample;
             }
             Block::Def(def) if runtime_def_names.contains(&def.name) => {
                 rewrite_proc_calls_in_stmts(
                     &mut def.body,
-                    &global_proc_instances,
+                    &call_instances,
                     &global_proc_array_slots,
                     proc_api,
                     errors,
@@ -1367,7 +960,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 for event in events {
                     rewrite_proc_calls_in_stmts(
                         &mut event.body,
-                        &global_proc_instances,
+                        &call_instances,
                         &global_proc_array_slots,
                         proc_api,
                         errors,
@@ -1376,7 +969,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             }
             Block::When(when) => rewrite_proc_calls_in_stmts(
                 &mut when.body,
-                &global_proc_instances,
+                &call_instances,
                 &global_proc_array_slots,
                 proc_api,
                 errors,
@@ -1409,7 +1002,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                             elem: ArrayElemType::Primitive(PrimitiveType::Bool),
                             size: Box::new(Expr::int(len as i64)),
                         },
-                        init: Some(vec![Expr::bool(false); len]),
+                        init: None,
                         initialize: true,
                         init_is_value: false,
                     },
@@ -1453,21 +1046,29 @@ pub(super) fn rewrite_top_level_proc_calls(
             let mut managed = runtime_managed_arrays.iter().collect::<Vec<_>>();
             managed.sort_by_key(|(a, _)| *a);
             for (_base, info) in &managed {
-                for slot_idx in 0..info.slots.len() {
-                    reset_prefix.push(Stmt::Assign {
+                let variable = "__onda_proc_reset_slot";
+                reset_prefix.push(Stmt::For {
+                    loc: Default::default(),
+                    var: variable.to_owned(),
+                    var_ty: PrimitiveType::I32,
+                    step: None,
+                    start: Expr::int(0),
+                    end: Expr::int(info.slots.len() as i64),
+                    end_inclusive: false,
+                    body: vec![Stmt::Assign {
                         loc: Default::default(),
                         target_loc: Default::default(),
                         target: AssignTarget::Index {
                             base: info.active_symbol.clone(),
-                            index: Expr::int(slot_idx as i64),
+                            index: Expr::var(variable),
                         },
                         decl_ty: None,
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
                         expr: Expr::bool(false),
-                    });
-                }
+                    }],
+                });
             }
 
             exec.pre.retain(|stmt| {
@@ -1496,31 +1097,42 @@ pub(super) fn rewrite_top_level_proc_calls(
             exec.pre = reset_prefix;
 
             for (base, info) in managed {
-                for (slot_idx, slot_name) in info.slots.iter().enumerate() {
-                    let Some(instance) = global_proc_instances.get(slot_name) else {
-                        continue;
-                    };
-                    let Some(api) = proc_api.get(&info.proc_name) else {
-                        continue;
-                    };
-                    let mut post_args = Vec::<CallArg>::new();
-                    post_args.push(CallArg {
-                        name: None,
-                        expr: Expr::Index {
-                            loc: Default::default(),
-                            base: (*base).clone(),
-                            index: Box::new(Expr::int(slot_idx as i64)),
-                        },
-                    });
-                    post_args.extend(expand_proc_buffer_call_args(
-                        instance, api, slot_name, errors,
-                    ));
-                    exec.post.push(Stmt::If {
+                let Some((_, api, instances)) = resolve_proc_array_dispatch_context(
+                    &info.slots,
+                    &call_instances,
+                    proc_api,
+                    "processor block-post",
+                    errors,
+                ) else {
+                    continue;
+                };
+                let variable = "__onda_proc_finish_slot";
+                let index = Expr::var(variable);
+                let mut args = vec![CallArg {
+                    name: None,
+                    expr: Expr::Index {
+                        loc: Default::default(),
+                        base: base.clone(),
+                        index: Box::new(index.clone()),
+                    },
+                }];
+                args.extend(dynamic_proc_array_buffer_call_args(
+                    &instances, &api, base, &index, errors,
+                ));
+                exec.post.push(Stmt::For {
+                    loc: Default::default(),
+                    var: variable.to_owned(),
+                    var_ty: PrimitiveType::I32,
+                    step: None,
+                    start: Expr::int(0),
+                    end: Expr::int(info.slots.len() as i64),
+                    end_inclusive: false,
+                    body: vec![Stmt::If {
                         loc: Default::default(),
                         cond: Expr::Index {
                             loc: Default::default(),
                             base: info.active_symbol.clone(),
-                            index: Box::new(Expr::int(slot_idx as i64)),
+                            index: Box::new(index),
                         },
                         then_branch: vec![Stmt::Expr {
                             loc: Default::default(),
@@ -1528,12 +1140,12 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 loc: Default::default(),
                                 name: format!("{}{}", info.proc_name, PROC_BLOCK_POST_FN_SUFFIX),
                                 type_args: Vec::new(),
-                                args: post_args,
+                                args,
                             },
                         }],
                         else_branch: Vec::new(),
-                    });
-                }
+                    }],
+                });
             }
         }
     }
@@ -1594,15 +1206,21 @@ sample:
             typed.array_vars
         );
         assert!(
-            typed.block_pre.iter().any(|stmt| matches!(
-                stmt,
-                Stmt::Assign {
-                    target: AssignTarget::Index { base, index },
-                    expr: Expr::Bool { value: false, .. },
-                    ..
-                } if base == "__onda_proc_block_active_voices"
-                    && matches!(index, Expr::Int { value: 0, .. } | Expr::Int { value: 1, .. })
-            )),
+            typed.block_pre.iter().any(|statement| {
+                let mut resets = false;
+                statement.visit_statements(|stmt| {
+                    resets |= matches!(
+                    stmt,
+                    Stmt::Assign {
+                        target: AssignTarget::Index { base, index },
+                        expr: Expr::Bool { value: false, .. },
+                        ..
+                    } if base == "__onda_proc_block_active_voices"
+                        && matches!(index, Expr::Var { .. })
+                    );
+                });
+                resets
+            }),
             "expected managed active-slot reset in block_pre: {:?}",
             typed.block_pre
         );

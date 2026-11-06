@@ -1,0 +1,392 @@
+{
+  "schema_version": 9,
+  "config": {
+    "sample_rate": 48000,
+    "block_size": 4
+  },
+  "source_files": [],
+  "log_sites": [],
+  "types": [
+    {
+      "kind": "scalar",
+      "data": "f32"
+    },
+    {
+      "kind": "scalar",
+      "data": "bool"
+    },
+    {
+      "kind": "scalar",
+      "data": "i32"
+    },
+    {
+      "kind": "buffer_map",
+      "data": {
+        "element": "f32",
+        "channels": "mono",
+        "access": "read_write",
+        "len": 2
+      }
+    }
+  ],
+  "structs": [],
+  "interface": {
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "out1",
+        "ty": 0
+      }
+    ],
+    "control_outputs": [],
+    "params": [
+      {
+        "name": "step",
+        "ty": 0,
+        "default": {
+          "kind": "scalar",
+          "data": {
+            "type": "f32",
+            "value": 0.25
+          }
+        },
+        "range": null,
+        "control": {
+          "scale": "linear",
+          "curve": null,
+          "unit": null,
+          "step": null,
+          "step_count": null
+        }
+      }
+    ],
+    "buffers": [
+      {
+        "name": "a",
+        "element": "f32",
+        "channels": "mono",
+        "access": "read_write"
+      },
+      {
+        "name": "b",
+        "element": "f32",
+        "channels": "mono",
+        "access": "read_write"
+      }
+    ],
+    "events": [],
+    "delegates": []
+  },
+  "state": [
+    {
+      "name": "phase",
+      "ty": 0,
+      "persistence": "snapshot",
+      "authored": true
+    }
+  ],
+  "const_data": [],
+  "functions": [
+    {
+      "name": "onda_processor_init",
+      "kind": {
+        "kind": "init"
+      },
+      "attributes": {
+        "origin": "compiler_generated",
+        "inline": "always",
+        "runtime_context": true
+      },
+      "params": [],
+      "results": [],
+      "locals": [],
+      "body": {
+        "statements": [
+          {
+            "kind": {
+              "kind": "assign",
+              "data": {
+                "destination": {
+                  "base": {
+                    "kind": "state",
+                    "data": 0
+                  },
+                  "projections": []
+                },
+                "value": {
+                  "kind": "use",
+                  "data": {
+                    "kind": "constant",
+                    "data": {
+                      "type": "f32",
+                      "value": 0
+                    }
+                  }
+                }
+              }
+            },
+            "source": {
+              "file": null,
+              "line": 0,
+              "column": 0,
+              "end_line": 0,
+              "end_column": 0
+            }
+          }
+        ]
+      },
+      "source": {
+        "file": null,
+        "line": 0,
+        "column": 0,
+        "end_line": 0,
+        "end_column": 0
+      }
+    },
+    {
+      "name": "onda_process",
+      "kind": {
+        "kind": "process"
+      },
+      "attributes": {
+        "origin": "compiler_generated",
+        "inline": "always",
+        "runtime_context": true
+      },
+      "params": [
+        {
+          "name": "start_frame",
+          "ty": 2,
+          "mode": "value"
+        },
+        {
+          "name": "frames",
+          "ty": 2,
+          "mode": "value"
+        },
+        {
+          "name": "flags",
+          "ty": 2,
+          "mode": "value"
+        }
+      ],
+      "results": [],
+      "locals": [
+        {
+          "name": "$frame",
+          "ty": 2
+        },
+        {
+          "name": null,
+          "ty": 1
+        },
+        {
+          "name": null,
+          "ty": 0
+        },
+        {
+          "name": null,
+          "ty": 0
+        },
+        {
+          "name": "$end_frame",
+          "ty": 2
+        },
+        {
+          "name": "$logical_frame",
+          "ty": 2
+        }
+      ],
+      "body": {
+        "statements": [
+          {
+            "kind": {
+              "kind": "call",
+              "data": {
+                "results": [],
+                "function": 2,
+                "args": [
+                  {
+                    "kind": "buffer_span",
+                    "data": {
+                      "kind": "mapped_interface",
+                      "data": {
+                        "map": 0,
+                        "start": 0,
+                        "len": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "source": {
+              "file": null,
+              "line": 0,
+              "column": 0,
+              "end_line": 0,
+              "end_column": 0
+            }
+          },
+          {
+            "kind": {
+              "kind": "assign",
+              "data": {
+                "destination": {
+                  "base": {
+                    "kind": "state",
+                    "data": 0
+                  },
+                  "projections": []
+                },
+                "value": {
+                  "kind": "use",
+                  "data": {
+                    "kind": "constant",
+                    "data": {
+                      "type": "f32",
+                      "value": 77
+                    }
+                  }
+                }
+              }
+            },
+            "source": {
+              "file": null,
+              "line": 0,
+              "column": 0,
+              "end_line": 0,
+              "end_column": 0
+            }
+          }
+        ]
+      },
+      "source": {
+        "file": null,
+        "line": 0,
+        "column": 0,
+        "end_line": 0,
+        "end_column": 0
+      }
+    },
+    {
+      "name": "check_channels",
+      "kind": {
+        "kind": "user"
+      },
+      "attributes": {
+        "origin": "source",
+        "inline": "never",
+        "runtime_context": true
+      },
+      "params": [
+        {
+          "name": "map",
+          "ty": 3,
+          "mode": "value"
+        }
+      ],
+      "results": [],
+      "locals": [
+        {
+          "ty": 3
+        },
+        {
+          "ty": 2
+        }
+      ],
+      "source": {
+        "file": null,
+        "line": 0,
+        "column": 0,
+        "end_line": 0,
+        "end_column": 0
+      },
+      "body": {
+        "statements": [
+          {
+            "kind": {
+              "kind": "assign",
+              "data": {
+                "destination": {
+                  "base": {
+                    "kind": "local",
+                    "data": 0
+                  },
+                  "projections": []
+                },
+                "value": {
+                  "kind": "load",
+                  "data": {
+                    "base": {
+                      "kind": "parameter",
+                      "data": 0
+                    },
+                    "projections": []
+                  }
+                }
+              }
+            },
+            "source": {
+              "file": null,
+              "line": 0,
+              "column": 0,
+              "end_line": 0,
+              "end_column": 0
+            }
+          },
+          {
+            "kind": {
+              "kind": "assign",
+              "data": {
+                "destination": {
+                  "base": {
+                    "kind": "local",
+                    "data": 1
+                  },
+                  "projections": []
+                },
+                "value": {
+                  "kind": "buffer_param_channels",
+                  "data": {
+                    "kind": "local_element",
+                    "data": {
+                      "collection": 0,
+                      "selector": {
+                        "kind": "constant",
+                        "data": {
+                          "type": "i32",
+                          "value": 2
+                        }
+                      },
+                      "bounds": "checked"
+                    }
+                  }
+                }
+              }
+            },
+            "source": {
+              "file": null,
+              "line": 0,
+              "column": 0,
+              "end_line": 0,
+              "end_column": 0
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "entry_points": {
+    "init": 0,
+    "process": 1
+  },
+  "buffer_maps": [
+    {
+      "buffers": [
+        0,
+        1
+      ]
+    }
+  ]
+}

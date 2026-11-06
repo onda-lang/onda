@@ -107,6 +107,12 @@ voices under strict floating-point rules and increase the active data set from 1
 48 KiB (two state arrays and one constant table). Each output frame updates every voice.
 The compiler counters include eliminated common expressions and bounds checks.
 
+`proc-bank-16/128/1024` performs the same ordered processor-bank work with nested
+processor state. `proc-helper-callback-16/128/1024` additionally forwards selected
+children through helpers and routes a delegate to the owning bank. Compare their
+frontend allocations, MIR function/tensor counts, compilation time and runtime
+across capacities to detect slot-dependent expansion or lost owner context.
+
 `state-window-array-f32/f64` and `state-window-slice-f32/f64` read and write separate offset regions
 of one state allocation, using fixed references or forwarded slice descriptors. They exercise
 view shape propagation, bounds proofs, alignment and dependence analysis without changing storage layout.
@@ -379,6 +385,13 @@ improvements, removed experiments, worker identities, paired samples, validation
 steps. The final 12-case native check produces byte-identical objects to the compiler before the
 removed experiments; it establishes preservation of code generation, not an additional speedup.
 Historical compile-scaling, Wasm and FFT results are labeled separately from that cleanup check.
+
+The [2026-11-06 loop-peeling results](results/2026-11-06-loop-peeling.json) record callback-bank
+speedups and the direct array recurrence that remained scalar. The subsequent
+[predicate-folding results](results/2026-11-06-predicate-folding.json) measure the additional
+counted-loop proof that exposes vectorization in that recurrence, including varied-frequency
+arrays, unchanged processor-bank controls, bit-exact comparisons, and worker identities. These
+are sequential optimization baselines; their before/after ratios are not interchangeable.
 
 `metadata.json` records settings, compiler binary hash, harness hashes, CPU information, platform,
 Git revision and whether the working tree is dirty. Wasm runs also record backend source and

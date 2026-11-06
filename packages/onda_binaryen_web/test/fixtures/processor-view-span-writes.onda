@@ -1,0 +1,31 @@
+proc Voice:
+  buffers:
+    source: f32 {2}
+  params:
+    tag: i32 = 0
+  sample:
+    source[0][0] = f32(tag)
+    source[1][0] = f32(tag * 10)
+    out1 = source[0][0] + source[1][0]
+def step_child(voice) -> f32:
+  return voice()
+def step_array(voices, index: i32) -> f32:
+  return step_child(voices[index])
+proc Bank:
+  buffers:
+    left: f32 {2}
+    right: f32 {2}
+  init:
+    voices: Voice[2] = [Voice(tag = 2, source = left), Voice(tag = 7, source = right)]
+    index: i32 = 0
+  sample:
+    out1 = step_array(voices, index)
+    index = 1 - index
+buffers:
+  left: f32 {2}
+  right: f32 {2}
+init:
+  bank = Bank(left = left, right = right)
+sample:
+  out1 = bank()
+  out2 = left[0][0] + left[1][0] * 10.0 + right[0][0] * 100.0 + right[1][0] * 1000.0

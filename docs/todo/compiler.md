@@ -2,11 +2,15 @@
 
 ## Processor lowering and compile-time scalability
 
-The convolution project is the current stress case: it contains two convolver instances, four FFT
-sizes, large flattened state, and more than two hundred specialized MIR functions. Some of that work
-is inherent, but the compiler currently constructs uniform flattened helper ABIs and then removes
-most of their parameters. Keep the existing MIR unused-parameter pass as a correctness backstop,
-while moving avoidable work earlier in the pipeline.
+Processor arrays now use columnar field tensors and shared implementations specialized by
+processor declaration and context shape. Runtime views carry storage roots and coordinates;
+helper signatures scale with live fields rather than array capacity. MIR dead-value cleanup and
+unused-parameter pruning already remove dead scalar parameter materializations and converge
+across forwarding chains while retaining failing argument preparation.
+
+The convolution project remains a compile-time stress case with large state and many specialized
+functions. Further work should reduce unnecessary construction before the existing MIR cleanup,
+using fresh measurements rather than treating the former per-slot expansion as a current cost.
 
 - Add call-transitive, leaf-level state-use analysis during processor ABI planning.
   - Emit only the scalar/array leaves each generated helper transitively accesses.
@@ -17,23 +21,9 @@ while moving avoidable work earlier in the pipeline.
   - Replace its fixed-point full scans with a caller worklist if profiling finds pathological deep
     forwarding chains.
 
-- Make processor specializations independent of instance paths where possible.
-  - Compile structurally identical instances, such as left/right convolvers or repeated voices,
-    against one shared implementation.
-  - Pass an explicit instance-state view instead of baking physical state names into each helper.
-  - Preserve specialization by processor type, compile context, and genuinely distinct constants.
-
-- Make MIR unused-parameter pruning see through scalar parameter materialization.
-  - Lowering currently emits a `local = load @parameter` assignment for every scalar and tuple
-    component, so the load itself makes an otherwise unused parameter appear live.
-  - Remove the canonical materialization together with the parameter when its destination local is
-    otherwise dead, including after forwarding arguments disappear in a later pruning round.
-  - Continue preserving source argument evaluation whenever preparing an argument can fail or has
-    observable effects.
-
 - Evaluate compact typed state-region references in MIR.
-  - Represent a processor or aggregate state region with one reference plus validated field access,
-    rather than hundreds of independent scalar/array reference parameters.
+  - Compare a region reference with the current one-reference-per-live-field ABI for declarations
+    with many distinct fields. Array capacity no longer expands that ABI.
   - Define field-level aliasing, mutability, range facts, serialization, and backend lowering before
     changing the MIR contract.
   - Measure this against leaf-pruned flat ABIs first; do not add aggregate machinery unless it
@@ -99,12 +89,49 @@ A 1,000-instance `Sine` bank exposes avoidable state traffic and a serial floati
 reduction in the sample loop. Calls and table lookups are already inlined; enabling fast math lets
 LLVM vectorize the bank. Use this workload to guide general processor and MIR optimizations.
 
+The [final processor-storage report](../../scripts/bench/results/2026-11-02-processor-final.md#mir-alignment-and-larger-capacity-stress)
+adds measured follow-ups from banks up to 16,384 slots. Its ordinary-array numerical references
+carry less state and omit callback dispatch; use them to identify costs while accounting for that
+difference in work.
+
+- Prune unused compiler-generated delegate routing state per instance.
+  - In the 16,384-slot nested callback bank, `__onda_delegate_index` and
+    `__onda_delegate_route` are initialized but never read by processing/helpers, which use captured
+    coordinates directly. Removing these two tensors would save 131,072 bytes of state/snapshot
+    storage and their initialization writes.
+  - Prove routing fields unused across reachable helpers, events, aliases, and replacement paths.
+    Keep the routing generator for top-level subscriptions that still read these fields.
+  - Derive state/snapshot metadata from the retained layout and verify initialization, cloning,
+    snapshot/restore, and delegate identity/order. Measure storage, initialization and snapshot
+    costs separately from DSP runtime.
+
 - Reduce processor state traffic using field-level liveness and effect analysis.
   - Eliminate unobservable processor-output stores and reuse invariant parameters, increments, and
     offsets across samples when writes and aliases permit it.
+  - Use the reported 16/128/1,024/16,384-slot banks to prove when cached outputs are used only by
+    their producing call. Forward immediate uses while retaining stores observed through aliases,
+    helpers, events or later samples; check removed stores in MIR/LLVM and measure state bytes and
+    runtime against the current processor baseline.
   - Keep evolving state in locals where possible, committing it at observable boundaries.
   - Preserve event, exported-function, state-snapshot, and segmented-processing behavior, including
     state and effect ordering on failure.
+
+- Expose independent work in processor callback loops through shared MIR proofs.
+  - Native scheduling now peels a distinguished first iteration using generic MIR predicate
+    summaries through helpers. This exposes vectorization in the indexed callback banks without
+    reordering their effects. Extend only with proofs and measurements for predicates selecting
+    other iterations, dynamic bounds, and more general callback dependencies.
+  - Proven first-index comparisons in the remainder now fold using the counted-loop legality proof
+    and conservative local-copy tracking. This also addresses the direct array recurrence that
+    stayed scalar in the [initial peeling measurements](../../scripts/bench/results/2026-11-06-loop-peeling.json);
+    [paired folding measurements](../../scripts/bench/results/2026-11-06-predicate-folding.json)
+    cover that case and unchanged processor-bank controls.
+    Further propagation through helper boundaries needs its own proof; profitability summaries
+    cannot substitute for value identity or memory independence.
+  - Preserve synchronous callback order, overlapping views, checked failures and the ordered
+    floating-point reduction. Keep uncertain effects on the original execution path.
+  - Share reusable effect/dependence facts in MIR; evaluate vectorization and target costs in the
+    [backends](backends.md#optimization-follow-ups), with native/Wasm differential coverage.
 
 - Evaluate block scheduling or bounded tiling of independent processor computations.
   - Reuse oscillator/filter state across several samples and expose independent work to backend

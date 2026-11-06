@@ -4,6 +4,16 @@ use crate::array_semantics::{
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::*;
 
+pub(crate) fn has_indexed_proc_receiver(
+    args: &[CallArg],
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+) -> bool {
+    args.first().is_some_and(|arg| {
+        arg.name.as_deref() == Some(METHOD_RECEIVER_ARG)
+            && matches!(&arg.expr, Expr::Index { base, .. } if proc_array_roots.contains_key(base))
+    })
+}
+
 fn push_expr_error(errors: &mut Vec<Diagnostic>, expr: &Expr, message: impl Into<String>) {
     errors.push(Diagnostic::semantic_span(message, expr.loc()));
 }
@@ -452,6 +462,10 @@ fn validate_expr_node<'a>(
                     );
                     return;
                 }
+            }
+            if let Some(name) = dynamic_param_surface_name(name, env) {
+                push_dynamic_param_surface_value_error(errors, expr.loc(), name);
+                return;
             }
             if let Some((base, field)) = split_field_path(name, errors) {
                 if let Some(struct_name) = env.struct_name(base) {
@@ -1291,7 +1305,7 @@ fn validate_expr_node<'a>(
                 }
                 return;
             }
-            if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+            if name == PROCESSOR_RESOURCE_SELECT {
                 validate_internal_proc_index_buffer_select_call(
                     name,
                     args,
@@ -1447,6 +1461,9 @@ fn validate_expr_node<'a>(
                 for (idx, arg) in resolved.iter().copied().enumerate() {
                     if let Some(arg) = arg {
                         let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
+                        if crate::processor_views::is_bound_resource_argument(arg, param_ty) {
+                            continue;
+                        }
                         let param_readonly = sig
                             .params
                             .get(idx)
@@ -1720,19 +1737,14 @@ fn validate_expr_node<'a>(
                 return;
             }
 
-            if env.proc_event_names.contains(name) {
-                let has_indexed_proc_receiver = args.first().is_some_and(|arg| {
-                    matches!(
-                        &arg.expr,
-                        Expr::Index { base, .. } if env.proc_array_roots.contains_key(base)
-                    ) && matches!(arg.name.as_deref(), None | Some(METHOD_RECEIVER_ARG))
-                });
-                if has_indexed_proc_receiver {
-                    for arg in args {
-                        children.push(&arg.expr);
-                    }
-                    return;
+            if has_indexed_proc_receiver(args, env.proc_array_roots) {
+                for arg in args {
+                    children.push(&arg.expr);
                 }
+                return;
+            }
+
+            if env.proc_event_names.contains(name) {
                 push_expr_error(
                     errors,
                     expr,
@@ -1847,6 +1859,7 @@ fn is_internal_proc_index_validation_arg(
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG)
+            | Some(PROC_CACHED_FIELD_ARG)
     ) {
         return true;
     }
@@ -3298,7 +3311,7 @@ fn validate_buffer_array_param_call_arg(
         format!("function '{fn_name}' parameter #{param_idx}")
     };
     if let Expr::UserCall { name, args, .. } = arg {
-        if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+        if name == PROCESSOR_RESOURCE_SELECT {
             for choice in args.iter().filter(|arg| arg.name.is_none()) {
                 validate_buffer_array_param_call_arg(
                     fn_name,
@@ -3403,19 +3416,19 @@ fn validate_buffer_param_call_arg(
         format!("function '{fn_name}' parameter #{param_idx}")
     };
     if let Expr::UserCall { name, args, .. } = arg {
-        if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+        if name == PROCESSOR_RESOURCE_SELECT {
             validate_internal_proc_index_buffer_select_call(name, args, env, loc, errors);
             for slot_expr in args.iter().filter(|a| a.name.is_none()).map(|a| &a.expr) {
-                if let Expr::Var { name: symbol, .. } = slot_expr {
-                    validate_buffer_symbol_for_param(
-                        &context,
-                        expected,
-                        symbol,
-                        env,
-                        slot_expr.loc(),
-                        errors,
-                    );
-                }
+                validate_buffer_param_call_arg(
+                    fn_name,
+                    param_idx,
+                    param_names,
+                    expected,
+                    slot_expr,
+                    env,
+                    slot_expr.loc(),
+                    errors,
+                );
             }
             return;
         }
@@ -3902,6 +3915,20 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
         });
     }
 
+    if let Some(element) = split_simple_field_path(base).and_then(|(root, field)| {
+        resolve_flattened_struct_array_leaf_type(env.struct_name(root)?, field, env.struct_defs)
+    }) {
+        // Scalar tensors projected through aggregate arrays are read views.
+        // Writes retain the indexed receiver so field ranges and processor
+        // parameter hooks still run at their ordinary assignment boundary.
+        return Some(UnsafeStorageShape {
+            index_count: 1,
+            element: UnsafeStorageElement::Primitive(Some(element)),
+            readable: true,
+            writable: false,
+        });
+    }
+
     let (port, readable, writable) = match base {
         "ins" => (env.port_index_ins, true, false),
         "outs" => (
@@ -4093,6 +4120,7 @@ fn validate_internal_proc_index_call(
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG) => {}
+            Some(PROC_CACHED_FIELD_ARG) => {}
             _ => {
                 if !is_by_ref_call_arg_expr(&arg.expr, env) {
                     validate_expr(&arg.expr, env, errors);
@@ -4175,6 +4203,11 @@ fn validate_internal_proc_index_buffer_select_call(
 
     for slot_expr in slot_exprs {
         match slot_expr {
+            Expr::Index { base, index, .. }
+                if is_declared_buffer_array_info(env.declared_symbols, base) =>
+            {
+                validate_expr(index, env, errors);
+            }
             Expr::Var { name: symbol, .. } => {
                 if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
                     push_loc_error(

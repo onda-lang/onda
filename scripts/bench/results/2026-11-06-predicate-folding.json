@@ -1,0 +1,376 @@
+{
+  "date": "2026-11-06",
+  "change": "Fold direct first-index comparisons in the remainder of peeled counted loops",
+  "baseline": "Same working tree with first-iteration peeling, before remainder-predicate folding; not the original 5da474a baseline.",
+  "head": "6964c23cc505d680a9de338eee8d74b5be3627de",
+  "llvm": "21.1.2",
+  "workers": {
+    "before": {
+      "path": "/tmp/onda-predicate-folding/before-worker",
+      "sha256": "a1549c1f6fae46cfec6c8e69b1176158297071f3d88b3d18f609b0c31378d72e"
+    },
+    "after": {
+      "path": "/home/francesco/Sources/onda-proc-state/target/debug/examples/benchmark_dsp",
+      "sha256": "8f74bf32cf7f5af203b23ffd642afc33701fb2aeb94b46298344fddb85da1020"
+    }
+  },
+  "artifacts": "/tmp/onda-predicate-folding",
+  "method": {
+    "harness": "scripts/bench/run.py",
+    "opt_level": 3,
+    "fast_math": false,
+    "cpu": 0,
+    "sample_rate": 48000,
+    "block_size": 128,
+    "repetitions_per_run": 7,
+    "round_ms": 150,
+    "warmup_blocks": 64,
+    "validation_blocks": 8,
+    "latency_blocks": 128,
+    "order": [
+      "before",
+      "after",
+      "after",
+      "before"
+    ],
+    "reported_statistic": "median of 14 per-round ns/frame values (two runs)",
+    "host_build": "debug; generated DSP uses LLVM O3",
+    "command_template": "python3 scripts/bench/run.py --source <case.onda-or-mir.json> --trust-mir --runner <before-or-after-worker> --backend native --output <new-directory> --ir --repetitions 7 --round-ms 150 --warmup-blocks 64 --validation-blocks 8 --latency-blocks 128 --timeout-seconds 180"
+  },
+  "sources": {
+    "varied_frequency": "packages/onda_binaryen_web/test/fixtures/peeled-loop-predicates.onda, with N set to 32, 128, 1024, or 16384",
+    "uniform_frequency": "Same algorithm with frequency[i] = 110.0 and N = 16384; the original direct-array probe from 2026-11-06-loop-peeling.json",
+    "controls": [
+      "proc-helper-callback-128",
+      "proc-helper-callback-1024",
+      "large-bank-processor",
+      "large-callback-processor"
+    ]
+  },
+  "cases": [
+    {
+      "name": "array-first-index-1024",
+      "before_ns_per_frame": 1061.5274333953857,
+      "after_ns_per_frame": 495.6282663345337,
+      "speedup": 2.141781463042884,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          1032.7595520019531,
+          1083.3346061706543
+        ],
+        "after": [
+          494.20419311523443,
+          496.7433815002442
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          11.274147,
+          11.228168
+        ],
+        "after": [
+          12.927093000000001,
+          13.012055
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "20bad414ccbef24fdcaf0086dc7132f8b29f419e476bc93f5c5123c95e9f1f66",
+        "after": "d8cdf3126f9e820106b5f3d3270e317731ce893ee6f49d552e597e133d8d2ada"
+      },
+      "source_fingerprint": "e06fa16fba5c768a9cf6ca76a64e40629dec1d4a8da53c8a0563e89d0dc46954",
+      "state_bytes": 12352
+    },
+    {
+      "name": "array-first-index-128",
+      "before_ns_per_frame": 124.44613599777222,
+      "after_ns_per_frame": 44.42443907260895,
+      "speedup": 2.801298983074898,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          119.8135461807251,
+          125.75426578521729
+        ],
+        "after": [
+          43.38062119483948,
+          45.33382487297058
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          11.545481,
+          11.651480000000001
+        ],
+        "after": [
+          13.139565000000001,
+          12.981787
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "358a4ca75754df621f7c4dc999978b52d6febcd8134e57686e9a00999ff88085",
+        "after": "9938fdd1030e6874aaf96a52195df180591bacb98b21df7afae5b67fc5b90905"
+      },
+      "source_fingerprint": "83dd36ebb9d5ab957cc907050af51bc429948b935aa06a330db321b6bfa0bf66",
+      "state_bytes": 1600
+    },
+    {
+      "name": "array-first-index-16384",
+      "before_ns_per_frame": 17261.548141479492,
+      "after_ns_per_frame": 9509.43295288086,
+      "speedup": 1.8152026758073043,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          16931.662384033203,
+          17578.715911865234
+        ],
+        "after": [
+          9392.212646484375,
+          9610.662384033203
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          16.361891,
+          13.498822
+        ],
+        "after": [
+          11.755468,
+          12.952306
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "69989c1854e2d8e949ef443342239aeba79052bb14fc9a4a6e7aad228766865d",
+        "after": "a2d75b1700ab7cc13b4b44931dfeb1d2c8c2cf51e8a16c2f62a7894becd36416"
+      },
+      "source_fingerprint": "ddd4e8d7f21417776d6f7d5815debf98166a63a8129f3bf41698f0ec56c5d348",
+      "state_bytes": 196672
+    },
+    {
+      "name": "array-first-index-32",
+      "before_ns_per_frame": 24.020872235298157,
+      "after_ns_per_frame": 12.06843501329422,
+      "speedup": 1.9903883319450697,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          23.459603190422058,
+          24.673792958259583
+        ],
+        "after": [
+          10.397319197654724,
+          13.873388648033142
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          12.040853,
+          12.073261
+        ],
+        "after": [
+          11.703921000000001,
+          14.770736
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "714563ca5e075c797dd3188248161dbb148ac875705315f9395add69f45e4f90",
+        "after": "07594fe3a0c4dc2c302cae42d97d6e99142fbd04f19691b3868aa3491cfac9f5"
+      },
+      "source_fingerprint": "2f032a5e420dea52b77e5aeb1e27196bc1e184d140491ad96bcdb40ba0db39cd",
+      "state_bytes": 388
+    },
+    {
+      "name": "array-first-index-uniform-16384",
+      "before_ns_per_frame": 17046.32878112793,
+      "after_ns_per_frame": 9647.482391357422,
+      "speedup": 1.7669199164746519,
+      "llvm_ir_identical": false,
+      "run_medians": {
+        "before": [
+          16550.84262084961,
+          17766.460906982422
+        ],
+        "after": [
+          9641.552459716797,
+          9649.157653808594
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          11.24435,
+          11.732498
+        ],
+        "after": [
+          12.317259,
+          17.634158
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "cf7f159e775f7e552d474c6d74db2b4c12cd14cbb1533b895b25fd6d4e90de5c",
+        "after": "95b80da823fe58cac7dec0e41466b564bcea5be470cccec7338991baedbd1614"
+      },
+      "source_fingerprint": "4040349e49b6e990339efd80f5305f47b5ffc164c5118699ce34867183ad24c0",
+      "state_bytes": 196672
+    },
+    {
+      "name": "large-bank-processor",
+      "before_ns_per_frame": 9946.760772705078,
+      "after_ns_per_frame": 9997.82308959961,
+      "speedup": 0.9948926564876258,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          9942.197265625,
+          9954.450622558594
+        ],
+        "after": [
+          9963.114166259766,
+          10089.306884765625
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          12.32545,
+          13.918745999999999
+        ],
+        "after": [
+          11.805166,
+          17.798265
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "1040f91a92c1b2919af07442e7c75a0117431c95657f7f1d2bd1d0c86e362f48",
+        "after": "1040f91a92c1b2919af07442e7c75a0117431c95657f7f1d2bd1d0c86e362f48"
+      },
+      "source_fingerprint": "cdaf5b2d6ca2bd224803f8cb7dedcf3e1bb2e80db751130284a12a3f925970a7",
+      "state_bytes": 262208
+    },
+    {
+      "name": "large-callback-processor",
+      "before_ns_per_frame": 12106.099868774414,
+      "after_ns_per_frame": 12172.108200073242,
+      "speedup": 0.9945770830973693,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          12137.52377319336,
+          12020.739990234375
+        ],
+        "after": [
+          12190.310821533203,
+          12146.19906616211
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          21.089749,
+          21.63658
+        ],
+        "after": [
+          17.074365,
+          16.349625
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "c9c1fccae0f6be14d4b4ae5f0e3a533d39aa0f033cf84fb9ca2343ff70dd8e3f",
+        "after": "c9c1fccae0f6be14d4b4ae5f0e3a533d39aa0f033cf84fb9ca2343ff70dd8e3f"
+      },
+      "source_fingerprint": "1697e9a04a714784059097aafbba52e0f2b372162bf78da11c284e8759fb5671",
+      "state_bytes": 393280
+    },
+    {
+      "name": "proc-helper-callback-1024",
+      "before_ns_per_frame": 496.43539333343506,
+      "after_ns_per_frame": 503.5777997970581,
+      "speedup": 0.985816677251258,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          497.0105457305908,
+          495.89265632629395
+        ],
+        "after": [
+          489.7755298614502,
+          526.4588832855225
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          16.15512,
+          22.011184
+        ],
+        "after": [
+          16.489817,
+          16.177960000000002
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "2f3d755247129ef9c38745e797502780478703fc3eff75899b21d7c6da81f53f",
+        "after": "2f3d755247129ef9c38745e797502780478703fc3eff75899b21d7c6da81f53f"
+      },
+      "source_fingerprint": "9a466af9e8a2c8bdf3f3e49d029df2cae5fbd876d527e8127daeed0d5d36b56e",
+      "state_bytes": 24640
+    },
+    {
+      "name": "proc-helper-callback-128",
+      "before_ns_per_frame": 48.49732458591461,
+      "after_ns_per_frame": 47.294541239738464,
+      "speedup": 1.0254317583942547,
+      "llvm_ir_identical": true,
+      "run_medians": {
+        "before": [
+          48.38420033454895,
+          48.72514295578003
+        ],
+        "after": [
+          47.04769468307495,
+          47.615158796310425
+        ]
+      },
+      "jit_ms": {
+        "before": [
+          20.589326,
+          22.479570000000002
+        ],
+        "after": [
+          17.615744,
+          22.712724
+        ]
+      },
+      "llvm_ir_sha256": {
+        "before": "0261682e008c4b2940f249772538a829f52ee3852e623cfcf9883567e4136b14",
+        "after": "0261682e008c4b2940f249772538a829f52ee3852e623cfcf9883567e4136b14"
+      },
+      "source_fingerprint": "3a1b8ad2b82fd97e35899e6b8f3452941b44af4eae54c66e571982211f23b927",
+      "state_bytes": 3136
+    }
+  ],
+  "validation": {
+    "rust_packages": [
+      "onda_mir",
+      "onda_codegen_llvm",
+      "onda_examples"
+    ],
+    "rust_suite_passed": 1352,
+    "rust_suite_ignored": 1,
+    "additional_identity_test_passed": 1,
+    "clippy": "passed with -D warnings",
+    "backend_parity_scenarios": 118,
+    "binaryen_configurations": 2,
+    "backend_parity_bit_exact_samples": 6184,
+    "backend_parity_approximate_samples": 4096,
+    "backend_parity_max_approximate_abs_error": 1.192e-07,
+    "all_9_benchmark_cold_and_warm_outputs": "bit exact before/after in both runs",
+    "saved_corpus_mir_programs": 159,
+    "saved_corpus_programs_with_new_folds": 0,
+    "documentation": "API documentation checker and relative-link target checks passed"
+  },
+  "scope": [
+    "The counted-loop legality proof establishes that the initial index cannot recur. Only direct comparisons and identity-preserving local copies use this fact; callee profitability summaries do not authorize folds.",
+    "The peeled first iteration is copied before folding. Side-effect order, checked operations, state layouts, and reference alias assumptions are preserved.",
+    "This remains backend-selected MIR scheduling for native LLVM. Portable MIR and Binaryen retain their previous schedule.",
+    "Four processor-bank controls have byte-identical LLVM IR. Timing variation in those controls is not evidence of changed generated code.",
+    "Routing-state pruning and cached-output elimination remain future work. These measurements do not establish performance on every target or source program."
+  ]
+}

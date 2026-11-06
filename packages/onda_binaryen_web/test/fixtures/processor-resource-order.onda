@@ -1,0 +1,31 @@
+proc Voice:
+  ins:
+    input: f32
+  buffers:
+    source: f32
+  sample:
+    out1 = source[0] + input
+def step(voice, value: f32) -> f32:
+  return voice(value)
+proc Bank:
+  buffers:
+    source: f32 {2}
+  init:
+    picks: i32[2] = [1, 0]
+    voices: Voice[2] = Voice(source = source[picks[0]])
+  def change() -> f32:
+    picks[0] = 0
+    return 10.0
+  sample:
+    picks[0] = 1
+    out1 = voices[0](change())
+    picks[0] = 1
+    out2 = step(voices[0], change())
+buffers:
+  clips: f32 {2}
+init:
+  bank = Bank(source = clips)
+sample:
+  clips[0][0] = 1.0
+  clips[1][0] = 2.0
+  out1, out2 = bank()

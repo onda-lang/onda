@@ -8,10 +8,9 @@ use crate::callable_validation::validate_owner_callable_bindings;
 use crate::processor_lowering::{
     coerce_typed_delegates, coerce_typed_events, collect_runtime_state_roots,
     desugar_materialized_processors, guard_pinned_initializers, internal_proc_index_call_signature,
-    lower_graph_blocks, materialize_generic_processors, nested_call_out_fn_name,
-    nested_step_fn_name, prepare_processors_for_graph_inspection, proc_runtime_analysis_options,
-    validated_sample_oversample_factor, ProcLoweringShape, ProcessorDesugarResult,
-    TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
+    lower_graph_blocks, materialize_generic_processors, prepare_processors_for_graph_inspection,
+    proc_runtime_analysis_options, validated_sample_oversample_factor, ProcLoweringShape,
+    ProcessorDesugarResult, TopLevelProcRewriteMeta, TOP_LEVEL_INIT_ALL_NAME,
 };
 use crate::*;
 
@@ -29,6 +28,7 @@ mod data_permissions;
 mod declaration_metadata;
 mod integer_ranges;
 mod post_analysis;
+mod processor_hook_dependencies;
 mod runtime_defaults;
 mod runtime_materialization;
 mod tuple_assignments;
@@ -408,30 +408,23 @@ fn collect_typed_nested_proc_arrays(
         .collect::<Vec<_>>();
     arrays.sort_by(|lhs, rhs| lhs.0.cmp(rhs.0));
     for (field_name, slots, child_proc) in arrays {
-        let physical_slots = slots
-            .iter()
-            .map(|slot| format!("{physical_prefix}{slot}"))
-            .collect::<Vec<_>>();
         output.push(TypedNestedProcArray {
             owner_struct: owner_struct.to_owned(),
             field_name: format!("{physical_prefix}{field_name}"),
             proc_name: child_proc.to_owned(),
-            slots: physical_slots.clone(),
+            len: slots.len(),
+            active_field: format!(
+                "{physical_prefix}{}",
+                shape.nested_proc_active_fields[field_name]
+            ),
         });
-        for physical_slot in physical_slots {
-            collect_typed_nested_proc_arrays(
-                owner_struct,
-                child_proc,
-                &format!("{physical_slot}__"),
-                lowering_shapes,
-                stack,
-                output,
-            );
-        }
     }
     let mut nested_instances = shape.state.nested_procs.iter().collect::<Vec<_>>();
     nested_instances.sort_by(|lhs, rhs| lhs.0.cmp(rhs.0));
     for (field_name, nested) in nested_instances {
+        if field_name.contains('[') {
+            continue;
+        }
         collect_typed_nested_proc_arrays(
             owner_struct,
             &nested.proc_name,
@@ -586,27 +579,50 @@ fn rewrite_executable_call_scopes(
     block_post: &mut Vec<Stmt>,
     events: &mut [EventDef],
     seed: &crate::def_semantics::CallTypeEnv,
-    mut rewrite: impl FnMut(&mut Vec<Stmt>, &mut crate::def_semantics::CallTypeEnv),
+    mut rewrite: impl FnMut(
+        Option<crate::processor_views::ProcessorBoundary>,
+        &mut Vec<Stmt>,
+        &mut crate::def_semantics::CallTypeEnv,
+    ),
 ) -> crate::def_semantics::CallTypeEnv {
+    use crate::processor_views::ProcessorBoundary;
     let mut init_env = seed.clone();
-    rewrite(init, &mut init_env);
+    rewrite(Some(ProcessorBoundary::Init), init, &mut init_env);
+    crate::def_semantics::call_types::rewrite_root_resource_recipes(&init_env, |body, env| {
+        rewrite(None, body, env)
+    });
 
     let mut block_carried_env = init_env.clone();
-    rewrite(block_pre, &mut block_carried_env);
+    rewrite(
+        Some(ProcessorBoundary::BlockPre),
+        block_pre,
+        &mut block_carried_env,
+    );
 
     let mut sample_env = block_carried_env.clone();
+    sample_env.local_processor_lifetimes = true;
     if let Some(options) = seed.sample_options {
         sample_env.const_symbols.options = options;
     }
-    rewrite(sample, &mut sample_env);
+    rewrite(Some(ProcessorBoundary::Sample), sample, &mut sample_env);
 
     let mut block_post_env = block_carried_env;
-    rewrite(block_post, &mut block_post_env);
+    block_post_env.local_processor_lifetimes = true;
+    rewrite(
+        Some(ProcessorBoundary::BlockPost),
+        block_post,
+        &mut block_post_env,
+    );
 
-    for event in events {
+    for (index, event) in events.iter_mut().enumerate() {
         let mut event_env = init_env.clone();
+        event_env.local_processor_lifetimes = true;
         bind_event_param_call_types(&mut event_env, event);
-        rewrite(&mut event.body, &mut event_env);
+        rewrite(
+            Some(ProcessorBoundary::Event(index)),
+            &mut event.body,
+            &mut event_env,
+        );
     }
 
     // Callable executable regions may run outside the current block, so they
@@ -634,12 +650,15 @@ fn function_integer_binding_ranges(
     def: &FunctionDef,
     proc_ranges: &HashMap<String, HashMap<String, IntegerBindingRange>>,
     runtime_ranges: &HashMap<String, IntegerBindingRange>,
+    processor_views: &crate::processor_views::ProcessorViewCatalog,
 ) -> HashMap<String, IntegerBindingRange> {
-    let source = crate::compile_context::lowered_function_origin(&def.name);
-    let inherited = source
-        .split_once(".__onda_proc_")
-        .filter(|(_, suffix)| *suffix != "init")
-        .and_then(|(owner, _)| proc_ranges.get(owner))
+    let inherited = processor_views
+        .operation(&def.name)
+        .filter(|operation| {
+            !operation.projection.edges.is_empty()
+                || operation.kind != crate::processor_views::ProcessorOperation::Init
+        })
+        .and_then(|operation| proc_ranges.get(&operation.projection.owner))
         .map(proc_integer_binding_range_aliases)
         .unwrap_or_else(|| runtime_ranges.clone());
     integer_binding_ranges_outside_params(&inherited, def.params.iter().map(|param| &param.name))
@@ -652,7 +671,6 @@ fn aggregate_layout_error_diagnostic(
     let (struct_name, field_path): (Option<&str>, Option<&str>) = match &error {
         AggregateLayoutError::DuplicateStruct { struct_name }
         | AggregateLayoutError::LayoutsTooLarge { struct_name, .. }
-        | AggregateLayoutError::LayoutTooWide { struct_name, .. }
         | AggregateLayoutError::NestingTooDeep { struct_name, .. } => (Some(struct_name), None),
         AggregateLayoutError::DuplicateField {
             struct_name,
@@ -1031,6 +1049,7 @@ pub fn analyze_with_options_and_inputs(
         authored_instance_roots,
         interface_names,
         input_smoothing_aliases,
+        processor_views,
     } = desugar_materialized_processors(
         program,
         &smoothing_templates,
@@ -1041,6 +1060,7 @@ pub fn analyze_with_options_and_inputs(
         &mut errors,
     );
     let proc_api = std::rc::Rc::new(proc_api);
+    let processor_views = std::rc::Rc::new(RefCell::new(processor_views));
     let transient_init_views = normalize_indexed_member_assignments(&mut program);
     let mut pinned_state_roots = program
         .block(BlockKind::Init)
@@ -1737,10 +1757,20 @@ pub fn analyze_with_options_and_inputs(
         }
     }
     for def in &defs {
-        let Some(owner) = def.name.strip_suffix(".__onda_proc_init") else {
+        let Some(operation) = processor_views
+            .borrow()
+            .operation(&def.name)
+            .cloned()
+            .filter(|operation| {
+                operation.projection.edges.is_empty()
+                    && operation.kind == crate::processor_views::ProcessorOperation::Init
+            })
+        else {
             continue;
         };
-        let proc_ranges = proc_state_ranges.entry(owner.to_owned()).or_default();
+        let proc_ranges = proc_state_ranges
+            .entry(operation.projection.owner)
+            .or_default();
         collect_integer_binding_range_assignments(&def.body, proc_ranges);
     }
     check_local_port_duplicates(&raw_ins, "input", &mut errors);
@@ -2190,6 +2220,7 @@ pub fn analyze_with_options_and_inputs(
     // influence their bodies. Compiler-generated executable defs select their
     // owner environment through `def_call_type_env` below.
     let mut function_env_seed = crate::def_semantics::CallTypeEnv::default();
+    function_env_seed.processor_views = processor_views.clone();
     function_env_seed.processor_apis = proc_api.clone();
     function_env_seed.nominal_arrays = std::rc::Rc::new(
         lowering_shapes
@@ -2198,15 +2229,14 @@ pub fn analyze_with_options_and_inputs(
                 let fields = shape
                     .nested_proc_array_slots
                     .iter()
-                    .filter_map(|(name, slots)| {
-                        let slot = shape.state.nested_procs.get(slots.first()?)?;
-                        Some((
+                    .map(|(name, slots)| {
+                        (
                             name.clone(),
                             crate::def_semantics::CallArrayType::nominal(
-                                slot.proc_name.clone(),
+                                slots.proc_name.clone(),
                                 Some(slots.len()),
                             ),
-                        ))
+                        )
                     })
                     .collect();
                 (owner.clone(), fields)
@@ -2225,6 +2255,7 @@ pub fn analyze_with_options_and_inputs(
         options,
     );
     let mut top_level_env = crate::def_semantics::CallTypeEnv::default();
+    top_level_env.processor_views = processor_views.clone();
     top_level_env.sample_options = function_env_seed.sample_options;
     top_level_env.nominal_arrays = function_env_seed.nominal_arrays.clone();
     top_level_env.processor_apis = proc_api.clone();
@@ -2295,31 +2326,40 @@ pub fn analyze_with_options_and_inputs(
             .filter(|buffer| buffer.is_array)
             .map(|buffer| (buffer.name.clone(), buffer.array_len)),
     );
-    top_level_env
-        .struct_instances
-        .extend(state_method_env.struct_instances.clone());
+    top_level_env.struct_instances.extend(
+        state_method_env
+            .struct_instances
+            .iter()
+            .filter(|(name, ty)| {
+                // Method discovery sees every init alias ahead of call typing.
+                // Processor aliases acquire their complete view at their actual
+                // declaration, rather than starting as plain owned instances.
+                !proc_api.contains_key(*ty) || processor_views.borrow().roots.contains_key(*name)
+            })
+            .map(|(name, ty)| (name.clone(), ty.clone())),
+    );
     top_level_env
         .array_types
-        .extend(state_method_env.array_types.clone());
-    top_level_env.array_types.extend(
-        top_level_proc_rewrite
-            .global_proc_array_slots
-            .iter()
-            .filter_map(|(name, slots)| {
-                let first = slots.first()?;
-                let proc_name = &top_level_proc_rewrite
-                    .global_proc_instances
-                    .get(first)?
-                    .proc_name;
-                Some((
-                    name.clone(),
-                    crate::def_semantics::CallArrayType::nominal(
-                        proc_name.clone(),
-                        Some(slots.len()),
-                    ),
-                ))
-            }),
-    );
+        .extend(state_method_env.array_types.iter().filter(|(name, ty)| {
+            !matches!(&ty.elem, crate::call_types::CallArrayElemType::Nominal(proc_name) if proc_api.contains_key(proc_name))
+                || processor_views.borrow().roots.contains_key(*name)
+        }).map(|(name, ty)| (name.clone(), ty.clone())));
+    top_level_env
+        .array_types
+        .extend(
+            top_level_proc_rewrite
+                .global_proc_array_slots
+                .iter()
+                .map(|(name, slots)| {
+                    (
+                        name.clone(),
+                        crate::def_semantics::CallArrayType::nominal(
+                            slots.proc_name.clone(),
+                            Some(slots.len()),
+                        ),
+                    )
+                }),
+        );
 
     // Overloads identify declarations; contexts belong to concrete instances.
     let (mut overload_candidates, mut def_public_name_by_internal) =
@@ -2376,7 +2416,7 @@ pub fn analyze_with_options_and_inputs(
         &mut block_post,
         &mut events,
         &top_level_env,
-        |stmts, env| {
+        |_boundary, stmts, env| {
             crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
                 stmts,
                 env,
@@ -2580,6 +2620,26 @@ pub fn analyze_with_options_and_inputs(
             .union(&scalar_candidates)
             .cloned()
             .collect::<HashSet<_>>();
+        // A processor's nominal state type does not describe its borrowed
+        // callback and resource environment. Concrete processor parameters
+        // therefore remain eligible for environment-shape specialization.
+        mono_eligible.extend(
+            fn_signatures
+                .iter()
+                .filter(|(_, signature)| {
+                    signature.param_types.iter().any(|ty| match ty {
+                        Some(FnParamType::Struct(name) | FnParamType::ArrayGeneric(name)) => {
+                            proc_type_names.contains(name)
+                        }
+                        Some(FnParamType::SizedArray {
+                            generic_name: Some(name),
+                            ..
+                        }) => proc_type_names.contains(name),
+                        _ => false,
+                    })
+                })
+                .map(|(name, _)| name.clone()),
+        );
         // Also run mono pass when any def has untyped params that could be
         // inferred as tuple from call-site tuple literal args.
         let has_untyped_params = fn_signatures
@@ -2592,8 +2652,12 @@ pub fn analyze_with_options_and_inputs(
             if mandatory_mono.contains(&def.name) {
                 continue;
             }
-            let inherited =
-                function_integer_binding_ranges(def, &proc_state_ranges, &runtime_ranges);
+            let inherited = function_integer_binding_ranges(
+                def,
+                &proc_state_ranges,
+                &runtime_ranges,
+                &processor_views.borrow(),
+            );
             normalize_function_metadata(
                 def,
                 &mut const_artifacts,
@@ -2642,7 +2706,7 @@ pub fn analyze_with_options_and_inputs(
                     &mut block_post,
                     &mut events,
                     &top_level_env,
-                    |stmts, env| {
+                    |_boundary, stmts, env| {
                         *env = crate::def_semantics::monomorphize_calls_in_stmts(
                             stmts,
                             env,
@@ -2767,6 +2831,7 @@ pub fn analyze_with_options_and_inputs(
                                 &method,
                                 &proc_state_ranges,
                                 &runtime_ranges,
+                                &processor_views.borrow(),
                             );
                             normalize_function_metadata(
                                 &mut method,
@@ -2793,8 +2858,12 @@ pub fn analyze_with_options_and_inputs(
                     }
                 }
                 for def in generated_defs.iter_mut().skip(normalized_generated_defs) {
-                    let inherited =
-                        function_integer_binding_ranges(def, &proc_state_ranges, &runtime_ranges);
+                    let inherited = function_integer_binding_ranges(
+                        def,
+                        &proc_state_ranges,
+                        &runtime_ranges,
+                        &processor_views.borrow(),
+                    );
                     normalize_function_metadata(
                         def,
                         &mut const_artifacts,
@@ -2892,6 +2961,7 @@ pub fn analyze_with_options_and_inputs(
                             def,
                             &proc_state_ranges,
                             &runtime_ranges,
+                            &processor_views.borrow(),
                         );
                         normalize_function_metadata(
                             def,
@@ -2957,7 +3027,7 @@ pub fn analyze_with_options_and_inputs(
                     &mut block_post,
                     &mut events,
                     &top_level_env,
-                    |stmts, env| {
+                    |_boundary, stmts, env| {
                         resolved_overloads +=
                             crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
                                 stmts,
@@ -3010,14 +3080,63 @@ pub fn analyze_with_options_and_inputs(
             register_generated_method_owners(&mut method_self_struct_internal, &mono_cache);
             defs.extend(generated_defs);
 
-            // Shapes that intrinsically require monomorphization cannot be
-            // lowered in their template form. Keep their source signatures,
-            // however: a call that could not produce a specialization still
-            // needs ordinary call-contract validation so diagnostics describe
-            // the missing or incompatible argument instead of pretending the
-            // declared function does not exist. Only concrete generated defs
-            // survive into typed lowering.
-            defs.retain(|def| !mandatory_mono.contains(&def.name));
+            if processor_views.borrow().function_params.is_empty() {
+                defs.retain(|def| !mandatory_mono.contains(&def.name));
+            } else {
+                let view_templates = mono_cache
+                    .iter()
+                    .filter(|(_, concrete)| {
+                        processor_views
+                            .borrow()
+                            .function_params
+                            .contains_key(*concrete)
+                    })
+                    .map(|(source, _)| source.to_owned())
+                    .collect::<HashSet<_>>();
+                let mut roots = vec![
+                    init.as_slice(),
+                    block_pre.as_slice(),
+                    sample.as_slice(),
+                    block_post.as_slice(),
+                ];
+                roots.extend(events.iter().map(|event| event.body.as_slice()));
+                let reachable = collect_reachable_def_names_from_roots(&roots, &defs);
+
+                // Shapes that intrinsically require monomorphization cannot be
+                // lowered in their template form. Keep their source signatures,
+                // however: a call that could not produce a specialization still
+                // needs ordinary call-contract validation so diagnostics describe
+                // the missing or incompatible argument instead of pretending the
+                // declared function does not exist. Only concrete generated defs
+                // survive into typed lowering.
+                defs.retain(|def| {
+                    !mandatory_mono.contains(&def.name)
+                        && (!view_templates.contains(&def.name) || reachable.contains(&def.name))
+                });
+                // A discarded nominal template may itself have requested helper
+                // specializations. Keep only selected implementations. Generated
+                // operation bodies are roots here because complete views can make
+                // their owner callbacks reachable during MIR legalization.
+                let mut implementation_roots = roots;
+                implementation_roots.extend(
+                    defs.iter()
+                        .filter(|def| processor_views.borrow().operation(&def.name).is_some())
+                        .map(|def| def.body.as_slice()),
+                );
+                let implementations =
+                    collect_reachable_def_names_from_roots(&implementation_roots, &defs);
+                let specializations = mono_cache
+                    .iter()
+                    .map(|(_, name)| name.clone())
+                    .collect::<HashSet<_>>();
+                defs.retain(|def| {
+                    !specializations.contains(&def.name) || implementations.contains(&def.name)
+                });
+                processor_views
+                    .borrow_mut()
+                    .function_params
+                    .retain(|name, _| implementations.contains(name));
+            }
         }
     }
 
@@ -3061,7 +3180,7 @@ pub fn analyze_with_options_and_inputs(
             &mut block_post,
             &mut events,
             &top_level_env,
-            |stmts, env| {
+            |_boundary, stmts, env| {
                 resolved += crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
                     stmts,
                     env,
@@ -3113,18 +3232,38 @@ pub fn analyze_with_options_and_inputs(
         &mut block_post,
         &mut events,
         &top_level_env,
-        |stmts, env| {
+        |boundary, stmts, env| {
+            let context = crate::def_semantics::CallTypeContext {
+                return_types: &final_overload_return_types,
+                struct_defs: &struct_defs,
+            };
+            let boundary_env = boundary.map(|boundary| (boundary, env.clone()));
             crate::def_semantics::rewrite_overloaded_calls_in_stmt_list(
                 stmts,
                 env,
-                crate::def_semantics::CallTypeContext {
-                    return_types: &final_overload_return_types,
-                    struct_defs: &struct_defs,
-                },
+                context,
                 crate::def_semantics::OverloadOwnerContext::default(),
                 &overload_candidates,
                 &mut errors,
             );
+            if let Some((boundary, mut boundary_env)) = boundary_env {
+                let operations = crate::processor_views::record_boundary_operations(
+                    stmts,
+                    &mut boundary_env,
+                    context,
+                );
+                let mut views = processor_views.borrow_mut();
+                views.boundary_operations.insert(boundary, operations);
+                if matches!(
+                    boundary,
+                    crate::processor_views::ProcessorBoundary::Init
+                        | crate::processor_views::ProcessorBoundary::BlockPre
+                ) {
+                    views
+                        .boundary_views
+                        .insert(boundary, boundary_env.processor_bindings);
+                }
+            }
         },
     );
     for def in &mut defs {
@@ -3154,6 +3293,20 @@ pub fn analyze_with_options_and_inputs(
             &overload_candidates,
             &mut errors,
         );
+        if !is_unresolved_template {
+            let operations = crate::processor_views::record_function_operations(
+                def,
+                env,
+                crate::def_semantics::CallTypeContext {
+                    return_types: &final_overload_return_types,
+                    struct_defs: &struct_defs,
+                },
+            );
+            processor_views
+                .borrow_mut()
+                .function_operations
+                .insert(def.name.clone(), operations);
+        }
     }
 
     if typed_structs.len() != validated_struct_count {
@@ -3166,6 +3319,7 @@ pub fn analyze_with_options_and_inputs(
     }
 
     let input_names: HashSet<String> = ins.iter().cloned().collect();
+    let source_struct_defs = processor_views.borrow().source_struct_defs(&struct_defs);
     let output_names: HashSet<String> = outs.iter().cloned().collect();
     let control_output_names: HashSet<String> = control_outs.iter().cloned().collect();
     let all_output_names = output_names
@@ -3317,6 +3471,7 @@ pub fn analyze_with_options_and_inputs(
         .collect::<HashSet<_>>();
     let no_proc_event_names = HashSet::<String>::new();
     let init_ctx = InitAnalysisCtx {
+        storage_struct_defs: &struct_defs,
         context_label: "top-level",
         common: ScopeAnalysisCtx {
             policy: ScopePolicy::Init,
@@ -3327,7 +3482,7 @@ pub fn analyze_with_options_and_inputs(
             io_surface_array_names: &io_surface_array_names,
             dynamic_param_array_names: &dynamic_param_array_names,
             param_names: &param_names,
-            struct_defs: &struct_defs,
+            struct_defs: &source_struct_defs,
             fn_signatures: &fn_signatures,
             fn_return_types: &def_return_types,
             options,
@@ -3526,7 +3681,7 @@ pub fn analyze_with_options_and_inputs(
                     io_surface_array_names: &io_surface_array_names,
                     dynamic_param_array_names: &dynamic_param_array_names,
                     param_names: &param_names,
-                    struct_defs: &struct_defs,
+                    struct_defs: &source_struct_defs,
                     fn_signatures: &fn_signatures,
                     fn_return_types: &def_return_types,
                     options,
@@ -3630,7 +3785,7 @@ pub fn analyze_with_options_and_inputs(
                 param_names: &param_names,
                 validation_input_names: &input_names,
                 validation_output_names: &all_output_names,
-                struct_defs: &struct_defs,
+                struct_defs: &source_struct_defs,
                 fn_signatures: &fn_signatures,
                 fn_return_types: &def_return_types,
                 options,
@@ -3727,10 +3882,13 @@ pub fn analyze_with_options_and_inputs(
     let reachable_def_names =
         collect_reachable_def_names(&init, &block_exec, &sample_and_event_exec, &defs);
 
+    let mut def_source_struct_defs = source_struct_defs;
+
     let defs_requiring_param_inference = defs
         .iter()
         .filter(|def| {
             reachable_def_names.contains(&def.name)
+                || processor_views.borrow().operation(&def.name).is_some()
                 || def_has_concrete_param_contract(def, &method_self_struct_internal, &struct_defs)
         })
         .cloned()
@@ -3762,7 +3920,7 @@ pub fn analyze_with_options_and_inputs(
             .collect::<HashMap<_, _>>(),
         &fn_signatures,
         &method_self_struct_internal,
-        &struct_defs,
+        &def_source_struct_defs,
         &proc_type_names,
         options,
         &mut errors,
@@ -3773,6 +3931,7 @@ pub fn analyze_with_options_and_inputs(
     for name in synth_names {
         let fields = &synthesized_struct_defs[&name];
         def_struct_defs.insert(name.clone(), fields.clone());
+        def_source_struct_defs.insert(name.clone(), fields.clone());
         typed_structs.push(TypedStruct {
             name,
             fields: fields.clone(),
@@ -3948,6 +4107,17 @@ pub fn analyze_with_options_and_inputs(
                 Expr::Int { value, .. } if *value >= 0 => *value as usize,
                 _ => 1,
             };
+            fn_local_data_aliases.insert(
+                param_name.clone(),
+                LocalArrayAliasInfo {
+                    proven_len: None,
+                    len,
+                    static_len: Some(len),
+                    elem_ty: PrimitiveType::F32,
+                    elem_struct: Some(proc_info.proc_name.clone()),
+                    writable: true,
+                },
+            );
             if let Some(api) = proc_api.get(&proc_info.proc_name) {
                 for param in api.params.values().filter(|param| !param.private) {
                     fn_local_data_aliases.insert(
@@ -4054,7 +4224,7 @@ pub fn analyze_with_options_and_inputs(
             );
         }
         let mut def_proc_vars = HashMap::<String, ProcCallInstance>::new();
-        let mut def_proc_array_slots = HashMap::<String, Vec<String>>::new();
+        let mut def_proc_array_slots = ProcArrayDeclarations::new();
         let mut def_proc_block_active_symbols = HashMap::<String, String>::new();
         if let Some(kinds) = inferred_def_params.get(&def.name) {
             for (param_name, kind) in def.params.iter().map(|p| &p.name).zip(kinds.iter()) {
@@ -4066,40 +4236,35 @@ pub fn analyze_with_options_and_inputs(
                                     .entry(base.clone())
                                     .or_insert_with(|| slots.clone());
                                 let prefixed_base = format!("{param_name}.{base}");
-                                let prefixed_slots = slots
-                                    .iter()
-                                    .map(|slot| format!("{param_name}.{slot}"))
-                                    .collect::<Vec<_>>();
+                                let prefixed_slots = slots.qualified(param_name);
                                 def_proc_array_slots
                                     .entry(prefixed_base.clone())
                                     .or_insert(prefixed_slots);
                                 if let Some(active_field) =
-                                    shape.nested_proc_array_active_fields.get(base)
+                                    shape.nested_proc_active_fields.get(base)
                                 {
                                     def_proc_block_active_symbols
                                         .entry(prefixed_base)
                                         .or_insert_with(|| format!("{param_name}.{active_field}"));
                                 }
-                                for slot in slots {
-                                    if let Some(nested) = shape.state.nested_procs.get(slot) {
-                                        def_proc_vars.entry(slot.clone()).or_insert(
-                                            ProcCallInstance {
-                                                proc_name: nested.proc_name.clone(),
-                                                buffer_args: Vec::new(),
-                                                delegate_context_args: Vec::new(),
-                                                routes_owner_delegates: false,
-                                            },
-                                        );
-                                        let prefixed_slot = format!("{param_name}.{slot}");
-                                        def_proc_vars.entry(prefixed_slot).or_insert(
-                                            ProcCallInstance {
-                                                proc_name: nested.proc_name.clone(),
-                                                buffer_args: Vec::new(),
-                                                delegate_context_args: Vec::new(),
-                                                routes_owner_delegates: false,
-                                            },
-                                        );
-                                    }
+                                for slot in slots.binding_names() {
+                                    def_proc_vars
+                                        .entry(slot.clone())
+                                        .or_insert(ProcCallInstance {
+                                            proc_name: slots.proc_name.clone(),
+                                            buffer_args: Vec::new(),
+                                            delegate_context_args: Vec::new(),
+                                            routes_owner_delegates: false,
+                                        });
+                                    let prefixed_slot = format!("{param_name}.{slot}");
+                                    def_proc_vars.entry(prefixed_slot).or_insert(
+                                        ProcCallInstance {
+                                            proc_name: slots.proc_name.clone(),
+                                            buffer_args: Vec::new(),
+                                            delegate_context_args: Vec::new(),
+                                            routes_owner_delegates: false,
+                                        },
+                                    );
                                 }
                             }
                             for (instance_name, nested) in &shape.state.nested_procs {
@@ -4135,10 +4300,13 @@ pub fn analyze_with_options_and_inputs(
                         }
                     }
                     TypedFnParam::ProcArray { proc_name, len } => {
-                        let slot_names = (0..*len)
-                            .map(|idx| format!("{param_name}.__onda_proc_array_slot_{idx}"))
-                            .collect::<Vec<_>>();
-                        for slot_name in &slot_names {
+                        let slot_names = ProcArrayDeclaration::new(
+                            param_name.clone(),
+                            proc_name.clone(),
+                            *len,
+                            true,
+                        );
+                        for slot_name in slot_names.binding_names() {
                             def_proc_vars.insert(
                                 slot_name.clone(),
                                 ProcCallInstance {
@@ -4160,18 +4328,44 @@ pub fn analyze_with_options_and_inputs(
             }
         }
         let mut def_proc_array_roots = param_proc_arrays.clone();
-        for (base, slots) in &def_proc_array_slots {
-            let Some(proc_name) = slots
-                .first()
-                .and_then(|slot| def_proc_vars.get(slot))
-                .map(|instance| instance.proc_name.clone())
-            else {
+        // Processor parameters expose typed resource members to source call
+        // checking. The complete view supplies their actual captures during
+        // MIR operation legalization, using current binding tables.
+        for (receiver, instance) in &mut def_proc_vars {
+            let Some(api) = proc_api.get(&instance.proc_name) else {
                 continue;
             };
+            instance.buffer_args = api
+                .buffers
+                .iter()
+                .enumerate()
+                .map(|(index, buffer)| {
+                    let name = crate::processor_views::bound_resource_member(receiver, index);
+                    let channels = match buffer.channels {
+                        TypedBufferChannels::Mono => BufferChannelInfo::Mono,
+                        TypedBufferChannels::Static(count) => BufferChannelInfo::Static(count),
+                        TypedBufferChannels::Dynamic => BufferChannelInfo::Dynamic,
+                    };
+                    insert_declared_symbol(
+                        &mut def_state_scalars,
+                        &mut def_declared_symbols,
+                        name.clone(),
+                        DeclaredSymbolInfo::Buffer {
+                            elem_ty: buffer.elem_ty,
+                            channels,
+                            array_len: buffer.array_len,
+                            is_array: buffer.is_array,
+                        },
+                    );
+                    Expr::var(name)
+                })
+                .collect();
+        }
+        for (base, slots) in &def_proc_array_slots {
             def_proc_array_roots
                 .entry(base.clone())
                 .or_insert_with(|| ProcNestedArrayState {
-                    proc_name,
+                    proc_name: slots.proc_name.clone(),
                     size_expr: Expr::int(slots.len() as i64),
                 });
         }
@@ -4207,7 +4401,7 @@ pub fn analyze_with_options_and_inputs(
                 io_surface_array_names: &def_io_surface_array_names,
                 dynamic_param_array_names: &dynamic_param_array_names,
                 param_names: &def_global_params,
-                struct_defs: &def_struct_defs,
+                struct_defs: &def_source_struct_defs,
                 fn_signatures: &fn_signatures,
                 fn_return_types: &def_return_types,
                 options: def_options,
@@ -4266,9 +4460,13 @@ pub fn analyze_with_options_and_inputs(
             }
         }
         retain_assignment_types(&mut def.body, resolved_assignment_types.into_inner());
+        let proc_owner = processor_views
+            .borrow()
+            .operation(&def.name)
+            .map(|operation| operation.projection.owner.clone());
         tuple_assignments::scalarize_tuple_assignments(&mut def.body, &mut |stores| {
             inject_bound_proc_param_hooks_in_stmts(
-                def.name.split_once(".__onda_proc_").map(|(owner, _)| owner),
+                proc_owner.as_deref(),
                 stores,
                 &def_proc_vars,
                 &def_proc_array_slots,
@@ -4375,8 +4573,12 @@ pub fn analyze_with_options_and_inputs(
         // boundary; declarations make this pass idempotent by carrying
         // canonical inclusive bounds after their first rewrite.
         for def in &mut defs {
-            let inherited =
-                function_integer_binding_ranges(def, &proc_state_ranges, &runtime_ranges);
+            let inherited = function_integer_binding_ranges(
+                def,
+                &proc_state_ranges,
+                &runtime_ranges,
+                &processor_views.borrow(),
+            );
             let mut inherited = inherited;
             if let Some(param_kinds) = inferred_def_params.get(&def.name) {
                 inherited.extend(struct_param_integer_ranges(
@@ -4399,7 +4601,7 @@ pub fn analyze_with_options_and_inputs(
             &typed_events,
             &defs,
             &proc_api,
-            &lowering_shapes,
+            &processor_views.borrow(),
             &mut errors,
         );
         if !errors.is_empty() {
@@ -4410,8 +4612,8 @@ pub fn analyze_with_options_and_inputs(
             .iter()
             .filter_map(|def| {
                 let mut ranges = HashMap::new();
-                if let Some((owner, _)) = def.name.split_once(".__onda_proc_") {
-                    if let Some(proc_ranges) = proc_state_ranges.get(owner) {
+                if let Some(operation) = processor_views.borrow().operation(&def.name) {
+                    if let Some(proc_ranges) = proc_state_ranges.get(&operation.projection.owner) {
                         ranges.extend(proc_ranges.iter().filter_map(|(name, range)| {
                             typed_integer_range(range).map(|range| (name.clone(), range))
                         }));
@@ -4437,6 +4639,24 @@ pub fn analyze_with_options_and_inputs(
                     .get(&d.name)
                     .cloned()
                     .unwrap_or_else(|| vec![TypedFnParam::Scalar { ty: None }; d.params.len()]);
+                let processor_types = param_kinds
+                    .iter()
+                    .filter_map(|kind| match kind {
+                        TypedFnParam::Struct { struct_name }
+                            if proc_api.contains_key(struct_name) =>
+                        {
+                            Some(struct_name.clone())
+                        }
+                        TypedFnParam::ProcArray { proc_name, .. } => Some(proc_name.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !processor_types.is_empty() {
+                    processor_views
+                        .borrow_mut()
+                        .function_processors
+                        .insert(d.name.clone(), processor_types);
+                }
                 let readonly_data_params = fn_signatures
                     .get(&d.name)
                     .map(|signature| signature.readonly_data_params.clone())
@@ -4465,18 +4685,20 @@ pub fn analyze_with_options_and_inputs(
                 }
             })
             .collect::<Vec<_>>();
-        reject_recursive_runtime_defs(&all_typed_defs, &mut errors);
+        let defs_in_postorder = runtime_def_postorder(&all_typed_defs, &mut errors);
         if !errors.is_empty() {
             return Err(errors);
         }
         inject_sample_def_owner_proc_block_hooks(
+            &init,
             &sample,
             &mut block_pre,
             &mut block_post,
-            &all_typed_defs,
+            &defs_in_postorder,
             &proc_api,
             &top_level_proc_rewrite.global_proc_instances,
             &top_level_proc_rewrite.global_proc_array_slots,
+            &processor_views.borrow(),
             &mut errors,
         );
         runtime_defaults::share_runtime_defaults(&mut all_typed_defs);
@@ -4485,16 +4707,18 @@ pub fn analyze_with_options_and_inputs(
             options,
             sample_oversample_factor,
         );
+        use crate::processor_views::ProcessorBoundary;
         let mut roots = vec![
-            (&mut init, options),
-            (&mut block_pre, options),
-            (&mut sample, sample_options),
-            (&mut block_post, options),
+            (&mut init, options, ProcessorBoundary::Init),
+            (&mut block_pre, options, ProcessorBoundary::BlockPre),
+            (&mut sample, sample_options, ProcessorBoundary::Sample),
+            (&mut block_post, options, ProcessorBoundary::BlockPost),
         ];
         roots.extend(
             typed_events
                 .iter_mut()
-                .map(|event| (&mut event.body, options)),
+                .enumerate()
+                .map(|(index, event)| (&mut event.body, options, ProcessorBoundary::Event(index))),
         );
         let specialized = materialize_reachable_typed_defs(
             roots,
@@ -4507,6 +4731,7 @@ pub fn analyze_with_options_and_inputs(
             },
             &mut errors,
             &defaults,
+            &mut processor_views.borrow_mut(),
         );
         if !errors.is_empty() {
             return Err(errors);
@@ -4648,6 +4873,11 @@ pub fn analyze_with_options_and_inputs(
             def_sample_oversample_factors,
             proc_step_oversample_meta,
             proc_instance_oversample_factors,
+            proc_array_hook_types: proc_api
+                .iter()
+                .filter(|(_, api)| api.has_block && api.outputs.timing == OutputTiming::Sample)
+                .map(|(name, _)| name.clone())
+                .collect(),
             init,
             block_pre,
             sample_oversample_factor,
@@ -4668,6 +4898,7 @@ pub fn analyze_with_options_and_inputs(
                 .collect(),
             struct_roots: struct_instances,
             nested_proc_arrays: typed_nested_proc_arrays,
+            processor_views: processor_views.borrow().clone(),
             ins_explicit,
             audio_outs_explicit,
             control_outs_explicit,

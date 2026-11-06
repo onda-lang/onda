@@ -66,6 +66,13 @@ export class MirCompilerLowering extends MirCompilerCore {
             context,
           );
         }
+        if (["buffer", "buffer_span", "buffer_map"].includes(this.type(destinationType).kind)) {
+          const components = this.compileResourceRvalue(data.value, destinationType, context);
+          if (data.destination.base.kind !== "local" || data.destination.projections.length !== 0) this.fail("buffer descriptor destination must be an unprojected local");
+          const layout = context.localLayouts[data.destination.base.data];
+          if (layout.components.length !== components.length) this.fail("buffer descriptor component count differs");
+          return this.module.block(null, components.map((component, offset) => this.module.local.set(layout.index + offset, component)));
+        }
         const scalar = this.placeScalarType(data.destination, context);
         const value = this.compileRvalue(data.value, scalar, context);
         return this.storePlace(data.destination, value, scalar, context);
@@ -219,7 +226,8 @@ export class MirCompilerLowering extends MirCompilerCore {
         }
         this.fail(`buffer call argument ${index} of '${target.name}' is invalid`);
       }
-      if (parameterType.kind === "buffer_span") {
+      if (["buffer_span", "buffer_map"].includes(parameterType.kind)) {
+        if (argument.kind === "value" && argument.data.kind === "local") return this.resourcePlaceComponents({ base: argument.data, projections: [] }, context);
         if (argument.kind !== "buffer_span") {
           this.fail(`buffer span call argument ${index} of '${target.name}' is invalid`);
         }
@@ -236,7 +244,14 @@ export class MirCompilerLowering extends MirCompilerCore {
       this.requireScalarType(result, `result ${resultId} of '${target.name}'`),
     );
     const resultType = this.wasmResultType(resultScalars);
-    const call = this.module.call(this.functionNames[data.function], args, resultType);
+    const packed = this.functionAbiLayout[data.function];
+    const callArgs = packed ? [this.module.i32.const(packed.address)] : args;
+    const directCall = this.module.call(this.functionNames[data.function], callArgs, resultType);
+    const call = packed ? this.module.block(null, [
+      ...packed.entries.map(({ scalar, address }, index) =>
+        this.storeScalar(scalar, this.module.i32.const(address), args[index])),
+      directCall,
+    ], resultType) : directCall;
     let compiledCall;
     if (data.results.length === 0) {
       compiledCall = call;
@@ -1036,6 +1051,27 @@ export class MirCompilerLowering extends MirCompilerCore {
     }
   }
 
+  resourcePlaceComponents(place, context) {
+    if (place.projections.length !== 0) this.fail("buffer descriptor places cannot have projections");
+    const layout = place.base.kind === "local" ? context.localLayouts[place.base.data]
+      : place.base.kind === "parameter" ? context.paramLayouts[place.base.data] : null;
+    if (!layout || !["buffer", "buffer_span", "buffer_map"].includes(layout.kind)) this.fail("resource place has no buffer descriptor");
+    return layout.components.map((scalar, offset) => this.module.local.get(layout.index + offset, this.wasmType(scalar)));
+  }
+
+  compileResourceRvalue(rvalue, typeId, context) {
+    if (rvalue.kind === "use" && rvalue.data.kind === "local") return this.resourcePlaceComponents({ base: rvalue.data, projections: [] }, context);
+    if (rvalue.kind === "load") return this.resourcePlaceComponents(rvalue.data, context);
+    if (rvalue.kind !== "make_buffer" || !this.typesEquivalent(rvalue.data.ty, typeId)) this.fail("invalid buffer descriptor rvalue");
+    const source = rvalue.data.source;
+    if (source.kind === "buffer") return this.compileInterfaceBufferValue(source.data, context);
+    if (source.kind === "buffer_param") return this.loadBufferParamValue(source.data, context);
+    if (source.kind === "buffer_span") return this.compileBufferSpanValue(source.data, this.type(typeId), context);
+    if (source.kind === "place") return this.resourcePlaceComponents(source.data, context);
+    if (source.kind === "value" && source.data.kind === "local") return this.resourcePlaceComponents({ base: source.data, projections: [] }, context);
+    this.fail("make_buffer source is not a buffer descriptor");
+  }
+
   compileSliceRvalue(rvalue, context) {
     switch (rvalue.kind) {
       case "use":
@@ -1442,13 +1478,13 @@ export class MirCompilerLowering extends MirCompilerCore {
 
   compileBufferChannels(bufferRef, context) {
     const channels = this.bufferRefChannelMetadata(bufferRef);
-    if (channels.kind === "mono") return this.module.i32.const(1);
-    if (channels.kind === "static") return this.module.i32.const(channels.count);
     return this.withBufferRefIndex(
       bufferRef,
       context,
       binaryen.i32,
-      (index, staticIndex) => this.bufferTableValueFactory(
+      (index, staticIndex) => channels.kind !== "dynamic"
+        ? this.module.i32.const(channels.count ?? 1)
+        : this.bufferTableValueFactory(
         POINTER_GLOBALS.bufferChannels,
         index,
         staticIndex,
@@ -1481,13 +1517,13 @@ export class MirCompilerLowering extends MirCompilerCore {
       type.data.channels,
       type.data.element,
     );
-    if (channels.kind === "mono") return this.module.i32.const(1);
-    if (channels.kind === "static") return this.module.i32.const(channels.count);
     return this.withBufferParamSelector(
       parameterId,
       context,
       binaryen.i32,
-      (selector, staticSelector) => this.bufferParamComponentFactory(
+      (selector, staticSelector) => channels.kind !== "dynamic"
+        ? this.module.i32.const(channels.count ?? 1)
+        : this.bufferParamComponentFactory(
         parameterId,
         3,
         "i32",
@@ -1499,18 +1535,21 @@ export class MirCompilerLowering extends MirCompilerCore {
   }
 
   bufferParamType(parameterId, context) {
-    const parameter = context.function.params[this.bufferParamIds(parameterId, context)[0]];
+    const id = this.bufferParamIds(parameterId, context)[0];
+    const parameter = ["local", "local_element"].includes(parameterId?.kind) ? context.function.locals[id] : context.function.params[id];
     const type = parameter && this.type(parameter.ty);
-    const expectedKind = parameterId?.kind === "array_element"
-      ? "buffer_span"
-      : "buffer";
-    if (!type || type.kind !== expectedKind) {
+    const expectedKinds = ["array_element", "local_element"].includes(parameterId?.kind)
+      ? ["buffer_span", "buffer_map"]
+      : ["buffer"];
+    if (!type || !expectedKinds.includes(type.kind)) {
       this.fail(`parameter id ${parameterId} is not a buffer`);
     }
     return type;
   }
 
   bufferParamIds(parameterRef, context) {
+    if (parameterRef?.kind === "local" && Number.isInteger(parameterRef.data) && context.function.locals[parameterRef.data]) return [parameterRef.data];
+    if (parameterRef?.kind === "local_element" && Number.isInteger(parameterRef.data?.collection) && context.function.locals[parameterRef.data.collection]) return [parameterRef.data.collection];
     if (Number.isInteger(parameterRef)) return [parameterRef];
     if (
       parameterRef?.kind === "direct"
@@ -1529,16 +1568,17 @@ export class MirCompilerLowering extends MirCompilerCore {
     this.fail("invalid buffer parameter reference");
   }
 
-  bufferParamLayout(parameterId, context) {
-    const layout = context.paramLayouts[parameterId];
-    if (!layout || !["buffer", "buffer_span"].includes(layout.kind)) {
+  bufferParamLayout(parameterRef, context) {
+    const parameterId = this.bufferParamIds(parameterRef, context)[0];
+    const layout = ["local", "local_element"].includes(parameterRef?.kind) ? context.localLayouts[parameterId] : context.paramLayouts[parameterId];
+    if (!layout || !["buffer", "buffer_span", "buffer_map"].includes(layout.kind)) {
       this.fail(`parameter id ${parameterId} has no buffer descriptor`);
     }
     return layout;
   }
 
   staticBufferParamSelector(parameterRef, context) {
-    if (parameterRef?.kind !== "array_element") return null;
+    if (!["array_element", "local_element"].includes(parameterRef?.kind)) return null;
     const reference = parameterRef.data;
     const type = this.bufferParamType(parameterRef, context);
     const selector = reference.selector;
@@ -1571,7 +1611,7 @@ export class MirCompilerLowering extends MirCompilerCore {
   }
 
   withBufferParamSelector(parameterRef, context, resultType, build) {
-    if (parameterRef?.kind !== "array_element") {
+    if (!["array_element", "local_element"].includes(parameterRef?.kind)) {
       return build(null, null, []);
     }
     const staticSelector = this.staticBufferParamSelector(parameterRef, context);
@@ -1610,12 +1650,17 @@ export class MirCompilerLowering extends MirCompilerCore {
     context,
   ) {
     const parameterId = this.bufferParamIds(parameterRef, context)[0];
-    const layout = this.bufferParamLayout(parameterId, context);
-    if (parameterRef?.kind !== "array_element") {
+    const layout = this.bufferParamLayout(parameterRef, context);
+    if (!["array_element", "local_element"].includes(parameterRef?.kind)) {
       return () =>
         this.module.local.get(layout.index + offset, this.wasmType(scalar));
     }
     const rawLoad = (index) => {
+      if (layout.kind === "buffer_map") {
+        const map = this.module.local.get(layout.index + 6, binaryen.i32);
+        index = this.loadScalar("i32", this.module.i32.add(map,
+          this.module.i32.mul(index, this.module.i32.const(4))));
+      }
       const table = this.module.local.get(layout.index + offset, binaryen.i32);
       const address = this.module.i32.add(
         table,
@@ -1639,9 +1684,9 @@ export class MirCompilerLowering extends MirCompilerCore {
         context,
       );
     };
-    if (staticSelector === null) return () => load(selector());
+    if (staticSelector === null || ["local", "local_element"].includes(parameterRef?.kind)) return () => load(selector());
 
-    const key = `buffer_param:${parameterId}:${staticSelector}:${offset}:${scalar}`;
+    const key = `buffer_param:${parameterRef?.kind ?? "parameter"}:${parameterId}:${staticSelector}:${offset}:${scalar}`;
     let local = context.bufferDescriptorCache.get(key);
     if (local === undefined) {
       local = this.allocateGeneratedLocal(
@@ -1703,7 +1748,7 @@ export class MirCompilerLowering extends MirCompilerCore {
 
   loadBufferParamValue(parameterId, context) {
     const components = ["i32", "i32", "i32", "i32", "f32", "i32"];
-    if (parameterId?.kind !== "array_element") {
+    if (!["array_element", "local_element"].includes(parameterId?.kind)) {
       return components.map((scalar, offset) =>
         this.loadBufferParamComponent(parameterId, offset, scalar, context),
       );
@@ -1746,13 +1791,7 @@ export class MirCompilerLowering extends MirCompilerCore {
   }
 
   loadBufferPlace(place, context) {
-    if (place.base.kind !== "parameter" || place.projections.length !== 0) {
-      this.fail("buffer call arguments must be unprojected buffer parameters");
-    }
-    const layout = this.bufferParamLayout(place.base.data, context);
-    return layout.components.map((scalar, offset) =>
-      this.module.local.get(layout.index + offset, this.wasmType(scalar)),
-    );
+    return this.resourcePlaceComponents(place, context);
   }
 
   compileInterfaceBufferValue(bufferRef, context) {
@@ -1821,36 +1860,75 @@ export class MirCompilerLowering extends MirCompilerCore {
     const tableScalars = ["i32", "i32", "i32", "i32", "f32", "i32"];
     let tables;
     let start;
+    let resourceMap = null;
+    const mapped = expectedType.kind === "buffer_map";
+    const expectedChannels = this.bufferChannelMetadata(expectedType.data.channels, expectedType.data.element);
+    const accepts = (source) => {
+      if (!source || source.element !== expectedType.data.element
+        || !["read_only", "read_write"].includes(source.access)
+        || (expectedType.data.access === "read_write" && source.access !== "read_write")) return false;
+      const channels = this.bufferChannelMetadata(source.channels, source.element);
+      return expectedChannels.kind === "dynamic"
+        || (channels.kind !== "dynamic"
+          && (channels.count ?? 1) === (expectedChannels.count ?? 1));
+    };
     if (spanRef.kind === "interface") {
-      if (
-        !Number.isInteger(data.first)
-        || data.first < 0
+      if (mapped || !Number.isInteger(data.first) || data.first < 0
         || data.first + data.len > this.mir.interface.buffers.length
-      ) {
-        this.fail("interface buffer span is out of range");
+        || !this.mir.interface.buffers.slice(data.first, data.first + data.len).every(accepts)) {
+        this.fail("interface buffer span is incompatible or out of range");
       }
       tables = tableGlobals.map((name) => this.module.global.get(name, binaryen.i32));
       start = data.first;
+    } else if (spanRef.kind === "mapped_interface") {
+      const map = this.mir.buffer_maps?.[data.map];
+      if (!mapped || !Number.isInteger(data.map) || !map
+        || !Number.isInteger(data.start) || data.start < 0
+        || data.start + data.len > map.buffers.length
+        || !map.buffers.slice(data.start, data.start + data.len)
+          .every((id) => accepts(this.mir.interface.buffers[id]))) {
+        this.fail("mapped buffer collection is incompatible or out of range");
+      }
+      tables = tableGlobals.map((name) => this.module.global.get(name, binaryen.i32));
+      start = data.start;
+      resourceMap = this.module.i32.const(this.bufferMapLayout[data.map].address);
+    } else if (spanRef.kind === "local") {
+      const source = context.function.locals[data.collection];
+      const sourceType = source && this.type(source.ty);
+      const layout = context.localLayouts[data.collection];
+      if (!sourceType || sourceType.kind !== expectedType.kind || !layout || layout.kind !== expectedType.kind || !accepts(sourceType.data) || data.len > sourceType.data.len) this.fail("local buffer collection window is incompatible");
+      const indexLocal = this.allocateGeneratedLocal(context, "i32", "buffer_collection.window");
+      const initialize = this.module.local.set(indexLocal, this.compileDynamicBoundedIndex(
+        () => this.compileValue(data.start, context), () => this.module.i32.const(sourceType.data.len - data.len + 1), data.bounds, context, true));
+      const index = () => this.module.local.get(indexLocal, binaryen.i32);
+      const values = layout.components.map((_, offset) => {
+        const base = this.module.local.get(layout.index + offset, binaryen.i32);
+        if (mapped && offset < 6) return base;
+        const size = mapped ? 4 : this.scalarSize(tableScalars[offset]);
+        return this.module.i32.add(base, this.module.i32.mul(index(), this.module.i32.const(size)));
+      });
+      values[0] = this.module.block(null, [initialize, values[0]], binaryen.i32);
+      return values;
     } else if (spanRef.kind === "parameter") {
       const parameter = context.function.params[data.span];
       const sourceType = parameter && this.type(parameter.ty);
       const layout = context.paramLayouts[data.span];
-      if (
-        !sourceType
-        || sourceType.kind !== "buffer_span"
-        || !layout
-        || layout.kind !== "buffer_span"
-        || !Number.isInteger(data.start)
-        || data.start < 0
+      if (!sourceType || sourceType.kind !== expectedType.kind
+        || !layout || layout.kind !== expectedType.kind
+        || !Number.isInteger(data.start) || data.start < 0
         || data.start + data.len > sourceType.data.len
-      ) {
-        this.fail("buffer span parameter window is out of range");
+        || !accepts(sourceType.data)) {
+        this.fail("buffer collection parameter window is incompatible or out of range");
       }
-      tables = layout.components.map((_, offset) =>
+      tables = layout.components.slice(0, 6).map((_, offset) =>
         this.module.local.get(layout.index + offset, binaryen.i32));
       start = data.start;
+      if (mapped) resourceMap = this.module.local.get(layout.index + 6, binaryen.i32);
     } else {
       this.fail("invalid buffer span reference");
+    }
+    if (mapped) {
+      return [...tables, this.module.i32.add(resourceMap, this.module.i32.const(start * 4))];
     }
     return tables.map((table, offset) => this.module.i32.add(
       table,

@@ -191,6 +191,53 @@ sample:
 """
 
 
+def processor_bank(voices, *, callbacks=False):
+    """Columnar processor storage and complete borrowed receiver environments."""
+    delegate = "  delegate fired(value: f32)\n" if callbacks else ""
+    publish = "    fired(phase)\n" if callbacks else ""
+    helpers = """def step_voice(voice) -> f32:
+  return voice()
+def forward_voice(voice) -> f32:
+  return step_voice(voice)
+def forward_array(voices, index: i32) -> f32:
+  selected = voices[index]
+  return forward_voice(selected)
+
+""" if callbacks else ""
+    observed = "    observed = 0.0\n" if callbacks else ""
+    handler = """  when voices[0].fired(value):
+    observed = value
+""" if callbacks else ""
+    call = "forward_array(voices, i)" if callbacks else "voices[i]()"
+    output = " + observed" if callbacks else ""
+    return f"""proc Voice:
+  params:
+    frequency = 110.0
+  init:
+    phase = 0.0
+{delegate}  sample:
+    phase += frequency / SR
+    if phase >= 1.0:
+      phase -= 1.0
+{publish}    out1 = phase
+{helpers}proc Bank:
+  init:
+    voices: Voice[{voices}] = Voice()
+    rendered: f32[{voices}]
+{observed}{handler}  sample:
+    for i in 0..{voices}:
+      rendered[i] = {call}
+    total = 0.0
+    for i in 0..{voices}:
+      total += rendered[i]
+    out1 = total / f32({voices}){output}
+init:
+  bank = Bank()
+sample:
+  out1 = bank()
+"""
+
+
 def guarded_array_probe(width, helper):
     # Dynamic bounds and reverse affine addresses should expose contiguous SIMD
     # loads. Exercise both references through helpers and direct state storage.
@@ -268,6 +315,12 @@ def catalog():
         cases[name] = {"source": slice_probe(dynamic), "warmup_blocks": 512}
     for voices in [16, 256, 4096]:
         cases[f"voice-bank-{voices}"] = {"source": voice_bank(voices), "warmup_blocks": 64}
+    for voices in [16, 128, 1024]:
+        for name, callbacks in [("proc-bank", False), ("proc-helper-callback", True)]:
+            cases[f"{name}-{voices}"] = {
+                "source": lambda voices=voices, callbacks=callbacks: processor_bank(voices, callbacks=callbacks),
+                "warmup_blocks": 64,
+            }
     for name, case in cases.items():
         if name.startswith("fft-real-") or name in {"passthrough", "filter-onepole", "filter-dcblock", "filter-biquad", "filter-svf"}:
             case["reference"] = name

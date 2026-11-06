@@ -37,6 +37,7 @@ define_id!(OutputId);
 define_id!(ControlOutputId);
 define_id!(ParamId);
 define_id!(BufferId);
+define_id!(BufferMapId);
 define_id!(EventId);
 define_id!(EventParamId);
 define_id!(DelegateId);

@@ -26,9 +26,37 @@ pub(super) fn reference_alignment(
                 Type::Array { element, .. } => element,
                 _ => ty,
             };
-            let offset = layouts.state.offsets[region.state.index()]
-                + region.start as usize * layouts.type_sizes[element.index()];
+            let Some(offset) = (region.start as usize)
+                .checked_mul(layouts.type_sizes[element.index()])
+                .and_then(|offset| layouts.state.offsets[region.state.index()].checked_add(offset))
+            else {
+                return 1;
+            };
             alignment.min(alignment_at_byte_offset(layouts.state.alignment, offset))
+        });
+    }
+    if let Some(offsets) = origins.state_offset_multiples() {
+        return offsets.fold(layouts.state.alignment, |alignment, (state, multiple)| {
+            let ty = program.state[state.index()].ty;
+            let element = match program.types[ty.index()] {
+                Type::Array { element, .. } => element,
+                _ => ty,
+            };
+            let Some(byte_multiple) = usize::try_from(multiple)
+                .ok()
+                .and_then(|multiple| multiple.checked_mul(layouts.type_sizes[element.index()]))
+            else {
+                return 1;
+            };
+            alignment
+                .min(alignment_at_byte_offset(
+                    layouts.state.alignment,
+                    layouts.state.offsets[state.index()],
+                ))
+                .min(alignment_at_byte_offset(
+                    layouts.state.alignment,
+                    byte_multiple,
+                ))
         });
     }
     let ty = program.functions[function.index()].params[parameter.index()].ty;
