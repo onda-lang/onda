@@ -261,6 +261,7 @@ jobs:
 
       - name: Test Linux X11 and Wayland adapters
         if: runner.os == 'Linux' && inputs.test_integrations
+        shell: bash
         env:
           WGPU_BACKEND: vulkan
         run: |
@@ -851,13 +852,6 @@ jobs:
         with:
           path: dist
 
-      - name: Generate checksums
-        shell: bash
-        run: |
-          find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' \) -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > dist/SHA256SUMS.txt
-
       - name: Publish GitHub release
         shell: bash
         env:
@@ -866,7 +860,7 @@ jobs:
           RELEASE_NAME: ${{ steps.version.outputs.version }}
         run: |
           mapfile -t release_files < <(
-            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' -o -name 'SHA256SUMS.txt' \) \
+            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' \) \
               | sort
           )
 
@@ -874,6 +868,12 @@ jobs:
             echo "no release artifacts found under dist/" >&2
             exit 1
           fi
+
+          # Release assets have flat filenames, independent of artifact directories.
+          for archive in "${release_files[@]}"; do
+            (cd -- "$(dirname -- "$archive")" && sha256sum -- "$(basename -- "$archive")")
+          done > dist/SHA256SUMS.txt
+          release_files+=(dist/SHA256SUMS.txt)
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME" --notes-file release-notes.md
