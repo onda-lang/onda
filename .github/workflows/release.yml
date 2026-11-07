@@ -25,7 +25,7 @@ on:
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
-        default: 9f1b0113c9374a781bb5e6126e89489ce82e9688
+        default: a468c0379f7105d575cc855c867fcc4f3419f4ad
       sdk_run_id:
         description: Rebuild only plugins using SDKs from this Onda run; empty builds everything
         type: string
@@ -716,7 +716,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: onda-lang/onda-plugin/.github/workflows/build.yml@2a9758891d8a900d21bb244010e0d869b13795cc
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@bbcf17da761159231b458b2b175fb143300f791c
     with:
       source_ref: ${{ inputs.plugin_ref }}
       onda_source_ref: ${{ inputs.sdk_source_ref || github.sha }}
@@ -727,7 +727,7 @@ jobs:
     needs: [build, web]
     permissions:
       contents: read
-    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@9f1b0113c9374a781bb5e6126e89489ce82e9688
+    uses: onda-lang/onda-vscode/.github/workflows/package-embedded.yml@a468c0379f7105d575cc855c867fcc4f3419f4ad
     with:
       source_ref: ${{ inputs.vscode_ref }}
       onda_source_ref: ${{ github.sha }}
