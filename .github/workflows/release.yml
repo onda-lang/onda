@@ -727,7 +727,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: onda-lang/onda-plugin/.github/workflows/build.yml@bbcf17da761159231b458b2b175fb143300f791c
+    uses: onda-lang/onda-plugin/.github/workflows/build.yml@d4c136cab7f44ed1afaf0c960eeb0de3fa5770ba
     with:
       source_ref: ${{ inputs.plugin_ref }}
       onda_source_ref: ${{ inputs.sdk_source_ref || github.sha }}
