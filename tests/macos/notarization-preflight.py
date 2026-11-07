@@ -71,7 +71,10 @@ def control():
         if not any(audio.readframes(audio.getnframes())):
             raise RuntimeError("Baseline render is silent")
 
-    # First prove the same executable runs, then fails specifically on its JIT path.
+    # Use a fresh inode: re-signing an already executed file can leave cached
+    # kernel signing state that differs from the new signature on disk.
+    cli = directory / "onda-hardened"
+    shutil.copy2(ROOT / "target/release/onda", cli)
     sign(directory, cli, None)
     run(directory, "hardened-startup", [cli, "--version"])
     result, _ = render(directory, cli, "jit-without-entitlement", check=False)

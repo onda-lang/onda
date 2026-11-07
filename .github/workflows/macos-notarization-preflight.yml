@@ -17,6 +17,29 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
+  runtime-policy:
+    name: Verify runner enforces executable-memory restrictions
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Inspect security configuration and test fresh executable
+        shell: bash
+        run: |
+          sw_vers
+          csrutil status
+          sysctl kern.bootargs
+          mkdir -p target/runtime-policy
+          clang -Wall -Wextra -Werror tests/macos/runtime-policy.c -o target/runtime-policy/probe
+          cp target/runtime-policy/probe target/runtime-policy/probe-hardened
+          codesign --force --sign - --options runtime target/runtime-policy/probe-hardened
+          codesign -dvvv target/runtime-policy/probe-hardened
+          target/runtime-policy/probe
+          if target/runtime-policy/probe-hardened; then
+            echo "::error::Unentitled JIT executed under hardened runtime"
+            exit 1
+          fi
+
   hardened-runtime:
     name: Ad hoc signing and hardened runtime (arm64)
     runs-on: macos-latest
@@ -27,6 +50,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: notarization-preflight
+          cache-on-failure: true
 
       - name: Build release CLI, libraries, and test executables
         shell: bash
