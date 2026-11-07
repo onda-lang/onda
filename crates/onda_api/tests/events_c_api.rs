@@ -2976,7 +2976,7 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
             ),
             0
         );
-        let mut insufficient = [0x55_i8; 4];
+        let mut insufficient = [0x55 as c_char; 4];
         assert_eq!(
             onda_format_print_batch_into(
                 instance.0,
@@ -2988,8 +2988,8 @@ fn c_api_formats_prints_from_initialized_and_process_calls() {
             ),
             0
         );
-        assert_eq!(insufficient, [0x55_i8; 4]);
-        let mut bytes = vec![0_i8; required + 1];
+        assert_eq!(insufficient, [0x55 as c_char; 4]);
+        let mut bytes = vec![0 as c_char; required + 1];
         assert_eq!(
             onda_format_print_batch_into(
                 instance.0,
