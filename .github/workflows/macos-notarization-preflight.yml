@@ -18,8 +18,12 @@ env:
 
 jobs:
   runtime-policy:
-    name: Verify runner enforces executable-memory restrictions
-    runs-on: macos-latest
+    name: Verify executable-memory restrictions (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
@@ -37,11 +41,14 @@ jobs:
           target/runtime-policy/probe
           if target/runtime-policy/probe-hardened; then
             echo "::error::Unentitled JIT executed under hardened runtime"
+            echo "${{ matrix.os }}: inconclusive; the control executed JIT without an entitlement." >> "$GITHUB_STEP_SUMMARY"
+            echo 'This runner cannot validate hardened-runtime JIT compatibility.' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
   hardened-runtime:
     name: Ad hoc signing and hardened runtime (arm64)
+    needs: runtime-policy
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
