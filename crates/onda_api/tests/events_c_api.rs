@@ -684,7 +684,7 @@ fn temp_source_dir(prefix: &str) -> PathBuf {
         .as_nanos();
     let path = std::env::temp_dir().join(format!("onda_api_{prefix}_{nanos}"));
     fs::create_dir_all(&path).expect("create temp source directory");
-    path
+    fs::canonicalize(path).expect("canonical temp source directory")
 }
 
 unsafe fn manifest_paths(manifest: *const onda_source_manifest) -> Vec<PathBuf> {
@@ -837,8 +837,8 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
         assert_eq!(
             manifest_unresolved_paths(unresolved_manifest.0),
             vec![
-                dir.join("missing/module.onda"),
-                dir.join("missing/module.on"),
+                dir.join("missing").join("module.onda"),
+                dir.join("missing").join("module.on"),
             ]
         );
         assert_eq!(
@@ -881,7 +881,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
             ))
             .to_str()
             .unwrap(),
-            dir.join("missing/module.onda").to_str().unwrap()
+            dir.join("missing").join("module.onda").to_str().unwrap()
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -1210,15 +1210,7 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
 #[test]
 fn c_project_image_and_typed_asset_api_round_trip() {
     unsafe {
-        let dir = std::env::temp_dir().join(format!(
-            "onda_c_project_image_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).expect("create project source directory");
+        let dir = temp_source_dir("project_image");
         let entry = dir.join("main.onda");
         let dependency = dir.join("voice.onda");
         fs::write(
