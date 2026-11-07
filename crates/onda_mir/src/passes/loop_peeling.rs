@@ -5,6 +5,7 @@
 //! decides whether that remainder can be vectorized after ordinary inlining.
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::loops::FunctionFacts;
 use crate::*;
 
 #[cfg(test)]
@@ -36,6 +37,7 @@ type SelectedLoops = BTreeMap<usize, Vec<Fold>>;
 
 struct Scan<'a> {
     function: &'a Function,
+    facts: &'a FunctionFacts,
     summaries: &'a [Predicates],
     predicates: Predicates,
     initial_index: Option<i32>,
@@ -46,11 +48,13 @@ struct Scan<'a> {
 impl<'a> Scan<'a> {
     fn new(
         function: &'a Function,
+        facts: &'a FunctionFacts,
         summaries: &'a [Predicates],
         initial_index: Option<i32>,
     ) -> Self {
         Self {
             function,
+            facts,
             summaries,
             predicates: Predicates::new(),
             initial_index,
@@ -122,7 +126,11 @@ impl<'a> Scan<'a> {
                         }
                     }
                     if let PlaceBase::Local(local) = destination.base {
-                        locals[local.index()] = if destination.projections.is_empty() {
+                        // Escaped storage can change through an existing alias,
+                        // including after a direct assignment reestablishes a copy.
+                        locals[local.index()] = if destination.projections.is_empty()
+                            && !self.facts.storage_escapes(local)
+                        {
                             symbol
                         } else {
                             None
@@ -146,16 +154,6 @@ impl<'a> Scan<'a> {
                     }
                     for result in results {
                         locals[result.index()] = None;
-                    }
-                    // References may overlap and mutate their source locals.
-                    for argument in args {
-                        if let CallArgument::Place(Place {
-                            base: PlaceBase::Local(local),
-                            ..
-                        }) = argument
-                        {
-                            locals[local.index()] = None;
-                        }
                     }
                 }
                 StatementKind::If {
@@ -187,13 +185,18 @@ pub(super) struct Plan(Vec<SelectedLoops>);
 
 impl Plan {
     pub fn new(program: &Program) -> Self {
+        let facts = program
+            .functions
+            .iter()
+            .map(FunctionFacts::new)
+            .collect::<Vec<_>>();
         let mut summaries = vec![Predicates::new(); program.functions.len()];
         for index in crate::call_graph::CallGraph::new(program).postorder {
             let function = &program.functions[index];
             if function.attributes.inline == InlineHint::Never {
                 continue;
             }
-            let mut scan = Scan::new(function, &summaries, None);
+            let mut scan = Scan::new(function, &facts[index], &summaries, None);
             scan.statements(
                 &function.body.statements,
                 &mut vec![None; function.locals.len()],
@@ -204,9 +207,17 @@ impl Plan {
             program
                 .functions
                 .iter()
-                .map(|function| {
+                .zip(&facts)
+                .map(|(function, facts)| {
                     let mut selected = SelectedLoops::new();
-                    collect(function, &function.body, &summaries, &mut 0, &mut selected);
+                    collect(
+                        function,
+                        facts,
+                        &function.body,
+                        &summaries,
+                        &mut 0,
+                        &mut selected,
+                    );
                     selected
                 })
                 .collect(),
@@ -228,6 +239,7 @@ impl Plan {
 
 fn plan_loop(
     function: &Function,
+    facts: &FunctionFacts,
     previous: Option<&Statement>,
     body: &Block,
     summaries: &[Predicates],
@@ -254,13 +266,14 @@ fn plan_loop(
     if *index != counted.index
         || !projections.is_empty()
         || i64::from(limit) - i64::from(*start) < i64::from(MIN_ITERATIONS)
+        || facts.storage_escapes(*index)
         || !unchanged_induction(counted.body, *index)
     {
         return None;
     }
     let mut locals = vec![None; function.locals.len()];
     locals[index.index()] = Some(Symbol::Index(Origin::Induction));
-    let mut scan = Scan::new(function, summaries, Some(*start));
+    let mut scan = Scan::new(function, facts, summaries, Some(*start));
     scan.statements(counted.body, &mut locals);
     scan.predicates
         .contains(&(Origin::Induction, *start))
@@ -294,6 +307,7 @@ fn unchanged_induction(statements: &[Statement], index: LocalId) -> bool {
 
 fn collect(
     function: &Function,
+    facts: &FunctionFacts,
     block: &Block,
     summaries: &[Predicates],
     ordinal: &mut usize,
@@ -306,21 +320,22 @@ fn collect(
                 *ordinal += 1;
                 if let Some(folds) = plan_loop(
                     function,
+                    facts,
                     index.checked_sub(1).map(|i| &block.statements[i]),
                     body,
                     summaries,
                 ) {
                     selected.insert(id, folds);
                 }
-                collect(function, body, summaries, ordinal, selected);
+                collect(function, facts, body, summaries, ordinal, selected);
             }
             StatementKind::If {
                 then_block,
                 else_block,
                 ..
             } => {
-                collect(function, then_block, summaries, ordinal, selected);
-                collect(function, else_block, summaries, ordinal, selected);
+                collect(function, facts, then_block, summaries, ordinal, selected);
+                collect(function, facts, else_block, summaries, ordinal, selected);
             }
             _ => {}
         }

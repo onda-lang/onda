@@ -1096,7 +1096,7 @@ fn infer_expr_primitive_type(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn monomorphize_calls_in_stmts(
-    stmts: &mut [Stmt],
+    stmts: &mut Vec<Stmt>,
     env: &CallTypeEnv,
     mono_eligible: &HashSet<String>,
     fn_signatures: &HashMap<String, FnSignature>,
@@ -1192,6 +1192,20 @@ struct MonoRewriter<'a> {
 }
 
 impl CallTypeRewriter for MonoRewriter<'_> {
+    fn expand_assignment(
+        &mut self,
+        stmt: &mut Stmt,
+        env: &CallTypeEnv,
+        temp_counter: &mut usize,
+    ) -> Option<Vec<Stmt>> {
+        crate::proc_call_rewrite::expand_processor_projection_assignment(
+            stmt,
+            env,
+            temp_counter,
+            self.errors,
+        )
+    }
+
     fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
         crate::proc_call_rewrite::rewrite_processor_projection_statement(expr, env, self.errors);
         self.rewrite_expr(expr, env);

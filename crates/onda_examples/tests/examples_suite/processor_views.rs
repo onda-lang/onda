@@ -1,6 +1,287 @@
 use super::*;
 
 #[test]
+fn nested_processors_read_their_own_private_parameters() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-private-owner-reads.onda"
+    );
+    render_channels(source, &[&[9.0; 4], &[6.0; 4]]);
+}
+
+#[test]
+fn conditional_processor_copies_keep_cleanup_resource_captures() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-conditional-copy-resources.onda"
+    );
+    let scalar = source
+        .replace(
+            "copies: Voice[1] = left.voices[1:2]",
+            "copy: Voice = left.voices[1]",
+        )
+        .replace(
+            "copies: Voice[1] = right.voices[0:1]",
+            "copy: Voice = right.voices[0]",
+        )
+        .replace("copies[0]()", "copy()");
+    let untaken = source.replace(
+        "  if choose:",
+        "  if false:\n    unused: Voice[1] = left.voices[1:2]\n    unused[0]()\n  if choose:",
+    );
+    for source in [source, &scalar, &untaken] {
+        render_channel_blocks_with_buffers(
+            source,
+            &[
+                &[0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0],
+                &[1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0],
+                &[0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0],
+            ],
+            &[0.0; 4],
+            4,
+        );
+    }
+}
+
+#[test]
+fn conditional_processor_loop_copies_complete_each_resource_once() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-conditional-copy-resources.onda"
+    );
+    let source = source.replace(
+        "  if choose:\n    copies: Voice[1] = left.voices[1:2]\n  else:\n    copies: Voice[1] = right.voices[0:1]\n  return copies[0]()",
+        "  result = 0.0\n  for turn in 0..2:\n    if choose:\n      copies: Voice[1] = left.voices[1:2]\n    else:\n      copies: Voice[1] = right.voices[0:1]\n    result = copies[0]()\n    choose = !choose\n  return result",
+    );
+    render_channel_blocks_with_buffers(
+        &source,
+        &[
+            &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+        ],
+        &[0.0; 4],
+        4,
+    );
+}
+
+#[test]
+fn processor_alias_param_writes_clamp_before_running_one_hook() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-alias-param-writes.onda"
+    );
+    render_channels(source, &[&[4.0; 4], &[8.0; 4], &[2.0, 2.0, 3.0, 3.0]]);
+    render_channels(
+        &source.replace(" => update", ""),
+        &[&[4.0; 4], &[0.0; 4], &[0.0; 4]],
+    );
+    render_channels(
+        &source.replace(
+            "    if first:\n      v = voices[0]\n    else:\n      v = voices[1]",
+            "    v = voices[0]",
+        ),
+        &[&[4.0; 4], &[8.0; 4], &[2.0, 3.0, 4.0, 5.0]],
+    );
+    render_channels(
+        &source
+            .replace(
+                "voices: Voice[2] = Voice()",
+                "left = Voice()\n    right = Voice()",
+            )
+            .replace("voices[0]", "left")
+            .replace("voices[1]", "right"),
+        &[&[4.0; 4], &[8.0; 4], &[2.0, 2.0, 3.0, 3.0]],
+    );
+    render_channels(
+        &source
+            .replace("    v.gain = 9", "    set_gain(v, 9)")
+            .replace(
+                "proc Bank:",
+                "def set_gain(v, value):\n  v.gain = value\nproc Bank:",
+            ),
+        &[&[4.0; 4], &[8.0; 4], &[2.0, 2.0, 3.0, 3.0]],
+    );
+}
+
+#[test]
+fn processor_alias_array_param_writes_keep_ranges() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-alias-array-param-writes.onda"
+    );
+    render_channels(source, &[&[4.0, 8.0, 8.0, 8.0]]);
+}
+
+#[test]
+fn processor_alias_param_hooks_keep_the_processor_sample_rate() {
+    let source = r#"
+proc Voice:
+  params:
+    gain = 0.0 => update
+  init:
+    cached = 0.0
+  def update():
+    cached = gain * SR / 48000.0
+  sample 2:
+    out1 = cached
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+  sample:
+    v = voices[0]
+    v.gain = 3.0
+    out1 = v()
+init:
+  bank = Bank()
+sample:
+  out1 = bank()
+"#;
+    for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+        let (mut instance, _, _) = compile_instance_with_options(
+            source,
+            256,
+            CompileOptions {
+                sample_rate: 48_000.0,
+                block_size: 256,
+                fast_math: false,
+                opt_level,
+            },
+        );
+        let mut output = [0.0; 256];
+        process_interleaved(&mut instance, &[], &mut output, 256).unwrap();
+        assert_near(output[255], 6.0, 1e-3);
+    }
+}
+
+#[test]
+fn indexed_processor_param_writes_evaluate_receiver_then_value_once() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-indexed-param-write-order.onda"
+    );
+    for source in [
+        source.to_owned(),
+        source.replace(
+            "    voices[choose()].gain = value()",
+            "    selected = voices[:]\n    selected[choose()].gain = value()",
+        ),
+    ] {
+        render_channels(
+            &source,
+            &[&[1.0; 4], &[6.0; 4], &[21.0; 4], &[2.0, 3.0, 4.0, 5.0]],
+        );
+    }
+}
+
+#[test]
+fn indexed_processor_compound_writes_preserve_scalar_types_and_evaluation_order() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-indexed-compound-param-writes.onda"
+    );
+    for (ty, initial) in [
+        ("i32", "1"),
+        ("i64", "9007199254740993"),
+        ("f32", "1"),
+        ("f64", "16777216"),
+    ] {
+        let source = source
+            .replace("i64", ty)
+            .replace("9007199254740993", initial);
+        for source in [
+            source.clone(),
+            source.replace(
+                "    voices[choose()].gain += value()",
+                "    voices[choose()].gain = voices[0].gain + value()",
+            ),
+            source.replace(
+                "    voices[choose()].gain += value()",
+                "    voices[choose()].gain = current_gain(0) + value()",
+            ),
+            source.replace(
+                "  bank = Bank()",
+                "  banks: Bank[2] = Bank()\n  bank = banks[1]",
+            ),
+        ] {
+            render_channels(
+                &source,
+                &[
+                    &[1.0, 2.0, 3.0, 4.0],
+                    &[2.0, 3.0, 4.0, 5.0],
+                    &[1.0; 4],
+                    &[21.0; 4],
+                    &[0.0; 4],
+                ],
+            );
+        }
+        if ty.starts_with('i') {
+            render_channels(
+                &source.replace(".gain += value()", ".gain ^= value()"),
+                &[
+                    &[-1.0, 0.0, -1.0, 0.0],
+                    &[2.0, 3.0, 4.0, 5.0],
+                    &[1.0; 4],
+                    &[21.0; 4],
+                    &[0.0; 4],
+                ],
+            );
+        }
+        render_channels(
+            &source.replace(" => update", ""),
+            &[
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0.0; 4],
+                &[1.0; 4],
+                &[21.0; 4],
+                &[0.0; 4],
+            ],
+        );
+    }
+}
+
+#[test]
+fn indexed_processor_named_param_calls_run_one_hook() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-indexed-param-write-order.onda"
+    )
+    .replace(
+        "    voices[choose()].gain = value()",
+        "    voices[choose()](gain = value())",
+    );
+    render_channels(
+        &source,
+        &[&[1.0; 4], &[6.0; 4], &[21.0; 4], &[2.0, 3.0, 4.0, 5.0]],
+    );
+}
+
+#[test]
+fn processor_param_hooks_run_after_init_and_once_per_named_write() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-param-hook-scheduling.onda"
+    );
+    for source in [
+        source.to_owned(),
+        source.replace(
+            "Voice[2] = Voice(gain = 9)",
+            "Voice[2] = [Voice(gain = 9), Voice(gain = 9)]",
+        ),
+        source.replace(
+            "Voice[2] = Voice(gain = 9)",
+            "Voice[2] = Voice(gain = [9, 9])",
+        ),
+        source.replace(
+            "  bank = Bank()",
+            "  banks: Bank[2] = Bank()\n  bank = banks[1]",
+        ),
+    ] {
+        render_channels(
+            &source,
+            &[
+                &[3.0; 4],
+                &[2.0, 3.0, 4.0, 5.0],
+                &[4.0; 4],
+                &[1.0; 4],
+                &[2.0, 3.0, 4.0, 5.0],
+            ],
+        );
+    }
+}
+
+#[test]
 fn block_storage_and_sample_owned_processors_compose() {
     let source = include_str!(
         "../../../../packages/onda_binaryen_web/test/fixtures/processor-block-sample-owned-hooks.onda"
@@ -282,6 +563,15 @@ fn copied_processor_elements_flatten_without_resolving_resources() {
         &[0.0, 0.0],
         4,
     );
+}
+
+#[test]
+fn conditional_processor_array_copies_complete_only_initialized_owners() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-conditional-array-cleanup.onda"
+    );
+    let expected = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0];
+    render_channel_blocks_with_buffers(source, &[&expected, &[0.0; 8]], &[0.0], 4);
 }
 
 #[test]

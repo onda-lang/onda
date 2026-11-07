@@ -110,7 +110,7 @@ pub(super) fn materialize_processor_projections(
     structs: &HashMap<String, StructDef>,
     oversample_factors: &mut HashMap<String, usize>,
     oversample_meta: &mut HashMap<String, ProcStepOversampleMeta>,
-) {
+) -> HashMap<String, std::sync::Arc<HashSet<String>>> {
     let families = wrapper_families(blocks, shapes, procs);
     let storage_symbols = super::storage_projections::register_storage_projections(shapes, structs);
     let mut seen = HashSet::new();
@@ -165,6 +165,7 @@ pub(super) fn materialize_processor_projections(
         }
         oversample_meta.insert(name, meta);
     }
+    let mut storage_views = HashMap::new();
     for block in blocks {
         let Block::Def(function) = block else {
             continue;
@@ -230,7 +231,14 @@ pub(super) fn materialize_processor_projections(
         }
         rewriter.aliases.append(&mut function.body);
         function.body = rewriter.aliases;
+        if !rewriter.view_types.is_empty() {
+            storage_views.insert(
+                function.name.clone(),
+                std::sync::Arc::new(rewriter.view_types.into_keys().collect()),
+            );
+        }
     }
+    storage_views
 }
 
 struct ProjectionMaterializer<'a> {
@@ -300,6 +308,7 @@ impl ProjectionMaterializer<'_> {
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: Expr::Index {
                         loc: Default::default(),
                         base: format!("{receiver}.{}", selection.field),

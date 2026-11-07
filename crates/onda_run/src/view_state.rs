@@ -15,10 +15,13 @@ pub fn host_panel_state(
             theme_mode,
             default_param_smoothing_seconds,
         );
-        state["schemaReady"] = serde_json::json!(!matches!(
-            controller.source_compilation,
-            crate::SourceCompilationState::Compiling(_)
-        ));
+        state["schemaReady"] = serde_json::json!(
+            !controller.restoring
+                && !matches!(
+                    controller.source_compilation,
+                    crate::SourceCompilationState::Compiling(_)
+                )
+        );
         return state;
     }
     let mut panel = serde_json::json!({

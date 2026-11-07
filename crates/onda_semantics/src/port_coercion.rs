@@ -616,6 +616,7 @@ pub(super) fn build_top_level_range_hoist_assign(
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: clamp_expr_to_range(Expr::var(source_name), range),
     }
 }

@@ -1784,7 +1784,7 @@ fn desugar_processors_impl(
         options,
         errors,
     );
-    proc_storage::materialize_processor_projections(
+    let materialized_storage_views = proc_storage::materialize_processor_projections(
         &mut generated_defs,
         &lowering_shapes,
         &proc_defs_by_name,
@@ -1801,6 +1801,7 @@ fn desugar_processors_impl(
         options,
         &generated_defs,
     );
+    processor_views.materialized_storage_views = materialized_storage_views;
     resource_recipes::defer_root_resources(&mut processor_views, &program.blocks, options);
     processor_views
         .lexical_resources

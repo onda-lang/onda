@@ -138,12 +138,12 @@ typedef struct onda_event_tensor_view {
   int32_t element_count;
 } onda_event_tensor_view_t;
 
-/* Flattened metadata for one event tensor view. path is the dot-separated schema-leaf path.
+/* Flattened metadata for one event or delegate payload tensor. path is the dot-separated schema-leaf path.
    shape contains only fixed array axes, outermost first. For a fixed parameter, its required view
    element_count is fixed_element_count. For a slice, the required element_count is the logical
    slice length multiplied by fixed_element_count. path and shape remain valid until the program is
    destroyed. */
-typedef struct onda_event_tensor_info {
+typedef struct onda_payload_tensor_info {
   const char* path;
   const int32_t* shape;
   int32_t shape_rank;
@@ -151,7 +151,7 @@ typedef struct onda_event_tensor_info {
   int32_t element_type;
   int32_t is_slice;
   int32_t fixed_element_count;
-} onda_event_tensor_info_t;
+} onda_payload_tensor_info_t;
 
 typedef struct onda_owned_string {
   char* data;
@@ -405,7 +405,8 @@ const onda_compile_const_input_t* onda_compile_constants_inputs(
 /* Destroys a compile-constant descriptor list. NULL is accepted. */
 void onda_compile_constants_destroy(onda_compile_constants_t* constants);
 
-/* Establishes audio FP mode on the calling thread (x86 FTZ/DAZ). Does not restore
+/* Establishes audio FP mode on the calling thread (x86 FTZ/DAZ, ARM64 FZ).
+   Allocation-free; checks the register and writes only when needed. Does not restore
    the previous mode. Call explicitly on host-owned execution threads or manage
    an FP scope in the host. Runtime operations never change FP mode implicitly. */
 void onda_configure_current_thread_audio_fp_mode(void);
@@ -977,7 +978,7 @@ typedef struct onda_buffer_array_info_t {
 typedef struct onda_message_info_t {
   const char* name;
   const char* schema_json;
-  int32_t payload_bytes, payload_min_bytes, record_bytes, record_min_bytes, tensor_count;
+  int32_t payload_bytes, payload_min_bytes, record_bytes, record_min_bytes, tensor_count, region_count;
   const onda_payload_plan_t* payload_plan;
 } onda_message_info_t;
 const onda_buffer_info_t* onda_buffer_info(const onda_program_t* program, int32_t index);
@@ -1011,11 +1012,10 @@ int onda_buffer_index(const onda_program_t* program, const char* name);
 int onda_event_index(const onda_program_t* program, const char* name);
 int onda_delegate_index(const onda_program_t* program, const char* name);
 
-int onda_event_tensor_info(
-  const onda_program_t* program,
-  int event_index,
-  int tensor_index,
-  onda_event_tensor_info_t* out_info
+/* Returns a borrowed leaf descriptor, or NULL for an invalid plan/index. */
+const onda_payload_tensor_info_t* onda_payload_tensor_info(
+  const onda_payload_plan_t* plan,
+  int32_t tensor_index
 );
 typedef struct onda_payload_layout_t {
   int32_t payload_bytes;
@@ -1052,6 +1052,19 @@ int onda_payload_layout(
   const onda_payload_plan_t* plan,
   const int32_t* slice_lengths,
   int32_t slice_length_count,
+  onda_payload_region_t* out_regions,
+  int32_t region_capacity,
+  onda_payload_layout_t* out_layout
+);
+/* Resolves the same regions from complete packed wire bytes. Reads slice-length
+   prefixes without decoding or normalizing scalar values. Validates the entire
+   payload before writing any output; truncated, trailing, or negative-length
+   payloads return INVALID_SHAPE. Pointer, capacity, lifetime and other status
+   contracts match onda_payload_layout. The input must not overlap outputs. */
+int onda_payload_layout_from_bytes(
+  const onda_payload_plan_t* plan,
+  const uint8_t* payload,
+  int32_t payload_bytes,
   onda_payload_region_t* out_regions,
   int32_t region_capacity,
   onda_payload_layout_t* out_layout

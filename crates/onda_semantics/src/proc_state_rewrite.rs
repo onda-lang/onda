@@ -16,6 +16,8 @@ pub(crate) const PROC_INIT_FN_SUFFIX: &str = ".__onda_proc_init";
 pub(crate) const PROC_BLOCK_PRE_FN_SUFFIX: &str = ".__onda_proc_block_pre";
 pub(crate) const PROC_BLOCK_POST_FN_SUFFIX: &str = ".__onda_proc_block_post";
 pub(crate) const PROC_STEP_FN_SUFFIX: &str = ".__onda_proc_step";
+/// Declaration-only signature used while checking scalar processor aliases.
+pub(crate) const PROC_SOURCE_CALL_FN_SUFFIX: &str = ".__onda_proc_source_call";
 pub(crate) const PROC_CALL_OUT_FN_PREFIX: &str = ".__onda_proc_call_out";
 pub(crate) const PROC_EVENT_FN_PREFIX: &str = ".__onda_proc_event_";
 
@@ -921,6 +923,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                 decl_ty,
                 generic_decl_ty,
                 is_typed_decl,
+                param_write_lowered,
                 expr,
                 ..
             } => {
@@ -990,6 +993,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 generic_decl_ty: generic_decl_ty.clone(),
                                 is_typed_decl: *is_typed_decl,
                                 typed_decl_ty_loc: Default::default(),
+                                param_write_lowered: *param_write_lowered,
                                 expr: expr_rewritten,
                             });
                         }
@@ -1002,6 +1006,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                 generic_decl_ty: None,
                                 is_typed_decl: false,
                                 typed_decl_ty_loc: Default::default(),
+                                param_write_lowered: *param_write_lowered,
                                 expr: expr_rewritten,
                             });
                         }
@@ -1015,6 +1020,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                     generic_decl_ty: None,
                                     is_typed_decl: false,
                                     typed_decl_ty_loc: Default::default(),
+                                    param_write_lowered: *param_write_lowered,
                                     expr: expr_rewritten,
                                 });
                             }
@@ -1027,6 +1033,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             generic_decl_ty: generic_decl_ty.clone(),
                             is_typed_decl: *is_typed_decl,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: *param_write_lowered,
                             expr: expr_rewritten,
                         })
                     }
@@ -1053,6 +1060,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                             generic_decl_ty: generic_decl_ty.clone(),
                                             is_typed_decl: *is_typed_decl,
                                             typed_decl_ty_loc: Default::default(),
+                                            param_write_lowered: *param_write_lowered,
                                             expr: expr_rewritten,
                                         });
                                     }
@@ -1078,6 +1086,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         generic_decl_ty: generic_decl_ty.clone(),
                                         is_typed_decl: *is_typed_decl,
                                         typed_decl_ty_loc: Default::default(),
+                                        param_write_lowered: *param_write_lowered,
                                         expr: expr_rewritten,
                                     });
                                 };
@@ -1090,6 +1099,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                                         generic_decl_ty: None,
                                         is_typed_decl: false,
                                         typed_decl_ty_loc: Default::default(),
+                                        param_write_lowered: *param_write_lowered,
                                         expr: expr_rewritten,
                                     });
                                 }
@@ -1130,6 +1140,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: *param_write_lowered,
                             expr: expr_rewritten,
                         })
                     }
@@ -1162,6 +1173,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: *param_write_lowered,
                             expr: expr_rewritten,
                         })
                     }
@@ -1173,6 +1185,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                         generic_decl_ty: generic_decl_ty.clone(),
                         is_typed_decl: *is_typed_decl,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: *param_write_lowered,
                         expr: expr_rewritten,
                     }),
                     AssignTarget::IndexedMember {
@@ -1202,6 +1215,7 @@ pub(crate) fn rewrite_proc_stmt_symbols(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: *param_write_lowered,
                             expr: expr_rewritten,
                         })
                     }

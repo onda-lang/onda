@@ -8,6 +8,8 @@ const status = document.getElementById("status");
 const vscode =
   typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null;
 const send = (message) => {
+  // VS Code serializes both commands and saved view state as JSON.
+  if (vscode) message = JSON.parse(wireJson(message));
   if (message.type === "setTheme" && (message.mode === "dark" || message.mode === "light")) {
     themeMode = message.mode;
     document.documentElement.dataset.theme = themeMode;

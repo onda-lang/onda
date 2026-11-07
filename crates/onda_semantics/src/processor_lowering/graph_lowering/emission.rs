@@ -9,6 +9,7 @@ pub(super) fn assign_stmt(target: String, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -58,6 +59,7 @@ pub(super) fn assign_node_field_stmt(node: &GraphNodeKey, field: &str, expr: Exp
             generic_decl_ty: None,
             is_typed_decl: false,
             typed_decl_ty_loc: Default::default(),
+            param_write_lowered: false,
             expr,
         },
     }
@@ -196,6 +198,7 @@ pub(super) fn lower_graph(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::ArrayCtor {
                     loc: Default::default(),
                     spec: ArrayTypeSpec {
@@ -215,6 +218,7 @@ pub(super) fn lower_graph(
                 generic_decl_ty: None,
                 is_typed_decl: true,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int(0),
             });
         }
@@ -452,6 +456,7 @@ pub(super) fn lower_graph(
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: false,
                         expr: slot_expr,
                     });
                 }
@@ -525,6 +530,7 @@ pub(super) fn lower_graph(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: slot_expr,
                 });
             }

@@ -369,8 +369,9 @@ peeled iteration preserves each original operation, including checked failures a
 callbacks, followed by the original increment and remaining loop. Within the remainder, the
 counted-loop proof establishes that the induction variable never equals its initial value. Direct
 `==` / `!=` comparisons with that value fold to false / true, including local copies proven equal
-to the current induction variable on every incoming path. Overwritten or reference-passed copies,
-call results, and values carried from a previous iteration supply no such proof. Helper summaries
+to the current induction variable on every incoming path. Locals exposed through views or references
+anywhere in the function supply no such proof, including aliases created before the loop. Neither do
+overwritten copies, call results, or values carried from a previous iteration. Helper summaries
 never authorize these folds. The peeled iteration keeps its original comparisons; folding changes
 neither effect order nor checked operations.
 

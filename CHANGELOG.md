@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Native Linux ARM64 release packages, including the CLI and C SDK libraries.
+- Declare `proc Main` as the program entry: Onda creates one instance per host instance
+  and exposes its public controls, inputs, outputs, buffers, events, and delegates.
+- Input attributes `ramp` and `lag` provide linear and exponential smoothing for scalar
+  and fixed-array floating-point inputs, including processor inputs.
 - Pass references to nested processors, processor arrays, and slices through helper functions
   while preserving their state, bound buffers, and delegate subscriptions, including references
   selected by conditional branches.
@@ -34,6 +39,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Linux release packages use a Debian 12 build baseline with glibc 2.36 and
+  PipeWire 0.3.65; Windows release packages use the Visual Studio 2022 toolchain.
 - Large nested processor arrays compile without the previous aggregate-size limit or generating
   a separate implementation for every element, making larger voice banks practical.
 - Faster native processor-bank processing, with roughly 4–5× speedups in measured 16- and
@@ -67,10 +74,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Restore run controls and buffers before initialization, including when authored defaults would
+  fail a runtime safety check. Paused startup and metadata queries no longer execute `init`;
+  playback, offline rendering, and benchmarks apply `--set` overrides before initialization.
+- Respect declared primitive input/output types in native run hosts, including mixed arrays,
+  instead of binding every port as `f32`. Convert samples at the host audio boundary.
+- Use saturating integer audio-input conversion in native and Web Audio hosts, including
+  infinities and NaN, instead of wrapping or failing on non-finite values.
+- Preserve negative zero in JSON event payloads, metadata defaults, delegate responses,
+  and VS Code event edits and saved view state.
 - Preserve processor block-hook and callback ordering through aliases, branches, and helper calls,
   including when hosts process a block in multiple segments.
+- Complete block hooks for locally owned processor arrays declared inside conditional branches,
+  including nested arrays.
 - Keep processor buffer references current after restoring snapshots and rebinding host buffers.
 - Evaluate processor selection indices only once, preserving side effects when selecting a receiver.
+- Preserve declared scalar types in indexed processor-parameter reads, compound writes, and
+  helper returns, including exact `i64` arithmetic in nested processor arrays.
+- Run parameter update hooks once per write, and after initialization during construction and
+  builtin `init(...)`, including nested processor arrays.
+- Preserve parameter ranges, private access checks, and update hooks through borrowed processor
+  aliases, and support tuple-output calls through branch-selected aliases.
 - Initialize private parameters in every processor-array element and keep task activation independent
   when mixing constant and dynamic array indices.
 - Direct buffer-reference aliases retain their buffer identity and metadata queries.

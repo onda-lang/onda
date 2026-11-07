@@ -11,6 +11,15 @@ pub(crate) trait CallTypeRewriter {
     fn context(&self) -> CallTypeContext<'_>;
     fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv);
 
+    fn expand_assignment(
+        &mut self,
+        _stmt: &mut Stmt,
+        _env: &CallTypeEnv,
+        _temp_counter: &mut usize,
+    ) -> Option<Vec<Stmt>> {
+        None
+    }
+
     fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
         self.rewrite_expr(expr, env);
     }
@@ -21,9 +30,28 @@ pub(crate) trait CallTypeRewriter {
         });
     }
 
-    fn rewrite_stmts(&mut self, stmts: &mut [Stmt], env: &mut CallTypeEnv) -> StatementFlow {
-        for stmt in stmts {
-            let flow = with_stmt_diag_context_mut(stmt, |_diag, stmt| match stmt {
+    fn rewrite_stmts(&mut self, stmts: &mut Vec<Stmt>, env: &mut CallTypeEnv) -> StatementFlow {
+        let mut temp_counter = crate::proc_call_rewrite::projection_temp_counter(stmts);
+        self.rewrite_stmts_inner(stmts, env, &mut temp_counter)
+    }
+
+    fn rewrite_stmts_inner(
+        &mut self,
+        stmts: &mut Vec<Stmt>,
+        env: &mut CallTypeEnv,
+        temp_counter: &mut usize,
+    ) -> StatementFlow {
+        let mut pending = std::collections::VecDeque::from(std::mem::take(stmts));
+        while let Some(mut stmt) = pending.pop_front() {
+            if matches!(stmt, Stmt::Assign { .. }) {
+                if let Some(expanded) = self.expand_assignment(&mut stmt, env, temp_counter) {
+                    for statement in expanded.into_iter().rev() {
+                        pending.push_front(statement);
+                    }
+                    continue;
+                }
+            }
+            let flow = with_stmt_diag_context_mut(&mut stmt, |_diag, stmt| match stmt {
                 Stmt::Assign {
                     target,
                     decl_ty,
@@ -68,9 +96,11 @@ pub(crate) trait CallTypeRewriter {
                 } => {
                     self.rewrite_expr(cond, env);
                     let mut then_env = env.clone();
-                    let then_flow = self.rewrite_stmts(then_branch, &mut then_env);
+                    let then_flow =
+                        self.rewrite_stmts_inner(then_branch, &mut then_env, temp_counter);
                     let mut else_env = env.clone();
-                    let else_flow = self.rewrite_stmts(else_branch, &mut else_env);
+                    let else_flow =
+                        self.rewrite_stmts_inner(else_branch, &mut else_env, temp_counter);
                     let (joined, flow) = join_branch_envs(then_env, then_flow, else_env, else_flow);
                     *env = joined;
                     flow
@@ -92,20 +122,22 @@ pub(crate) trait CallTypeRewriter {
                     let mut body_env = env.clone();
                     body_env.shadow_binding(var);
                     body_env.scalar_types.insert(var.clone(), *var_ty);
-                    self.rewrite_stmts(body, &mut body_env);
+                    self.rewrite_stmts_inner(body, &mut body_env, temp_counter);
                     env.join_processor_bindings_from(&body_env);
                     StatementFlow::Continues
                 }
                 Stmt::While { cond, body, .. } => {
                     self.rewrite_expr(cond, env);
                     let mut body_env = env.clone();
-                    self.rewrite_stmts(body, &mut body_env);
+                    self.rewrite_stmts_inner(body, &mut body_env, temp_counter);
                     env.join_processor_bindings_from(&body_env);
                     StatementFlow::Continues
                 }
                 Stmt::Break { .. } | Stmt::Continue { .. } => StatementFlow::Terminates,
             });
+            stmts.push(stmt);
             if flow == StatementFlow::Terminates {
+                stmts.extend(pending);
                 return flow;
             }
         }

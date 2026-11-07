@@ -1400,7 +1400,11 @@ fn validate_expr_node<'a>(
                 }
                 return;
             }
-            if let Some(sig) = env.fn_signatures.get(name) {
+            if let Some(sig) = env.fn_signatures.get(name).or_else(|| {
+                let proc_name = env.struct_name(name)?;
+                env.fn_signatures
+                    .get(&format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}"))
+            }) {
                 let display_name = sig.display_name.as_deref().unwrap_or(name);
                 if sig.type_params.is_empty() {
                     if !type_args.is_empty() {

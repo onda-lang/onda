@@ -28,7 +28,7 @@ pub(crate) fn record_function_operations(
 }
 
 pub(crate) fn record_boundary_operations(
-    body: &mut [Stmt],
+    body: &mut Vec<Stmt>,
     env: &mut CallTypeEnv,
     context: CallTypeContext<'_>,
 ) -> Vec<(String, ProcessorViewShape)> {

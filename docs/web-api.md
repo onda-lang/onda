@@ -199,6 +199,12 @@ The package root re-exports the common artifact validation and file helpers. The
 
 ## `@onda-lang/webaudio`
 
+Audio ports retain their declared scalar types in Wasm. At the Web Audio `f32`
+boundary, integer inputs truncate toward zero and saturate (NaN becomes zero),
+and boolean inputs use nonzero comparison, including NaN. Outputs convert
+numerically to `f32`; booleans become zero or one. Event/delegate payloads retain
+their schema-defined types and precision independently of audio conversion.
+
 ### Construction
 
 - `registerOndaAudioWorklet(context, workletUrl?)` registers the processor once per context.

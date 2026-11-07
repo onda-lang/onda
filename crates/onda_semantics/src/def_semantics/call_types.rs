@@ -5,6 +5,7 @@ pub(crate) use scopes::CallTypeRewriter;
 
 use std::collections::{HashMap, HashSet};
 
+use crate::proc_call_support::named_call_var_arg;
 use crate::*;
 
 #[derive(Debug, Clone, Default)]
@@ -21,6 +22,7 @@ pub(crate) struct CallTypeEnv {
     /// Lexically introduced processor values use complete-view call lowering.
     /// Global constructors and function parameters have their ordinary ABI plan.
     lexical_processor_bindings: HashSet<String>,
+    materialized_storage_views: Option<std::sync::Arc<HashSet<String>>>,
     shadowed_processor_roots: HashSet<String>,
     /// Lexical bindings whose concrete semantic type still depends on a call
     /// site or an unresolved expression. Keeping existence separate from type
@@ -185,6 +187,13 @@ impl CallArrayType {
 impl CallTypeEnv {
     pub(crate) fn is_lexical_processor_binding(&self, name: &str) -> bool {
         self.lexical_processor_bindings.contains(name)
+    }
+
+    pub(crate) fn is_materialized_storage_view(&self, name: &str) -> bool {
+        let root = name.split('.').next().unwrap_or(name);
+        self.materialized_storage_views
+            .as_ref()
+            .is_some_and(|views| views.contains(root))
     }
 
     pub(crate) fn processor_view_shape(
@@ -379,6 +388,10 @@ impl CallTypeEnv {
 
     pub(crate) fn bind_processor_function_params(&mut self, function: &str) {
         let catalog = self.processor_views.borrow();
+        self.materialized_storage_views = catalog
+            .materialized_storage_views
+            .get(crate::compile_context::lowered_function_origin(function))
+            .cloned();
         let origin = crate::compile_context::source_function_name(function);
         if let Some(params) = catalog.function_params.get(origin) {
             self.processor_bindings.extend(params.clone());
@@ -450,6 +463,7 @@ impl CallTypeEnv {
     pub(crate) fn enter_function(&mut self, type_params: &[String]) {
         self.set_owner_type_params(type_params);
         self.local_processor_lifetimes = true;
+        self.materialized_storage_views = None;
     }
 
     /// Binds a concrete function parameter in the shared call-typing
@@ -1048,23 +1062,21 @@ pub(crate) fn infer_scalar_expr_type(
     .and_then(|ty| effective_untyped_assignment_type(expr, Some(ty), &env.const_symbols))
 }
 
-fn named_call_var_arg<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a str> {
-    args.iter().find_map(|arg| {
-        (arg.name.as_deref() == Some(arg_name))
-            .then_some(&arg.expr)
-            .and_then(|expr| match expr {
-                Expr::Var { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-    })
-}
-
 fn infer_array_symbol_elem_type(
     name: &str,
     env: &CallTypeEnv,
     context: CallTypeContext<'_>,
 ) -> Option<PrimitiveType> {
-    infer_array_symbol_type(name, env, context)?.primitive_elem()
+    infer_array_symbol_type(name, env, context)
+        .and_then(|array| array.primitive_elem())
+        .or_else(|| {
+            let (root, field) = name.split_once('.')?;
+            crate::resolve_flattened_struct_array_leaf_type(
+                env.struct_instances.get(root)?,
+                field,
+                context.struct_defs,
+            )
+        })
 }
 
 fn infer_array_symbol_type(

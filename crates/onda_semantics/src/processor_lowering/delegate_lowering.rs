@@ -1927,7 +1927,7 @@ fn build_proc_delegate_effects(
 }
 
 fn rewrite_source_overload_stmts(
-    stmts: &mut [Stmt],
+    stmts: &mut Vec<Stmt>,
     env: &mut crate::def_semantics::CallTypeEnv,
     overloads: &HashMap<String, Vec<crate::def_semantics::OverloadCandidate>>,
     return_types: &HashMap<String, ReturnType>,
@@ -2202,11 +2202,7 @@ fn rewrite_processor_source_overload_scopes(
         resolved +=
             rewrite_source_overload_task(task, state_env, overloads, return_types, struct_defs);
     }
-    for body in [
-        proc.block_pre.as_mut_slice(),
-        proc.sample.as_mut_slice(),
-        proc.block_post.as_mut_slice(),
-    ] {
+    for body in [&mut proc.block_pre, &mut proc.sample, &mut proc.block_post] {
         let mut env = state_env.clone();
         resolved +=
             rewrite_source_overload_stmts(body, &mut env, overloads, return_types, struct_defs);
@@ -2463,13 +2459,13 @@ pub(super) fn resolve_source_overloads(
             }
             Block::Block(exec) => {
                 for body in [
-                    exec.pre.as_mut_slice(),
-                    exec.sample
-                        .as_mut()
-                        .map(|sample| sample.body.as_mut_slice())
-                        .unwrap_or(&mut []),
-                    exec.post.as_mut_slice(),
-                ] {
+                    Some(&mut exec.pre),
+                    exec.sample.as_mut().map(|sample| &mut sample.body),
+                    Some(&mut exec.post),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     let mut env = top_state_env.clone();
                     rewrite_source_overload_stmts(
                         body,
@@ -2571,11 +2567,7 @@ pub(super) fn resolve_source_overloads(
                 &struct_defs,
             );
         }
-        for body in [
-            proc.block_pre.as_mut_slice(),
-            proc.sample.as_mut_slice(),
-            proc.block_post.as_mut_slice(),
-        ] {
+        for body in [&mut proc.block_pre, &mut proc.sample, &mut proc.block_post] {
             let mut env = state_env.clone();
             rewrite_source_overload_stmts(body, &mut env, &overloads, &return_types, &struct_defs);
         }
@@ -3395,6 +3387,7 @@ pub(super) fn lower_top_level_child_whens(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: value,
                 });
             }

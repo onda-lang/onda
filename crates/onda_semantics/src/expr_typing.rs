@@ -17,6 +17,10 @@ use crate::decl_symbols::{
 use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
 use crate::expr_analysis::{has_lexical_root_binding, has_scalar_value_binding};
 use crate::internal_names::PROC_INDEX_CALL_SENTINEL;
+use crate::proc_call_support::named_call_var_arg;
+use crate::proc_state_rewrite::{
+    PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
+};
 use crate::{
     is_builtin_array_like_receiver_with_resolver, resolve_flattened_struct_array_leaf_type,
     resolve_struct_field_decl, split_field_path, LocalAliasTypes, LocalArrayAliasInfo,
@@ -791,6 +795,24 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 Expr::UserCall { name, args, .. } => {
                     if declared_symbols.unresolved_types.contains(name) {
                         return None;
+                    }
+                    if name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+                        == Some(PROC_INDEX_CALL_SENTINEL)
+                    {
+                        let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;
+                        if let Some(array) = proc_array_roots.get(base) {
+                            let field = named_call_var_arg(args, PROC_FIELD_SENTINEL_ARG)?;
+                            return match resolve_struct_field_decl(
+                                &array.proc_name,
+                                field,
+                                struct_defs,
+                            )?
+                            .ty
+                            {
+                                TypedFieldType::Scalar(ty) => Some(ty),
+                                _ => None,
+                            };
+                        }
                     }
                     if name == crate::proc_state_rewrite::STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
                         let (base, _, field, field_index) =

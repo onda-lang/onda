@@ -207,20 +207,6 @@ pub struct onda_event_tensor_view_t {
     pub element_count: i32,
 }
 
-/// Flattened metadata for one event tensor view. Borrowed pointers remain valid
-/// until the program is destroyed.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct onda_event_tensor_info_t {
-    pub path: *const c_char,
-    pub shape: *const i32,
-    pub shape_rank: i32,
-    pub parameter_index: i32,
-    pub element_type: i32,
-    pub is_slice: i32,
-    pub fixed_element_count: i32,
-}
-
 const _: () = {
     assert!(
         std::mem::size_of::<onda_event_tensor_view_t>()
@@ -578,7 +564,6 @@ struct CompiledProgram {
     buffer_types: Vec<CString>,
     buffer_array_names: Vec<CString>,
     event_names: Vec<CString>,
-    event_tensor_info: Vec<Vec<CEventTensorInfo>>,
     event_schema_json: Vec<CString>,
     delegate_names: Vec<CString>,
     delegate_schema_json: Vec<CString>,
@@ -1935,13 +1920,6 @@ unsafe fn compile_parsed_program(
         }
     };
 
-    let event_tensor_info = match build_event_tensor_info(&jit) {
-        Ok(value) => value,
-        Err(diag) => {
-            write_diag(out_diag, diag_to_c(&diag));
-            return ptr::null_mut();
-        }
-    };
     let event_schema_json = match (0..jit.event_count())
         .map(|event_idx| {
             let event = jit
@@ -2036,7 +2014,6 @@ unsafe fn compile_parsed_program(
         buffer_types,
         buffer_array_names,
         event_names,
-        event_tensor_info,
         event_schema_json,
         delegate_names,
         delegate_schema_json,
@@ -3801,10 +3778,7 @@ pub use payload_layout::*;
 mod metadata;
 
 pub use metadata::*;
-use metadata::{
-    build_event_tensor_info, primitive_type_bytes, primitive_type_from_i32, primitive_type_to_i32,
-    CEventTensorInfo,
-};
+use metadata::{primitive_type_bytes, primitive_type_from_i32, primitive_type_to_i32};
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

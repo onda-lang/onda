@@ -13,138 +13,11 @@ use onda_frontend::Span;
 
 type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
 
-/// Lexical type information also exposes processor projections beneath selected
-/// owners. Feed those receivers through the ordinary processor call resolver.
-pub(crate) fn rewrite_processor_projection_calls(
-    expression: &mut Expr,
-    env: &CallTypeEnv,
-    errors: &mut Vec<Diagnostic>,
-) {
-    rewrite_processor_projection_call_sites(expression, env, false, errors);
-}
-
-pub(crate) fn rewrite_processor_projection_statement(
-    expression: &mut Expr,
-    env: &CallTypeEnv,
-    errors: &mut Vec<Diagnostic>,
-) {
-    rewrite_processor_projection_call_sites(expression, env, true, errors);
-}
-
-fn rewrite_processor_projection_call_sites(
-    expression: &mut Expr,
-    env: &CallTypeEnv,
-    statement: bool,
-    errors: &mut Vec<Diagnostic>,
-) {
-    expression.visit_mut_postorder(|node| {
-        if let Expr::UserCall { name, args, .. } = node {
-            canonicalize_indexed_proc_receiver_call(name, args, |base| {
-                env.processor_view_shape(&Expr::var(base))
-                    .is_some_and(|shape| shape.is_array())
-            });
-        }
-    });
-    let mut instances = HashMap::new();
-    let mut arrays = ProcArrayDeclarations::new();
-    for expression in expression.walk() {
-        let Expr::UserCall { name, args, .. } = expression else {
-            continue;
-        };
-        let indexed = proc_index_base_name(args);
-        let receiver = indexed.unwrap_or(name);
-        let resolved = env
-            .processor_view_shape(&Expr::var(receiver))
-            .map(|shape| (receiver, shape))
-            .or_else(|| {
-                let (receiver, _) = name.rsplit_once('.')?;
-                env.processor_view_shape(&Expr::var(receiver))
-                    .map(|shape| (receiver, shape))
-            });
-        let Some((receiver, shape)) = resolved else {
-            continue;
-        };
-        if !shape.requires_environment() && !env.is_lexical_processor_binding(receiver) {
-            continue;
-        }
-        let Some(api) = env.processor_apis.get(&shape.proc_name) else {
-            continue;
-        };
-        if name.starts_with(PROC_FIELD_SENTINEL_PREFIX) {
-            if let Some(Expr::Var { name: field, .. }) = args
-                .iter()
-                .find(|arg| arg.name.as_deref() == Some(PROC_FIELD_SENTINEL_ARG))
-                .map(|arg| &arg.expr)
-            {
-                if !api.outputs.names.contains(field)
-                    && parse_proc_output_alias_index(field, api.outputs.timing).is_none()
-                {
-                    continue;
-                }
-            }
-        }
-        let binding = if shape.is_array() {
-            if indexed.is_none() {
-                continue;
-            }
-            let declaration = if let Some(len) = shape.array_len() {
-                ProcArrayDeclaration::new(receiver.to_owned(), shape.proc_name.clone(), len, true)
-            } else {
-                ProcArrayDeclaration::borrowed(receiver, shape.proc_name.clone())
-            };
-            let binding = declaration
-                .first_binding()
-                .expect("processor array has a family binding")
-                .clone();
-            arrays.insert(receiver.to_owned(), declaration);
-            binding
-        } else {
-            if indexed.is_some() {
-                continue;
-            }
-            receiver.to_owned()
-        };
-        instances.insert(
-            binding,
-            ProcCallInstance {
-                proc_name: shape.proc_name,
-                buffer_args: api
-                    .buffers
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| {
-                        Expr::var(crate::processor_views::bound_resource_member(
-                            receiver, index,
-                        ))
-                    })
-                    .collect(),
-                delegate_context_args: Vec::new(),
-                routes_owner_delegates: false,
-            },
-        );
-    }
-    if !instances.is_empty() {
-        if statement {
-            let mut stmt = Stmt::Expr {
-                loc: expression.loc().span(),
-                expr: std::mem::replace(expression, Expr::bool(false)),
-            };
-            rewrite_proc_calls_in_stmt(&mut stmt, &instances, &arrays, &env.processor_apis, errors);
-            let Stmt::Expr { expr, .. } = stmt else {
-                unreachable!("processor statement rewriting preserves its form")
-            };
-            *expression = expr;
-        } else {
-            rewrite_proc_calls_in_expr(
-                expression,
-                &instances,
-                &arrays,
-                &env.processor_apis,
-                errors,
-            );
-        }
-    }
-}
+mod projections;
+pub(crate) use projections::{
+    expand_processor_projection_assignment, proc_param_setter_def, projection_temp_counter,
+    rewrite_processor_projection_calls, rewrite_processor_projection_statement,
+};
 
 mod call_arguments;
 pub(crate) use call_arguments::lower_named_proc_param_calls_in_stmts;
@@ -253,6 +126,7 @@ pub(super) fn build_proc_read_helper(
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: Expr::Cast {
             loc: Default::default(),
             to: PrimitiveType::I32,
@@ -277,6 +151,7 @@ pub(super) fn build_proc_read_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int(0),
             }],
             else_branch: Vec::new(),
@@ -297,6 +172,7 @@ pub(super) fn build_proc_read_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int((len.saturating_sub(1)) as i64),
             }],
             else_branch: Vec::new(),
@@ -401,6 +277,7 @@ pub(super) fn build_proc_write_helper(
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: Expr::Cast {
             loc: Default::default(),
             to: PrimitiveType::I32,
@@ -425,6 +302,7 @@ pub(super) fn build_proc_write_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int(0),
             }],
             else_branch: Vec::new(),
@@ -445,6 +323,7 @@ pub(super) fn build_proc_write_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int((len.saturating_sub(1)) as i64),
             }],
             else_branch: Vec::new(),
@@ -482,6 +361,7 @@ pub(super) fn build_proc_write_helper(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: Expr::var("value"),
                 }],
                 else_branch: unmatched,
@@ -506,6 +386,7 @@ pub(super) fn build_proc_write_helper(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: Expr::var("value"),
                 }],
                 else_branch: Vec::new(),
@@ -1255,6 +1136,7 @@ fn assign_temp_stmt(name: String, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -1364,6 +1246,7 @@ fn proc_output_assignment(loc: Span, target_loc: Span, target: String, expr: Exp
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -2494,16 +2377,32 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
     proc_api: &HashMap<String, ProcApi>,
     authorized_private_receiver: Option<&str>,
     errors: &mut Vec<Diagnostic>,
-    skip_top_level_indices: Option<&HashSet<usize>>,
     temp_counter: &mut usize,
 ) {
     let mut rewritten = Vec::<Stmt>::with_capacity(stmts.len());
-    for (idx, mut stmt) in std::mem::take(stmts).into_iter().enumerate() {
-        // Constructor expansion has already validated and clamped these writes.
-        // A counted constructor is one generated subtree, just like a scalar
-        // constructor assignment; neither may trigger external-access checks
-        // or bound hooks before initialization has completed.
-        if skip_top_level_indices.is_some_and(|indices| indices.contains(&idx)) {
+    for mut stmt in std::mem::take(stmts) {
+        // Constructor stores defer hooks until init completes; other lowered
+        // stores already have their hook calls. Preserve that scheduling.
+        if matches!(
+            stmt,
+            Stmt::Assign {
+                param_write_lowered: true,
+                ..
+            }
+        ) {
+            rewritten.push(stmt);
+            continue;
+        }
+        // Indexed members become complete element views during assignment-place
+        // normalization. Apply parameter semantics in the lexical projection pass
+        // after that selection, so the store and hook share one receiver.
+        if matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::IndexedMember { .. },
+                ..
+            }
+        ) {
             rewritten.push(stmt);
             continue;
         }
@@ -2521,7 +2420,6 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_api,
                     authorized_private_receiver,
                     errors,
-                    None,
                     temp_counter,
                 );
                 inject_bound_proc_param_hooks_in_stmts_inner(
@@ -2532,7 +2430,6 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_api,
                     authorized_private_receiver,
                     errors,
-                    None,
                     temp_counter,
                 );
             }
@@ -2545,7 +2442,6 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_api,
                     authorized_private_receiver,
                     errors,
-                    None,
                     temp_counter,
                 );
             }
@@ -2619,6 +2515,13 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                 }
                 rewritten.extend(prelude);
             }
+            if let Stmt::Assign {
+                param_write_lowered,
+                ..
+            } = &mut stmt
+            {
+                *param_write_lowered = true;
+            }
         }
         rewritten.push(stmt);
         rewritten.extend(hook_stmts);
@@ -2643,30 +2546,6 @@ pub(super) fn inject_bound_proc_param_hooks_in_stmts(
         proc_api,
         None,
         errors,
-        None,
-        &mut temp_counter,
-    );
-}
-
-pub(super) fn inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
-    owner_proc: Option<&str>,
-    stmts: &mut Vec<Stmt>,
-    proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &ProcArrayDeclarations,
-    proc_api: &HashMap<String, ProcApi>,
-    errors: &mut Vec<Diagnostic>,
-    skip_top_level_indices: &HashSet<usize>,
-) {
-    let mut temp_counter = 0usize;
-    inject_bound_proc_param_hooks_in_stmts_inner(
-        stmts,
-        owner_proc,
-        proc_vars,
-        proc_array_slots,
-        proc_api,
-        None,
-        errors,
-        Some(skip_top_level_indices),
         &mut temp_counter,
     );
 }
@@ -2689,7 +2568,6 @@ pub(super) fn inject_bound_proc_param_hooks_in_nested_event_stmts(
         proc_api,
         Some(nested_receiver),
         errors,
-        None,
         &mut temp_counter,
     );
 }

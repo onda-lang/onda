@@ -99,7 +99,7 @@ pub(crate) fn run_bench(options: BenchOptions) -> Result<(), String> {
     .map_err(|error| error.message)?;
     let buffers =
         crate::project_cmd::load_initial_buffers(project.buffers, &options.buffer_bindings)?;
-    let mut run = RunSession::build_with_inputs_and_initial_buffers(
+    let mut run = RunSession::prepare_with_inputs_and_initial_buffers(
         &AnalysisSession::new(),
         &project.entry,
         run_options,
@@ -111,6 +111,8 @@ pub(crate) fn run_bench(options: BenchOptions) -> Result<(), String> {
         run.set_param(name, *value)
             .map_err(|error| format_single_diagnostic("benchmark parameter failed", &error))?;
     }
+    run.restart()
+        .map_err(|error| format_single_diagnostic("benchmark initialization failed", &error))?;
     if options.show_meta {
         eprintln!("{}", onda_run::format_run_param_info(&run.param_info()));
     }

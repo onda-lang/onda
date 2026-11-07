@@ -7,7 +7,7 @@ if [[ $# -ne 2 ]]; then
     exit 2
 fi
 
-expected=libonda.so
+expected="${1##*/}"
 soname="$(
     readelf -d "$1" |
         sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p'
@@ -20,7 +20,7 @@ fi
 consumer_dependency="$(
     readelf -d "$2" |
         sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p' |
-        awk '$0 ~ /libonda[.]so$/ { print }'
+        awk -v expected="$expected" '{ name = $0; sub(/^.*\//, "", name); if (name == expected) print }'
 )"
 if [[ "$consumer_dependency" != "$expected" ]]; then
     echo "Expected '$2' dependency '$expected'; found '$consumer_dependency'" >&2

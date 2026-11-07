@@ -26,32 +26,33 @@ static int views_from_metadata(
   if (tensor_count < 0 || (size_t) tensor_count > view_capacity)
     return -1;
   for (int tensor_index = 0; tensor_index < tensor_count; ++tensor_index) {
-    onda_event_tensor_info_t info;
-    if (onda_event_tensor_info(program, event_index, tensor_index, &info) != 0)
+    const onda_payload_tensor_info_t* tensor =
+      onda_payload_tensor_info(info->payload_plan, tensor_index);
+    if (tensor == NULL)
       return -1;
-    printf("tensor[%d] %s: type=%d shape=[", tensor_index, info.path, info.element_type);
-    for (int axis = 0; axis < info.shape_rank; ++axis)
-      printf("%s%d", axis == 0 ? "" : ",", info.shape[axis]);
-    printf("] slice=%d fixed_elements=%d\n", info.is_slice, info.fixed_element_count);
+    printf("tensor[%d] %s: type=%d shape=[", tensor_index, tensor->path, tensor->element_type);
+    for (int axis = 0; axis < tensor->shape_rank; ++axis)
+      printf("%s%d", axis == 0 ? "" : ",", tensor->shape[axis]);
+    printf("] slice=%d fixed_elements=%d\n", tensor->is_slice, tensor->fixed_element_count);
     int found = 0;
     for (size_t i = 0; i < binding_count; ++i) {
-      if (strcmp(bindings[i].path, info.path) != 0)
+      if (strcmp(bindings[i].path, tensor->path) != 0)
         continue;
-      if (bindings[i].element_type != info.element_type) {
+      if (bindings[i].element_type != tensor->element_type) {
         fprintf(
           stderr,
           "host tensor '%s' has primitive type %d; event requires %d\n",
-          info.path,
+          tensor->path,
           bindings[i].element_type,
-          info.element_type
+          tensor->element_type
         );
         return -1;
       }
       const int32_t count = bindings[i].element_count;
-      if ((!info.is_slice && count != info.fixed_element_count)
-          || (info.is_slice
-              && (count < 0 || count % info.fixed_element_count != 0))) {
-        fprintf(stderr, "host tensor '%s' has an incompatible shape\n", info.path);
+      if ((!tensor->is_slice && count != tensor->fixed_element_count)
+          || (tensor->is_slice
+              && (count < 0 || count % tensor->fixed_element_count != 0))) {
+        fprintf(stderr, "host tensor '%s' has an incompatible shape\n", tensor->path);
         return -1;
       }
       views[tensor_index] = (onda_event_tensor_view_t) {
@@ -62,7 +63,7 @@ static int views_from_metadata(
       break;
     }
     if (!found) {
-      fprintf(stderr, "no host tensor bound for event leaf '%s'\n", info.path);
+      fprintf(stderr, "no host tensor bound for event leaf '%s'\n", tensor->path);
       return -1;
     }
   }

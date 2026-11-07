@@ -188,6 +188,7 @@ fn capture_persistent_buffer_alias_selectors(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: selector,
                 });
                 **index = Expr::var((*selector_state).to_owned());
@@ -221,6 +222,7 @@ fn rebind_persistent_buffer_aliases(aliases: &[PersistentBufferAlias]) -> Vec<St
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr,
             }
         })
@@ -446,6 +448,7 @@ fn declaration_only_primitive_array_fill(stmt: &Stmt) -> Option<Stmt> {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: zero_expr(element),
     })
 }
@@ -513,6 +516,7 @@ where
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: true,
                 expr: value,
             });
             continue;
@@ -552,6 +556,7 @@ where
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: true,
                 expr: value,
             });
         }
@@ -693,7 +698,6 @@ fn generate_nested_wrapper_defs(
         }
 
         let mut nested_init_body = Vec::<Stmt>::new();
-        let mut constructor_setup_indices = HashSet::<usize>::new();
         let constructor_array_symbols =
             nested_wrapper_constructor_array_symbols(&callee_shape, &nested_path);
         let mut callee_init_stmts = mark_pinned_initializers(&callee_proc.init);
@@ -917,7 +921,6 @@ fn generate_nested_wrapper_defs(
                                 proc_api,
                                 errors,
                             ) {
-                                constructor_setup_indices.insert(nested_init_body.len());
                                 nested_init_body.push(rewritten);
                             }
                         }
@@ -928,8 +931,6 @@ fn generate_nested_wrapper_defs(
                     if uniform && first_setup_end > setup_start {
                         let template = nested_init_body[setup_start..first_setup_end].to_vec();
                         nested_init_body.truncate(setup_start);
-                        constructor_setup_indices.retain(|index| *index < setup_start);
-                        constructor_setup_indices.insert(setup_start);
                         nested_init_body.push(proc_array_init::broadcast_setup(
                             &proc.name,
                             &nested_field_name(&nested_path, array_var),
@@ -1059,7 +1060,6 @@ fn generate_nested_wrapper_defs(
                             proc_api,
                             errors,
                         ) {
-                            constructor_setup_indices.insert(nested_init_body.len());
                             nested_init_body.push(rewritten);
                         }
                     }
@@ -1169,14 +1169,13 @@ fn generate_nested_wrapper_defs(
                 nested_init_body.push(rewritten);
             }
         }
-        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+        inject_bound_proc_param_hooks_in_stmts(
             Some(&proc.name),
             &mut nested_init_body,
             &nested_hook_instances,
             &shape.nested_proc_array_slots,
             proc_api,
             errors,
-            &constructor_setup_indices,
         );
         guard_pinned_initializers(&mut nested_init_body, INIT_FULL_PARAM_NAME);
         nested_init_body.extend(after_init_nested_bind_hook_stmts(
@@ -1969,6 +1968,14 @@ pub(super) fn generate_lowered_proc_blocks(
             .unwrap_or(1)
             .max(1);
 
+        for param in shape.param_specs.iter().flat_map(|param| &param.slots) {
+            if param.bind.is_some() && !param.private {
+                generated_defs.push(Block::Def(crate::proc_call_rewrite::proc_param_setter_def(
+                    &proc.name, param,
+                )));
+            }
+        }
+
         let mut nested_vars = declared_child_bindings(&shape.state, &shape.nested_proc_array_slots)
             .map(|(name, proc_name)| (name.clone(), proc_name.to_owned()))
             .collect::<Vec<_>>();
@@ -2110,7 +2117,6 @@ pub(super) fn generate_lowered_proc_blocks(
         }
 
         let mut init_body = Vec::<Stmt>::new();
-        let mut constructor_setup_indices = HashSet::<usize>::new();
         let constructor_array_symbols = proc_constructor_array_symbols(&shape);
         let proc_symbols = proc_api.keys().cloned().collect::<HashSet<_>>();
         let proc_ns = namespace_of_symbol(&proc.name);
@@ -2316,7 +2322,6 @@ pub(super) fn generate_lowered_proc_blocks(
                                 proc_api,
                                 errors,
                             ) {
-                                constructor_setup_indices.insert(init_body.len());
                                 init_body.push(rewritten);
                             }
                         }
@@ -2327,8 +2332,6 @@ pub(super) fn generate_lowered_proc_blocks(
                     if uniform && first_setup_end > setup_start {
                         let template = init_body[setup_start..first_setup_end].to_vec();
                         init_body.truncate(setup_start);
-                        constructor_setup_indices.retain(|index| *index < setup_start);
-                        constructor_setup_indices.insert(setup_start);
                         init_body.push(proc_array_init::broadcast_setup(
                             &proc.name,
                             &array_var.clone(),
@@ -2377,6 +2380,7 @@ pub(super) fn generate_lowered_proc_blocks(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: false,
                             expr: value,
                         };
                         if let Some(rewritten) = rewrite_owner_proc_stmt(
@@ -2434,6 +2438,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: false,
                         expr: value,
                     };
                     if let Some(rewritten) = rewrite_owner_proc_stmt(
@@ -2532,7 +2537,6 @@ pub(super) fn generate_lowered_proc_blocks(
                             proc_api,
                             errors,
                         ) {
-                            constructor_setup_indices.insert(init_body.len());
                             init_body.push(rewritten);
                         }
                     }
@@ -2624,14 +2628,13 @@ pub(super) fn generate_lowered_proc_blocks(
             }
         }
 
-        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+        inject_bound_proc_param_hooks_in_stmts(
             Some(&proc.name),
             &mut init_body,
             &hook_proc_instances,
             &shape.nested_proc_array_slots,
             proc_api,
             errors,
-            &constructor_setup_indices,
         );
         guard_pinned_initializers(&mut init_body, INIT_FULL_PARAM_NAME);
         init_body.extend(after_init_bind_hook_stmts(&proc.name, &shape.param_specs));

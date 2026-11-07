@@ -105,6 +105,52 @@ function processorOutputRing(delegateCapacity, printCapacity, budget = 1024) {
   return { buffer, ring: openExecutionOutputRing(buffer) };
 }
 
+test("audio inputs use saturating integer conversion in cached and fallback views", () => {
+  const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: metadata() } });
+  const source = new Float32Array([NaN, Infinity, -Infinity, -0, 7.9, -7.9, 2 ** 31, 2 ** 63]);
+  for (const [scalar, Type, expected] of [
+    ["i32", Int32Array, [0, 2147483647, -2147483648, 0, 7, -7, 2147483647, 2147483647]],
+    ["i64", BigInt64Array, [0n, 9223372036854775807n, -9223372036854775808n, 0n, 7n, -7n, 2147483648n, 9223372036854775807n]],
+    ["bool", Uint8Array, [1, 1, 1, 0, 1, 1, 1, 1]],
+  ]) {
+    const elementSize = Type.BYTES_PER_ELEMENT;
+    const info = { scalar, pointer: 256, elementSize };
+    const view = new DataView(processor.memory.buffer);
+    const cached = new Type(processor.memory.buffer, info.pointer, source.length);
+    processor.copyInputSamples(source, info, cached, 0, 0, source.length, view);
+    assert.deepEqual([...cached], expected, scalar);
+    cached.fill(scalar === "i64" ? 0n : 0);
+    processor.copyInputSamples(source, info, null, 0, 0, source.length, view);
+    assert.deepEqual([...cached], expected, `${scalar} fallback`);
+  }
+});
+
+test("every audio scalar converts numerically with segment and channel offsets", () => {
+  const processor = new Processor({ processorOptions: { wasmBytes: wasm, metadata: metadata() } });
+  const input = new Float32Array([99, -1.75, -0, 3.25, 0.5, 99]);
+  for (const [scalar, Type, expected] of [
+    ["f32", Float32Array, [-1.75, -0, 3.25, 0.5]],
+    ["f64", Float64Array, [-1.75, -0, 3.25, 0.5]],
+    ["i32", Int32Array, [-1, 0, 3, 0]],
+    ["i64", BigInt64Array, [-1n, 0n, 3n, 0n]],
+    ["bool", Uint8Array, [1, 0, 1, 1]],
+  ]) {
+    const info = { scalar, pointer: 256, elementSize: Type.BYTES_PER_ELEMENT };
+    const view = new DataView(processor.memory.buffer);
+    const storage = new Type(processor.memory.buffer, info.pointer, input.length);
+    for (const cached of [true, false]) {
+      storage.fill(scalar === "i64" ? 42n : 42);
+      processor.copyInputSamples(input, info, cached ? storage : null, 1, 1, 4, view);
+      assert.deepEqual([...storage].slice(1, 5), expected, `${scalar} input`);
+      assert.equal(storage[0], scalar === "i64" ? 42n : 42);
+      assert.equal(storage[5], scalar === "i64" ? 42n : 42);
+      const output = new Float32Array([99, 99, 99, 99, 99, 99]);
+      processor.copyOutputSamples(output, info, cached ? storage : null, 1, 1, 4, view);
+      assert.deepEqual([...output], [99, ...expected.map(Number), 99], `${scalar} output`);
+    }
+  }
+});
+
 test("worklet remains silent until explicit full initialization", () => {
   const processor = new Processor({
     processorOptions: {

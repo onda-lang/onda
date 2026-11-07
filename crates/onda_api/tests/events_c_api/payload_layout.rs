@@ -17,6 +17,28 @@ fn c_api_layout_regions_encode_real_events_and_match_delegate_payloads() {
         let program = compile_program(SOURCE);
         let event = &*onda_event_info(program.0, 0);
         let delegate = &*onda_delegate_info(program.0, 0);
+        assert_eq!(event.region_count, 7);
+        assert_eq!(delegate.region_count, event.region_count);
+        for index in 0..event.tensor_count {
+            let a = &*onda_payload_tensor_info(event.payload_plan, index);
+            let b = &*onda_payload_tensor_info(delegate.payload_plan, index);
+            assert_eq!(CStr::from_ptr(a.path), CStr::from_ptr(b.path));
+            assert_eq!(a.parameter_index, b.parameter_index);
+            assert_eq!(a.element_type, b.element_type);
+            assert_eq!(a.is_slice, b.is_slice);
+            assert_eq!(a.fixed_element_count, b.fixed_element_count);
+            assert_eq!(a.shape_rank, b.shape_rank);
+            assert_eq!(a.shape.is_null(), b.shape.is_null());
+            if a.shape_rank > 0 {
+                assert_eq!(
+                    std::slice::from_raw_parts(a.shape, a.shape_rank as usize),
+                    std::slice::from_raw_parts(b.shape, b.shape_rank as usize)
+                );
+            }
+        }
+        assert!(onda_payload_tensor_info(std::ptr::null(), 0).is_null());
+        assert!(onda_payload_tensor_info(event.payload_plan, -1).is_null());
+        assert!(onda_payload_tensor_info(delegate.payload_plan, delegate.tensor_count).is_null());
         let mut diag = empty_diag();
         let instance = InstanceHandle(initialized_instance(
             program.0,
@@ -122,18 +144,94 @@ fn c_api_layout_regions_encode_real_events_and_match_delegate_payloads() {
                     ),
                     0 => bytes[0] = 1,
                     1 => bytes
-                        .chunks_exact_mut(8)
+                        .as_chunks_mut::<8>()
+                        .0
+                        .iter_mut()
                         .for_each(|b| b.copy_from_slice(&1.5_f64.to_le_bytes())),
                     2 => bytes
-                        .chunks_exact_mut(4)
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
                         .for_each(|b| b.copy_from_slice(&7_i32.to_le_bytes())),
                     3 => bytes.copy_from_slice(&9_007_199_254_740_993_i64.to_le_bytes()),
                     4 => bytes
-                        .chunks_exact_mut(4)
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
                         .for_each(|b| b.copy_from_slice(&0.25_f32.to_le_bytes())),
                     _ => unreachable!(),
                 }
             }
+            let mut decoded = vec![onda_payload_region_t::default(); regions.len()];
+            let mut decoded_layout = onda_payload_layout_t::default();
+            assert_eq!(
+                onda_payload_layout_from_bytes(
+                    delegate.payload_plan,
+                    wire.as_ptr(),
+                    wire.len() as i32,
+                    decoded.as_mut_ptr(),
+                    decoded.len() as i32,
+                    &mut decoded_layout
+                ),
+                0
+            );
+            assert_eq!(decoded, regions);
+            assert_eq!(decoded_layout, layout);
+            assert_eq!(
+                onda_payload_layout_from_bytes(
+                    event.payload_plan,
+                    wire.as_ptr(),
+                    wire.len() as i32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut decoded_layout
+                ),
+                0
+            );
+            assert_eq!(decoded_layout, layout);
+            // Rejection must preserve every output, even for a late bad extent.
+            let mut truncated = wire.clone();
+            truncated.pop();
+            let mut trailing = wire.clone();
+            trailing.push(0);
+            let mut negative = wire.clone();
+            negative[1..5].copy_from_slice(&(-1_i32).to_le_bytes());
+            let mut oversized = wire.clone();
+            oversized[1..5].copy_from_slice(&i32::MAX.to_le_bytes());
+            for (malformed, expected_status) in [
+                (&truncated, ONDA_API_ERROR_INVALID_SHAPE),
+                (&trailing, ONDA_API_ERROR_INVALID_SHAPE),
+                (&negative, ONDA_API_ERROR_INVALID_SHAPE),
+                (&oversized, ONDA_API_ERROR_SIZE_OVERFLOW),
+            ] {
+                let before = decoded.clone();
+                assert_eq!(
+                    onda_payload_layout_from_bytes(
+                        delegate.payload_plan,
+                        malformed.as_ptr(),
+                        malformed.len() as i32,
+                        decoded.as_mut_ptr(),
+                        decoded.len() as i32,
+                        &mut decoded_layout
+                    ),
+                    expected_status
+                );
+                assert_eq!(decoded, before);
+                assert_eq!(decoded_layout, layout);
+            }
+            assert_eq!(
+                onda_payload_layout_from_bytes(
+                    event.payload_plan,
+                    wire.as_ptr(),
+                    wire.len() as i32,
+                    decoded.as_mut_ptr(),
+                    decoded.len() as i32 - 1,
+                    &mut decoded_layout
+                ),
+                ONDA_API_ERROR_SIZE_MISMATCH
+            );
+            assert_eq!(decoded, regions);
+            assert_eq!(decoded_layout, layout);
             let mut storage = [0_u8; 256];
             let mut batch = onda_delegate_batch_t {
                 storage: storage.as_mut_ptr(),
@@ -298,5 +396,18 @@ fn c_api_empty_message_layout_needs_no_storage() {
             0
         );
         assert_eq!(layout, onda_payload_layout_t::default());
+        assert_eq!(
+            onda_payload_layout_from_bytes(
+                plan,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut layout
+            ),
+            0
+        );
+        assert_eq!(layout, onda_payload_layout_t::default());
+        assert!(onda_payload_tensor_info(plan, 0).is_null());
     }
 }

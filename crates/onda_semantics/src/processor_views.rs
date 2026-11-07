@@ -532,6 +532,10 @@ pub struct ProcessorViewCatalog {
     pub(crate) function_operations: HashMap<String, Vec<(String, ProcessorViewShape)>>,
     pub root_resource_recipes: Vec<ProcessorRootResourceRecipe>,
     pub lexical_resources: HashMap<String, Vec<ProcessorLexicalResource>>,
+    /// Source-checked storage projections introduced by processor lowering,
+    /// keyed by the generated function's declaration identity.
+    pub(crate) materialized_storage_views:
+        HashMap<String, std::sync::Arc<std::collections::HashSet<String>>>,
     declarations: Vec<ProcessorViewDeclaration>,
     operations: Vec<GeneratedProcessorOperation>,
     declaration_indices: HashMap<String, HashMap<String, usize>>,

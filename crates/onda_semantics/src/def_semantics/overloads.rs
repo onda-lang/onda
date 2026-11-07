@@ -732,7 +732,7 @@ fn rewrite_overloaded_calls_in_expr_impl(
 }
 
 pub(crate) fn rewrite_overloaded_calls_in_stmt_list(
-    stmts: &mut [Stmt],
+    stmts: &mut Vec<Stmt>,
     env: &mut CallTypeEnv,
     context: CallTypeContext<'_>,
     owner: OverloadOwnerContext,
@@ -775,6 +775,7 @@ pub(crate) fn rewrite_overloaded_calls_in_function(
             );
         }
     }
+    env.bind_processor_function_params(&def.name);
     let mut rewriter = OverloadRewriter {
         context,
         owner,
@@ -796,6 +797,20 @@ struct OverloadRewriter<'a> {
 }
 
 impl CallTypeRewriter for OverloadRewriter<'_> {
+    fn expand_assignment(
+        &mut self,
+        stmt: &mut Stmt,
+        env: &CallTypeEnv,
+        temp_counter: &mut usize,
+    ) -> Option<Vec<Stmt>> {
+        crate::proc_call_rewrite::expand_processor_projection_assignment(
+            stmt,
+            env,
+            temp_counter,
+            self.errors,
+        )
+    }
+
     fn rewrite_statement_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv) {
         crate::proc_call_rewrite::rewrite_processor_projection_statement(expr, env, self.errors);
         self.rewrite_expr(expr, env);

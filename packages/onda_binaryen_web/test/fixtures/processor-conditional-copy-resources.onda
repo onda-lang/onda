@@ -1,0 +1,29 @@
+proc Voice:
+  buffers:
+    source: f32
+  block:
+    sample:
+      out1 = source[0]
+    source[0] += 1.0
+proc Bank:
+  buffers:
+    clips: f32 {2}
+  init:
+    voices: Voice[2] = [Voice(source = clips[0]), Voice(source = clips[1])]
+def exercise(left: Bank, right: Bank, choose: bool) -> f32:
+  if choose:
+    copies: Voice[1] = left.voices[1:2]
+  else:
+    copies: Voice[1] = right.voices[0:1]
+  return copies[0]()
+buffers:
+  clips: f32 {4}
+init:
+  left = Bank(clips = clips[0:2])
+  right = Bank(clips = clips[2:4])
+  choose = true
+sample:
+  out1 = exercise(left, right, choose)
+  out2 = clips[1][0]
+  out3 = clips[2][0]
+  choose = !choose

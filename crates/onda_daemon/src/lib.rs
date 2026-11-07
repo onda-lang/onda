@@ -156,11 +156,33 @@ impl DaemonSession {
             inputs,
             initial_buffers,
         )?;
+        Ok(self.insert_run(normalized, run))
+    }
+
+    /// Expose a compiled run for control restoration without executing `init`.
+    pub fn prepare_run_with_options_inputs_and_initial_buffers(
+        &mut self,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        inputs: &CompileInputs,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<&RunSession, RunBuildError> {
+        let normalized = normalize_session_path(path.as_ref());
+        let run = RunSession::prepare_with_inputs_and_initial_buffers(
+            &self.analysis,
+            &normalized,
+            options,
+            inputs,
+            initial_buffers,
+        )?;
+        Ok(self.insert_run(normalized, run))
+    }
+
+    fn insert_run(&mut self, normalized: PathBuf, run: RunSession) -> &RunSession {
         self.runs.insert(normalized.clone(), run);
-        Ok(self
-            .runs
+        self.runs
             .get(&normalized)
-            .expect("run inserted into session"))
+            .expect("run inserted into session")
     }
 
     pub fn rebuild_run(&mut self, path: impl AsRef<Path>) -> Result<&RunSession, RunBuildError> {

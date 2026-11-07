@@ -234,6 +234,17 @@ impl PayloadPlan {
         Ok(workspace)
     }
 
+    /// Resolves a complete packed payload without copying or decoding its values.
+    /// Validates every extent before visiting; no callbacks occur on failure.
+    pub fn visit_wire_layout(
+        &self,
+        input: &[u8],
+        visit: impl FnMut(PayloadRegion),
+    ) -> Result<(usize, usize), PayloadError> {
+        self.required_workspace(input)?;
+        self.walk(|offset, _| read_length(input, offset), visit)
+    }
+
     pub(super) fn walk(
         &self,
         mut length: impl FnMut(usize, usize) -> Result<usize, PayloadError>,

@@ -3372,7 +3372,7 @@ block {
 
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
-    prepare_process(&mut instance).expect("prepare unchecked process");
+    prepare_process(&instance).expect("prepare unchecked process");
 
     unsafe {
         process_unchecked_segment(

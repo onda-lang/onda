@@ -735,50 +735,38 @@ sample:
             target: AssignTarget::Var(receiver),
             expr: Expr::Index { base, index, .. },
             ..
-        }, Stmt::Assign {
-            target: AssignTarget::Var(destination),
-            ..
         }, Stmt::Expr {
             expr: Expr::UserCall { name, args, .. },
             ..
         }] = body.as_slice()
         else {
-            panic!("each iteration should select, write, then call one hook: {body:?}");
+            panic!("each iteration should select once and call one setter: {body:?}");
         };
         assert_eq!(base, "self.children");
         assert!(matches!(index.as_ref(), Expr::Var { name, .. } if name == var));
-        assert_eq!(destination, &format!("{receiver}.gain"));
-        assert!(
-            name.starts_with("Parent.__onda_proc_local__nested____onda_family_children__")
-                && name.ends_with("__update"),
-            "the selected child should use one shared family hook: {name}"
-        );
-        assert!(matches!(args.as_slice(), [
-                CallArg { expr: Expr::Var { name, .. }, .. },
-                CallArg { expr: Expr::Call { func: BuiltinFn::RangeClamp, args, .. }, .. },
-            ] if name == "self" && matches!(args.as_slice(), [
-                Expr::Cast { to: PrimitiveType::I32, expr, .. },
-                Expr::Int { value: 0, .. }, Expr::Int { value: 1, .. },
-            ] if matches!(expr.as_ref(), Expr::Var { name, .. } if name == var))));
-        let helpers = typed
-            .defs
-            .iter()
-            .filter(|def| def.name == *name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            helpers.len(),
-            1,
-            "all elements should share one cascade hook"
-        );
-        assert!(
-                helpers[0].body.iter().any(|statement| matches!(statement,
-                    Stmt::Assign { target: AssignTarget::Var(target), expr, .. }
-                        if target.ends_with(".cached")
-                            && expr.walk().any(|node| matches!(node, Expr::Var { name, .. } if name.ends_with(".gain")))
-                )),
-                "the shared cascade hook must update the selected child's cache: {:?}",
-                helpers[0].body
+        assert!(name.starts_with("Child.__onda_proc_set_param_gain"));
+        assert!(matches!(&args[0].expr, Expr::Var { name, .. } if name == receiver));
+        let setter = typed.defs.iter().find(|def| def.name == *name).unwrap();
+        let [Stmt::Assign {
+            target: AssignTarget::Var(target),
+            ..
+        }, Stmt::Expr {
+            expr: Expr::UserCall { name: hook, .. },
+            ..
+        }] = setter.body.as_slice()
+        else {
+            panic!(
+                "the shared setter must store and call one update hook: {:?}",
+                setter.body
             );
+        };
+        assert_eq!(target, "self.gain");
+        let hook = typed.defs.iter().find(|def| def.name == *hook).unwrap();
+        assert!(hook.body.iter().any(|statement| matches!(statement,
+                Stmt::Assign { target: AssignTarget::Var(target), expr, .. }
+                    if target.ends_with(".cached")
+                        && expr.walk().any(|node| matches!(node, Expr::Var { name, .. } if name.ends_with(".gain")))
+            )), "the hook must update the selected child's cache: {:?}", hook.body);
     }
 
     #[test]

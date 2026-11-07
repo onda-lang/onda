@@ -1054,6 +1054,7 @@ pub(super) fn rewrite_stmt_for_def_proc_block_guards(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: false,
                             expr: Expr::bool(true),
                         },
                     ],

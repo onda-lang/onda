@@ -8,6 +8,17 @@ use crate::{
     PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG, PROC_INDEX_UNCHECKED_ARG,
 };
 
+pub(crate) fn named_call_var_arg<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a str> {
+    args.iter().find_map(|arg| {
+        (arg.name.as_deref() == Some(arg_name))
+            .then_some(&arg.expr)
+            .and_then(|expr| match expr {
+                Expr::Var { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+    })
+}
+
 #[derive(Clone)]
 pub(crate) struct ProcArrayAliasInfo {
     pub(crate) array_base: String,
@@ -88,6 +99,7 @@ pub(crate) fn capture_proc_alias_selectors(
                                 generic_decl_ty: None,
                                 is_typed_decl: false,
                                 typed_decl_ty_loc: Default::default(),
+                                param_write_lowered: false,
                                 expr: index,
                             });
                             *expr = crate::index_access::indexed_read_expr(

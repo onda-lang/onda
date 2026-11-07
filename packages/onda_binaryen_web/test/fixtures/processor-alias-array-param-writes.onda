@@ -1,0 +1,18 @@
+proc Voice:
+  params:
+    gains: i32[2] = [0, 0] {0, 4}
+  sample:
+    out1 = f32(gains[0] + gains[1])
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    index = 0
+  sample:
+    v = voices[0]
+    v.gains[index] = 9
+    index = 1 - index
+    out1 = v()
+init:
+  bank = Bank()
+sample:
+  out1 = bank()

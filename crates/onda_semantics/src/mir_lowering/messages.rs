@@ -361,6 +361,7 @@ pub(super) fn event_body(event: &TypedEvent) -> Vec<Stmt> {
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::Tuple {
                     loc: Default::default(),
                     values: (0..types.len())

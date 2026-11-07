@@ -73,13 +73,14 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
             },
         );
         let started = startup_rx
-            .recv_timeout(Duration::from_secs(10))
+            // Optimized compilation of the 64-channel case can exceed ten seconds.
+            .recv_timeout(Duration::from_secs(20))
             .unwrap()
             .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(started.metadata.input_channels, channels);
         assert_eq!(started.metadata.output_channels, channels);
         if start_paused {
-            // A control reply is a render-thread barrier: initialization finished,
+            // A control reply is a render-thread barrier: preparation finished,
             // but no DSP samples may be produced until the host asks to play.
             let (reply, response) = mpsc::channel();
             control_tx

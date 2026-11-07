@@ -176,6 +176,7 @@ fn internal_assign(name: String, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Span::ZERO,
+        param_write_lowered: false,
         expr,
     }
 }
@@ -218,6 +219,7 @@ fn finish_assignment(
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Span::ZERO,
+        param_write_lowered: false,
         expr: rhs,
     });
     Ok(())

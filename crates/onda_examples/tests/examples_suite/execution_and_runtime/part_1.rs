@@ -3642,7 +3642,7 @@ fn process_readiness_and_unchecked_execution_work() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    prepare_process(&mut instance).expect("validate bindings should succeed");
+    prepare_process(&instance).expect("validate bindings should succeed");
 
     unsafe {
         process_unchecked(&mut instance, onda_runtime::ExecutionOutput::none())
@@ -3683,7 +3683,7 @@ fn process_readiness_rejects_missing_required_bindings() {
     )
     .expect("bind buffer");
 
-    let result = prepare_process(&mut instance);
+    let result = prepare_process(&instance);
 
     assert!(
         result.is_err(),

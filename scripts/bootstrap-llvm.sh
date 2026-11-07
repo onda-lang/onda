@@ -62,6 +62,9 @@ if [[ -z "$ASSET" ]]; then
     Linux/x86_64|Linux/amd64)
       ASSET="llvm-$VERSION-linux-x64-static.tar.xz"
       ;;
+    Linux/arm64|Linux/aarch64)
+      ASSET="llvm-$VERSION-linux-arm64-static.tar.xz"
+      ;;
     Darwin/arm64|Darwin/aarch64)
       ASSET="llvm-$VERSION-macos-arm64-static.tar.xz"
       ;;

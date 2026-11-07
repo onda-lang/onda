@@ -8,18 +8,19 @@ use onda_codegen_llvm::{
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
 use onda_runtime::{
-    bind_buffer, bind_input, bind_output, create_instance, decode_print_batch_for_program,
-    format_decoded_print_occurrences, init_checked, prepare_process, process_unchecked,
-    process_unchecked_segment, set_param_by_index, trigger_event_by_index_unchecked,
-    validate_process_segment, DelegateBatch, ExecutionOutput, InitMode, Instance, PrintBatch,
-    PrintValue, DELEGATE_RECORD_HEADER_SIZE,
+    bind_buffer, create_instance, decode_print_batch_for_program, format_decoded_print_occurrences,
+    init_checked, prepare_process, process_unchecked, process_unchecked_segment,
+    set_param_by_index, trigger_event_by_index_unchecked, validate_process_segment, DelegateBatch,
+    ExecutionOutput, InitMode, Instance, PrintBatch, PrintValue, DELEGATE_RECORD_HEADER_SIZE,
 };
 use onda_semantics::{AnalysisOptions, CompileInputs, TypedProgram};
 
 use onda_semantics::{normalize_session_path, AnalysisSession, DocumentVersion};
 
+mod audio_ports;
 mod packed_output;
 mod param_smoothing;
+use audio_ports::AudioPort;
 pub use packed_output::{RunOutputCounts, RunOutputDecoder, RunPackedOutput};
 use param_smoothing::ParamSmoothing;
 
@@ -275,11 +276,12 @@ pub struct RunSession {
     typed: TypedProgram,
     jit: JitProgram,
     instance: Instance,
+    initialization_pending: bool,
     param_values: HashMap<String, crate::RunParamValue>,
     param_smoothing: ParamSmoothing,
     buffer_bindings: Vec<Option<RunBufferBinding>>,
-    input_buffers: Vec<Vec<f32>>,
-    output_buffers: Vec<Vec<f32>>,
+    input_buffers: Vec<AudioPort>,
+    output_buffers: Vec<AudioPort>,
     event_plans: Vec<onda_processor_abi::payload::PayloadPlan>,
     event_encoder: onda_processor_abi::payload::PayloadEncoderWorkspace,
     delegate_storage: Vec<u8>,
@@ -391,7 +393,45 @@ impl RunSession {
         inputs: &CompileInputs,
         initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
     ) -> Result<Self, RunBuildError> {
-        let path = normalize_session_path(path.as_ref());
+        Self::build_with_initialization(
+            analysis,
+            path.as_ref(),
+            options,
+            inputs,
+            initial_buffers,
+            true,
+        )
+    }
+
+    /// Compile and prepare bindings without executing authored initialization.
+    /// Metadata, controls and buffers are available immediately; `restart` commits
+    /// the restored targets and bindings before initialization and processing.
+    pub fn prepare_with_inputs_and_initial_buffers(
+        analysis: &AnalysisSession,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        inputs: &CompileInputs,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<Self, RunBuildError> {
+        Self::build_with_initialization(
+            analysis,
+            path.as_ref(),
+            options,
+            inputs,
+            initial_buffers,
+            false,
+        )
+    }
+
+    fn build_with_initialization(
+        analysis: &AnalysisSession,
+        path: &Path,
+        options: RunOptions,
+        inputs: &CompileInputs,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+        initialize: bool,
+    ) -> Result<Self, RunBuildError> {
+        let path = normalize_session_path(path);
         let snapshot =
             analysis.analyze_document_with_inputs(&path, options.analysis_options(), inputs);
         let mut sources = snapshot.sources;
@@ -408,16 +448,18 @@ impl RunSession {
             let jit =
                 jit_program_from_optimized_mir_with_options(mir, options.mir_compile_options())?;
 
-            let mut input_buffers = jit
+            let input_buffers = jit
                 .inputs()
                 .iter()
-                .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
-                .collect::<Vec<_>>();
+                .map(|desc| AudioPort::new(desc, options.block_size))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|diag| vec![diag])?;
             let mut output_buffers = jit
                 .outputs()
                 .iter()
-                .map(|desc| vec![0.0_f32; options.block_size.saturating_mul(desc.array_len())])
-                .collect::<Vec<_>>();
+                .map(|desc| AudioPort::new(desc, options.block_size))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|diag| vec![diag])?;
             let mut buffer_bindings = std::iter::repeat_with(|| None)
                 .take(jit.buffer_count())
                 .collect::<Vec<_>>();
@@ -455,11 +497,12 @@ impl RunSession {
             let mut prints = Self::next_print_batch(&mut print_storage, 0);
             let instance_result = create_bound_instance(
                 &jit,
-                &mut input_buffers,
+                &input_buffers,
                 &mut output_buffers,
                 &mut buffer_bindings,
                 None,
                 &param_values,
+                initialize,
                 ExecutionOutput {
                     delegate_batch: None,
                     print_batch: prints.as_mut(),
@@ -516,6 +559,7 @@ impl RunSession {
                 typed,
                 jit,
                 instance,
+                initialization_pending: !initialize,
                 param_values,
                 param_smoothing,
                 buffer_bindings,
@@ -985,6 +1029,7 @@ impl RunSession {
     }
 
     fn begin_block_render(&mut self, rendered: &[f32], frames: usize) -> Result<(), Diagnostic> {
+        prepare_process(&self.instance)?;
         let expected_samples = self
             .options
             .block_size
@@ -1002,7 +1047,7 @@ impl RunSession {
         self.begin_delegate_batch();
         self.begin_print_batch();
         for buffer in &mut self.output_buffers {
-            buffer.fill(0.0);
+            buffer.clear();
         }
         self.param_smoothing
             .begin_block(&mut self.instance, frames)?;
@@ -1066,6 +1111,7 @@ impl RunSession {
         values: &[RunEventValue],
         sequence_base: u32,
     ) -> Result<u32, Diagnostic> {
+        prepare_process(&self.instance)?;
         let (index, payload) = encode_run_event(
             &self.jit,
             &self.event_plans,
@@ -1140,16 +1186,8 @@ impl RunSession {
 
     fn interleave_outputs(&self, rendered: &mut [f32]) {
         let output_channels = self.jit.required_out_channels();
-        let mut output_channel = 0;
-        for (buffer, desc) in self.output_buffers.iter().zip(self.jit.outputs()) {
-            for ch in 0..desc.array_len() {
-                let channel =
-                    &buffer[ch * self.options.block_size..(ch + 1) * self.options.block_size];
-                for (frame, &sample) in channel.iter().enumerate() {
-                    rendered[frame * output_channels + output_channel] = sample;
-                }
-                output_channel += 1;
-            }
+        for buffer in &self.output_buffers {
+            buffer.copy_output(rendered, output_channels);
         }
     }
 
@@ -1244,6 +1282,9 @@ impl RunSession {
             .map_err(Diagnostic::from)
             .and_then(check_execution_status)
             .and_then(|()| prepare_process(&self.instance).map_err(Diagnostic::from));
+        if result.is_ok() {
+            self.initialization_pending = false;
+        }
         self.begin_delegate_batch();
         self.begin_print_batch();
         result
@@ -1251,27 +1292,7 @@ impl RunSession {
 
     pub fn set_input_block(&mut self, interleaved: &[f32], source_channels: usize) {
         for buffer in &mut self.input_buffers {
-            buffer.fill(0.0);
-        }
-        if source_channels == 0 || interleaved.is_empty() {
-            return;
-        }
-
-        let frames = self
-            .options
-            .block_size
-            .min(interleaved.len() / source_channels);
-        for (buffer, desc) in self.input_buffers.iter_mut().zip(self.jit.inputs()) {
-            for ch in 0..desc.array_len() {
-                let src_channel = desc.slot_offset().saturating_add(ch);
-                if src_channel >= source_channels {
-                    continue;
-                }
-                let dst_base = ch.saturating_mul(self.options.block_size);
-                for frame in 0..frames {
-                    buffer[dst_base + frame] = interleaved[frame * source_channels + src_channel];
-                }
-            }
+            buffer.copy_input(interleaved, source_channels);
         }
     }
 
@@ -1296,7 +1317,10 @@ impl RunSession {
     /// Host-owned parameter targets and buffer bindings are retained, while all
     /// processor state starts fresh.
     pub fn restart(&mut self) -> Result<(), Diagnostic> {
-        self.rebuild_instance()?;
+        let instance = self.build_instance(None, true)?;
+        self.instance = instance;
+        self.initialization_pending = false;
+        self.param_smoothing.settle(false);
         self.begin_delegate_batch();
         Ok(())
     }
@@ -1382,10 +1406,13 @@ impl RunSession {
         if let Some(binding) = prepared.as_ref() {
             validate_buffer_element(&self.jit, index, name, binding.0.samples.element())?;
         }
-        let instance = self.build_instance(Some(BufferBindingReplacement {
-            index,
-            binding: prepared.as_mut().map(|prepared| &mut prepared.0),
-        }))?;
+        let instance = self.build_instance(
+            Some(BufferBindingReplacement {
+                index,
+                binding: prepared.as_mut().map(|prepared| &mut prepared.0),
+            }),
+            !self.initialization_pending,
+        )?;
         self.param_smoothing.settle(false);
         Ok(RetiredRunBuffer {
             _instance: mem::replace(&mut self.instance, instance),
@@ -1396,26 +1423,21 @@ impl RunSession {
         })
     }
 
-    fn rebuild_instance(&mut self) -> Result<(), Diagnostic> {
-        let instance = self.build_instance(None)?;
-        self.instance = instance;
-        self.param_smoothing.settle(false);
-        Ok(())
-    }
-
     fn build_instance(
         &mut self,
         replacement: Option<BufferBindingReplacement<'_>>,
+        initialize: bool,
     ) -> Result<Instance, Diagnostic> {
         self.begin_print_batch();
         let mut prints = Self::next_print_batch(&mut self.print_storage, 0);
         let result = create_bound_instance(
             &self.jit,
-            &mut self.input_buffers,
+            &self.input_buffers,
             &mut self.output_buffers,
             &mut self.buffer_bindings,
             replacement,
             &self.param_values,
+            initialize,
             ExecutionOutput {
                 delegate_batch: None,
                 print_batch: prints.as_mut(),
@@ -1570,35 +1592,22 @@ fn proportional_index(index: usize, length: usize, divisions: usize) -> usize {
 #[allow(clippy::too_many_arguments)]
 fn create_bound_instance(
     jit: &JitProgram,
-    input_buffers: &mut [Vec<f32>],
-    output_buffers: &mut [Vec<f32>],
+    input_buffers: &[AudioPort],
+    output_buffers: &mut [AudioPort],
     buffer_bindings: &mut [Option<RunBufferBinding>],
     mut replacement: Option<BufferBindingReplacement<'_>>,
     param_values: &HashMap<String, crate::RunParamValue>,
+    initialize: bool,
     output: ExecutionOutput<'_, '_>,
 ) -> Result<Instance, Diagnostic> {
     onda_realtime::configure_current_thread_audio_fp_mode();
     let mut instance = create_instance(jit.clone(), None)?;
 
-    for (index, buffer) in input_buffers.iter_mut().enumerate() {
-        unsafe {
-            bind_input(
-                &mut instance,
-                index,
-                buffer.as_ptr().cast::<u8>(),
-                mem::size_of_val(buffer.as_slice()),
-            )?;
-        }
+    for (index, buffer) in input_buffers.iter().enumerate() {
+        buffer.bind_input(&mut instance, index)?;
     }
     for (index, buffer) in output_buffers.iter_mut().enumerate() {
-        unsafe {
-            bind_output(
-                &mut instance,
-                index,
-                buffer.as_mut_ptr().cast::<u8>(),
-                mem::size_of_val(buffer.as_slice()),
-            )?;
-        }
+        buffer.bind_output(&mut instance, index)?;
     }
     for (index, current_binding) in buffer_bindings.iter_mut().enumerate() {
         let binding = match replacement.as_mut() {
@@ -1629,8 +1638,10 @@ fn create_bound_instance(
         onda_runtime::set_param_element_by_index(&mut instance, index, element, bytes.as_slice())?;
     }
 
-    check_execution_status(init_checked(&mut instance, InitMode::Full, output)?)?;
-    prepare_process(&instance)?;
+    if initialize {
+        check_execution_status(init_checked(&mut instance, InitMode::Full, output)?)?;
+        prepare_process(&instance)?;
+    }
     Ok(instance)
 }
 
@@ -2129,8 +2140,9 @@ sample:
             process().unwrap();
         }
         assert_eq!(run.options().param_smoothing_seconds, 0.0);
-        assert_eq!(run.output_buffers[0], vec![4.0; 4]);
-        assert_eq!(run.output_buffers[1], vec![2.0; 4]);
+        let mut rendered = [0.0; 8];
+        run.interleave_outputs(&mut rendered);
+        assert_eq!(rendered, [4.0, 2.0, 4.0, 2.0, 4.0, 2.0, 4.0, 2.0]);
         assert!(run.take_print_batch().unwrap().entries.is_empty());
     }
 

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::*;
 
 mod facts;
+pub(crate) use facts::FunctionFacts;
 mod independent;
 #[cfg(test)]
 mod tests;

@@ -19,9 +19,9 @@ on:
         type: boolean
         default: false
       plugin_ref:
-        description: Full onda-plugin source commit for integration builds
+        description: Full onda-plugin source commit compatible with this SDK; required for integration builds
         type: string
-        default: 2a9758891d8a900d21bb244010e0d869b13795cc
+        default: ''
       vscode_ref:
         description: Full onda-vscode source commit for integration builds
         type: string
@@ -82,28 +82,50 @@ jobs:
     needs: validate
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: windows-x64
-            runner: windows-latest
+            runner: windows-2022
+            container: ''
             platform: windows
             arch: x64
             archive_ext: zip
           - name: linux-x64
             runner: ubuntu-24.04
+            container: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
             platform: linux
             arch: x64
             archive_ext: tar.xz
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            container: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+            platform: linux
+            arch: arm64
+            archive_ext: tar.xz
           - name: macos-arm64
             runner: macos-latest
+            container: ''
             platform: macos
             arch: arm64
             archive_ext: tar.xz
 
     steps:
+      - name: Prepare Debian 12 build environment
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          source /etc/os-release
+          test "$ID:$VERSION_ID" = debian:12
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.36'
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git libclang-dev libssl-dev \
+            ninja-build pkg-config python-is-python3 xz-utils
+
       - name: Checkout repo
         uses: actions/checkout@v5
         with:
@@ -113,8 +135,7 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get install -y --no-install-recommends \
             pkg-config \
             libpipewire-0.3-dev \
             libdbus-1-dev \
@@ -128,13 +149,18 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libgl1-mesa-dev \
-            mesa-vulkan-drivers xvfb xauth weston
+            libvulkan1 mesa-vulkan-drivers xvfb xauth weston
 
           pipewire_version="$(pkg-config --modversion libpipewire-0.3)"
           if ! printf '%s\n%s\n' "0.3.53" "$pipewire_version" | sort -V -C; then
             echo "PipeWire >= 0.3.53 is required; found $pipewire_version" >&2
             exit 1
           fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.98.0
@@ -180,7 +206,7 @@ jobs:
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
           if ($LASTEXITCODE -ne 0) { throw "Onda API build failed" }
-          cargo test --release -p onda_api --test events_c_api project_buffer_updates
+          cargo test --release -p onda_api --test events_c_api
           if ($LASTEXITCODE -ne 0) { throw "Onda API validation failed" }
           cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization --test target_initialization -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
@@ -225,7 +251,7 @@ jobs:
           if [[ "$RUNNER_OS" == Linux ]]; then export WGPU_BACKEND=vulkan; fi
           cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
           cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization --test target_initialization -- --nocapture
-          cargo test --release -p onda_api --test events_c_api project_buffer_updates
+          cargo test --release -p onda_api --test events_c_api
           cmake \
             -S tests/cmake_sdk \
             -B target/cmake-sdk \
@@ -247,7 +273,7 @@ jobs:
           weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --log="$RUNNER_TEMP/weston.log" &
           compositor=$!
           trap 'kill "$compositor"; wait "$compositor" || true' EXIT
-          for attempt in {1..100}; do
+          for _ in {1..100}; do
             if [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then break; fi
             kill -0 "$compositor" || { cat "$RUNNER_TEMP/weston.log"; exit 1; }
             sleep 0.1
@@ -525,6 +551,10 @@ jobs:
           bash tests/cmake_sdk/check-macos-shared-library.sh \
             target/release/libonda.dylib \
             target/cmake-sdk-packaged/libonda_cmake_shared_smoke.so
+          cc -dynamiclib -Iinclude tests/cmake_sdk/ui_consumer.c \
+            target/release/libonda_ui.dylib -o target/onda_ui_sdk_smoke.dylib
+          bash tests/cmake_sdk/check-macos-shared-library.sh \
+            target/release/libonda_ui.dylib target/onda_ui_sdk_smoke.dylib
 
       - name: Verify Linux shared SDK identity
         if: runner.os == 'Linux'
@@ -533,6 +563,25 @@ jobs:
           bash tests/cmake_sdk/check-linux-shared-library.sh \
             target/release/libonda.so \
             target/cmake-sdk-packaged/libonda_cmake_shared_smoke.so
+          cc -shared -fPIC -Iinclude tests/cmake_sdk/ui_consumer.c \
+            target/release/libonda_ui.so -o target/onda_ui_sdk_smoke.so
+          bash tests/cmake_sdk/check-linux-shared-library.sh \
+            target/release/libonda_ui.so target/onda_ui_sdk_smoke.so
+
+      - name: Verify Linux SDK runtime baseline
+        if: runner.os == 'Linux'
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          import os, sys
+          from pathlib import Path
+          # Share the ABI policy with the pinned LLVM builder.
+          sys.path.insert(0, "deps/llvm-bootstrap/tests")
+          from check_linux_package import audit_elf
+          root = Path("dist") / f"onda-{os.environ['PACKAGE_VERSION']}-linux-{os.environ['PACKAGE_ARCH']}"
+          audit_elf(root, os.environ["PACKAGE_ARCH"])
 
       - name: Verify CMake SDK exports
         if: runner.os == 'Windows'
@@ -548,8 +597,7 @@ jobs:
           $module = Join-Path $PWD "target\cmake-sdk-packaged\Release\onda_cmake_shared_smoke.dll"
           .\tests\cmake_sdk\check-windows-shared-library.ps1 -Consumer $module
 
-      - name: Certify unpublished SDK artifacts
-        if: inputs.test_integrations
+      - name: Certify SDK artifacts
         shell: python
         run: |
           import hashlib, os
@@ -736,7 +784,7 @@ jobs:
     name: Publish Release
     if: ${{ github.event_name == 'push' || (inputs.publish_release && !inputs.test_integrations) }}
     needs: [build, web]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repo

@@ -4,6 +4,7 @@ use serde_json::{Number, Value};
 const NAN: &str = "NaN";
 const POSITIVE_INFINITY: &str = "Infinity";
 const NEGATIVE_INFINITY: &str = "-Infinity";
+const NEGATIVE_ZERO: &str = "-0";
 
 pub fn event_value_to_json(value: &RunEventValue) -> Value {
     match value {
@@ -33,11 +34,12 @@ pub fn event_value_from_json(value: Value) -> Result<RunEventValue, String> {
             NAN => Ok(RunEventValue::Number(f64::NAN)),
             POSITIVE_INFINITY => Ok(RunEventValue::Number(f64::INFINITY)),
             NEGATIVE_INFINITY => Ok(RunEventValue::Number(f64::NEG_INFINITY)),
+            NEGATIVE_ZERO => Ok(RunEventValue::Number(-0.0)),
             _ => value
                 .parse::<i64>()
                 .map(RunEventValue::I64)
                 .map_err(|_| {
-                    "event string values must be decimal i64 integers, 'NaN', 'Infinity', or '-Infinity'"
+                    "event string values must be decimal i64 integers, 'NaN', 'Infinity', '-Infinity', or '-0'"
                         .to_owned()
                 }),
         },
@@ -52,7 +54,7 @@ pub fn event_value_from_json(value: Value) -> Result<RunEventValue, String> {
             .collect::<Result<_, _>>()
             .map(RunEventValue::Struct),
         Value::Null => Err(
-            "event values must be numbers, decimal i64 or non-finite float strings, booleans, arrays, or objects"
+            "event values must be numbers, decimal i64 or special float strings, booleans, arrays, or objects"
                 .to_owned(),
         ),
     }
@@ -65,6 +67,8 @@ fn float_to_json(value: f64) -> Value {
         Value::String(POSITIVE_INFINITY.to_owned())
     } else if value == f64::NEG_INFINITY {
         Value::String(NEGATIVE_INFINITY.to_owned())
+    } else if value == 0.0 && value.is_sign_negative() {
+        Value::String(NEGATIVE_ZERO.to_owned())
     } else {
         Value::Number(Number::from_f64(value).expect("finite f64 must be a JSON number"))
     }
@@ -75,6 +79,29 @@ mod tests {
     use super::{event_value_from_json, event_value_to_json};
     use onda_daemon::RunEventValue;
     use serde_json::{json, Value};
+
+    #[test]
+    fn negative_zero_string_decodes_as_a_float() {
+        let RunEventValue::Number(value) = event_value_from_json(json!("-0")).unwrap() else {
+            panic!("negative zero must retain its floating-point encoding");
+        };
+        assert_eq!(value.to_bits(), (-0.0_f64).to_bits());
+        for value in [0, i64::MIN, i64::MAX, 9_007_199_254_740_993] {
+            assert_eq!(
+                event_value_from_json(json!(value.to_string())).unwrap(),
+                RunEventValue::I64(value)
+            );
+        }
+    }
+
+    #[test]
+    fn negative_zero_serializes_without_losing_its_sign_in_javascript() {
+        assert_eq!(
+            event_value_to_json(&RunEventValue::Number(-0.0)),
+            json!("-0")
+        );
+        assert_eq!(event_value_to_json(&RunEventValue::Number(0.0)), json!(0.0));
+    }
 
     #[test]
     fn event_values_round_trip_losslessly_and_preserve_field_order() {
@@ -99,13 +126,13 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "zeta": ["NaN", "Infinity", "-Infinity", -0.0, 0.25],
+                "zeta": ["NaN", "Infinity", "-Infinity", "-0", 0.25],
                 "alpha": "9007199254740993",
             })
         );
         assert_eq!(
             encoded.to_string(),
-            r#"{"zeta":["NaN","Infinity","-Infinity",-0.0,0.25],"alpha":"9007199254740993"}"#
+            r#"{"zeta":["NaN","Infinity","-Infinity","-0",0.25],"alpha":"9007199254740993"}"#
         );
 
         let RunEventValue::Struct(decoded) =

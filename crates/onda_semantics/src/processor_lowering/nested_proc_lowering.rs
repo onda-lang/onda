@@ -1293,6 +1293,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: value,
                 });
                 scalar_idx += 1;
@@ -1307,6 +1308,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: false,
                         expr: default.clone(),
                     });
                 }
@@ -1321,6 +1323,7 @@ pub(super) fn expand_nested_struct_ctor_assign(
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: false,
                         expr: default.clone(),
                     });
                 }
@@ -1426,6 +1429,7 @@ pub(super) fn expand_nested_proc_ctor_assign(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: true,
                 expr: value,
             });
         }
@@ -1538,6 +1542,7 @@ pub(super) fn expand_proc_instance_ctor_assign(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: true,
                 expr: value,
             });
         }

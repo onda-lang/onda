@@ -2410,12 +2410,12 @@ sample:
         assert_eq!(tensor_count, 6);
         let mut views = Vec::with_capacity(tensor_count as usize);
         for tensor_index in 0..tensor_count {
-            let mut info = std::mem::MaybeUninit::<onda_event_tensor_info_t>::uninit();
-            assert_eq!(
-                onda_event_tensor_info(program.0, 0, tensor_index, info.as_mut_ptr()),
-                0
+            let info = onda_payload_tensor_info(
+                (*onda_event_info(program.0, 0)).payload_plan,
+                tensor_index,
             );
-            let info = info.assume_init();
+            assert!(!info.is_null());
+            let info = &*info;
             let path = CStr::from_ptr(info.path).to_str().unwrap();
             let (data, element_count, element_type, parameter_index, is_slice) = match path {
                 "gain" => ((&gain as *const f32).cast(), 1, ONDA_PRIMITIVE_F32, 0, 0),

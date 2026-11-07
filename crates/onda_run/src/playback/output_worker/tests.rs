@@ -35,6 +35,70 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
+fn typed_audio_and_events_do_not_allocate_on_producer() {
+    let path = std::env::temp_dir().join("onda_typed_audio_allocations.onda");
+    let mut session = DaemonSession::default();
+    session.open_document(
+        &path,
+        onda_daemon::DocumentVersion(1),
+        r#"
+ins:
+  single: f32
+  double: f64
+  integer: i32
+  wide: i64
+  enabled: bool
+outs:
+  single_out: f32
+  double_out: f64
+  integer_out: i32
+  wide_out: i64
+  enabled_out: bool
+event update(value: f64, id: i64, flag: bool):
+  print(value, id, flag)
+sample:
+  single_out = single
+  double_out = double
+  integer_out = integer
+  wide_out = wide
+  enabled_out = enabled
+"#,
+    );
+    session
+        .start_run_with_options(
+            &path,
+            RunOptions {
+                block_size: 4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let run = session.run_mut(&path).unwrap();
+    let input = [0.5; 20];
+    let mut output = [0.0; 20];
+    let values = [
+        RunEventValue::Number(1.0000000000000002),
+        RunEventValue::I64(i64::MAX),
+        RunEventValue::Bool(true),
+    ];
+    ALLOCATIONS.with(|count| count.set(Some(0)));
+    for _ in 0..32 {
+        run.set_input_block(&input, 5);
+        run.trigger_event("update", &values).unwrap();
+        run.render_block_interleaved(&mut output).unwrap();
+    }
+    let allocations = ALLOCATIONS.with(|count| count.replace(None).unwrap());
+    assert_eq!(allocations, 0);
+    assert_eq!(
+        output,
+        [
+            0.5, 0.5, 0.0, 0.0, 1.0, 0.5, 0.5, 0.0, 0.0, 1.0, 0.5, 0.5, 0.0, 0.0, 1.0, 0.5, 0.5,
+            0.0, 0.0, 1.0
+        ]
+    );
+}
+
+#[test]
 fn dense_midi_and_packed_output_do_not_allocate_on_producer() {
     let path = std::env::temp_dir().join(format!(
         "onda_output_allocations_{}.onda",

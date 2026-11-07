@@ -1589,34 +1589,60 @@ test("browser composition finishes before a numeric edit can commit", { timeout:
   }
 });
 
-test("event float edits preserve changes between signed zeros", { timeout:30000 }, async t => {
-  const origin = await serveGpuUi(t);
-  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
-  const page = await chrome.page({width:720,height:840,
-    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
-  await page.navigate(origin + "/index.html?backend=webgl");
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
-  for (const type of ["f32", "f64"]) {
-    await page.evaluate(`_onHostMessage({type:'state',state:{path:'zero-${type}.onda',supportsScope:false,
-      supportsTransport:false,supportsDeviceSelection:false,supportsSourceSelection:false,supportsProjectExport:false,
-      events:[{name:'probe',args:[{name:'value',type:'${type}',value:0,default:0}]}]}});
-      document.querySelector('canvas').focus()`);
-    for (const text of ["-0", "0", "-0"]) {
-      for (let i=0;i<15;i++) {
-        await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Tab",code:"Tab"});
-        if (await page.evaluate("document.activeElement.tagName==='TEXTAREA'")) break;
+for (const host of ["browser", "VS Code"]) {
+  test(`${host} event float edits preserve changes between signed zeros`, { timeout:30000 }, async t => {
+    const origin = await serveGpuUi(t);
+    const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+    const page = await chrome.page({width:720,height:840,
+      source:host === "VS Code" ? `window.commands=[];
+        window.saved=JSON.parse(sessionStorage.getItem('viewState') || 'null');
+        window.acquireVsCodeApi=()=>({
+          postMessage:message=>commands.push(JSON.parse(JSON.stringify(message))),
+          getState:()=>saved,setState:state=>{
+            saved=JSON.parse(JSON.stringify(state));
+            sessionStorage.setItem('viewState',JSON.stringify(saved));
+          },
+        });` : "window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+    await page.navigate(origin + "/index.html?backend=webgl");
+    await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+    for (const type of ["f32", "f64"]) {
+      const publish = () => page.evaluate(`_onHostMessage({type:'state',state:{path:'zero-${type}.onda',supportsScope:false,
+        supportsTransport:false,supportsDeviceSelection:false,supportsSourceSelection:false,supportsProjectExport:false,
+        events:[{name:'probe',args:[{name:'value',type:'${type}',value:0,default:0}]}]}});
+        document.querySelector('canvas').focus()`);
+      await publish();
+      for (const text of ["-0", "0", "-0"]) {
+        for (let i=0;i<15;i++) {
+          await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Tab",code:"Tab"});
+          if (await page.evaluate("document.activeElement.tagName==='TEXTAREA'")) break;
+        }
+        assert.equal(await page.evaluate("document.activeElement.tagName"), "TEXTAREA");
+        await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"a",code:"KeyA",modifiers:2});
+        await page.call("Input.insertText", {text});
+        await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Enter",code:"Enter"});
+        for (const event of ["mousePressed", "mouseReleased"])
+          await page.call("Input.dispatchMouseEvent", {type:event,x:650,y:140,button:"left",clickCount:1});
+        assert.equal(await page.evaluate("Object.is(Number(commands.findLast(c=>c.type==='triggerEvent')?.values[0]),-0)"),
+          text === "-0", `${type} edit ${text} must preserve the zero sign through dispatch`);
+        if (host === "VS Code") {
+          await eventually(() => page.evaluate(`saved?.eventValues[0].values[0] === ${text === "-0" ? "'-0'" : "0"}`),
+            `${type} edit ${text} must preserve the zero sign in saved state`);
+        }
       }
-      assert.equal(await page.evaluate("document.activeElement.tagName"), "TEXTAREA");
-      await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"a",code:"KeyA",modifiers:2});
-      await page.call("Input.insertText", {text});
-      await page.call("Input.dispatchKeyEvent", {type:"keyDown",key:"Enter",code:"Enter"});
-      for (const event of ["mousePressed", "mouseReleased"])
-        await page.call("Input.dispatchMouseEvent", {type:event,x:650,y:140,button:"left",clickCount:1});
-      assert.equal(await page.evaluate("Object.is(commands.findLast(c=>c.type==='triggerEvent')?.values[0],-0)"),
-        text === "-0", `${type} edit ${text} must preserve the zero sign through dispatch`);
+      if (host === "VS Code") {
+        const loaded = page.event("Page.loadEventFired");
+        await page.call("Page.reload");
+        await loaded;
+        await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "reloaded GPU UI");
+        await publish();
+        for (const event of ["mousePressed", "mouseReleased"])
+          await page.call("Input.dispatchMouseEvent", {type:event,x:650,y:140,button:"left",clickCount:1});
+        assert.equal(await page.evaluate("commands.findLast(c=>c.type==='triggerEvent')?.values[0]"), "-0",
+          `${type} edit must retain its zero sign after a webview reload`);
+      }
     }
-  }
-});
+  });
+}
 
 test("structured event controls edit and dispatch typed values", { timeout:30000 }, async t => {
   const origin = await serveGpuUi(t);

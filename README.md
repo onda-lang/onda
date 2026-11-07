@@ -48,12 +48,16 @@ Take a look at the `examples/` folder for more usage examples.
 ## Precompiled releases
 
 [GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages
-for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application
+for Linux x64 and arm64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application
 entry, static and shared C libraries, public headers, hosted and raw processor API references,
 language guide, standard-library reference, and examples. The Linux archive includes `install.sh`
 and `uninstall.sh` for a per-user CLI and desktop installation.
 
 The precompiled macOS binaries, including `Onda.app`, are not signed.
+
+Linux releases use a Debian 12 build baseline: glibc 2.36 and PipeWire 0.3.65.
+macOS arm64 binaries declare a minimum of macOS 11.0. Windows x64 releases use
+the Visual Studio 2022 toolchain and static MSVC runtime (`/MT`).
 
 Tagged releases attach portable tarballs and publish the four public npm packages:
 `@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and `@onda-lang/wasm-compiler`.
@@ -153,7 +157,8 @@ onda run play examples/basic/sine.onda --forever --set freq=220
 ```
 
 With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
-Add `--start-paused` to compile and initialize without processing audio until a control client sends `play`.
+Add `--start-paused` to expose metadata and restore controls and buffers before initialization.
+The control client's `play` command initializes with the restored values, then starts audio processing.
 
 ### `onda run render`
 
@@ -263,9 +268,10 @@ entrypoints directly. The paired JSON descriptor supplies storage sizes, alignme
 interface layouts. See the native raw-object example for a complete link command.
 
 The `release.yml` workflow supports unpublished integration builds with
-`test_integrations=true`. To rebuild only plugins against an existing SDK, also
-set `sdk_run_id` to its Onda build run and `sdk_source_ref` to its full source
-commit. SDK provenance and checksums are verified; publication stays disabled.
+`test_integrations=true`. Set `plugin_ref` to a full plugin source commit compatible
+with the SDK being built. To rebuild only plugins against an existing SDK, also set
+`sdk_run_id` to its Onda build run and `sdk_source_ref` to its full source commit.
+SDK provenance and checksums are verified; publication stays disabled.
 
 ## VST3 plugin
 

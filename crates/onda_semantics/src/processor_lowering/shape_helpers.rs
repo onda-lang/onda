@@ -2623,6 +2623,23 @@ pub(super) fn compute_proc_shape(
     }
 
     let mut typed_struct_defs = struct_defs_for_scalar_expr_inference(struct_defs);
+    let local_return_types;
+    let fn_return_types = if proc.local_defs.is_empty() {
+        fn_return_types
+    } else {
+        let mut source_struct_defs = typed_struct_defs.clone();
+        source_struct_defs.extend(source_proc_types.clone());
+        let mut return_env = crate::def_semantics::CallTypeEnv::default();
+        return_env.bind_constants(const_scalars, const_arrays, const_scope, proc_options);
+        local_return_types = infer_proc_local_return_types(
+            proc,
+            &return_env,
+            &source_struct_defs,
+            fn_signatures_full,
+            fn_return_types,
+        );
+        &local_return_types
+    };
     let mut typed_param_names = HashSet::<String>::new();
     for spec in &param_specs {
         typed_param_names.insert(spec.name.clone());
@@ -2997,20 +3014,22 @@ pub(super) fn compute_proc_shape(
                 params.push(spec.name.clone());
                 defaults.push(Some(Expr::number(0.0)));
             }
+            let signature = FnSignature {
+                defaults_validated: false,
+                display_name: None,
+                requires_call_specialization: false,
+                params,
+                defaults: defaults.into(),
+                param_types: Vec::new(),
+                type_params: Vec::new(),
+                return_type: None,
+                readonly_data_params: HashSet::new(),
+            };
             proc_fn_signatures.insert(
-                instance_name.clone(),
-                FnSignature {
-                    defaults_validated: false,
-                    display_name: None,
-                    requires_call_specialization: false,
-                    params,
-                    defaults: defaults.into(),
-                    param_types: Vec::new(),
-                    type_params: Vec::new(),
-                    return_type: None,
-                    readonly_data_params: HashSet::new(),
-                },
+                format!("{}{PROC_SOURCE_CALL_FN_SUFFIX}", nested.proc_name),
+                signature.clone(),
             );
+            proc_fn_signatures.insert(instance_name.clone(), signature);
 
             let primary_ty = declarations
                 .outputs

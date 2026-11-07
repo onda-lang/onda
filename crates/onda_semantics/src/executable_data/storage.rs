@@ -68,6 +68,7 @@ impl BindingStorage {
             },
             is_typed_decl,
             typed_decl_ty_loc: Default::default(),
+            param_write_lowered: false,
             expr,
         }
     }
@@ -90,6 +91,7 @@ pub(crate) fn assign_var(name: impl Into<String>, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -103,6 +105,7 @@ pub(crate) fn typed_assign(name: impl Into<String>, ty: PrimitiveType, expr: Exp
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }

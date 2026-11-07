@@ -1,0 +1,22 @@
+struct Box:
+  value: i32
+
+def clear(box: Box):
+  box.value = 0
+
+params:
+  choose: bool = true
+
+sample:
+  count: i32 = 0
+  for i in 0..32:
+    box = Box(i)
+    other = Box(1)
+    if choose:
+      selected = box
+    else:
+      selected = other
+    clear(selected)
+    if box.value == 0:
+      count += 1
+  out1 = f32(count)

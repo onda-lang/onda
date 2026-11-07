@@ -149,6 +149,7 @@ pub(crate) fn expand_inline_array_ctor_initializers(stmts: &mut Vec<Stmt>) {
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: false,
                         expr: value,
                     });
                 }

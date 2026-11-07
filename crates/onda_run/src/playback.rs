@@ -73,7 +73,7 @@ pub struct PlaybackLaunch {
     pub fast_math: bool,
     pub show_meta: bool,
     pub control_json: bool,
-    /// Compile and initialize, then wait for a control `play` command.
+    /// Compile and expose controls; defer initialization until a control `play` command.
     pub start_paused: bool,
     pub param_sets: Vec<(String, RunParamValue)>,
     pub buffer_bindings: Vec<(String, PathBuf)>,
@@ -872,7 +872,7 @@ fn spawn_run_render_thread(
                     })?,
                 );
             }
-            if let Err(error) = session.start_run_with_options_inputs_and_initial_buffers(
+            if let Err(error) = session.prepare_run_with_options_inputs_and_initial_buffers(
                 &launch.input,
                 run_options,
                 &launch.compile_inputs,
@@ -900,6 +900,14 @@ fn spawn_run_render_thread(
                     .expect("run should be active while applying params")
                     .set_param(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
+            }
+
+            if !launch.start_paused {
+                session
+                    .run_mut(&launch.input)
+                    .expect("run should be prepared before initialization")
+                    .restart()
+                    .map_err(|diag| format_single_diagnostic("daemon play start failed", &diag))?;
             }
 
             publish_run_output_batch(
@@ -1038,7 +1046,6 @@ fn spawn_run_render_thread(
                         }
                         PlaybackControlCommand::Play { reply } => {
                             stream_errors.set_output_expected(false);
-                            play_requested = true;
                             midi_timeline.reset();
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -1063,7 +1070,8 @@ fn spawn_run_render_thread(
                                     output_worker.publish(run, delegate_subscription_id)?;
                                     execution
                                 });
-                            playing = play_requested && result.is_ok();
+                            play_requested = result.is_ok();
+                            playing = play_requested;
                             if playing {
                                 scope_ring
                                     .reconfigure(SCOPE_CAPACITY_FRAMES, render_output_channels);
@@ -2524,6 +2532,9 @@ fn run_device_lists_json(
 
 #[cfg(test)]
 mod audio_queue_tests;
+
+#[cfg(test)]
+mod startup_tests;
 
 #[cfg(all(test, unix))]
 mod control_server_tests;

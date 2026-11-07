@@ -40,6 +40,51 @@ pub(super) fn unique_proc_local_defs(proc: &ProcessorDef) -> Vec<FunctionDef> {
     out
 }
 
+pub(super) fn infer_proc_local_return_types(
+    proc: &ProcessorDef,
+    env: &crate::def_semantics::CallTypeEnv,
+    struct_defs: &HashMap<String, Vec<crate::TypedStructField>>,
+    signatures: &HashMap<String, crate::FnSignature>,
+    returns: &HashMap<String, crate::ReturnType>,
+) -> HashMap<String, crate::ReturnType> {
+    let mut env = env.clone();
+    // Bind captured fields through the ordinary alias inference. The source
+    // owner is nominal here; physical column names have not been introduced.
+    let owner = "__onda_proc_source_owner";
+    env.struct_instances
+        .insert(owner.to_owned(), proc.name.clone());
+    let context = crate::def_semantics::CallTypeContext {
+        return_types: returns,
+        struct_defs,
+    };
+    for field in struct_defs.get(&proc.name).into_iter().flatten() {
+        crate::def_semantics::call_types::update_call_type_env_after_assign(
+            &AssignTarget::Var(field.name.clone()),
+            None,
+            None,
+            &Expr::var(format!("{owner}.{}", field.name)),
+            &mut env,
+            context,
+        );
+    }
+    let defs = proc
+        .local_defs
+        .iter()
+        .map(|def| {
+            let mut def = def.clone();
+            def.name = proc_local_hidden_def_name(&proc.name, &def.name);
+            def
+        })
+        .collect::<Vec<_>>();
+    crate::def_semantics::infer_known_def_return_types_with_seed(
+        &defs,
+        signatures,
+        &env,
+        struct_defs,
+        returns,
+    )
+}
+
 pub(super) fn pre_desugar_proc_local_hidden_def(
     owner_proc: &str,
     local_def: &FunctionDef,

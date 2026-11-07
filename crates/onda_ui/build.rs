@@ -1,6 +1,15 @@
 //! Generate compact character coverage so Wasm can request only needed fonts.
 use std::{collections::BTreeSet, env, fmt::Write, fs, path::PathBuf};
 fn main() {
+    match env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("linux") => {
+            println!("cargo::rustc-link-arg-cdylib=-Wl,-soname,libonda_ui.so");
+        }
+        Ok("macos") => {
+            println!("cargo::rustc-link-arg-cdylib=-Wl,-install_name,@rpath/libonda_ui.dylib");
+        }
+        _ => {}
+    }
     let directory = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
         .join("../../assets/fonts/fallback");
     println!("cargo:rerun-if-changed={}", directory.display());

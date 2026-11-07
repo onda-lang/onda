@@ -43,6 +43,7 @@ fn assign(name: String, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: matches!(expr, Expr::ArrayCtor { .. }),
         typed_decl_ty_loc: Span::ZERO,
+        param_write_lowered: false,
         expr,
     }
 }

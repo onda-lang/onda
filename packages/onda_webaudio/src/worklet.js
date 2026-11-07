@@ -29,6 +29,19 @@ const HOST_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
 const DECIMAL_I64 = /^-?[0-9]+$/;
 
+// Match Onda's float-to-integer casts at the host audio boundary.
+function audioI32(value) {
+  if (value >= 2147483647) return 2147483647;
+  if (value <= -2147483648) return -2147483648;
+  return Math.trunc(value) || 0;
+}
+
+function audioI64(value) {
+  if (value >= 2 ** 63) return 9223372036854775807n;
+  if (value <= -(2 ** 63)) return -9223372036854775808n;
+  return Number.isNaN(value) ? 0n : BigInt(Math.trunc(value));
+}
+
 function exactI64(value) {
   let integer;
   if (typeof value === "bigint") {
@@ -1430,15 +1443,13 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
       }
       if (info.scalar === "i32") {
         for (let frame = 0; frame < segmentFrames; frame += 1) {
-          target[startFrame + frame] = Math.trunc(source[callbackOffset + frame]);
+          target[startFrame + frame] = audioI32(source[callbackOffset + frame]);
         }
         return;
       }
       if (info.scalar === "i64") {
         for (let frame = 0; frame < segmentFrames; frame += 1) {
-          target[startFrame + frame] = BigInt(
-            Math.trunc(source[callbackOffset + frame]),
-          );
+          target[startFrame + frame] = audioI64(source[callbackOffset + frame]);
         }
         return;
       }
@@ -1459,9 +1470,9 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
         info.scalar === "bool"
           ? value !== 0
           : info.scalar === "i64"
-            ? BigInt(Math.trunc(value))
+            ? audioI64(value)
             : info.scalar === "i32"
-              ? Math.trunc(value)
+              ? audioI32(value)
               : value,
         view,
       );

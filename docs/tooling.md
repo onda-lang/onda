@@ -75,6 +75,13 @@ onda run examples/basic/sine.onda
 
 The native host uses the shared GPU interface. Common options select the sample rate, block size, audio devices, and color theme.
 
+Native run hosts support `f32`, `f64`, `i32`, `i64`, and `bool` input/output ports,
+including fixed arrays. Processing uses each port's declared type. The host audio
+stream uses `f32`: integer inputs truncate toward zero and saturate, with NaN
+becoming zero; boolean inputs test nonzero, including NaN. Outputs convert
+numerically to `f32`, with booleans becoming zero or one. Events and delegates
+retain their declared precision independently of the audio stream.
+
 Click a numeric value to type, or drag it horizontally. Knobs drag vertically;
 sliders follow their tracks. Shift-drag adjusts finely, double-click restores a
 default, Enter commits text, and Escape cancels. Section headers collapse controls;

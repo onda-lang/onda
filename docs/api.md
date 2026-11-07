@@ -396,11 +396,12 @@ unranged numeric conversions return NaN. Raw parameter bytes retain full-width `
 ### Messages and tensor views
 
 Message records contain a recursive `schema_json`, fixed/minimum packed payload sizes, delegate
-record sizes, tensor count and an immutable borrowed `payload_plan`. Fixed sizes are -1 for dynamic messages; event record sizes are -1.
+record sizes, tensor/region counts and an immutable borrowed `payload_plan`. Fixed sizes are -1 for dynamic messages; event record sizes are -1.
 The schema preserves nested structs, tuples, arrays, slices, exact defaults and enum/integer domains.
 There is no separate scalar-only parameter projection.
 
-`onda_event_tensor_info` exposes each flattened primitive leaf in dispatch order: path, owning
+`onda_payload_tensor_info(plan, index)` returns a borrowed descriptor for either an event or
+delegate leaf, or null for an invalid plan/index. It exposes each leaf in dispatch order: path, owning
 parameter, primitive type, fixed shape, element product and dynamic outer-slice marker. For fixed
 parameters, `fixed_element_count` is the view's element count; for slices, multiply it by the
 logical slice length. Paths and shapes are borrowed until program destruction.
@@ -411,6 +412,12 @@ workspace bytes, and the number of regions. Pass `NULL, 0` for the region storag
 those totals; otherwise supply caller-owned storage for every region. The query allocates nothing
 and checks all lengths, overflow and capacity before writing any output. Failures leave both the
 summary and region array unchanged and return the corresponding `ONDA_API_ERROR_*` status.
+
+`onda_payload_layout_from_bytes` resolves the same regions from a complete packed payload,
+reading slice-length prefixes without decoding or normalizing scalar values. It accepts both event
+and delegate plans and uses the same storage, sizing, allocation-free and failure-atomic contracts.
+Truncated/trailing bytes or negative lengths return `ONDA_API_ERROR_INVALID_SHAPE`. This is suitable
+for host decoders and inspectors; it does not validate primitive values or execute a handler.
 
 Regions appear in wire order, with one region per primitive tensor and one additional region per
 slice length prefix. `parameter_index` identifies the source parameter; `tensor_index` is the
@@ -453,7 +460,7 @@ Call `onda_init_checked` explicitly and inspect its execution status. Release th
 `onda_instance_destroy`.
 
 Hosts own floating-point thread policy. `onda_configure_current_thread_audio_fp_mode()` optionally
-enables the audio policy on the calling thread (FTZ/DAZ on x86). Every explicit call reapplies it.
+enables the audio policy on the calling thread (FTZ/DAZ on x86, FZ on ARM64). Every explicit call reapplies it.
 Call it before initialization, events or processing on each execution thread when desired; hosts
 that share a thread with other work own saving/restoring the prior mode. Runtime calls never change
 this policy implicitly.
@@ -793,7 +800,7 @@ onda_diag_dispose
 onda_event_count
 onda_event_index
 onda_event_info
-onda_event_tensor_info
+onda_payload_tensor_info
 onda_format_print_batch
 onda_format_print_batch_into
 onda_init_checked
@@ -820,6 +827,7 @@ onda_param_info
 onda_param_normalized_to_plain
 onda_param_plain_to_normalized
 onda_payload_layout
+onda_payload_layout_from_bytes
 onda_prepare_process
 onda_print_batch_next
 onda_print_batch_reset

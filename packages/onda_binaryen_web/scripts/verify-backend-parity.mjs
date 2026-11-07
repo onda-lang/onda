@@ -102,6 +102,12 @@ const scenarios = [
     expectedChannels: [[1242, 2763, 14847, 2763, 1242, 2763, 14847, 2763], Array(8).fill(0)],
   },
   {
+    name: "peeled index copies retain writes through branch-selected aliases",
+    source: join(packageDir, "test/fixtures/peeled-loop-aliased-copy.onda"),
+    blocks: 1,
+    expectedChannels: [Array(4).fill(32)],
+  },
+  {
     name: "peeled first-index predicates preserve ordered state updates",
     source: join(packageDir, "test/fixtures/peeled-loop-predicates.onda"),
     actions: [
@@ -129,6 +135,61 @@ const scenarios = [
     source: join(packageDir, "test/fixtures/processor-local-scalar-hooks.onda"),
     blocks: 2,
     expectedChannels: [Array(8).fill(2), Array(8).fill(2), Array(8).fill(2), Array(8).fill(2), Array(8).fill(0)],
+  },
+  {
+    name: "conditional local processor arrays complete only initialized owners",
+    source: join(packageDir, "test/fixtures/processor-conditional-array-cleanup.onda"),
+    blocks: 2,
+    expectedChannels: [[10, 20, 30, 40, 50, 60, 70, 80], Array(8).fill(0)],
+  },
+  {
+    name: "nested processors retain private scalar and array access in their own methods and hooks",
+    source: join(packageDir, "test/fixtures/processor-private-owner-reads.onda"),
+    blocks: 2,
+    expectedChannels: [Array(8).fill(9), Array(8).fill(6)],
+  },
+  {
+    name: "conditional processor copies retain cleanup resources from nested slices",
+    source: join(packageDir, "test/fixtures/processor-conditional-copy-resources.onda"),
+    actions: [
+      { kind: "segments", segments: [{ start_frame: 0, frames: 2, flags: 1 }, { start_frame: 2, frames: 2, flags: 2 }] },
+      { kind: "render" },
+    ],
+    expectedChannels: [
+      [0, 0, 1, 1, 2, 2, 3, 3],
+      [1, 1, 2, 2, 3, 3, 4, 4],
+      [0, 1, 1, 2, 2, 3, 3, 4],
+    ],
+  },
+  {
+    name: "borrowed processor parameter writes preserve ranges and update hooks",
+    source: join(packageDir, "test/fixtures/processor-alias-param-writes.onda"),
+    blocks: 2,
+    expectedChannels: [Array(8).fill(4), Array(8).fill(8), [2, 2, 3, 3, 4, 4, 5, 5]],
+  },
+  {
+    name: "borrowed processor array parameter writes preserve ranges",
+    source: join(packageDir, "test/fixtures/processor-alias-array-param-writes.onda"),
+    blocks: 2,
+    expectedChannels: [[4, 8, 8, 8, 8, 8, 8, 8]],
+  },
+  {
+    name: "processor parameter hooks run after initialization and once per named write",
+    source: join(packageDir, "test/fixtures/processor-param-hook-scheduling.onda"),
+    actions: [{ kind: "render" }, { kind: "event", name: "restart", values: [] }, { kind: "render" }],
+    expectedChannels: [Array(8).fill(3), [2, 3, 4, 5, 2, 3, 4, 5], Array(8).fill(4), Array(8).fill(1), [2, 3, 4, 5, 7, 8, 9, 10]],
+  },
+  {
+    name: "indexed compound parameter writes retain i64 precision and ordered single evaluation",
+    source: join(packageDir, "test/fixtures/processor-indexed-compound-param-writes.onda"),
+    blocks: 2,
+    expectedChannels: [[1, 2, 3, 4, 5, 6, 7, 8], [2, 3, 4, 5, 6, 7, 8, 9], Array(8).fill(1), Array(8).fill(21), Array(8).fill(0)],
+  },
+  {
+    name: "indexed parameter writes evaluate the receiver and value once in order",
+    source: join(packageDir, "test/fixtures/processor-indexed-param-write-order.onda"),
+    blocks: 2,
+    expectedChannels: [Array(8).fill(1), Array(8).fill(6), Array(8).fill(21), [2, 3, 4, 5, 6, 7, 8, 9]],
   },
   {
     name: "local processor copies complete on returns and loop exits",
@@ -2006,7 +2067,7 @@ function canonicalValue(value) {
     if (Number.isNaN(value)) return "NaN";
     if (value === Infinity) return "Infinity";
     if (value === -Infinity) return "-Infinity";
-    if (Object.is(value, -0)) return "-0.0";
+    if (Object.is(value, -0)) return "-0";
     return value;
   }
   if (typeof value === "bigint") return value.toString();

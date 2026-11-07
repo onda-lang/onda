@@ -9,6 +9,7 @@ mod indexed_proc_events;
 mod input_smoothing;
 mod main_entry;
 mod proc_array_borrowing;
+mod processor_parameters;
 mod processor_projections;
 mod processor_storage;
 mod runtime_defaults;

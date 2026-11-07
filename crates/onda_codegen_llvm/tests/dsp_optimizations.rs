@@ -290,6 +290,51 @@ sample:
 }
 
 #[test]
+fn peeling_preserves_writes_through_branch_selected_local_aliases() {
+    let fixture = include_str!(
+        "../../../packages/onda_binaryen_web/test/fixtures/peeled-loop-aliased-copy.onda"
+    );
+    for (choose, expected) in [(true, 32.0f32), (false, 1.0)] {
+        let (mir, _) =
+            optimize(&fixture.replace("choose: bool = true", &format!("choose: bool = {choose}")));
+        for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+            let jit = jit_program_from_optimized_mir_with_options(
+                mir.clone(),
+                MirCompileOptions {
+                    opt_level,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let params = jit.default_param_bytes();
+            let mut state = jit.initialize_state(&params).unwrap();
+            let mut output = [f32::NAN; 32];
+            unsafe {
+                assert_eq!(
+                    jit.process_checked(
+                        &mut state,
+                        &params,
+                        0,
+                        32,
+                        3,
+                        &[],
+                        &[output.as_mut_ptr().cast()],
+                        &[],
+                        &[],
+                        &[],
+                        &[],
+                        None,
+                    )
+                    .unwrap(),
+                    PROCESSOR_EXECUTION_OK
+                );
+            }
+            assert_eq!(output, [expected; 32], "choose={choose}, {opt_level:?}");
+        }
+    }
+}
+
+#[test]
 fn peeling_preserves_overlapping_views_and_first_iteration_effects() {
     for (src, dst) in [("values[:64]", "values[1:]"), ("values[1:]", "values[:64]")] {
         let source = format!(

@@ -315,12 +315,12 @@ sample:
         for (tensor_index, (path, parameter, is_slice, elements, shape)) in
             expected.into_iter().enumerate()
         {
-            let mut info = std::mem::MaybeUninit::<onda_event_tensor_info_t>::uninit();
-            assert_eq!(
-                onda_event_tensor_info(program.0, 0, tensor_index as i32, info.as_mut_ptr()),
-                0
+            let info = onda_payload_tensor_info(
+                (*onda_event_info(program.0, 0)).payload_plan,
+                tensor_index as i32,
             );
-            let info = info.assume_init();
+            assert!(!info.is_null());
+            let info = &*info;
             assert_eq!(CStr::from_ptr(info.path).to_str().unwrap(), path);
             assert_eq!(info.parameter_index, parameter);
             assert_eq!(info.element_type, ONDA_PRIMITIVE_F32);

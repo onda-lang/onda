@@ -261,14 +261,13 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     )?;
 
     session
-        .start_run_with_options_inputs_and_initial_buffers(
+        .prepare_run_with_options_inputs_and_initial_buffers(
             input,
             run_options,
             compile_inputs,
             initial_buffers,
         )
         .map_err(|err| format_run_build_error("daemon run start failed", &err))?;
-    write_run_prints(&mut session, input)?;
 
     if show_meta {
         let info = session
@@ -287,6 +286,13 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .set_param(name, *value)
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
     }
+
+    let initialization = session
+        .run_mut(input)
+        .expect("run should be prepared before initialization")
+        .restart();
+    write_run_prints(&mut session, input)?;
+    initialization.map_err(|diag| format_single_diagnostic("daemon run start failed", &diag))?;
 
     let out_channels = session
         .run(input)

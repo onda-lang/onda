@@ -544,6 +544,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr: parse_expr(expr_pair)?,
                     })
                 }
@@ -579,6 +580,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr,
                     })
                 }
@@ -608,6 +610,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                         generic_decl_ty: None,
                                         is_typed_decl: true,
                                         typed_decl_ty_loc,
+                                        param_write_lowered: false,
                                         expr: other,
                                     });
                                 }
@@ -624,6 +627,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr: Expr::ArrayCtor {
                             loc,
                             spec,
@@ -664,6 +668,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                 generic_decl_ty: None,
                                 is_typed_decl: true,
                                 typed_decl_ty_loc,
+                                param_write_lowered: false,
                                 expr,
                             });
                         }
@@ -676,6 +681,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: Some(declared_type),
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr,
                     })
                 }
@@ -695,6 +701,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr: parse_expr(expr_pair)?,
                     })
                 }
@@ -745,6 +752,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 generic_decl_ty: None,
                 is_typed_decl: has_range,
                 typed_decl_ty_loc: Span::ZERO,
+                param_write_lowered: false,
                 expr,
             })
         }
@@ -811,6 +819,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Span::ZERO,
+                param_write_lowered: false,
                 expr: parse_expr(expr_pair)?,
             })
         }

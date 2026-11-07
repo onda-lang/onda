@@ -20,7 +20,7 @@ measurement procedures and dated results.
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
 | `onda_processor_abi` | Compiler-free shared processor descriptor schema and ABI version constants. |
 | `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated current-schema MIR MessagePack or JSON. |
-| `onda_realtime` | Backend-independent realtime thread policy, including explicit x86 FTZ/DAZ setup. |
+| `onda_realtime` | Backend-independent realtime thread policy, including explicit x86 FTZ/DAZ and ARM64 FZ setup. |
 | `onda_host_protocol` | Canonical host-owned MIDI and transport event catalog shared by native tooling and browser hosts. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
@@ -271,6 +271,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     specialization and MIR. Shapes contain declared projections and resource layouts; physical root
     instances and captured coordinates are values. Specialization and compile-context materialization
     retain the required shared owner adapters without constructing fake source calls.
+    Materialized storage views are registered by function and binding after source checking,
+    so later projection checks preserve owner access without inferring it from generated names.
     Lexical resource captures record the owner declaration ordinal and actual parameter at signature
     generation, including task resume helpers. Lowering consumes that metadata without recovering
     ownership from parameter names; lexical bindings retain their normal shadowing rules.
@@ -289,6 +291,10 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `proc_call_rewrite.rs`, `proc_call_rewrite/call_arguments.rs`, `proc_call_support.rs`,
   `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, named-argument and call-surface
   expansion, aliasing, and state symbol rewriting.
+  Assignments retain whether their processor parameter semantics have been lowered. Constructor
+  and builtin-init stores defer hooks to post-init; stores with scheduled hooks remain raw through
+  owner rewriting, cloning, and specialization. Lexical projection lowering handles only pending
+  writes, sharing the ordinary range and access checks without duplicating hook execution.
 - `internal_names.rs` — internal symbol naming.
 - `mir_lowering.rs` — transactional semantic-to-MIR lowering; owns executable storage/resources,
   events, functions, aggregate/reference shapes, recursive processor arrays, oversampling, and the
@@ -321,6 +327,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     forwarding and aliases back to owning storage, without adding activation checks to sample calls.
     Retained owned processor copies carry their resource environments separately from their new
     storage roots and participate in the same boundary scheduling as constructor-owned roots.
+    Local cleanup initializes captured coordinates and choice tags to neutral values at entry;
+    declaration guards still keep untaken resource recipes and physical references unevaluated.
   - `mir_lowering/tests.rs` — complete-program lowering regression coverage.
 
 ### `onda_mir` (`crates/onda_mir/src`)
@@ -374,7 +382,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   The native test API uses the same path.
 
 ### `onda_realtime` (`crates/onda_realtime/src`)
-- `lib.rs` — allocation-free, once-per-thread audio floating-point policy shared by runtime hosts.
+- `lib.rs` — allocation-free, idempotent audio floating-point setup for executing host threads.
 
 ### `onda_host_protocol` (`crates/onda_host_protocol`)
 
@@ -405,8 +413,9 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   metadata queries; event trigger; state snapshot/restore).
 
 - `value_info.rs` — immutable program-owned value, buffer and message records with cached enum JSON.
-- `payload_layout.rs` — borrowed message plans and allocation-free C layout queries, reusing the
-  processor ABI's checked region traversal for both events and delegates.
+- `payload_layout.rs` — borrowed message plans and tensor descriptors plus allocation-free C layout
+  queries from logical lengths or packed bytes, sharing the processor ABI's checked traversal for
+  both events and delegates.
 - `source_info.rs` — borrowed source graph, project buffer and materialization records.
 
 ### `onda_cpal` (`crates/onda_cpal/src`)
@@ -417,6 +426,14 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - Analysis sessions and document overlays are re-exported from `onda_semantics::AnalysisSession`.
 - `run_session.rs` — live JIT instance lifecycle, validated initial and replacement buffer binding,
   param updates, and `render_block`.
+  Prepared runs expose metadata and accept validated controls and buffer bindings without executing
+  authored initialization. `restart` initializes with the complete restored state; processing and
+  events reject uninitialized instances. Playback with `--start-paused` and daemon metadata queries
+  use this preparation path. Running buffer replacements continue to rebuild and initialize.
+  `run_session/audio_ports` owns naturally aligned storage of each declared primitive type and
+  allocation-free conversion to/from the host's interleaved `f32` audio stream. Integer inputs
+  use saturating truncation and boolean inputs use nonzero comparison; events retain their
+  independent schema-driven payload encoding and precision.
   `prepare_processing` provides exclusively borrowed prepared processor calls without host
   rendering or output collection for benchmarking.
   `PreparedRunBuffer` owns validated samples and precomputed waveform data; replacement
@@ -431,9 +448,14 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 
 ### `onda_run` (`crates/onda_run/src`)
 - `child_session.rs` — playback child lifetime, readiness messages, and bounded UTF-8 diagnostics.
+- `controller_startup.rs` — native child restoration barrier. Children start paused; validated
+  control and buffer acknowledgements complete before `play` initializes and processes. Failed
+  restoration terminates preparation so retrying restores the complete state again.
 - `control_client.rs` — controller-side JSON control connection and requests.
 - `playback/control_reader.rs` — byte framing that retains partial requests across socket timeouts.
 - `param_value_json.rs` — lossless scalar control transport, including decimal strings for `i64`.
+- `event_value_json.rs` — recursive event/delegate JSON transport, preserving exact `i64`
+  strings and special floating-point values, including negative zero.
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
   filesystem watcher for the entry, transitive non-stdlib sources, project manifest/entry/assets,
   unresolved recovery paths, path-targeted snapshot validation, and disk fallback for partial
@@ -473,7 +495,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   waveform preparation, and retired-storage reclamation. Per-buffer revisions reject
   loads superseded by a later bind or clear. Control clients remain responsive during
   loading; the render producer commits prepared storage between blocks. Replacement
-  still rebuilds and initializes the instance at commit, since init may access other
+  rebuilds and initializes an already running instance at commit, since init may access other
   writable buffers. File contents are owned snapshots after loading; later path changes
   cannot invalidate their memory, and project asset watching retains its reload policy.
 
@@ -615,7 +637,7 @@ browser hosts leave it empty; the plugin supplies its control-input mappings.
   select LLVM's platform ABI and object representation without changing the logical Onda ABI.
 - Standard optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings; MIR does not
   override LLVM's loop or SLP vectorization heuristics.
-- Hosts own thread floating-point policy. The optional explicit helper enables x86 FTZ/DAZ on each
+- Hosts own thread floating-point policy. The optional explicit helper establishes x86 FTZ/DAZ or ARM64 FZ on each
   call; runtime execution never changes the host policy implicitly.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
 - Runtime init, events, and processing use prepared buffer descriptor tables; omitted slots are
@@ -743,8 +765,9 @@ and invalidation in detail. The main opportunities exposed to backends are:
   aliases and synchronous effects; modified/escaped induction variables and early exits reject it.
   The summaries guide profitability only. The counted-loop proof also folds equality/inequality
   comparisons against the initial index within the remainder, following local copies only while
-  every incoming path preserves their identity. Writes, reference arguments, and call results
-  invalidate copy facts; no loop-carried copy is assumed. The first iteration retains its original
+  every incoming path preserves their identity. Function-wide escape facts exclude locals exposed
+  through views or references, including aliases created before a loop. Writes and call results
+  invalidate other copy facts; no loop-carried copy is assumed. The first iteration retains its original
   comparisons. LLVM's ordinary inlining and dependence analysis decide whether the remaining loop
   can vectorize. Binaryen keeps the original schedule.
 - The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
@@ -856,6 +879,8 @@ those references when they need leaf paths rather than storing duplicated dotted
 Processor arrays follow the same layout at top level and inside other processors: each primitive
 field is one tensor whose axes include the enclosing array dimensions. Selecting an instance
 captures its coordinate once and borrows the corresponding scalar elements or history windows.
+Scalar read inference uses the declared field type for both source indexed selections and
+generated column projections, preserving that type through compound assignments and helpers.
 Shared child wrappers take the owner view and coordinates, so homogeneous runtime calls do not
 dispatch across every instance. The physical helper ABI remains one reference per live field,
 independent of array capacity; MIR retains per-field effects and backend parameter pruning.

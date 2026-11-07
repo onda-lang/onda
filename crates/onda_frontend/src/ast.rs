@@ -1144,6 +1144,9 @@ pub enum Stmt {
         generic_decl_ty: Option<String>,
         is_typed_decl: bool,
         typed_decl_ty_loc: Span,
+        /// The producer has validated/clamped this processor parameter write
+        /// and scheduled its hooks. Later rewrites must preserve the raw store.
+        param_write_lowered: bool,
         expr: Expr,
     },
     Expr {

@@ -26,6 +26,7 @@ pub(super) fn scalarize_tuple_assignments(
                 decl_ty: Some(DeclType::Tuple(types)),
                 loc,
                 target_loc,
+                param_write_lowered,
                 expr,
                 ..
             } = &statement
@@ -46,6 +47,7 @@ pub(super) fn scalarize_tuple_assignments(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: expr.clone(),
             };
             let mut stores = Vec::new();
@@ -62,6 +64,7 @@ pub(super) fn scalarize_tuple_assignments(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: *param_write_lowered,
                     expr: Expr::Index {
                         loc: loc.clone(),
                         base: name.clone(),

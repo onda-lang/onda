@@ -111,6 +111,31 @@ impl FunctionLowerer<'_> {
     /// Return the prefix length so recorded statement positions can be rebased.
     pub(super) fn initialize_scoped_processors(&mut self, body: &mut MirBlock) -> usize {
         let mut entry = MirBlock::default();
+        // Cleanup is guarded by declaration initialization, but MIR does not
+        // infer that this also initializes every captured coordinate and tag.
+        // Publish neutral scalar values without evaluating resource recipes.
+        let mut captures = std::collections::BTreeSet::new();
+        for binding in self.scoped_processor_bindings.values_mut() {
+            if let Some(view) = binding.processor_view_mut() {
+                view.visit_values(&mut |value| {
+                    if let Value::Local(local) = value {
+                        captures.insert(*local);
+                    }
+                });
+            }
+        }
+        for local in captures {
+            debug_assert_eq!(
+                self.types[self.locals[local.index()].ty.index()],
+                MirType::Scalar(onda_mir::ScalarType::I32)
+            );
+            self.assign_value(
+                &mut entry,
+                local,
+                zero_value(PrimitiveType::I32),
+                function_location(self.function),
+            );
+        }
         for processor in self.scoped_processors.clone() {
             self.assign_value(
                 &mut entry,
@@ -139,6 +164,14 @@ impl FunctionLowerer<'_> {
         for index in first..self.scoped_processors.len() {
             let processor = self.scoped_processors[index].clone();
             let mut completion = MirBlock::default();
+            // Rebuild owned column references inside the initialized branch;
+            // declaration-local descriptors do not survive a branch join.
+            let root = self.materialize_processor_storage_capture(
+                &ProcessorCapture::Direct(processor.root),
+                &processor.storage,
+                &mut completion,
+                location.clone(),
+            )?;
             let finish = |this: &mut Self, root: &str, block: &mut MirBlock| {
                 this.processor_owner_hooks(
                     root,
@@ -156,14 +189,14 @@ impl FunctionLowerer<'_> {
             };
             if let Some(len) = processor.storage.len {
                 self.processor_lifecycle_elements(
-                    &processor.root,
+                    &root,
                     len,
                     &mut completion,
                     location.clone(),
                     finish,
                 )?;
             } else {
-                finish(self, &processor.root, &mut completion)?;
+                finish(self, &root, &mut completion)?;
             }
             self.assign_value(
                 &mut completion,

@@ -158,6 +158,7 @@ pub(super) fn broadcast_setup(
             generic_decl_ty: None,
             is_typed_decl: false,
             typed_decl_ty_loc: Default::default(),
+            param_write_lowered: false,
             expr: Expr::Index {
                 loc: Default::default(),
                 base: format!("self.{array_base}"),

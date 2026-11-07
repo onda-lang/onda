@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 mod child_session;
 mod control_client;
 mod controller_events;
+mod controller_startup;
 use child_session::ChildSession;
 use control_client::IpcBridge;
 use controller_events::EventSender;
@@ -221,6 +222,7 @@ enum PendingCommand {
     ClearBuffer { name: String },
     Play,
     ResetParams,
+    RestoreControl,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -341,6 +343,8 @@ pub struct RunController {
     preserved_buffers: BTreeMap<String, PreservedBufferBinding>,
     preserved_events: Vec<(String, Vec<Value>)>,
     pending_commands: HashMap<u64, PendingCommand>,
+    pending_play: Option<u64>,
+    restoring: bool,
     active_virtual_notes: HashSet<i32>,
     processing_requested: bool,
     scope_polling_active: bool,
@@ -397,14 +401,9 @@ impl RunController {
             source_watch_revision.observe_change();
         }
         let child_generation = 1;
-        let child = ChildSession::spawn(
-            &launch_path,
-            &options,
-            true,
-            child_generation,
-            events_tx.clone(),
-        )
-        .map_err(|e| format!("failed to start run subprocess: {e}"))?;
+        let child =
+            ChildSession::spawn(&launch_path, &options, child_generation, events_tx.clone())
+                .map_err(|e| format!("failed to start run subprocess: {e}"))?;
 
         let mut controller = Self {
             launch_path,
@@ -429,6 +428,8 @@ impl RunController {
             preserved_buffers: BTreeMap::new(),
             preserved_events: Vec::new(),
             pending_commands: HashMap::new(),
+            pending_play: None,
+            restoring: false,
             active_virtual_notes: Default::default(),
             processing_requested: true,
             scope_polling_active: false,
@@ -713,15 +714,14 @@ impl RunController {
     pub fn start(&mut self) -> Result<(), String> {
         self.processing_requested = true;
         if self.can_reuse_compiled_child() {
-            if let Some(id) = self.bridge.send_command("play", &json!({})) {
-                self.pending_commands.insert(id, PendingCommand::Play);
+            self.state.connected = true;
+            if self.restoring {
+                self.refresh_processing_state();
+                return Ok(());
             }
-            self.scope_polling_active = true;
+            self.request_play()?;
             self.scope_request = None;
             self.last_scope_poll = Instant::now();
-            self.state.running = true;
-            self.state.connected = true;
-            self.state.status = "Running".to_owned();
             self.state.error = None;
             self.state.scope_channels = 0;
             self.state.scope_samples.clear();
@@ -735,6 +735,7 @@ impl RunController {
     pub fn stop(&mut self) {
         self.active_virtual_notes.clear();
         self.processing_requested = false;
+        self.pending_play = None;
         if self.state.connected && self.child.is_active() {
             let _ = self.bridge.send_command("pause", &json!({}));
         } else {
@@ -815,15 +816,21 @@ impl RunController {
     }
 
     pub fn set_param(&mut self, name: &str, value: Value) {
-        self.bridge
-            .send_command_notification("setParam", &json!({ "name": name, "value": value }));
+        self.state.error = None;
+        let payload = json!({ "name": name, "value": value });
+        if self.restoring {
+            if let Err(error) = self.send_restore_control("setParam", &payload) {
+                self.fail_restoration(error);
+            }
+        } else {
+            self.bridge.send_command_notification("setParam", &payload);
+        }
         if let Some(entry) = self.preserved_params.iter_mut().find(|(n, _)| n == name) {
             entry.1 = value.clone();
         } else {
             self.preserved_params.push((name.to_owned(), value.clone()));
         }
         update_param_value(&mut self.state.params, name, value);
-        self.state.error = None;
     }
 
     pub fn trigger_event(&mut self, name: &str, values: Vec<Value>) {
@@ -981,7 +988,6 @@ impl RunController {
         match ChildSession::spawn(
             &self.launch_path,
             &self.options,
-            self.processing_requested,
             self.child_generation,
             self.events_tx.clone(),
         ) {
@@ -1189,20 +1195,12 @@ impl RunController {
         // control clients remain unsubscribed until they request collection.
         self.bridge
             .send_command_notification("subscribeDelegates", &json!({}));
-        self.bridge.send_command(
-            "setParamSmoothing",
-            &json!({ "value": self.options.param_smoothing_seconds }),
-        );
-
-        for (name, value) in &self.preserved_params {
-            self.bridge
-                .send_command_notification("setParam", &json!({ "name": name, "value": value }));
+        if let Err(error) = self.begin_restoration() {
+            self.fail_restoration(error);
+            return;
         }
-        for (name, binding) in &self.preserved_buffers {
-            let (command, payload, pending) = binding.replay_request(name);
-            if let Some(id) = self.bridge.send_command(command, &payload) {
-                self.pending_commands.insert(id, pending);
-            }
+        if self.state.error.is_some() {
+            return;
         }
 
         self.refresh_processing_state();
@@ -1328,6 +1326,8 @@ impl RunController {
     }
 
     fn advance_child_generation(&mut self) {
+        self.pending_play = None;
+        self.restoring = false;
         self.active_virtual_notes.clear();
         self.child_generation = self
             .child_generation
@@ -1336,6 +1336,8 @@ impl RunController {
     }
 
     fn handle_child_exited(&mut self, code: Option<i32>, error: Option<String>) {
+        self.pending_play = None;
+        self.restoring = false;
         self.active_virtual_notes.clear();
         self.scope_polling_active = false;
         self.sync_scope_capture();
@@ -1455,10 +1457,33 @@ impl RunController {
                 if let Some(id) = id {
                     self.pending_commands.remove(&id);
                 }
+                poll.schema_changed = self.finish_restoration();
+                poll.state_changed = poll.schema_changed;
                 return poll;
             }
             let succeeded = resp.get("ok").and_then(Value::as_bool).unwrap_or(true);
             let command = id.and_then(|id| self.pending_commands.remove(&id));
+            if matches!(command, Some(PendingCommand::Play)) {
+                // A newer Start or Stop owns transport intent, including error reporting.
+                if id != self.pending_play {
+                    return poll;
+                }
+                self.pending_play = None;
+            }
+            if self.restoring
+                && command.as_ref().is_some_and(PendingCommand::restores_state)
+                && !succeeded
+            {
+                self.fail_restoration(
+                    resp["error"]
+                        .as_str()
+                        .unwrap_or("Failed to restore run controls")
+                        .to_owned(),
+                );
+                poll.state_changed = true;
+                poll.schema_changed = true;
+                return poll;
+            }
             if matches!(command, Some(PendingCommand::Scope)) && !scope_reply {
                 return poll;
             }
@@ -1490,24 +1515,27 @@ impl RunController {
                             self.refresh_processing_state();
                         }
                         PendingCommand::Play => {
-                            self.state.running = true;
-                            self.state.status = "Running".to_owned();
-                            self.scope_polling_active = true;
+                            self.refresh_processing_state();
                         }
-                        PendingCommand::ResetParams | PendingCommand::Scope => {}
+                        PendingCommand::ResetParams
+                        | PendingCommand::RestoreControl
+                        | PendingCommand::Scope => {}
                     }
                 } else {
                     match command {
                         PendingCommand::BindBuffer { .. } => self.refresh_processing_state(),
                         PendingCommand::ClearBuffer { .. } => {}
                         PendingCommand::Play => {
+                            self.processing_requested = false;
                             self.state.running = false;
                             self.active_virtual_notes.clear();
                             self.scope_polling_active = false;
                             self.scope_request = None;
                             self.state.status = "Runtime error".to_owned();
                         }
-                        PendingCommand::ResetParams | PendingCommand::Scope => {}
+                        PendingCommand::ResetParams
+                        | PendingCommand::RestoreControl
+                        | PendingCommand::Scope => {}
                     }
                 }
                 poll.state_changed = true;
@@ -1565,12 +1593,22 @@ impl RunController {
                 }
             }
         }
+        if self.finish_restoration() {
+            poll.state_changed = true;
+            poll.schema_changed = true;
+        }
         poll
     }
 
     fn refresh_processing_state(&mut self) {
-        self.state.running = self.processing_requested && self.state.connected;
-        self.state.status = if self.state.running {
+        let starting = self.pending_play.is_some();
+        self.state.running =
+            self.processing_requested && self.state.connected && !self.restoring && !starting;
+        self.state.status = if self.restoring {
+            "Restoring controls...".to_owned()
+        } else if starting {
+            "Starting...".to_owned()
+        } else if self.state.running {
             "Running".to_owned()
         } else {
             "Stopped".to_owned()
@@ -2981,7 +3019,7 @@ mod tests {
         );
     }
 
-    fn controller_without_child() -> super::RunController {
+    pub(super) fn controller_without_child() -> super::RunController {
         let path = PathBuf::from("scope.onda");
         let options = RunHostOptions::default();
         let (events_tx, events_rx) = EventSender::channel();
@@ -3008,6 +3046,8 @@ mod tests {
             preserved_buffers: Default::default(),
             preserved_events: Vec::new(),
             pending_commands: HashMap::new(),
+            pending_play: None,
+            restoring: false,
             active_virtual_notes: Default::default(),
             processing_requested: true,
             scope_polling_active: true,

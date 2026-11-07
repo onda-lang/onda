@@ -1305,7 +1305,7 @@ fn process_readiness_uses_current_proc_array_buffer_binding() {
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    prepare_process(&mut instance).expect("prepare unchecked with old buf2");
+    prepare_process(&instance).expect("prepare unchecked with old buf2");
     unsafe {
         process_unchecked_segment(
             &mut instance,
@@ -1333,7 +1333,7 @@ fn process_readiness_uses_current_proc_array_buffer_binding() {
     )
     .expect("bind buf2 new");
 
-    prepare_process(&mut instance).expect("prepare unchecked after rebind");
+    prepare_process(&instance).expect("prepare unchecked after rebind");
     unsafe {
         process_unchecked_segment(
             &mut instance,

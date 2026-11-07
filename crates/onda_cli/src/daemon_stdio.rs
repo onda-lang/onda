@@ -272,7 +272,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 onda_daemon::InitialBufferBinding::from_asset(name, asset, path)
             });
             // Metadata queries must not register or replace an active run.
-            let run = onda_daemon::RunSession::build_with_inputs_and_initial_buffers(
+            let run = onda_daemon::RunSession::prepare_with_inputs_and_initial_buffers(
                 session.analysis(),
                 &project.entry,
                 options,

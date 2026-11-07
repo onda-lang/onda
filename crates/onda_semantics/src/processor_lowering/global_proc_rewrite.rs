@@ -348,7 +348,6 @@ pub(super) fn rewrite_top_level_proc_calls(
         .find(|b| b.kind() == BlockKind::Init)
     {
         let mut rewritten_init = Vec::<Stmt>::new();
-        let mut constructor_setup_indices = HashSet::<usize>::new();
         for stmt in init.body.clone() {
             let mut pending_stmts = vec![stmt];
             if let Some(Stmt::Assign {
@@ -502,6 +501,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: false,
                             expr: Expr::UserCall {
                                 loc: Default::default(),
                                 name: proc_ctor.clone(),
@@ -535,6 +535,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: false,
                             expr: value,
                         });
                     }
@@ -634,10 +635,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                                     .collect::<Vec<_>>();
                             }
                             let setup_start = rewritten_init.len();
-                            for assign in ctor_assigns {
-                                constructor_setup_indices.insert(rewritten_init.len());
-                                rewritten_init.push(assign);
-                            }
+                            rewritten_init.extend(ctor_assigns);
                             let mut init_args = vec![
                                 CallArg {
                                     name: None,
@@ -666,8 +664,6 @@ pub(super) fn rewrite_top_level_proc_calls(
                                 let declaration = &global_proc_array_slots[array_base];
                                 if declaration.binding_names().len() == 1 {
                                     let body = rewritten_init.split_off(setup_start);
-                                    constructor_setup_indices.retain(|index| *index < setup_start);
-                                    constructor_setup_indices.insert(setup_start);
                                     rewritten_init.push(proc_array_init::top_level_setup(
                                         array_base,
                                         declaration.len(),
@@ -714,14 +710,13 @@ pub(super) fn rewrite_top_level_proc_calls(
             proc_api,
             errors,
         );
-        inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
+        inject_bound_proc_param_hooks_in_stmts(
             None,
             &mut init.body,
             &call_instances,
             &global_proc_array_slots,
             proc_api,
             errors,
-            &constructor_setup_indices,
         );
     }
 
@@ -996,6 +991,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     generic_decl_ty: None,
                     is_typed_decl: true,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: Expr::ArrayCtor {
                         loc: Default::default(),
                         spec: onda_frontend::ArrayTypeSpec {
@@ -1066,6 +1062,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         generic_decl_ty: None,
                         is_typed_decl: false,
                         typed_decl_ty_loc: Default::default(),
+                        param_write_lowered: false,
                         expr: Expr::bool(false),
                     }],
                 });

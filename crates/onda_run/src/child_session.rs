@@ -29,7 +29,6 @@ impl ChildSession {
     pub(super) fn spawn(
         onda_path: &Path,
         options: &RunHostOptions,
-        processing_requested: bool,
         generation: u64,
         event_tx: super::EventSender,
     ) -> Result<Self, String> {
@@ -39,6 +38,7 @@ impl ChildSession {
             .arg(onda_path)
             .arg("--forever")
             .arg("--control-json")
+            .arg("--start-paused")
             .arg("--sample-rate")
             .arg(options.sample_rate_hz.to_string())
             .arg("--block-size")
@@ -63,9 +63,6 @@ impl ChildSession {
         }
         if options.fast_math {
             cmd.arg("--fast-math");
-        }
-        if !processing_requested {
-            cmd.arg("--start-paused");
         }
         if options.show_meta {
             cmd.arg("--meta");

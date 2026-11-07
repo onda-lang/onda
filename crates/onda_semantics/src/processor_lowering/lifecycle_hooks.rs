@@ -64,6 +64,7 @@ pub(super) fn guard_scalar_hook(
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: Expr::bool(!finish),
     });
     let active = Expr::Index {
@@ -113,6 +114,7 @@ fn begin_active_slot(active_field: &str, index: Expr, call: Expr) -> Stmt {
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::bool(true),
             },
         ],
