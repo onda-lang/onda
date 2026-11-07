@@ -1,0 +1,60 @@
+name: macOS notarization preflight
+
+on:
+  push:
+    branches: [ci/macos-notarization-preflight]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-notarization-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_VERSION: 21.1.2
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  hardened-runtime:
+    name: Ad hoc signing and hardened runtime (arm64)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: notarization-preflight
+
+      - name: Build release CLI, libraries, and test executables
+        shell: bash
+        run: |
+          ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          mkdir -p target/notarization-preflight
+          cargo build --locked --release -p onda_cli --bin onda
+          cargo build --locked --release -p onda_api -p onda_ui --features onda_ui/ffi
+          cargo test --locked --release -p onda_codegen_llvm \
+            --test math_policy --test vector_math --test slice_optimization --test target_initialization \
+            --no-run --message-format json > target/notarization-preflight/compiler-tests.jsonl
+          cargo test --locked --release -p onda_ui -p onda_gpu -p onda_scope \
+            --features onda_ui/ffi --lib --no-run --message-format json \
+            > target/notarization-preflight/ui-tests.jsonl
+
+      - name: Exercise signed executables with hardened runtime
+        run: python3 tests/macos/notarization-preflight.py
+
+      - name: Retain signing diagnostics, test logs, and renders
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-notarization-preflight
+          path: |
+            target/notarization-preflight/**/*.log
+            target/notarization-preflight/**/*.json
+            target/notarization-preflight/**/*.plist
+            target/notarization-preflight/**/*.wav
+            target/notarization-preflight/summary.md
+          retention-days: 7
