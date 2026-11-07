@@ -1,9 +1,19 @@
-// Query the resolved CPU, including features implied by its name. LLVM's C API
-// only returns the feature overrides, which are insufficient for ISA selection.
+// LLVM target initialization and resolved CPU feature queries.
+#include <llvm-c/Target.h>
 #include <llvm/MC/MCSubtargetInfo.h>
 #include <llvm/Target/TargetMachine.h>
 #include <cstring>
 
+extern "C" void onda_initialize_codegen_targets() {
+  LLVMInitializeAllTargetInfos();
+  LLVMInitializeAllTargets();
+  LLVMInitializeAllTargetMCs();
+  LLVMInitializeAllAsmPrinters();
+  LLVMInitializeAllAsmParsers();
+}
+
+// LLVM's C API only returns feature overrides. ISA selection also needs the
+// features implied by the resolved CPU name.
 static bool has(llvm::TargetMachine *machine, const char *name) {
   const auto *features = machine->getMCSubtargetInfo();
   for (const auto &feature : features->getAllProcessorFeatures())

@@ -1,4 +1,4 @@
-//! Build the target-feature shim and register scalar libm addresses for ORC.
+//! Build the LLVM target shim and register scalar libm addresses for ORC.
 use std::{env, fmt::Write, fs, path::Path};
 
 #[path = "../src/vector_math_spec.rs"]
@@ -15,13 +15,15 @@ pub fn build(llvm: &Path) {
         .cpp(true)
         .std("c++17")
         .opt_level(2)
-        // The shim uses only inline accessors from this LLVM installation's
+        // Feature queries use inline accessors from this LLVM installation's
         // headers; LLVM-C shared libraries need not export C++ Support symbols.
         .define("LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING", "1")
         .include(llvm.join("include"))
-        .file("native/target_features.cpp")
+        // Keep initialization beside the LLVM libraries in Onda's archive.
+        // A wrapper in a later dependency archive fails with GNU ld.
+        .file("native/target.cpp")
         .warnings(false)
-        .compile("onda_target_features");
+        .compile("onda_target");
 
     // Scalar tails still use platform libm. Register addresses for ORC because
     // a statically linked Windows CRT need not export them for dynamic lookup.

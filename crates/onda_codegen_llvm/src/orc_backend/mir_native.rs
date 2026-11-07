@@ -27,8 +27,6 @@ use llvm_sys::prelude::*;
 use llvm_sys::target::{
     LLVMABIAlignmentOfType, LLVMABISizeOfType, LLVMByteOrder, LLVMCreateTargetData,
     LLVMDisposeTargetData, LLVMPointerSize, LLVMStoreSizeOfType, LLVMTargetDataRef,
-    LLVM_InitializeAllAsmParsers, LLVM_InitializeAllAsmPrinters, LLVM_InitializeAllTargetInfos,
-    LLVM_InitializeAllTargetMCs, LLVM_InitializeAllTargets,
 };
 use llvm_sys::target_machine::{
     LLVMCodeGenFileType, LLVMCodeGenOptLevel, LLVMDisposeTargetMachine,
@@ -3845,14 +3843,13 @@ fn wasm_u32_leb(bytes: &[u8], cursor: &mut usize) -> Result<u32, MirCodegenError
 }
 
 fn initialize_codegen_targets() {
+    unsafe extern "C" {
+        fn onda_initialize_codegen_targets();
+    }
     // Native and cross-target compilation share LLVM's unsynchronized registry.
     // They must use the same once guard, including the first registration.
     super::llvm_helpers::CODEGEN_TARGETS_INIT.get_or_init(|| unsafe {
-        LLVM_InitializeAllTargetInfos();
-        LLVM_InitializeAllTargets();
-        LLVM_InitializeAllTargetMCs();
-        LLVM_InitializeAllAsmPrinters();
-        LLVM_InitializeAllAsmParsers();
+        onda_initialize_codegen_targets();
     });
 }
 
