@@ -29,7 +29,7 @@ impl App {
                     }
                 }
             }
-            self.redraw_if_dirty();
+            self.redraw_if_dirty(Instant::now());
             return;
         }
         if let Some(c) = physical_letter(event.physical_key) {

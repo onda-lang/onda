@@ -7,6 +7,8 @@ struct Globals {
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 
+const SCOPE_STROKE_WIDTH: f32 = 2.; // Physical pixels.
+
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
@@ -58,7 +60,7 @@ fn position(p: vec2<f32>) -> vec4<f32> {
     let width = globals.scope.z / f32(columns);
     let bounds = -samples.yxwz*max(0.,height*.5-2.);
     let slope = max(abs(bounds.z-bounds.x),abs(bounds.w-bounds.y))/max(width,.001);
-    let pad = 1.5/globals.viewport.z*sqrt(1.+slope*slope);
+    let pad = (SCOPE_STROKE_WIDTH*.5+1.)/globals.viewport.z*sqrt(1.+slope*slope);
     let t = (corner(vertex).x+1.)*.5;
     let lower = mix(bounds.x,bounds.z,t)-pad;
     let upper = mix(bounds.y,bounds.w,t)+pad;
@@ -106,7 +108,7 @@ fn linear(color:vec3<f32>)->vec3<f32> {
     if in.params.y == 3. {
         let low = mix(in.envelope.x,in.envelope.z,in.local.x);
         let high = mix(in.envelope.y,in.envelope.w,in.local.x);
-        distance = max(low-in.local.y,in.local.y-high)-.65/globals.viewport.z;
+        distance = max(low-in.local.y,in.local.y-high)-SCOPE_STROKE_WIDTH*.5/globals.viewport.z;
     } else if in.params.y == 1. {
         let radius = in.half_size.x*25./29.;
         let sweep=4.71238898*clamp(in.params.z,0.,1.);

@@ -9,6 +9,57 @@ struct TestWindow {
     window: Window,
 }
 
+#[test]
+fn creation_requires_options_and_reports_the_error() {
+    unsafe {
+        let mut error = [0; 128];
+        assert!(onda_ui_create(std::ptr::null(), error.as_mut_ptr(), error.len()).is_null());
+        assert_eq!(
+            CStr::from_ptr(error.as_ptr()).to_str().unwrap(),
+            "Missing UI creation options"
+        );
+    }
+}
+
+#[test]
+fn optional_c_pacer_uses_only_host_timestamps() {
+    unsafe {
+        assert!(onda_ui_frame_pacer_create(-1.0).is_null());
+        for hz in [0.0, 60.0, 120.0] {
+            let pacer = onda_ui_frame_pacer_create(hz);
+            assert!(!pacer.is_null());
+            assert_eq!(onda_ui_frame_pacer_timer_delay_ms(pacer, 100.0), 0.0);
+            assert_eq!(onda_ui_frame_pacer_display_delay_ms(pacer, 100.0), 0.0);
+            onda_ui_frame_pacer_timer_submitted(pacer, 100.0);
+            let delay = onda_ui_frame_pacer_timer_delay_ms(pacer, 100.0);
+            assert!((delay - if hz == 0.0 { 0.0 } else { 1000.0 / hz }).abs() < 1e-10);
+            assert!(
+                (onda_ui_frame_pacer_display_delay_ms(pacer, 100.0) - delay * 0.5).abs() < 1e-10
+            );
+            if hz > 0.0 {
+                let early = 100.0 + 1000.0 / hz - 0.1;
+                assert!(onda_ui_frame_pacer_timer_delay_ms(pacer, early) > 0.0);
+                assert_eq!(onda_ui_frame_pacer_display_delay_ms(pacer, early), 0.0);
+            }
+            onda_ui_frame_pacer_destroy(pacer);
+        }
+    }
+}
+
+#[test]
+fn c_display_pacer_skips_expired_slots_without_resetting_its_phase() {
+    unsafe {
+        let pacer = onda_ui_frame_pacer_create(60.0);
+        assert!(!pacer.is_null());
+        for timestamp in [3.0, 29.667, 56.333, 63.667] {
+            assert_eq!(onda_ui_frame_pacer_display_delay_ms(pacer, timestamp), 0.0);
+            onda_ui_frame_pacer_display_submitted(pacer, timestamp);
+            assert!(onda_ui_frame_pacer_display_delay_ms(pacer, timestamp) > 0.0);
+        }
+        onda_ui_frame_pacer_destroy(pacer);
+    }
+}
+
 impl TestWindow {
     fn new() -> Self {
         let xlib = Xlib::open().expect("Xlib");
@@ -44,19 +95,36 @@ fn scheduling_updates_without_drawing_and_clears_deadlines_after_command_deliver
     let window = TestWindow::new();
     unsafe {
         let mut error = [0; 2048];
-        let ui = onda_ui_create(
-            1,
-            window.window as usize,
-            window.display as usize,
-            1000,
-            600,
-            2.0,
-            error.as_mut_ptr(),
-            error.len(),
-        );
+        let options = OndaUiCreateOptions {
+            platform: 1,
+            window: window.window as usize,
+            display: window.display as usize,
+            width: 1000,
+            height: 600,
+            scale: 2.0,
+            present_mode: 2,
+            maximum_frame_latency: 1,
+        };
+        let ui = onda_ui_create(&options, error.as_mut_ptr(), error.len());
         assert!(!ui.is_null(), "{:?}", CStr::from_ptr(error.as_ptr()));
         let mut owned = Box::from_raw(ui);
         let ui = &mut *owned as *mut OndaUi;
+        assert_eq!(onda_ui_present_mode(ui), 2);
+        assert_ne!(onda_ui_present_modes(ui) & (1 << 2), 0);
+        assert_eq!(onda_ui_set_presentation(ui, 2, 0), 0);
+        assert_eq!(
+            onda_ui_present_mode(ui),
+            2,
+            "rejected settings preserve the surface"
+        );
+        assert_eq!(onda_ui_set_presentation(ui, 6, 2), 1);
+        assert_eq!(onda_ui_present_modes(ui) & (1 << 6), 0);
+        let expected = if onda_ui_present_modes(ui) & (1 << 5) != 0 {
+            5
+        } else {
+            2
+        };
+        assert_eq!(onda_ui_present_mode(ui), expected);
         let state = string(json!({"type":"state","state":{
             "path":"schedule.onda","supportsScope":false,"supportsViewState":true,
             "params":(0..30).map(|i| json!({"name":format!("p{i}"),"type":"f64","value":0})).collect::<Vec<_>>()
@@ -66,6 +134,8 @@ fn scheduling_updates_without_drawing_and_clears_deadlines_after_command_deliver
         assert_eq!(onda_ui_render(ui), 1);
         onda_ui_commands(ui);
         assert_eq!(onda_ui_update(ui), 0);
+        // Explicit rendering is independent of dirty state and frame pacing.
+        assert_eq!(onda_ui_render(ui), 1);
         assert_eq!(onda_ui_wake_delay_ms(ui), -1.0);
 
         assert_eq!(
@@ -107,16 +177,17 @@ fn initial_state_restores_scroll_before_first_resize_or_render() {
     let window = TestWindow::new();
     unsafe {
         let mut error = [0; 2048];
-        let ui = onda_ui_create(
-            1,
-            window.window as usize,
-            window.display as usize,
-            1000,
-            600,
-            2.0,
-            error.as_mut_ptr(),
-            error.len(),
-        );
+        let options = OndaUiCreateOptions {
+            platform: 1,
+            window: window.window as usize,
+            display: window.display as usize,
+            width: 1000,
+            height: 600,
+            scale: 2.0,
+            present_mode: 2,
+            maximum_frame_latency: 1,
+        };
+        let ui = onda_ui_create(&options, error.as_mut_ptr(), error.len());
         assert!(!ui.is_null(), "{:?}", CStr::from_ptr(error.as_ptr()));
         // Own the C allocation so it is released before the native handles,
         // including when an assertion fails.

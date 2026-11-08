@@ -1,4 +1,4 @@
-import init, { CanvasUi } from "./pkg/onda_ui.js";
+import init, { CanvasUi, FramePacer, PresentMode } from "./pkg/onda_ui.js";
 import { browserBridge } from "./browser.js";
 import { computerKey, wireJson } from "./protocol.js";
 import { createTextInput } from "./text-input.js";
@@ -29,6 +29,9 @@ const send = (message) => {
 };
 let ui;
 let frame = 0;
+let frameTimer = 0;
+let framePacer;
+let redrawRetryAt = 0;
 let resizePending = true;
 let wakeTimer = 0;
 let fontRetryTimer = 0;
@@ -82,8 +85,9 @@ function report(error) {
   for (const values of Object.values(pendingValues)) values.clear();
   clearTimeout(wakeTimer);
   clearTimeout(fontRetryTimer);
-  if (frame) cancelAnimationFrame(frame);
-  frame = 0;
+  cancelFrame();
+  framePacer?.free();
+  framePacer = undefined;
   if (ui) {
     try {
       ui.input(JSON.stringify({ type: "focusLost" }));
@@ -140,9 +144,33 @@ function armWake() {
   }, Math.ceil(delay));
 }
 function schedule() {
+  if (frame || frameTimer || suspended || document.hidden || !ui || renderError) return;
+  const now = performance.now();
+  const delay = Math.floor(Math.max(framePacer.display_delay_ms(now), redrawRetryAt - now));
+  if (delay > 0) {
+    // Register RAF before the frame slot opens, then use a vsynced opportunity.
+    // New input shares this deadline instead of postponing the final frame.
+    frameTimer = setTimeout(() => {
+      frameTimer = 0;
+      requestFrame();
+    }, delay);
+  } else requestFrame();
+}
+function cancelFrame() {
+  clearTimeout(frameTimer);
+  frameTimer = 0;
+  if (frame) cancelAnimationFrame(frame);
+  frame = 0;
+}
+function requestFrame() {
   if (frame || suspended || document.hidden || !ui || renderError) return;
-  frame = requestAnimationFrame(() => {
+  frame = requestAnimationFrame((timestamp) => {
     frame = 0;
+    const now = performance.now();
+    if (framePacer.display_delay_ms(timestamp) > 0 || now < redrawRetryAt) {
+      schedule();
+      return;
+    }
     try {
       flushValues();
       applyResize();
@@ -153,7 +181,10 @@ function schedule() {
       }
       canvas.style.cursor = ui.cursor();
       loadFallbackFonts();
-      const presented = !ui.update() || ui.render();
+      const dirty = ui.update();
+      const presented = !dirty || ui.render();
+      if (dirty && presented) framePacer.display_submitted(timestamp);
+      redrawRetryAt = presented ? 0 : performance.now() + 1000 / 30;
       // Text measurement can resolve hidden drafts and move the scope viewport.
       commands();
       if (!presented) schedule();
@@ -510,8 +541,7 @@ document.addEventListener("visibilitychange", () => {
     clearTimeout(wakeTimer);
     clearTimeout(fontRetryTimer);
     input({ type: "focusLost" });
-    if (frame) cancelAnimationFrame(frame);
-    frame = 0;
+    cancelFrame();
   }
   resize();
 });
@@ -521,11 +551,12 @@ window.addEventListener("pagehide", (event) => {
   input({ type: "focusLost" });
   clearTimeout(wakeTimer);
   clearTimeout(fontRetryTimer);
-  if (frame) cancelAnimationFrame(frame);
-  frame = 0;
+  cancelFrame();
   if (ui && !event.persisted) {
     ui.free();
     ui = undefined;
+    framePacer.free();
+    framePacer = undefined;
   }
 });
 window.addEventListener("pageshow", (event) => {
@@ -537,6 +568,7 @@ window.addEventListener("pageshow", (event) => {
 
 try {
   await init();
+  framePacer = new FramePacer(60);
   const forceWebgl =
     new URLSearchParams(location.search).get("backend") === "webgl";
   const adapter =
@@ -546,6 +578,8 @@ try {
   ui = await CanvasUi.create(
     canvas,
     Boolean(adapter) && adapter.info?.isFallbackAdapter !== true,
+    PresentMode.Fifo,
+    2,
   );
   if (renderError) {
     const failed = ui;

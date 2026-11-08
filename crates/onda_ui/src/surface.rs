@@ -1,4 +1,4 @@
-use crate::{Renderer, RunUi};
+use crate::{PresentMode, PresentationOptions, Renderer, RunUi};
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]
@@ -12,6 +12,7 @@ pub struct SurfaceRenderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     size: [u32; 2],
+    present_modes: Vec<PresentMode>,
 }
 impl SurfaceRenderer {
     pub async fn new(
@@ -19,6 +20,7 @@ impl SurfaceRenderer {
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
+        presentation: PresentationOptions,
     ) -> Result<Self, String> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -47,8 +49,13 @@ impl SurfaceRenderer {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(config.format);
-        config.present_mode = wgpu::PresentMode::AutoVsync;
-        config.desired_maximum_frame_latency = 1;
+        let present_modes: Vec<_> = caps
+            .present_modes
+            .into_iter()
+            .map(PresentMode::from)
+            .collect();
+        config.present_mode = presentation.resolve(&present_modes)?;
+        config.desired_maximum_frame_latency = presentation.maximum_frame_latency;
         let renderer = Renderer::new(&adapter, config.format).await?;
         surface.configure(&renderer.device, &config);
         Ok(Self {
@@ -56,7 +63,35 @@ impl SurfaceRenderer {
             surface,
             config,
             size: [width, height],
+            present_modes,
         })
+    }
+    pub fn present_modes(&self) -> &[PresentMode] {
+        &self.present_modes
+    }
+    pub fn present_mode_mask(&self) -> u32 {
+        self.present_modes
+            .iter()
+            .fold(0, |mask, mode| mask | (1 << *mode as u32))
+    }
+    pub fn presentation(&self) -> PresentationOptions {
+        PresentationOptions {
+            present_mode: self.config.present_mode.into(),
+            maximum_frame_latency: self.config.desired_maximum_frame_latency,
+        }
+    }
+    pub fn set_presentation(&mut self, options: PresentationOptions) -> Result<(), String> {
+        let present_mode = options.resolve(&self.present_modes)?;
+        if present_mode != self.config.present_mode
+            || options.maximum_frame_latency != self.config.desired_maximum_frame_latency
+        {
+            self.config.present_mode = present_mode;
+            self.config.desired_maximum_frame_latency = options.maximum_frame_latency;
+            if !self.size.contains(&0) {
+                self.surface.configure(&self.renderer.device, &self.config);
+            }
+        }
+        Ok(())
     }
     pub fn resize(&mut self, width: u32, height: u32) {
         if self.size == [width, height] {
@@ -71,7 +106,8 @@ impl SurfaceRenderer {
         self.surface.configure(&self.renderer.device, &self.config);
     }
     /// False means the surface is temporarily unavailable; keep the frame dirty
-    /// and retry on the host's next display tick, without blocking its event loop.
+    /// and retry on a later host display tick. Acquisition or presentation can wait
+    /// for GPU/vsync backpressure; this function does not perform software pacing.
     pub fn render(&mut self, ui: &mut RunUi, scale: f32) -> Result<bool, String> {
         if self.size.contains(&0) {
             return Ok(false);

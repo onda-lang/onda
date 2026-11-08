@@ -1,4 +1,4 @@
-use crate::{Input, RunUi, SurfaceRenderer};
+use crate::{Input, PresentationOptions, RunUi, SurfaceRenderer};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -21,6 +21,8 @@ impl CanvasUi {
     pub async fn create(
         canvas: web_sys::HtmlCanvasElement,
         webgpu: bool,
+        present_mode: u32,
+        maximum_frame_latency: u32,
     ) -> Result<CanvasUi, JsValue> {
         std::panic::set_hook(Box::new(|info| log_panic(&info.to_string())));
         let width = canvas.width();
@@ -35,7 +37,9 @@ impl CanvasUi {
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        let gpu = SurfaceRenderer::new(instance, surface, width, height)
+        let presentation = PresentationOptions::from_raw(present_mode, maximum_frame_latency)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let gpu = SurfaceRenderer::new(instance, surface, width, height, presentation)
             .await
             .map_err(|e| JsValue::from_str(&e))?;
         Ok(Self {
@@ -92,9 +96,6 @@ impl CanvasUi {
     }
     pub fn render(&mut self) -> Result<bool, JsValue> {
         self.ui.update();
-        if self.rendered == Some(self.ui.revisions()) {
-            return Ok(true);
-        }
         let rendered = self
             .gpu
             .render(&mut self.ui, self.scale)
@@ -106,6 +107,26 @@ impl CanvasUi {
     }
     pub fn commands(&mut self) -> String {
         serde_json::to_string(&self.ui.take_commands()).unwrap_or_else(|_| "[]".into())
+    }
+    pub fn present_modes(&self) -> u32 {
+        self.gpu.present_mode_mask()
+    }
+    pub fn present_mode(&self) -> u32 {
+        self.gpu.presentation().present_mode as u32
+    }
+    pub fn set_presentation(
+        &mut self,
+        mode: u32,
+        maximum_frame_latency: u32,
+    ) -> Result<(), JsValue> {
+        self.gpu
+            .set_presentation(
+                PresentationOptions::from_raw(mode, maximum_frame_latency)
+                    .map_err(|e| JsValue::from_str(&e))?,
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+        self.rendered = None;
+        Ok(())
     }
     /// Advance timed state/layout without drawing; commands must still be drained.
     pub fn update(&mut self) -> bool {

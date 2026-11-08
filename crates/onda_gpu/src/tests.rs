@@ -151,11 +151,11 @@ fn hovering_wakes_an_idle_host_once_at_the_tooltip_deadline() {
     let deadline = app.ui.wake_deadline().unwrap();
     app.rendered = Some(app.ui.revisions());
     assert!(!app.needs_redraw(Instant::now()));
-    assert_eq!(app.next_wake(), Some(deadline));
+    assert_eq!(app.next_wake(Instant::now()), Some(deadline));
     let delay = deadline.saturating_duration_since(Instant::now());
     assert!(delay > Duration::from_millis(400) && delay <= Duration::from_millis(500));
     app.input(Input::PointerLeave);
-    assert_eq!(app.next_wake(), None);
+    assert_eq!(app.next_wake(Instant::now()), None);
 }
 
 fn source_controller(path: &Path) -> RunController {
@@ -342,7 +342,7 @@ fn zero_size_and_occlusion_suspend_redraws_until_the_surface_returns() {
         app.resize_surface(size[0], size[1], 1.0);
         assert!(!app.surface_visible());
         assert!(!app.needs_redraw(now));
-        assert_eq!(app.next_wake(), None);
+        assert_eq!(app.next_wake(Instant::now()), None);
     }
     app.resize_surface(720, 840, 1.0);
     assert!(app.surface_visible());
@@ -364,15 +364,61 @@ fn unavailable_surface_retries_wake_an_idle_host_without_spinning() {
     let deadline = now + onda_run::VISUALIZATION_INTERVAL;
     app.redraw_retry = Some(deadline);
     assert!(!app.redraw_ready(now));
-    assert_eq!(app.next_wake(), Some(deadline));
+    assert_eq!(app.next_wake(Instant::now()), Some(deadline));
     assert!(app.needs_redraw(deadline));
     app.resize_surface(0, 0, 1.0);
-    assert_eq!(app.next_wake(), None);
+    assert_eq!(app.next_wake(Instant::now()), None);
     app.resize_surface(720, 840, 1.0);
     assert!(
         app.needs_redraw(now),
         "restoring size must not wait for the old retry"
     );
+}
+
+#[test]
+fn redraw_and_wait_share_a_snapshot_at_the_frame_deadline() {
+    let mut app = App::new(None, RunHostOptions::default());
+    app.resize_surface(720, 840, 1.0);
+    let origin = app.frame_origin;
+    app.frame_pacer.timer_submitted(0.0);
+    let before = origin + Duration::from_nanos(16_666_666);
+    let due = origin + Duration::from_nanos(16_666_667);
+    assert!(!app.needs_redraw(before));
+    assert_eq!(app.next_wake(before), Some(due));
+    assert!(app.needs_redraw(due));
+    assert_eq!(
+        app.next_wake(due),
+        None,
+        "ready frames are requested directly"
+    );
+    let later = due + Duration::from_millis(1);
+    assert!(app.needs_redraw(later));
+    assert_eq!(app.next_wake(later), None);
+    app.rendered = Some(app.ui.revisions());
+    assert_eq!(app.next_wake(later), None);
+}
+
+#[test]
+fn host_pacing_wakes_for_pending_pixels_but_not_for_clean_or_hidden_views() {
+    let mut app = App::new(None, RunHostOptions::default());
+    app.resize_surface(720, 840, 1.0);
+    let now = Instant::now();
+    app.frame_pacer.timer_submitted(app.frame_time(now));
+    app.rendered = Some(app.ui.revisions());
+    assert_eq!(app.next_wake(Instant::now()), None);
+    app.ui
+        .message(json!({"type":"state","state":{"error":"changed pixels"}}));
+    assert!(!app.needs_redraw(now));
+    let due = app
+        .next_wake(now)
+        .expect("pending pixels need a frame wakeup");
+    assert!(app.needs_redraw(due));
+    assert_eq!(app.next_wake(now), Some(due));
+    app.occluded = true;
+    assert_eq!(app.next_wake(Instant::now()), None);
+    app.occluded = false;
+    app.rendered = Some(app.ui.revisions());
+    assert_eq!(app.next_wake(Instant::now()), None);
 }
 
 #[test]
@@ -385,11 +431,11 @@ fn deferred_presentation_wakes_an_idle_host_and_flushes_on_focus_loss() {
     app.ui.input(Input::Scroll { delta: 20.0 });
     app.commands();
     let deadline = app.ui.wake_deadline().unwrap();
-    assert_eq!(app.next_wake(), Some(deadline));
+    assert_eq!(app.next_wake(Instant::now()), Some(deadline));
     assert!(!app.views.contains_key("scroll.onda"));
     app.input(Input::FocusLost);
     assert_eq!(app.views["scroll.onda"]["scrollTop"], 20.0);
-    assert_eq!(app.next_wake(), None);
+    assert_eq!(app.next_wake(Instant::now()), None);
 }
 
 #[test]
@@ -661,5 +707,5 @@ fn an_idle_loaded_host_waits_for_controller_work_instead_of_polling_at_frame_rat
     controller.stop();
     controller.poll();
     app.controller = Some(controller);
-    assert!(app.next_wake().unwrap() > Instant::now() + Duration::from_millis(800));
+    assert!(app.next_wake(Instant::now()).unwrap() > Instant::now() + Duration::from_millis(800));
 }

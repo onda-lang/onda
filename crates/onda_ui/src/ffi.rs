@@ -1,4 +1,4 @@
-use crate::{Input, RunUi, SurfaceRenderer};
+use crate::{FramePacer, Input, PresentationOptions, RunUi, SurfaceRenderer};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::{
     ffi::{c_char, CStr, CString},
@@ -15,11 +15,117 @@ pub struct OndaUi {
     text_edit: CString,
 }
 
+#[repr(C)]
+pub struct OndaUiCreateOptions {
+    pub platform: u32,
+    pub window: usize,
+    pub display: usize,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+    pub present_mode: u32,
+    pub maximum_frame_latency: u32,
+}
+
 fn string(s: impl AsRef<str>) -> CString {
     CString::new(s.as_ref().replace('\0', " ")).expect("NULs removed")
 }
 fn guard<T>(fallback: T, f: impl FnOnce() -> T) -> T {
     catch_unwind(AssertUnwindSafe(f)).unwrap_or(fallback)
+}
+
+#[no_mangle]
+pub extern "C" fn onda_ui_frame_pacer_create(rate_hz: f64) -> *mut FramePacer {
+    guard(std::ptr::null_mut(), || {
+        FramePacer::new((rate_hz != 0.0).then_some(rate_hz))
+            .map_or(std::ptr::null_mut(), |pacer| Box::into_raw(Box::new(pacer)))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_frame_pacer_destroy(pacer: *mut FramePacer) {
+    guard((), || {
+        if !pacer.is_null() {
+            drop(unsafe { Box::from_raw(pacer) });
+        }
+    });
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_frame_pacer_timer_delay_ms(
+    pacer: *const FramePacer,
+    now_ms: f64,
+) -> f64 {
+    guard(0.0, || {
+        unsafe { pacer.as_ref() }.map_or(0.0, |pacer| pacer.timer_delay_ms(now_ms))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_frame_pacer_display_delay_ms(
+    pacer: *const FramePacer,
+    now_ms: f64,
+) -> f64 {
+    guard(0.0, || {
+        unsafe { pacer.as_ref() }.map_or(0.0, |pacer| pacer.display_delay_ms(now_ms))
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_frame_pacer_timer_submitted(
+    pacer: *mut FramePacer,
+    started_ms: f64,
+) {
+    guard((), || {
+        if let Some(pacer) = unsafe { pacer.as_mut() } {
+            pacer.timer_submitted(started_ms);
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_frame_pacer_display_submitted(
+    pacer: *mut FramePacer,
+    display_ms: f64,
+) {
+    guard((), || {
+        if let Some(pacer) = unsafe { pacer.as_mut() } {
+            pacer.display_submitted(display_ms);
+        }
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_present_modes(ui: *const OndaUi) -> u32 {
+    guard(0, || {
+        unsafe { ui.as_ref() }.map_or(0, |ui| ui.gpu.present_mode_mask())
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_present_mode(ui: *const OndaUi) -> u32 {
+    guard(u32::MAX, || {
+        unsafe { ui.as_ref() }.map_or(u32::MAX, |ui| ui.gpu.presentation().present_mode as u32)
+    })
+}
+#[no_mangle]
+pub unsafe extern "C" fn onda_ui_set_presentation(
+    ui: *mut OndaUi,
+    mode: u32,
+    maximum_frame_latency: u32,
+) -> i32 {
+    guard(0, || {
+        let Some(ui) = (unsafe { ui.as_mut() }) else {
+            return 0;
+        };
+        match PresentationOptions::from_raw(mode, maximum_frame_latency)
+            .and_then(|options| ui.gpu.set_presentation(options))
+        {
+            Ok(()) => {
+                ui.rendered = None;
+                1
+            }
+            Err(error) => {
+                ui.error = string(error);
+                0
+            }
+        }
+    })
 }
 
 /// The caller keeps both handles valid until the returned UI is destroyed.
@@ -28,6 +134,8 @@ unsafe fn surface(
     window: usize,
     display: usize,
 ) -> Result<(wgpu::Instance, wgpu::Surface<'static>), String> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = display;
     let (raw_window_handle, raw_display_handle) = match platform {
         #[cfg(target_os = "linux")]
         1 if window != 0 && display != 0 => (
@@ -73,22 +181,34 @@ unsafe fn surface(
 
 #[no_mangle]
 pub unsafe extern "C" fn onda_ui_create(
-    platform: u32,
-    window: usize,
-    display: usize,
-    width: u32,
-    height: u32,
-    scale: f32,
+    options: *const OndaUiCreateOptions,
     error: *mut c_char,
     capacity: usize,
 ) -> *mut OndaUi {
     guard(std::ptr::null_mut(), || {
         let result = (|| {
+            let &OndaUiCreateOptions {
+                platform,
+                window,
+                display,
+                width,
+                height,
+                scale,
+                present_mode,
+                maximum_frame_latency,
+            } = unsafe { options.as_ref() }.ok_or("Missing UI creation options")?;
             if !scale.is_finite() || scale <= 0.0 {
                 return Err("Invalid display scale".into());
             }
             let (instance, surface) = unsafe { surface(platform, window, display) }?;
-            let gpu = pollster::block_on(SurfaceRenderer::new(instance, surface, width, height))?;
+            let presentation = PresentationOptions::from_raw(present_mode, maximum_frame_latency)?;
+            let gpu = pollster::block_on(SurfaceRenderer::new(
+                instance,
+                surface,
+                width,
+                height,
+                presentation,
+            ))?;
             let mut ui = RunUi::default();
             ui.resize(width as f32 / scale, height as f32 / scale, scale);
             Ok::<_, String>(OndaUi {
@@ -229,9 +349,6 @@ pub unsafe extern "C" fn onda_ui_render(ui: *mut OndaUi) -> i32 {
             return -1;
         };
         ui.ui.update();
-        if ui.rendered == Some(ui.ui.revisions()) {
-            return 1;
-        }
         match ui.gpu.render(&mut ui.ui, ui.scale) {
             Ok(true) => {
                 ui.rendered = Some(ui.ui.revisions());

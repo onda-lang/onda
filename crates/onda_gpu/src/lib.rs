@@ -1,7 +1,7 @@
 //! Native event-loop adapter for the shared GPU run screen.
 
 use onda_run::{RunController, RunHostOptions, RunThemeMode};
-use onda_ui::{Input, Key, RunUi, SurfaceRenderer};
+use onda_ui::{FramePacer, Input, Key, PresentMode, PresentationOptions, RunUi, SurfaceRenderer};
 use serde_json::json;
 use std::{
     path::{Path, PathBuf},
@@ -57,6 +57,8 @@ struct App {
     rendered: Option<(u64, u64)>,
     surface_size: [u32; 2],
     redraw_retry: Option<Instant>,
+    frame_pacer: FramePacer,
+    frame_origin: Instant,
     pointer: [f32; 2],
     modifiers: winit::keyboard::ModifiersState,
     occluded: bool,
@@ -84,6 +86,8 @@ impl App {
             rendered: None,
             surface_size: [0; 2],
             redraw_retry: None,
+            frame_pacer: FramePacer::new(Some(60.0)).expect("valid host cadence"),
+            frame_origin: Instant::now(),
             pointer: [0.0; 2],
             modifiers: Default::default(),
             occluded: false,
@@ -235,7 +239,7 @@ impl App {
         }
         self.sync_ime();
         self.sync_scope_visibility();
-        self.redraw_if_dirty();
+        self.redraw_if_dirty(Instant::now());
     }
     fn surface_visible(&self) -> bool {
         !self.occluded && !self.surface_size.contains(&0)
@@ -284,24 +288,41 @@ impl App {
         self.rendered = None;
     }
     fn redraw_ready(&self, now: Instant) -> bool {
-        self.surface_visible() && self.redraw_retry.is_none_or(|deadline| now >= deadline)
+        self.surface_visible()
+            && self.redraw_retry.is_none_or(|deadline| now >= deadline)
+            && self.frame_pacer.timer_delay_ms(self.frame_time(now)) == 0.0
+    }
+    fn frame_time(&self, now: Instant) -> f64 {
+        now.saturating_duration_since(self.frame_origin)
+            .as_secs_f64()
+            * 1000.0
     }
     fn needs_redraw(&self, now: Instant) -> bool {
         self.redraw_ready(now) && self.rendered != Some(self.ui.revisions())
     }
-    fn next_wake(&self) -> Option<Instant> {
+    fn next_wake(&self, now: Instant) -> Option<Instant> {
         let poll = self
             .controller
             .as_ref()
             .map(RunController::next_poll_deadline);
-        let retry = self.redraw_retry.filter(|_| self.surface_visible());
+        let frame = if self.surface_visible() && self.rendered != Some(self.ui.revisions()) {
+            // Round up: rounding a positive sub-nanosecond delay to zero could
+            // leave pending pixels without an event that wakes the idle host.
+            let delay_ns =
+                (self.frame_pacer.timer_delay_ms(self.frame_time(now)) * 1_000_000.0).ceil();
+            let due = now + Duration::from_nanos(delay_ns as u64);
+            let due = self.redraw_retry.map_or(due, |retry| retry.max(due));
+            (due > now).then_some(due)
+        } else {
+            None
+        };
         poll.into_iter()
-            .chain(retry)
+            .chain(frame)
             .chain(self.ui.wake_deadline())
             .min()
     }
-    fn redraw_if_dirty(&self) {
-        if self.needs_redraw(Instant::now()) {
+    fn redraw_if_dirty(&self, now: Instant) {
+        if self.needs_redraw(now) {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
@@ -336,6 +357,10 @@ impl ApplicationHandler for App {
                 surface,
                 size.width,
                 size.height,
+                PresentationOptions {
+                    present_mode: PresentMode::MailboxOrFifo,
+                    maximum_frame_latency: 2,
+                },
             ))?);
             let scale = window.scale_factor() as f32;
             self.resize_surface(size.width, size.height, scale);
@@ -364,7 +389,7 @@ impl ApplicationHandler for App {
         };
         let scale = window.scale_factor() as f32;
         if self.file_drop_event(event_loop, &event, scale) {
-            self.redraw_if_dirty();
+            self.redraw_if_dirty(Instant::now());
             return;
         }
         match event {
@@ -377,15 +402,18 @@ impl ApplicationHandler for App {
                 self.resize_surface(size.width, size.height, scale);
             }
             WindowEvent::RedrawRequested => {
-                if !self.redraw_ready(Instant::now()) {
+                // Exposure remains pending even when it arrives before the
+                // host's next frame opportunity.
+                self.rendered = None;
+                let started = Instant::now();
+                if !self.redraw_ready(started) {
                     return;
                 }
-                // Exposure can require presentation even when the UI is clean.
-                self.rendered = None;
                 if let Some(g) = &mut self.gpu {
                     match g.render(&mut self.ui, scale) {
                         Ok(true) => {
                             self.rendered = Some(self.ui.revisions());
+                            self.frame_pacer.timer_submitted(self.frame_time(started));
                             self.redraw_retry = None;
                         }
                         Ok(false) => {
@@ -464,7 +492,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => self.keyboard_input(event),
             _ => {}
         }
-        self.redraw_if_dirty();
+        self.redraw_if_dirty(Instant::now());
     }
     fn proxy_wake_up(&mut self, _event_loop: &dyn ActiveEventLoop) {
         self.controller_woken = true;
@@ -485,9 +513,12 @@ impl ApplicationHandler for App {
         self.ui.update();
         self.commands();
         self.sync_ime();
-        self.redraw_if_dirty();
+        // Use one snapshot: every dirty frame is either requested now or has a
+        // future wakeup. Crossing a deadline between two clock reads loses both.
+        let now = Instant::now();
+        self.redraw_if_dirty(now);
         event_loop.set_control_flow(
-            self.next_wake()
+            self.next_wake(now)
                 .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
         );
     }

@@ -184,6 +184,78 @@ fn channel_meters_expand_when_space_returns_without_new_meter_data() {
 }
 
 #[test]
+fn wheel_over_fitting_scope_scrolls_the_document() {
+    for channels in [1, 2] {
+        let mut ui = fixture(channels);
+        ui.resize(720.0, 400.0, 1.0);
+        ui.message(json!({"type":"state","state":{
+            "viewState":{"scopePinned":true}
+        }}));
+        ui.prepare_scene();
+        assert!(ui.scene.content_height > ui.scene.viewport_height);
+        assert_eq!(ui.scene.scope_scroll_max, 0.0);
+        let r = ui.scene.scope_clip;
+        ui.input(Input::PointerMove {
+            x: r[0] + r[2] * 0.5,
+            y: r[1] + r[3] * 0.5,
+            fine: false,
+        });
+        assert!(!ui.scroll(-40.0, false));
+        assert!(!ui.scroll(0.0, false));
+        assert!(!ui.scroll(f32::NAN, false));
+        assert!(!ui.scroll(40.0, true));
+        assert!(ui.scroll(40.0, false));
+        assert_eq!(ui.scroll, 40.0);
+        assert_eq!(ui.interaction.scope_scroll, 0.0);
+    }
+}
+
+#[test]
+fn wheel_at_scope_edges_scrolls_the_document_in_both_scope_views() {
+    for pinned in [false, true] {
+        let mut ui = fixture(8);
+        ui.resize(720.0, 400.0, 1.0);
+        ui.message(json!({"type":"state","state":{
+            "params":(0..16).map(|i|json!({"name":format!("p{i}"),"type":"f64","value":0.5})).collect::<Vec<_>>(),
+            "viewState":{"scopePinned":pinned}
+        }}));
+        if !pinned {
+            click(&mut ui, Target::Scope);
+        }
+        ui.prepare_scene();
+        let max = ui.scene.scope_scroll_max;
+        assert!(max > 40.0);
+        let r = ui.scene.scope_clip;
+        ui.input(Input::PointerMove {
+            x: r[0] + r[2] * 0.5,
+            y: r[1] + r[3] * 0.5,
+            fine: false,
+        });
+
+        assert!(ui.scroll(40.0, false));
+        assert_eq!(ui.interaction.scope_scroll, 40.0);
+        assert_eq!(ui.scroll, 0.0);
+        assert!(ui.scroll(1000.0, false));
+        assert_eq!(ui.interaction.scope_scroll, max);
+        assert_eq!(ui.scroll, 0.0);
+        assert!(ui.scroll(40.0, false));
+        assert_eq!(ui.interaction.scope_scroll, max);
+        assert_eq!(ui.scroll, 40.0);
+
+        assert!(ui.scroll(-40.0, false));
+        assert_eq!(ui.interaction.scope_scroll, max - 40.0);
+        assert_eq!(ui.scroll, 40.0);
+        assert!(ui.scroll(-1000.0, false));
+        assert_eq!(ui.interaction.scope_scroll, 0.0);
+        assert_eq!(ui.scroll, 40.0);
+        assert!(ui.scroll(-40.0, false));
+        assert_eq!(ui.interaction.scope_scroll, 0.0);
+        assert_eq!(ui.scroll, 0.0);
+        assert!(!ui.scroll(-40.0, false));
+    }
+}
+
+#[test]
 fn capture_follows_clipping_without_changing_the_pinned_scope_presentation() {
     let mut ui = fixture(2);
     ui.resize(720.0, 400.0, 1.0);

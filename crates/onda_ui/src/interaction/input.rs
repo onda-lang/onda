@@ -5,6 +5,7 @@ use crate::{
     model::RunUi,
     presentation::Section,
     scene::{Rect, Target},
+    scrollbar::ScrollRegion,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -117,7 +118,7 @@ pub(crate) struct Gesture {
 }
 
 impl RunUi {
-    /// Returns whether the region under the pointer moved, so hosts can chain
+    /// Returns whether the view moved, so hosts can chain
     /// unconsumed wheel events to their surrounding document.
     pub fn scroll(&mut self, delta: f32, horizontal: bool) -> bool {
         self.prepare_scene();
@@ -129,10 +130,11 @@ impl RunUi {
                 .contains(self.interaction.pointer[0], self.interaction.pointer[1])
                 && self.pan_log_by(delta)
         } else {
-            self.scroll_region_by(
-                self.scroll_region(self.interaction.pointer[0], self.interaction.pointer[1]),
-                delta,
-            ) != 0.0
+            let region =
+                self.scroll_region(self.interaction.pointer[0], self.interaction.pointer[1]);
+            self.scroll_region_by(region, delta) != 0.0
+                || (region == ScrollRegion::Scope
+                    && self.scroll_region_by(ScrollRegion::Document, delta) != 0.0)
         }
     }
     pub(crate) fn pointer_captured(&self) -> bool {

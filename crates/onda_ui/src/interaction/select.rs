@@ -96,7 +96,7 @@ impl SelectId {
                     vec![44100, 48000, 88200, 96000, 192000]
                 } else if let Some(host) = host {
                     let maximum = host.as_u64().unwrap_or(0);
-                    let mut values: Vec<_> = [1, 2, 4, 8]
+                    let mut values: Vec<_> = [2, 4, 8]
                         .map(|divisor| maximum / divisor)
                         .into_iter()
                         .filter(|n| *n > 0)
@@ -106,9 +106,13 @@ impl SelectId {
                 } else {
                     vec![64, 128, 256, 512, 1024, 2048]
                 };
-                let value = ui.field_value(&field);
+                let mut value = ui.field_value(&field);
+                if host.is_some_and(|host| *host == value) {
+                    value = json!(0);
+                }
                 let mut choices: Vec<_> = values
                     .into_iter()
+                    .filter(|n| host.and_then(Value::as_u64) != Some(*n))
                     .map(|n| Choice {
                         label: if rate {
                             format!("{} kHz", n as f64 / 1000.0)
@@ -670,11 +674,11 @@ mod tests {
     #[test]
     fn plugin_block_choices_follow_host_capacity_and_subdivisions() {
         for (host, expected) in [
-            (128, vec![0, 128, 64, 32, 16]),
-            (32, vec![0, 32, 16, 8, 4]),
-            (1, vec![0, 1]),
+            (128, vec![0, 64, 32, 16]),
+            (32, vec![0, 16, 8, 4]),
+            (1, vec![0]),
             (0, vec![0]),
-            (300, vec![0, 300, 150, 75, 37]),
+            (300, vec![0, 150, 75, 37]),
         ] {
             let mut ui = RunUi::default();
             ui.message(json!({"type":"state","state":{
@@ -710,5 +714,25 @@ mod tests {
         }
         ui.message(json!({"type":"state","state":{"canSetBlockSize":false}}));
         assert!(!SelectId::BlockSize.spec(&ui).enabled);
+    }
+
+    #[test]
+    fn plugin_host_size_is_listed_once_even_with_explicit_options_or_preference() {
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{
+            "hostBlockSamples":128,"preferredBlockSamples":128,
+            "blockSizeOptions":[128,64,32,16],
+            "canSetBlockSize":true,"supportsRunSettings":true
+        }}));
+        let spec = SelectId::BlockSize.spec(&ui);
+        assert_eq!(spec.value, 0);
+        assert_eq!(spec.label, "128 (Host)");
+        assert_eq!(
+            spec.choices
+                .iter()
+                .map(|c| c.value.clone())
+                .collect::<Vec<_>>(),
+            vec![json!(0), json!(64), json!(32), json!(16)]
+        );
     }
 }

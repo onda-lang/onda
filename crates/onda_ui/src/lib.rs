@@ -8,6 +8,7 @@ mod controls;
 mod editing;
 mod events;
 mod fonts;
+mod frame_pacer;
 mod icons;
 mod interaction;
 mod layout;
@@ -15,6 +16,7 @@ mod meters;
 mod model;
 mod panels;
 mod presentation;
+mod presentation_options;
 mod renderer;
 mod scene;
 mod scheduling;
@@ -28,8 +30,10 @@ mod ffi;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
+pub use frame_pacer::FramePacer;
 pub use interaction::{Input, Key};
 pub use model::RunUi;
+pub use presentation_options::{PresentMode, PresentationOptions};
 pub use renderer::Renderer;
 pub use surface::SurfaceRenderer;
 

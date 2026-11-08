@@ -537,6 +537,7 @@ and validation instructions.
 | `onda_ui::{interaction, editing}` | Pointer/touch ownership, focus, menus, MIDI notes, drafts, selection, and composition. |
 | `onda_ui::{layout, panels, controls, scrollbar}` | Visible scene construction, cached structural layout, and viewport geometry. |
 | `onda_ui::scheduling` | Advance timed state without drawing and combine internal deadlines into one optional host wakeup. |
+| `onda_ui::FramePacer` | Optional host-owned cadence arithmetic, shared by Rust, C, and Wasm hosts. Caller-supplied rate and timestamps; no timers, retry policy, or render enforcement. |
 | `onda_ui::Renderer` | Instanced WGSL shapes, cached glyphon text, scope traces, and meter buffers; accepts a host-owned wgpu device. |
 | `onda_ui::{surface, ffi, web}` | Surface presentation and optional C/Wasm adapters. |
 | `onda_gpu` | Standalone winit window/input and `onda_run::RunController` adapter. |
@@ -574,7 +575,12 @@ The UI's `update()` advances timed state/layout without drawing; hosts drain
 commands and draw changed revisions. `wake_deadline()` combines internal timed
 work, and C/Wasm expose it as a relative millisecond delay. A wakeup may publish
 commands without changing pixels. Hosts choose their own frame cadence and
-coalesce input/state redraws independently of audio/data polling.
+coalesce input/state redraws independently of audio/data polling. Stock hosts
+explicitly choose 60 Hz through `FramePacer`. Native hosts prefer mailbox
+presentation through `PresentMode::MailboxOrFifo`; browser hosts use FIFO. Both are
+tear-free and use a maximum frame latency hint of two to allow CPU/GPU overlap.
+Surface capabilities and the resolved mode are exposed;
+unsupported explicit modes fail without changing the existing configuration.
 The native window sleeps until worker events, UI deadlines, capture deadlines,
 or source-watch maintenance require work. Browser frames coalesce pending values,
 visualization, and backing-store resize with `requestAnimationFrame`. Hosts suspend

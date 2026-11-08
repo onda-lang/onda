@@ -35,6 +35,56 @@ handles configuration and presentation. Its `render()` returns `Ok(false)` for a
 temporarily unavailable or zero-sized surface; retry on a later display tick.
 An error requires the host to report the failure and recreate the renderer.
 
+`SurfaceRenderer::new(instance, surface, width, height, presentation)` requires
+host-selected `PresentationOptions { present_mode, maximum_frame_latency }`.
+Use `onda_ui::PresentMode::MailboxOrFifo` to prefer tear-free mailbox with FIFO
+fallback in one configuration; no capability query or second configuration is needed.
+`present_modes()` reports supported concrete `PresentMode` values; `presentation()` reports
+the resolved selection. `set_presentation()` validates before reconfiguring and
+leaves the previous configuration intact on failure. Explicit unsupported modes
+are errors; `AutoVsync`, `AutoNoVsync`, and `MailboxOrFifo` permit fallback. Frame latency is a
+positive, backend-clamped buffering hint. FIFO and mailbox retain tear-free
+vsync; relaxed FIFO may tear when a refresh is missed. Surface acquisition or
+presentation can wait for GPU/vsync backpressure. Rendering does not perform
+software pacing.
+
+`FramePacer::new(Some(rate_hz))` is an optional, independent host-owned helper;
+`None` is uncapped. Choose one pair for each pacer's lifetime:
+
+| Host scheduling | Readiness query | Record after successful rendering |
+| --- | --- | --- |
+| Timer/event loop | `timer_delay_ms(now_ms)` | `timer_submitted(started_ms)`: host-clock timestamp captured immediately **before** rendering. |
+| Display callback/RAF | `display_delay_ms(display_ms)` | `display_submitted(display_ms)`: the callback's display timestamp, **not** its execution time. |
+
+All timestamps are finite monotonic milliseconds from the host's clock. The
+`*_submitted` calls record a successful submission, not GPU completion or the
+time pixels reached the screen. Do not advance the pacer after an unavailable
+surface or failed render. Round positive timer delays up to the timer's resolution.
+
+Display-driven hosts can also use `display_delay_ms(now_ms)` to arm callbacks
+before the next display slot opens. Inside the callback, check again with the
+display timestamp (the RAF argument on the web). Each nominal frame owns the time slot
+centered on its deadline, bounded by the midpoints to adjacent deadlines. This
+assigns jittered display opportunities to frames without an arbitrary tolerance;
+timer deadlines remain strict. Both pairs preserve the original phase while
+skipping expired deadlines or slots. Jitter can leave slots empty and place
+multiple opportunities in another slot; only occupied slots produce frames.
+The helper uses no internal clock, timer, UI state,
+or surface retry policy. Repeated queries preserve the pending deadline;
+ordinary delays preserve phase and stalls
+skip missed slots without a catch-up queue. On displays whose refresh is not a
+multiple of the requested rate, a nominal cadence uses unequal refresh gaps.
+Hosts may instead use their own scheduler, draw continuously, or render on demand.
+UI deadlines and scope-capture polling remain independent of presentation.
+The [scheduling examples](#scheduling-examples) show updates, command draining,
+frame retries, and cleanup in Rust, C, and JavaScript.
+
+The stock standalone, plugin, and browser/VS Code hosts explicitly choose a
+60 Hz nominal cadence and a maximum frame latency hint of two to allow CPU/GPU
+overlap. Native hosts prefer tear-free mailbox presentation when supported,
+falling back to FIFO. Browser hosts use FIFO. Browser frames still use
+`requestAnimationFrame`; WebGPU/WebGL may not expose native non-vsync modes.
+
 The source checkout's `crates/onda_ui/examples/host.rs` example owns its device
 and texture, edits a parameter, applies the command, and renders without an Onda
 compiler, audio device, or window. Run it from the source workspace:
@@ -196,8 +246,11 @@ rendering or later host updates.
 
 Default sample-rate choices are 44,100, 48,000, 88,200, 96,000 and 192,000 Hz;
 default block choices are 64, 128, 256, 512, 1,024 and 2,048 frames. With
-`hostBlockSamples`, block choices instead include Follow host and the host capacity
-divided by 1, 2, 4 and 8. Settings remain host-validated; publish their accepted values.
+`hostBlockSamples`, default block choices instead include one
+`<capacity> (Host)` entry (value `0`, follow host), plus the host capacity divided
+by 2, 4 and 8. The full host capacity is represented by that Host entry even when
+included in `blockSizeOptions` or selected by `preferredBlockSamples`.
+Settings remain host-validated; publish their accepted values.
 
 ### Scalar controls
 
@@ -403,8 +456,9 @@ handles; the standalone winit adapter supports native Wayland separately.
 Give the renderer exclusive ownership of pixels in that native view. When
 embedding in another toolkit, use a dedicated child window/view so its painter
 cannot erase or cover GPU presentation. Keep input/focus/event-loop ownership
-in the host. On resize, update native bounds, call `onda_ui_resize`, and render
-within the same UI callback; use the host event loop to retry temporary surface
+in the host. On resize, update native bounds, call `onda_ui_resize`, and schedule
+a redraw at the host's next frame opportunity. Keep that redraw pending until
+presentation succeeds, using the host event loop to retry temporary surface
 unavailability. Destroy the renderer before releasing its native child/display.
 
 Native release archives contain `include/onda_ui.h` and a shared library in `lib/`:
@@ -415,6 +469,15 @@ the plugin's `GpuView` demonstrates this approach in the source repositories.
 <!-- BEGIN UI C API FUNCTION INDEX -->
 ```text
 onda_ui_create
+onda_ui_frame_pacer_create
+onda_ui_frame_pacer_destroy
+onda_ui_frame_pacer_timer_delay_ms
+onda_ui_frame_pacer_display_delay_ms
+onda_ui_frame_pacer_timer_submitted
+onda_ui_frame_pacer_display_submitted
+onda_ui_present_modes
+onda_ui_present_mode
+onda_ui_set_presentation
 onda_ui_destroy
 onda_ui_resize
 onda_ui_message
@@ -437,9 +500,15 @@ onda_ui_cursor
 
 | Function | Result and ownership |
 | --- | --- |
-| `onda_ui_create` | Native platform/handles, physical dimensions and scale to a new handle; null on failure, with a NUL-terminated message in the caller's error buffer when provided. |
+| `onda_ui_create` | Pointer to `OndaUiCreateOptions` (native handles, dimensions, scale, presentation mode, positive maximum frame latency), error buffer and capacity to a new handle. Options are copied during the call. Null on failure, with a NUL-terminated message in the error buffer when provided. |
 | `onda_ui_destroy` | Release a handle; null is accepted. |
-| `onda_ui_resize` | Physical width/height and positive finite scale; zero dimensions suspend presentation. Also call on exposure with current dimensions to force presentation. |
+| `onda_ui_resize` | Physical width/height and positive finite scale; zero dimensions suspend presentation. Exposure can call `render` directly without changing layout. |
+| `onda_ui_present_modes`, `onda_ui_present_mode` | Supported concrete mode bitmask (`1 << mode`) and resolved current mode. Constants are declared in `OndaUiPresentMode`; `UINT32_MAX` indicates a null handle in the current-mode query. |
+| `onda_ui_set_presentation` | Mode and positive maximum frame latency; 1 accepted, 0 rejected with `onda_ui_error`. Rejected settings leave the surface unchanged. |
+| `onda_ui_frame_pacer_create`, `onda_ui_frame_pacer_destroy` | Independent optional helper; 0 Hz is uncapped, finite positive rates set a nominal cadence, invalid rates return null. Destroy accepts null. |
+| `onda_ui_frame_pacer_timer_delay_ms`, `onda_ui_frame_pacer_timer_submitted` | Timer-driven cadence: query with the current host-clock milliseconds; after successful rendering record the timestamp captured immediately before rendering. Round positive delays up. These functions never touch an `OndaUi` or read a clock. |
+| `onda_ui_frame_pacer_display_delay_ms` | Milliseconds until the next display frame's slot; zero means due. Use both to arm a vsynced callback and check its display timestamp. Direct rendering timers use `timer_delay_ms` instead. |
+| `onda_ui_frame_pacer_display_submitted` | After successful rendering record the callback's display timestamp, paired with `display_delay_ms`. Do not pass callback execution/completion time or mix timer/display pairs. |
 | `onda_ui_message` | NUL-terminated host-message JSON; 1 on successful parsing, 0 on error. |
 | `onda_ui_input` | NUL-terminated input JSON; 1 consumed, 0 unused, −1 error. |
 | `onda_ui_scope` | Copy `count` interleaved floats, at most 64×16,384 samples; zero count clears the waveform. |
@@ -447,7 +516,7 @@ onda_ui_cursor
 | `onda_ui_scope_visible`, `onda_ui_meter_visible` | Resolve layout and return 1 when that clipped viewport needs capture, otherwise 0. |
 | `onda_ui_update` | Advance timed state/layout without drawing; 1 redraw needed, 0 clean, −1 error. Drain commands afterward even when clean. |
 | `onda_ui_wake_delay_ms` | Milliseconds until the next timed update; −1 when absent. Relative to the library's monotonic clock; no clock epoch crosses the C interface. Recompute after updates, command draining, or state/input changes. |
-| `onda_ui_render` | Update and render if changed; 1 presented/clean, 0 retry later, −1 error. |
+| `onda_ui_render` | Explicitly update, draw and present, including unchanged UI; 1 presented, 0 surface unavailable, −1 error. No software frame limit; the host owns scheduling and retries. |
 | `onda_ui_commands` | Drain to a borrowed JSON command-array string, valid until the next commands call or destroy. |
 | `onda_ui_error` | Borrow the last error string until another error or destroy. |
 | `onda_ui_text_edit` | Borrow text-edit JSON until the next text-edit call or destroy; JSON null without an editor. |
@@ -494,17 +563,27 @@ host messages are `computerKey {code?,key?,pressed}` and
 `releaseVirtualMidiNotes` (computer-owned notes only). Audio hosts handle trusted
 activation gestures through the same-origin bridge in `ui/gpu/browser.js`.
 
-Direct Wasm hosts use `CanvasUi.create(canvas, webgpu)` after module initialization.
+Direct Wasm hosts use `CanvasUi.create(canvas, webgpu, presentMode, maximumFrameLatency)`
+after module initialization. Import `PresentMode` for named mode constants.
+`present_modes()` returns a bitmask of supported concrete modes,
+`present_mode()` reports the resolved mode, and `set_presentation(mode, latency)`
+validates and applies a new configuration. Unsupported explicit modes reject.
 It exposes `message(json)`, `input(json)`, `resize(width,height,scale)`, `render()`,
 `commands()`, `scroll(delta,horizontal)`, `scope_samples()`, `scope_packet()`,
 `meter_enabled()`, `scope_enabled()`, `scope_columns()`, `cursor()`, `editing()`,
 `text_edit()`, `buffer_target(x,y)`, and `pointer_stops(x,y)` for transport gestures.
 `message()`/`input()` return no consumption result; `scroll()` returns movement.
-`render()` returns true for presented/clean and false for retry. Both deadlines
+`render()` draws even unchanged UI and returns true for presented, false for an
+unavailable surface. It never enforces a frame rate. Both UI deadlines
 are exposed together through `wake_delay_ms()`, or undefined when absent.
 `update()` advances timed state/layout without drawing and returns whether a
 redraw is needed. Drain commands even when it returns false. The browser host
 uses one wakeup timer and coalesces drawing through `requestAnimationFrame`.
+It separately owns `new FramePacer(60)`, its frame timer and retry deadline,
+and uses RAF timestamps with `display_delay_ms()` and `display_submitted()` so callback execution
+jitter does not change the display cadence.
+Custom hosts may use the exported `FramePacer` with another rate, or `undefined`
+for uncapped, or supply their own scheduling. Free the helper with `free()`.
 `fallback_fonts()` returns a JSON
 array of missing bundled font names; fetch those assets and call
 `load_font(name, Uint8Array)`, then redraw. `free()` releases the canvas resources.
@@ -516,3 +595,248 @@ canvas backing dimensions, call `resize`, and render in that callback: changing
 `canvas.width`/`height` discards the displayed image, so doing it earlier exposes
 a blank canvas while waiting for the replacement frame. CSS may stretch the last
 frame until the callback runs. The stock browser/VS Code host follows this rule.
+
+## Scheduling examples
+
+These examples show the scheduling core for an existing host. The host supplies
+native events and applies drained commands. Call the service function after
+input/state changes and when its one-shot timer fires. Command handlers should
+queue any resulting state changes for another service call. Exposure forces a
+frame; ordinary input only draws changed revisions. Audio/data polling remains
+separate. Errors end servicing and require reporting and renderer recreation.
+
+### Rust: timer-driven surface
+
+Create the surface with `PresentationOptions { present_mode:
+PresentMode::MailboxOrFifo, maximum_frame_latency: 2 }`. Initialize the scheduling
+fields below with `FramePacer::new(Some(60.0))?`, `Instant::now()`, `None`, `false`,
+and `None`, respectively. The first revision comparison requests the initial frame.
+Call `service` on the UI thread and arm a one-shot timer for its returned instant;
+`None` means sleep until another event. Cancel that timer while hidden and set
+`pending = true` on exposure. Before dropping the view, send `Input::FocusLost`,
+drain its commands, then drop the renderer before its borrowed native window.
+
+```rust
+use onda_ui::{FramePacer, RunUi, SurfaceRenderer};
+use std::time::{Duration, Instant};
+
+struct View {
+    ui: RunUi,
+    surface: SurfaceRenderer,
+    scale: f32,
+    pacer: FramePacer,
+    epoch: Instant,
+    rendered: Option<(u64, u64)>,
+    pending: bool,
+    retry_at: Option<Instant>,
+}
+
+impl View {
+    fn service(
+        &mut self,
+        mut apply: impl FnMut(serde_json::Value),
+    ) -> Result<Option<Instant>, String> {
+        self.ui.update();
+        for command in self.ui.take_commands() {
+            apply(command);
+        }
+        self.pending |= self.rendered != Some(self.ui.revisions());
+        let started = Instant::now();
+        let started_ms = started.duration_since(self.epoch).as_secs_f64() * 1000.0;
+        if self.pending
+            && self.retry_at.is_none_or(|retry| started >= retry)
+            && self.pacer.timer_delay_ms(started_ms) == 0.0
+        {
+            if self.surface.render(&mut self.ui, self.scale)? {
+                self.pacer.timer_submitted(started_ms);
+                self.rendered = Some(self.ui.revisions());
+                self.pending = false;
+                self.retry_at = None;
+            } else {
+                self.retry_at = Some(Instant::now() + Duration::from_millis(34));
+            }
+            for command in self.ui.take_commands() {
+                apply(command);
+            }
+        }
+        let frame = self.pending.then(|| {
+            let now = Instant::now();
+            let now_ms = now.duration_since(self.epoch).as_secs_f64() * 1000.0;
+            let ns = (self.pacer.timer_delay_ms(now_ms) * 1_000_000.0).ceil() as u64;
+            let due = now + Duration::from_nanos(ns);
+            self.retry_at.map_or(due, |retry| retry.max(due))
+        });
+        Ok(self.ui.wake_deadline().into_iter().chain(frame).min())
+    }
+}
+```
+
+### C: timer-driven native view
+
+Use named creation options rather than positional handle/size/presentation
+arguments. This Xlib example uses host-provided `window` and `display` handles;
+Win32 uses platform `2` and AppKit uses `3`.
+
+```c
+OndaUiCreateOptions options = {
+    .platform = 1,
+    .window = window,
+    .display = display,
+    .width = 720, .height = 840, .scale = 1.0f,
+    .present_mode = ONDA_UI_MAILBOX_OR_FIFO,
+    .maximum_frame_latency = 2,
+};
+char error[1024];
+OndaUi *ui = onda_ui_create(&options, error, sizeof error);
+/* On null, report error. Otherwise publish initial state before servicing. */
+```
+
+Initialize `View` with that UI, `onda_ui_frame_pacer_create(60.0)`, `false`, and
+`0`. Check pacer creation for null. The host implements the two functions declared
+below. `apply_commands` parses/copies the borrowed JSON before invoking callbacks.
+`service` returns zero on error; report `onda_ui_error` and stop servicing.
+On success, `delay_ms < 0` means no timer is needed; otherwise arm a one-shot
+timer rounded up with `ceil(delay_ms)`. Cancel the timer while hidden and set
+`pending = true` on exposure. At shutdown, send `focusLost`, drain commands,
+destroy the UI and pacer, then release the native handles.
+
+```c
+#include "onda_ui.h"
+#include <stdbool.h>
+#include <math.h>
+
+double monotonic_ms(void);
+void apply_commands(const char *json);
+
+typedef struct View {
+    OndaUi *ui;
+    OndaUiFramePacer *pacer;
+    bool pending;
+    double retry_at;
+} View;
+
+int service(View *view, double *delay_ms) {
+    int dirty = onda_ui_update(view->ui);
+    apply_commands(onda_ui_commands(view->ui));
+    if (dirty < 0) return 0;
+    view->pending |= dirty > 0;
+    double started = monotonic_ms();
+    if (view->pending && started >= view->retry_at &&
+        onda_ui_frame_pacer_timer_delay_ms(view->pacer, started) == 0) {
+        int result = onda_ui_render(view->ui);
+        apply_commands(onda_ui_commands(view->ui));
+        if (result < 0) return 0;
+        view->pending = result == 0;
+        view->retry_at = result == 0 ? monotonic_ms() + 1000.0 / 30.0 : 0;
+        if (result > 0)
+            onda_ui_frame_pacer_timer_submitted(view->pacer, started);
+    }
+    *delay_ms = onda_ui_wake_delay_ms(view->ui);
+    if (view->pending) {
+        double now = monotonic_ms();
+        double frame = fmax(onda_ui_frame_pacer_timer_delay_ms(view->pacer, now),
+                            view->retry_at - now);
+        *delay_ms = *delay_ms < 0 ? frame : fmin(*delay_ms, frame);
+    }
+    return 1;
+}
+```
+
+### Web: display-driven canvas
+
+The following module assumes a canvas with its initial physical dimensions set,
+and host-provided `applyCommand` and `reportError` callbacks. Publish initial state
+and call `service()` after input/state changes. `expose()` requests a frame even
+when clean. The UI timer rounds up; the frame timer rounds down to register RAF
+before its display slot. Only the RAF timestamp advances the display pacer.
+Call `setVisible(false)` while hidden and `setVisible(true)` on return. Call
+`destroy()` before removing the canvas. The stock [browser host](../ui/gpu/host.js)
+also shows input wiring and coalescing backing-store resizes into the RAF callback.
+
+```js
+import init, {CanvasUi, FramePacer, PresentMode} from "./pkg/onda_ui.js";
+await init();
+const ui = await CanvasUi.create(canvas, false, PresentMode.Fifo, 2);
+const pacer = new FramePacer(60);
+let frame = null, frameTimer = null, wakeTimer = null;
+let forced = false, retryAt = 0, live = true, visible = true;
+
+function drain() {
+  for (const command of JSON.parse(ui.commands())) applyCommand(command);
+}
+function service() {
+  if (!live || !visible) return;
+  try {
+    const dirty = ui.update();
+    drain();
+    clearTimeout(wakeTimer);
+    const wake = ui.wake_delay_ms();
+    wakeTimer = wake === undefined ? null : setTimeout(service, Math.ceil(wake));
+    if (forced || dirty) schedule();
+  } catch (error) { fail(error); }
+}
+function schedule() {
+  if (frame !== null || frameTimer !== null) return;
+  const now = performance.now();
+  const delay = Math.max(pacer.display_delay_ms(now), retryAt - now);
+  const request = () => {
+    frameTimer = null;
+    frame = requestAnimationFrame(draw);
+  };
+  if (delay >= 1) frameTimer = setTimeout(request, Math.floor(delay));
+  else request();
+}
+function draw(displayMs) {
+  frame = null;
+  if (pacer.display_delay_ms(displayMs) > 0 || performance.now() < retryAt) {
+    schedule();
+    return;
+  }
+  try {
+    const dirty = ui.update();
+    drain();
+    if (forced || dirty) {
+      if (ui.render()) {
+        pacer.display_submitted(displayMs);
+        forced = false;
+        retryAt = 0;
+      } else retryAt = performance.now() + 1000 / 30;
+      drain();
+    }
+    service();
+  } catch (error) { fail(error); }
+}
+function expose() { forced = true; service(); }
+function cancel() {
+  clearTimeout(frameTimer);
+  clearTimeout(wakeTimer);
+  if (frame !== null) cancelAnimationFrame(frame);
+  frame = frameTimer = wakeTimer = null;
+}
+function setVisible(value) {
+  if (!live || visible === value) return;
+  visible = value;
+  if (visible) expose();
+  else {
+    cancel();
+    ui.input(JSON.stringify({type: "focusLost"}));
+    drain();
+  }
+}
+function destroy() {
+  if (!live) return;
+  live = false;
+  cancel();
+  canvas.removeEventListener("webglcontextlost", contextLost);
+  try { ui.input(JSON.stringify({type: "focusLost"})); drain(); }
+  finally { ui.free(); pacer.free(); }
+}
+function fail(error) {
+  if (!live) return;
+  try { destroy(); } finally { reportError(error); }
+}
+const contextLost = () => fail(new Error("GPU context lost"));
+ui.on_device_lost(fail);
+canvas.addEventListener("webglcontextlost", contextLost);
+service();
+```

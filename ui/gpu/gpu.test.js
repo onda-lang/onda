@@ -147,6 +147,159 @@ test("UI wakeups save without drawing, show idle feedback once, and return to sl
   assert.equal(await page.evaluate("updates.length"), updates, "idle UI must stop waking");
 });
 
+test("hosts own cadence and presentation while explicit canvas renders stay unpaced", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  await page.evaluate(`(async()=>{
+    const {CanvasUi}=await import('./pkg/onda_ui.js');
+    const update=CanvasUi.prototype.update;
+    CanvasUi.prototype.update=function(){window.testUi=this;return update.call(this)};
+    _onHostMessage({type:'state',state:{path:'host-pacing.onda',supportsScope:false,
+      supportsTransport:false,viewState:{readyId:99},
+      params:[{name:'gain',type:'f64',value:0.5,rangeMin:0,rangeMax:1}]}});
+  })()`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===99)"), "paced readiness");
+  const capabilities = await page.evaluate(`(async()=>{
+    const {FramePacer,PresentMode}=await import('./pkg/onda_ui.js');
+    const unlimited=new FramePacer(undefined), limited=new FramePacer(120);
+    unlimited.timer_submitted(100);limited.timer_submitted(100);
+    const delays=[unlimited.timer_delay_ms(100),limited.timer_delay_ms(100)];
+    unlimited.free();limited.free();
+    const jittered=new FramePacer(60);
+    const phase=[3,29.667,56.333,63.667].map(timestamp=>{
+      const delay=jittered.display_delay_ms(timestamp);
+      jittered.display_submitted(timestamp);
+      return [delay,jittered.display_delay_ms(timestamp)>0];
+    });
+    jittered.free();
+    const mode=testUi.present_mode(),mask=testUi.present_modes();
+    let rejected=false;
+    try{testUi.set_presentation(PresentMode.Fifo,0)}catch{rejected=true}
+    const unchanged=testUi.present_mode()===mode;
+    testUi.set_presentation(PresentMode.MailboxOrFifo,2);
+    const fallback=testUi.present_mode();
+    testUi.set_presentation(PresentMode.Fifo,2);
+    const explicit=[testUi.render(),testUi.render()];
+    return {delays,phase,mode,mask,fallback,rejected,unchanged,explicit,clean:!testUi.update()};
+  })()`);
+  assert.equal(capabilities.delays[0], 0);
+  assert.ok(Math.abs(capabilities.delays[1] - 1000 / 120) < 1e-9);
+  assert.deepEqual(capabilities.phase, Array(4).fill([0,true]));
+  assert.equal(capabilities.mode, 2); // PresentMode.Fifo
+  assert.ok(capabilities.mask & (1 << capabilities.mode));
+  assert.equal(capabilities.mask & (1 << 6), 0, "capabilities contain concrete modes only");
+  assert.equal(capabilities.fallback, capabilities.mask & (1 << 5) ? 5 : 2);
+  assert.ok(capabilities.rejected && capabilities.unchanged && capabilities.clean);
+  assert.deepEqual(capabilities.explicit, [true,true]);
+
+  await page.evaluate(`(async()=>{
+    const {CanvasUi}=await import('./pkg/onda_ui.js');
+    const message=CanvasUi.prototype.message,render=CanvasUi.prototype.render;
+    window.frameTimes=[];window.lastRendered=undefined;let applied;
+    CanvasUi.prototype.message=function(json){
+      const data=JSON.parse(json);
+      if(data.type==='parameterValues')applied=data.state.params?.[0]?.value;
+      return message.call(this,json);
+    };
+    CanvasUi.prototype.render=function(){
+      const result=render.call(this);
+      if(result){frameTimes.push(performance.now());lastRendered=applied}
+      return result;
+    };
+    await new Promise(resolve=>{
+      let sequence=0;
+      const timer=setInterval(()=>_onHostMessage({type:'parameterValues',state:{
+        params:[{name:'gain',value:(++sequence%100)/100}]}}),4);
+      setTimeout(()=>{
+        clearInterval(timer);
+        _onHostMessage({type:'parameterValues',state:{params:[{name:'gain',value:0.875}]}});
+        resolve();
+      },350);
+    });
+  })()`);
+  await eventually(() => page.evaluate("lastRendered===0.875"), "final value without further input");
+  const times = await page.evaluate("frameTimes");
+  assert.ok(times.length > 1);
+  assert.ok(times.length <= Math.ceil((times.at(-1)-times[0])*60/1000)+2,
+    `host exceeded its cadence: ${times.length} frames`);
+  await page.evaluate("new Promise(resolve=>setTimeout(resolve,100))");
+  assert.equal(await page.evaluate("frameTimes.length"), times.length, "clean host must stop drawing");
+});
+
+test("vsynced host keeps 60 Hz through display and callback jitter", { timeout:60000 }, async t => {
+  const origin = await serveGpuUi(t);
+  const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
+  const page = await chrome.page({width:720,height:840,
+    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+  await page.navigate(origin + "/index.html?backend=webgl");
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
+  await page.evaluate(`_onHostMessage({type:'state',state:{path:'jitter.onda',
+    supportsScope:false,supportsTransport:false,viewState:{readyId:98},
+    params:[{name:'gain',type:'f64',value:0.5,rangeMin:0,rangeMax:1}]}})`);
+  await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===98)"), "initial frame");
+  const result = await page.evaluate(`(async()=>{
+    const {CanvasUi}=await import('./pkg/onda_ui.js');
+    const render=CanvasUi.prototype.render,message=CanvasUi.prototype.message;
+    let draws=0,applied,lastRendered;
+    CanvasUi.prototype.message=function(json){
+      const data=JSON.parse(json);
+      if(data.type==='parameterValues')applied=data.state.params?.[0]?.value;
+      return message.call(this,json);
+    };
+    CanvasUi.prototype.render=function(){
+      const result=render.call(this);
+      if(result){draws++;lastRendered=applied}
+      return result;
+    };
+    // Drive the actual host and Wasm renderer with independent display and
+    // execution clocks, including input phases that can miss a late RAF timer.
+    let base=performance.now()+1000;
+    let now=base-5,id=0,maxPending=0;
+    const timers=new Map(),frames=new Map();
+    performance.now=()=>now;
+    window.setTimeout=(callback,delay=0)=>{
+      timers.set(++id,{callback,due:now+delay});return id;
+    };
+    window.clearTimeout=id=>timers.delete(id);
+    window.requestAnimationFrame=callback=>(frames.set(++id,callback),id);
+    window.cancelAnimationFrame=id=>frames.delete(id);
+    function advance(time){
+      for(;;){
+        const next=[...timers].filter(([,timer])=>timer.due<=time)
+          .sort((a,b)=>a[1].due-b[1].due)[0];
+        if(!next)break;
+        now=next[1].due;timers.delete(next[0]);next[1].callback();
+      }
+      now=time;
+    }
+    const results=[];
+    for(const [jitter,lags,inputOffset] of [
+      [0.1,[0.75,0.25],4], [0.1,[0.05,0.05],12.6], [0.5,[0.75,0.75],12.6],
+    ]){
+      draws=0;lastRendered=undefined;maxPending=0;
+      advance(base-5);
+      const value=value=>_onHostMessage({type:'parameterValues',state:{params:[{name:'gain',value}]}});
+      value(1/120);
+      for(let tick=0;tick<120;tick++){
+        const timestamp=base+tick*1000/60+(tick%2===0?jitter:-jitter);
+        advance(timestamp+lags[tick%2]);
+        maxPending=Math.max(maxPending,frames.size);
+        const callbacks=[...frames.values()];frames.clear();
+        for(const callback of callbacks)callback(timestamp);
+        if(tick<119){advance(timestamp+inputOffset);value((tick+2)/120)}
+      }
+      results.push({draws,lastRendered,maxPending,timers:timers.size,frames:frames.size});
+      base+=5000;
+    }
+    return results;
+  })()`);
+  assert.deepEqual(result, Array(3).fill({draws:120,lastRendered:1,maxPending:1,timers:0,frames:0}));
+});
+
 test("GPU rejects malformed scope packets without losing the frame or later updates", { timeout:60000 }, async t => {
   const origin = await serveGpuUi(t);
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
