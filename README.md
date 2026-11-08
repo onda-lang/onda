@@ -268,9 +268,10 @@ entrypoints directly. The paired JSON descriptor supplies storage sizes, alignme
 interface layouts. See the native raw-object example for a complete link command.
 
 The `release.yml` workflow supports unpublished integration builds with
-`test_integrations=true`. Set `plugin_ref` to a full plugin source commit compatible
-with the SDK being built. To rebuild only plugins against an existing SDK, also set
-`sdk_run_id` to its Onda build run and `sdk_source_ref` to its full source commit.
+`test_integrations=true`. Fresh SDK builds require compatible full `plugin_ref`
+and `vscode_ref` source commits. To reuse a completed SDK build, set `sdk_run_id`
+and its exact `sdk_source_ref`, plus the integration source refs to build; leave
+unneeded refs empty. VS Code builds the shared GPU UI from that same Onda commit.
 SDK provenance and checksums are verified; publication stays disabled.
 
 ## VST3 plugin
