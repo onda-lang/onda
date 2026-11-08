@@ -17,6 +17,23 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
+  vector-math:
+    name: ARM64 vector math regression (local signature)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: notarization-vector-math
+      - name: Verify numerical and floating-point control expectations
+        shell: bash
+        run: |
+          ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          cargo test --locked --release -p onda_codegen_llvm --test vector_math -- --test-threads=1
+
   runtime-policy:
     name: Verify executable-memory restrictions (${{ matrix.os }})
     strategy:
