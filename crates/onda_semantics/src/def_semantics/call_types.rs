@@ -1,7 +1,7 @@
 mod resource_recipes;
 mod scopes;
 pub(crate) use resource_recipes::rewrite_root_resource_recipes;
-pub(crate) use scopes::CallTypeRewriter;
+pub(crate) use scopes::{observe_call_type_bindings, CallTypeRewriter};
 
 use std::collections::{HashMap, HashSet};
 

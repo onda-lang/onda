@@ -1187,6 +1187,7 @@ pub(super) fn rewrite_owner_proc_stmts(
     nested_fields: &HashMap<String, HashSet<String>>,
     nested_instances: &HashMap<String, ProcCallInstance>,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     expand_proc_output_tuple_assignments(
@@ -1201,6 +1202,7 @@ pub(super) fn rewrite_owner_proc_stmts(
         nested_instances,
         proc_array_slots,
         proc_api,
+        constants,
         errors,
     );
     stmts
@@ -1694,6 +1696,7 @@ pub(super) fn lower_callee_stmts_for_nested_wrapper(
     callee_proc_array_slots: &ProcArrayDeclarations,
     delegate_context_args: &[String],
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     lower_named_proc_param_calls_in_stmts(
@@ -1701,6 +1704,7 @@ pub(super) fn lower_callee_stmts_for_nested_wrapper(
         callee_nested_instances,
         callee_proc_array_slots,
         proc_api,
+        constants,
         errors,
     );
     stmts

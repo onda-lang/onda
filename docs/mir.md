@@ -738,13 +738,15 @@ use `packages/onda_webaudio` for AudioWorklet playback.
 
 ## Realtime floating-point environment
 
-The native runtime configures every processing thread through the backend-independent
-`onda_realtime` utility. On x86 this enables denormals-are-zero and flush-to-zero once per thread.
+Hosts own the floating-point policy of each execution thread; native runtime calls never change it
+implicitly. The optional helper `onda_realtime::configure_current_thread_audio_fp_mode` enables
+denormals-are-zero and flush-to-zero on x86, or flush-to-zero on ARM64. Call it on each thread that
+will execute Onda when that policy is desired; repeated calls reapply it.
 Decaying feedback and oversampling filters otherwise enter the subnormal range and can suffer large,
-core-dependent stalls even when their generated LLVM is otherwise optimal. CPAL callbacks, offline
-runtime processing, daemon rendering, and benchmarks now share this policy instead of relying on a
-particular host to remember it. MIR still defines strict-width arithmetic; the realtime execution
-environment deliberately treats inaudible subnormal tails as zero.
+core-dependent stalls even when their generated LLVM is otherwise optimal. Stock native playback,
+offline rendering, daemon rendering, and benchmark hosts explicitly select this policy.
+MIR still defines strict-width arithmetic; those hosts deliberately treat inaudible subnormal tails
+as zero.
 
 Core WebAssembly still has no scalar fused multiply-add instruction. The backend therefore links a
 strict software FMA from its internal pure-Wasm math kernel. It matches one-rounding f32/f64 FMA

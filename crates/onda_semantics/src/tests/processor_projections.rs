@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn borrowed_processor_named_params_keep_restrictions() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-alias-named-params.onda"
+    );
+    for (source, expected) in [
+        (
+            source.replace("    gain =", "    private gain ="),
+            "private",
+        ),
+        (
+            source.replace(
+                "value = selected(2.0, gain = 3.0)",
+                "value = true && selected(2.0, gain = 3.0) > 0.0",
+            ),
+            "named param arguments are not supported in logical expressions",
+        ),
+        (
+            source.replace(
+                "value = selected(2.0, gain = 3.0)",
+                "value = 0.0\n    while selected(2.0, gain = 3.0) > 0.0:\n      break",
+            ),
+            "named param arguments are not supported in while conditions",
+        ),
+    ] {
+        let errors = analyze(parse_program(&source).unwrap()).expect_err(expected);
+        assert!(
+            errors.iter().any(|error| error.message.contains(expected)),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn nested_processor_aliases_are_callable_inside_processors() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-nested-alias-calls.onda"
+    );
+    lower_program_to_optimized_mir(&analyze_source(source))
+        .expect("projected array elements and scalar children retain their callable identity");
+}
+
+#[test]
+fn nested_processor_aliases_validate_required_inputs() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-nested-alias-calls.onda"
+    );
+    for (call, missing, input) in [
+        ("forwarded(10.0)", "forwarded()", "signal"),
+        ("scalar(20.0)", "scalar()", "signal"),
+        ("voice.increment(2)", "voice.increment()", "value"),
+        ("scalar.increment(3)", "scalar.increment()", "value"),
+    ] {
+        let errors = analyze(parse_program(&source.replace(call, missing)).unwrap())
+            .expect_err("nested processor calls require their declared inputs");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("missing") && error.message.contains(input)),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
 fn block_storage_and_sample_owned_processors_compose() {
     let source = include_str!(
         "../../../../packages/onda_binaryen_web/test/fixtures/processor-block-sample-owned-hooks.onda"

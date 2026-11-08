@@ -15,7 +15,7 @@ type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
 
 mod projections;
 pub(crate) use projections::{
-    expand_processor_projection_assignment, proc_param_setter_def, projection_temp_counter,
+    expand_processor_projection_statement, proc_param_setter_def, projection_temp_counter,
     rewrite_processor_projection_calls, rewrite_processor_projection_statement,
 };
 
@@ -3096,6 +3096,7 @@ pub(super) fn rewrite_proc_calls_in_stmts(
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
     let proc_vars = rewrite_proc_calls_in_stmts_without_hooks(
@@ -3103,6 +3104,7 @@ pub(super) fn rewrite_proc_calls_in_stmts(
         proc_vars,
         proc_array_slots,
         proc_api,
+        constants,
         errors,
     );
     inject_bound_proc_param_hooks_in_stmts(
@@ -3280,10 +3282,18 @@ pub(super) fn rewrite_proc_calls_in_stmts_without_hooks(
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> HashMap<String, ProcCallInstance> {
     expand_proc_output_tuple_assignments(stmts, proc_vars, proc_array_slots, proc_api, errors);
-    lower_named_proc_param_calls_in_stmts(stmts, proc_vars, proc_array_slots, proc_api, errors);
+    lower_named_proc_param_calls_in_stmts(
+        stmts,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        constants,
+        errors,
+    );
     let mut aliases = ProcArrayAliases::new();
     let mut proc_vars = proc_vars.clone();
     for stmt in &mut *stmts {

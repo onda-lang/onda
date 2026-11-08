@@ -1192,13 +1192,13 @@ struct MonoRewriter<'a> {
 }
 
 impl CallTypeRewriter for MonoRewriter<'_> {
-    fn expand_assignment(
+    fn expand_statement(
         &mut self,
         stmt: &mut Stmt,
         env: &CallTypeEnv,
         temp_counter: &mut usize,
     ) -> Option<Vec<Stmt>> {
-        crate::proc_call_rewrite::expand_processor_projection_assignment(
+        crate::proc_call_rewrite::expand_processor_projection_statement(
             stmt,
             env,
             temp_counter,

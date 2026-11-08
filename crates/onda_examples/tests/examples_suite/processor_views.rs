@@ -1,6 +1,309 @@
 use super::*;
 
 #[test]
+fn named_processor_params_preserve_statement_evaluation_order() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-statement-param-order.onda"
+    );
+    for source in [
+        source.to_owned(),
+        source
+            .replace("    selected = voice\n", "")
+            .replace("selected(", "voice(")
+            .replace("selected.out1", "voice.out1"),
+        source
+            .replace("voice = Voice()", "voices: Voice[2] = Voice()")
+            .replace("selected = voice", "selected = voices[0]"),
+        source
+            .replace("voice = Voice()", "voices: Voice[2] = Voice()")
+            .replace("selected = voice", "selected = voices[:]")
+            .replace("selected(", "selected[0](")
+            .replace("selected.out1", "selected[0].out1"),
+    ] {
+        render_channels(
+            &source,
+            &[
+                &[1.0, 4.0, 7.0, 10.0],
+                &[2.0, 5.0, 8.0, 11.0],
+                &[3.0, 6.0, 9.0, 12.0],
+                &[3.0, 6.0, 9.0, 12.0],
+            ],
+        );
+    }
+}
+
+#[test]
+fn named_processor_params_preserve_surrounding_evaluation_order() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-named-param-order.onda"
+    );
+    for (expression, expected, state) in [
+        (
+            "second(update(values), selected(gain = values[0]))",
+            [1.0, 2.0, 3.0, 4.0],
+            [1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            "update(values) + selected(gain = values[0])",
+            [1.0, 2.0, 3.0, 4.0],
+            [1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            "values[0] + selected(gain = update(values))",
+            [0.0, 1.0, 2.0, 3.0],
+            [1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            "selected.out1 + selected(gain = 1.0)",
+            [1.0, 2.0, 2.0, 2.0],
+            [0.0; 4],
+        ),
+    ] {
+        let source = source.replace(
+            "second(update(values), selected(gain = values[0]))",
+            expression,
+        );
+        for source in [
+            source.clone(),
+            source
+                .replace("    selected = voice\n", "")
+                .replace("selected(", "voice(")
+                .replace("selected.out1", "voice.out1"),
+            source
+                .replace("voice = Voice()", "voices: Voice[2] = Voice()")
+                .replace("selected = voice", "selected = voices[0]"),
+            source
+                .replace("voice = Voice()", "voices: Voice[2] = Voice()")
+                .replace("    selected = voice\n", "")
+                .replace("selected(", "voices[0](")
+                .replace("selected.out1", "voices[0].out1"),
+            source
+                .replace("voice = Voice()", "voices: Voice[2] = Voice()")
+                .replace("selected = voice", "selected = voices[:]")
+                .replace("selected(", "selected[0](")
+                .replace("selected.out1", "selected[0].out1"),
+        ] {
+            render_channels(&source, &[&expected, &state]);
+        }
+    }
+}
+
+#[test]
+fn named_processor_params_preserve_contextual_constant_precision() {
+    let source = r#"
+const Precise = 1.0000000000000002
+def first(value: f64, ignored: f32) -> f64:
+  return value
+proc Voice:
+  params:
+    gain = 0.0
+  sample:
+    out1 = gain
+proc Main:
+  init:
+    voice = Voice()
+  sample:
+    selected = voice
+    out1 = f32((first(Precise, selected(gain = 1.0)) - 1.0) * 4503599627370496.0)
+"#;
+    for source in [
+        source.to_owned(),
+        source
+            .replace("    selected = voice\n", "")
+            .replace("selected(", "voice("),
+        source
+            .replace(
+                "const Precise = 1.0000000000000002",
+                "const def precise() -> f64:\n  return 1.0000000000000002",
+            )
+            .replace("first(Precise,", "first(precise(),"),
+    ] {
+        render_channels(&source, &[&[1.0; 4]]);
+    }
+}
+
+#[test]
+fn named_processor_params_do_not_run_hooks_before_earlier_checked_failures() {
+    let source = r#"
+proc Voice:
+  params:
+    gain = 0.0 => updated
+  def updated():
+    print(gain)
+  sample:
+    out1 = gain
+proc Main:
+  params:
+    divisor: i32 = 0
+  init:
+    voice = Voice()
+  sample:
+    selected = voice
+    out1 = f32(1 / divisor) + selected(gain = 1.0)
+"#;
+    for statement in [
+        "out1 = f32(1 / divisor) + selected(gain = 1.0)",
+        "print(1 / divisor, selected(gain = 1.0))",
+        "values[1 / divisor] = selected(gain = 1.0)",
+        "for i in (1 / divisor)..i32(selected(gain = 1.0)):\n      out1 = 0.0",
+    ] {
+        let source = source
+            .replace("out1 = f32(1 / divisor) + selected(gain = 1.0)", statement)
+            .replace("voice = Voice()", "voice = Voice()\n    values: f32[1]");
+        for source in [
+            source.to_owned(),
+            source
+                .replace("    selected = voice\n", "")
+                .replace("selected(", "voice("),
+        ] {
+            for opt_level in [TargetOptLevel::O0, TargetOptLevel::O3] {
+                let (mut instance, _, _) = compile_instance_with_options(
+                    &source,
+                    4,
+                    CompileOptions {
+                        opt_level,
+                        sample_rate: 48_000.0,
+                        block_size: 4,
+                        fast_math: false,
+                    },
+                );
+                let mut output = [0.0_f32; 4];
+                if instance.output_count() != 0 {
+                    bind_output(
+                        &mut instance,
+                        0,
+                        output.as_mut_ptr().cast(),
+                        std::mem::size_of_val(&output),
+                    )
+                    .unwrap();
+                }
+                let mut storage = [0_u8; 64];
+                let mut prints = onda_runtime::PrintBatch::from_storage(&mut storage);
+                assert_eq!(
+                    process_checked_segment(
+                        &mut instance,
+                        0,
+                        4,
+                        PROCESSOR_FULL_BLOCK,
+                        onda_runtime::ExecutionOutput {
+                            delegate_batch: None,
+                            print_batch: Some(&mut prints)
+                        }
+                    )
+                    .unwrap(),
+                    onda_runtime::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+                    "{opt_level:?}, {statement}"
+                );
+                assert_eq!(prints.record_count, 0, "{opt_level:?}, {statement}");
+                assert_eq!(prints.overflow_count, 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn scalar_owners_preserve_nested_processor_arrays() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-scalar-owner-arrays.onda"
+    );
+    render_channels(source, &[&[11.0, 11.0, 12.0, 12.0]]);
+    render_channels(
+        &source.replace("    out1 = rack()", "    out1 = 0.0"),
+        &[&[0.0; 4]],
+    );
+}
+
+#[test]
+fn borrowed_processor_calls_lower_named_param_updates() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-alias-named-params.onda"
+    );
+    for source in [
+        source.to_owned(),
+        source.replace(
+            "    value = selected(2.0, gain = 3.0)",
+            "    signal = 2.0\n    value = selected(signal, gain = 3.0)",
+        ),
+        source
+            .replace("    voice = Voice()", "    voices: Voice[2] = Voice()")
+            .replace("selected = bank.voice", "selected = bank.voices[0]"),
+        source
+            .replace("    voice = Voice()", "    voices: Voice[2] = Voice()")
+            .replace("selected = bank.voice", "selected = bank.voices[:]")
+            .replace("selected(", "selected[0](")
+            .replace("selected.out1", "selected[0].out1"),
+        source
+            .replace("    voice = Voice()", "    voices: Voice[2] = Voice()")
+            .replace("selected = bank.voice", "selected = bank.voices")
+            .replace("selected(", "selected[0](")
+            .replace("selected.out1", "selected[0].out1"),
+        source
+            .replace(
+                "    out1 = signal * gain + f32(updates) * 100.0",
+                "    out1 = signal * gain + f32(updates) * 100.0\n    out2 = f32(updates)",
+            )
+            .replace(
+                "value = selected(2.0, gain = 3.0)",
+                "value, _ = selected(2.0, gain = 3.0)",
+            ),
+        source
+            .replace(
+                "proc Main:",
+                "def step(voice) -> f32:\n  return voice(2.0, gain = 3.0)\n\nproc Main:",
+            )
+            .replace(
+                "value = selected(2.0, gain = 3.0)",
+                "value = step(selected)",
+            ),
+    ] {
+        render_channels(
+            &source,
+            &[&[206.0, 406.0, 606.0, 806.0], &[312.0, 512.0, 712.0, 912.0]],
+        );
+    }
+}
+
+#[test]
+fn block_forwarded_processor_joins_retain_selected_state() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-block-forwarded-join.onda"
+    );
+    for source in [
+        source.to_owned(),
+        source.replace("selected = first", "forwarded = first\n    selected = forwarded"),
+        source.replace(
+            "      first = bank.voices[0]",
+            "      if choose:\n        first = bank.voices[0]\n      else:\n        first = bank.voices[1]",
+        ),
+    ] {
+        render_channel_blocks_with_buffers(
+            &source,
+            &[&[3.0, 6.0, 9.0, 12.0, 3.0, 6.0, 9.0, 12.0, 15.0, 18.0, 21.0, 24.0]],
+            &[],
+            4,
+        );
+    }
+}
+
+#[test]
+fn nested_processor_aliases_are_callable_inside_processors() {
+    let source = include_str!(
+        "../../../../packages/onda_binaryen_web/test/fixtures/processor-nested-alias-calls.onda"
+    );
+    render_channels(
+        source,
+        &[
+            &[13.0, 13.0, 16.0, 16.0],
+            &[24.0, 24.0, 28.0, 28.0],
+            &[13.0, 13.0, 16.0, 16.0],
+            &[13.0, 16.0, 19.0, 22.0],
+            &[24.0, 28.0, 32.0, 36.0],
+            &[13.0, 16.0, 19.0, 22.0],
+        ],
+    );
+}
+
+#[test]
 fn nested_processors_read_their_own_private_parameters() {
     let source = include_str!(
         "../../../../packages/onda_binaryen_web/test/fixtures/processor-private-owner-reads.onda"
@@ -106,6 +409,10 @@ fn processor_alias_array_param_writes_keep_ranges() {
         "../../../../packages/onda_binaryen_web/test/fixtures/processor-alias-array-param-writes.onda"
     );
     render_channels(source, &[&[4.0, 8.0, 8.0, 8.0]]);
+    render_channels(
+        &source.replace("v.gains[index] = 9", "v(gains = [9, 9])"),
+        &[&[8.0; 4]],
+    );
 }
 
 #[test]

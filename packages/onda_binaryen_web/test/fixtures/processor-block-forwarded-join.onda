@@ -1,0 +1,28 @@
+proc Voice:
+  init:
+    count = 0
+  event increment(value: i32):
+    count += value
+  sample:
+    count += 1
+    out1 = f32(count)
+
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+
+proc Main:
+  init:
+    banks: Bank[1] = Bank()
+    choose = true
+  block:
+    bank = banks[0]
+    if choose:
+      first = bank.voices[0]
+    else:
+      first = bank.voices[1]
+    selected = first
+    choose = !choose
+    sample:
+      selected.increment(2)
+      out1 = selected()

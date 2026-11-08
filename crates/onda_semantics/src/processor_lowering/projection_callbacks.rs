@@ -10,6 +10,7 @@ pub(super) fn child_when_body(
     proc_api: &HashMap<String, ProcApi>,
     options: AnalysisOptions,
     context_args: &[String],
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let edges = &declared.projection.edges;
@@ -69,6 +70,7 @@ pub(super) fn child_when_body(
         &shape.nested_proc_array_slots,
         outer_args,
         proc_api,
+        constants,
         errors,
     )
 }

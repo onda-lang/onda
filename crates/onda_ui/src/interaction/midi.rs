@@ -24,6 +24,7 @@ pub(crate) const KEYS: [(char, u8); 16] = [
 ];
 
 pub(crate) struct Midi {
+    pub engine_generation: Value,
     pub octave: i32,
     pub velocity: f64,
     pub pointer: Option<u8>,
@@ -36,6 +37,7 @@ pub(crate) struct Midi {
 impl Default for Midi {
     fn default() -> Self {
         Self {
+            engine_generation: Value::Null,
             octave: DEFAULT_OCTAVE,
             velocity: DEFAULT_VELOCITY,
             pointer: None,
@@ -54,7 +56,7 @@ impl Midi {
             || self.touches.values().any(|note| *note == Some(key))
     }
     pub fn command(&self, key: u8, pressed: bool) -> Value {
-        json!({"type":"midiNote","key":key,"pressed":pressed,"velocity":if pressed {self.velocity} else {0.0}})
+        json!({"type":"midiNote","engineGeneration":self.engine_generation,"key":key,"pressed":pressed,"velocity":if pressed {self.velocity} else {0.0}})
     }
     pub fn release(&mut self) -> Vec<Value> {
         let values = (0..128)

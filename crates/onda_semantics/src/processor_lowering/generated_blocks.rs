@@ -619,6 +619,7 @@ fn generate_nested_wrapper_defs(
     managed_active_fields: &mut HashMap<String, usize>,
     def_sample_oversample_factors: &mut HashMap<String, usize>,
     proc_step_oversample_meta: &mut HashMap<String, ProcStepOversampleMeta>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Block> {
     let mut nested_defs = Vec::<Block>::new();
@@ -706,6 +707,7 @@ fn generate_nested_wrapper_defs(
             &callee_nested_instances,
             &callee_shape.nested_proc_array_slots,
             proc_api,
+            constants,
             errors,
         );
         for stmt in &callee_init_stmts {
@@ -1269,6 +1271,7 @@ fn generate_nested_wrapper_defs(
                     &callee_shape.nested_proc_array_slots,
                     &delegate_context_args,
                     proc_api,
+                    constants,
                     errors,
                 )
             });
@@ -1289,6 +1292,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.nested_proc_array_slots,
                 &delegate_context_args,
                 proc_api,
+                constants,
                 errors,
             ) {
                 body.push(rewritten);
@@ -1301,6 +1305,7 @@ fn generate_nested_wrapper_defs(
                 proc_api,
                 options,
                 &delegate_context_args,
+                constants,
                 errors,
             );
             if !routed_handler.is_empty() {
@@ -1316,6 +1321,7 @@ fn generate_nested_wrapper_defs(
                         &shape.nested_fields,
                         nested_instances,
                         proc_api,
+                        constants,
                         errors,
                     ));
                 } else {
@@ -1368,6 +1374,7 @@ fn generate_nested_wrapper_defs(
             &callee_shape.nested_proc_array_slots,
             &delegate_context_args,
             proc_api,
+            constants,
             errors,
         ) {
             nested_step_body.push(rewritten);
@@ -1652,6 +1659,7 @@ fn generate_nested_wrapper_defs(
                             &callee_shape.nested_proc_array_slots,
                             &delegate_context_args,
                             proc_api,
+                            constants,
                             errors,
                         );
                         inject_bound_proc_param_hooks_in_nested_event_stmts(
@@ -1723,6 +1731,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.nested_proc_array_slots,
                 &delegate_context_args,
                 proc_api,
+                constants,
                 errors,
             ));
             let mut called_callee_nested = collect_called_proc_instances_in_stmts(
@@ -1832,6 +1841,7 @@ fn generate_nested_wrapper_defs(
                     &callee_shape.nested_proc_array_slots,
                     &delegate_context_args,
                     proc_api,
+                    constants,
                     errors,
                 ));
             }
@@ -1848,6 +1858,7 @@ fn generate_nested_wrapper_defs(
                 &callee_shape.nested_proc_array_slots,
                 &delegate_context_args,
                 proc_api,
+                constants,
                 errors,
             ));
             inject_bound_proc_param_hooks_in_stmts(
@@ -1949,6 +1960,7 @@ pub(super) fn generate_lowered_proc_blocks(
     struct_defs_by_name: &HashMap<String, StructDef>,
     proc_api: &HashMap<String, ProcApi>,
     options: AnalysisOptions,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> GeneratedProcBlocks {
     let mut generated_structs = Vec::<Block>::new();
@@ -2126,6 +2138,7 @@ pub(super) fn generate_lowered_proc_blocks(
             &nested_instances,
             &shape.nested_proc_array_slots,
             proc_api,
+            constants,
             errors,
         );
         for stmt in &proc_init_stmts {
@@ -2696,6 +2709,7 @@ pub(super) fn generate_lowered_proc_blocks(
             &mut nested_managed_active_fields,
             &mut def_sample_oversample_factors,
             &mut proc_step_oversample_meta,
+            constants,
             errors,
         ));
         if let Some(owner_api) = proc_api.get(&proc.name) {
@@ -2775,6 +2789,7 @@ pub(super) fn generate_lowered_proc_blocks(
                         &shape.nested_fields,
                         &nested_instances,
                         proc_api,
+                        constants,
                         errors,
                     );
                     inject_bound_proc_param_hooks_in_stmts(
@@ -2837,6 +2852,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_fields,
                 &nested_instances,
                 proc_api,
+                constants,
                 errors,
             )
         });
@@ -2855,6 +2871,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_fields,
                 &nested_instances,
                 proc_api,
+                constants,
                 errors,
             ) {
                 body.push(rewritten);
@@ -2902,6 +2919,7 @@ pub(super) fn generate_lowered_proc_blocks(
             &shape.nested_fields,
             &nested_instances,
             proc_api,
+            constants,
             errors,
         ) {
             step_body.push(rewritten);
@@ -2954,6 +2972,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_fields,
                 &nested_instances,
                 proc_api,
+                constants,
                 errors,
             ));
             let mut called_nested = collect_called_proc_instances_in_stmts(
@@ -3042,6 +3061,7 @@ pub(super) fn generate_lowered_proc_blocks(
                     &shape.nested_fields,
                     &nested_instances,
                     proc_api,
+                    constants,
                     errors,
                 ));
             }
@@ -3059,6 +3079,7 @@ pub(super) fn generate_lowered_proc_blocks(
                 &shape.nested_fields,
                 &nested_instances,
                 proc_api,
+                constants,
                 errors,
             ));
             inject_bound_proc_param_hooks_in_stmts(

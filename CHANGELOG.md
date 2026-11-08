@@ -89,6 +89,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   including nested arrays.
 - Keep processor buffer references current after restoring snapshots and rebinding host buffers.
 - Evaluate processor selection indices only once, preserving side effects when selecting a receiver.
+- Preserve source evaluation order around named processor parameter updates, including assignment
+  selectors, print arguments, loop bounds, and earlier helper calls and state reads.
 - Preserve declared scalar types in indexed processor-parameter reads, compound writes, and
   helper returns, including exact `i64` arithmetic in nested processor arrays.
 - Run parameter update hooks once per write, and after initialization during construction and
@@ -98,8 +100,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Initialize private parameters in every processor-array element and keep task activation independent
   when mixing constant and dynamic array indices.
 - Direct buffer-reference aliases retain their buffer identity and metadata queries.
-- Touch scrolling can continue into the surrounding browser page when a panel
-  reaches its scroll boundary.
+- Keep virtual MIDI input and pending failures attached to their original processor during
+  recompilation and playback restarts.
+- Touch scrolling continues through the run view before reaching the surrounding browser page.
 
 ### Removed
 

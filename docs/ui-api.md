@@ -204,7 +204,7 @@ rendering or later host updates.
 | `running` | Boolean playback state, initially false. A transition to false releases owned MIDI notes. |
 | `connected` | Boolean event-dispatch availability. Explicit false prevents Trigger commands. |
 | `schemaReady` | Boolean metadata completion barrier; omitted means synchronous/ready. |
-| `engineGeneration` | Host-defined string identifying the current event schema/engine; copied verbatim into `triggerEvent` commands, or `null` when absent. The host must reject stale generations if it uses this facility. |
+| `engineGeneration` | Host-defined string identifying the current event schema/engine; copied verbatim into `triggerEvent` and `midiNote` commands, or `null` when absent. Held MIDI notes release with their original generation when it changes. The host must reject stale generations if it uses this facility. |
 | `outputChannels` | Integer output count, 1–64; otherwise inferred from visualization data. |
 | `ondaVersion` | Optional version label. |
 | `themeMode` | `"dark"` or `"light"`. Omitted/null lets a browser host detect its appearance at startup. Native hosts resolve an unspecified choice when opening the window. |
@@ -394,7 +394,7 @@ acknowledges operations through state/value messages.
 | `resetEventArguments` | None | UI values are already reset; acknowledge if the host mirrors event edits. |
 | `clearLog` | None | Clear the host log and counters; UI clears immediately too. |
 | `copyText` | `text:string` | Write the host clipboard. |
-| `midiNote` | `key:integer`, `pressed:boolean`, `velocity:number` | Emit owned MIDI; key is 0–127 and velocity is 0–1, zero on release. |
+| `midiNote` | `key:integer`, `pressed:boolean`, `velocity:number`, `engineGeneration:string|null` | Emit owned MIDI into the matching engine; key is 0–127 and velocity is 0–1, zero on release. |
 | `viewState` | `state:object` | Persist the presentation snapshot. |
 | `scrollParent` | `deltaY:number` | Pass unconsumed logical vertical pan distance to an enclosing scroller, if any. |
 

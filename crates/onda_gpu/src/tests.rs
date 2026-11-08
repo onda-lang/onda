@@ -46,7 +46,7 @@ fn ime_composition_preserves_computer_key_releases() {
     assert_eq!(
         app.ui.take_commands(),
         vec![json!({
-            "type":"midiNote","key":60,"pressed":true,"velocity":1.0
+            "type":"midiNote","engineGeneration":null,"key":60,"pressed":true,"velocity":1.0
         })]
     );
     // Entering a field keeps the previously held piano key owned until release.

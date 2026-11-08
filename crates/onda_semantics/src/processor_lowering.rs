@@ -1330,6 +1330,7 @@ fn build_proc_lowering_env(
         .collect::<HashMap<_, _>>();
 
     let mut base_shapes = HashMap::<String, ProcBaseShape>::new();
+    let child_proc_surfaces = build_child_proc_surfaces(&proc_defs_by_name, options, const_arrays);
     let source_proc_types = logical_types::processor_source_types(
         &proc_defs_by_name,
         &struct_defs_by_name,
@@ -1409,6 +1410,7 @@ fn build_proc_lowering_env(
             &pre_desugar_fn_signatures,
             &pre_desugar_defs,
             &proc_defs_by_name,
+            &child_proc_surfaces,
             &source_proc_types,
             const_arrays,
             const_scalars,
@@ -1739,6 +1741,8 @@ fn desugar_processors_impl(
             );
         }
     }
+    let mut call_types = CallTypeEnv::default();
+    call_types.bind_constants(const_scalars, const_arrays, const_scope, options);
     let top_level_proc_rewrite = rewrite_top_level_proc_calls(
         &mut program,
         &runtime_def_names,
@@ -1746,6 +1750,7 @@ fn desugar_processors_impl(
         &proc_defs_by_name,
         &lowering_shapes,
         &proc_api,
+        &call_types.const_symbols,
         errors,
     );
     let entry_exports = entry
@@ -1775,6 +1780,7 @@ fn desugar_processors_impl(
         &struct_defs_by_name,
         &proc_api,
         options,
+        &call_types.const_symbols,
         errors,
     );
     projection_resources::complete_operation_calls(

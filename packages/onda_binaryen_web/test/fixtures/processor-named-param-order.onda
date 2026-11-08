@@ -1,0 +1,21 @@
+proc Voice:
+  params:
+    gain = 0.0
+  sample:
+    out1 = gain
+
+def update(values: f32[]) -> f32:
+  values[0] += 1.0
+  return 0.0
+
+def second(a: f32, b: f32) -> f32:
+  return b
+
+proc Main:
+  init:
+    voice = Voice()
+    values: f32[1] = [0.0]
+  sample:
+    selected = voice
+    out1 = second(update(values), selected(gain = values[0]))
+    out2 = values[0]

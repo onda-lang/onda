@@ -256,11 +256,10 @@ pub(crate) fn collect_expr_uses(expr: &Expr, uses: &mut HashSet<String>) {
 }
 
 pub(crate) fn collect_callable_receiver_use(name: &str, uses: &mut HashSet<String>) {
-    let Some((receiver, _)) = name.rsplit_once('.') else {
-        return;
-    };
+    // A plain call can name a borrowed processor just as a method can name a view.
+    let receiver = name.rsplit_once('.').map_or(name, |(receiver, _)| receiver);
     uses.insert(receiver.to_owned());
-    if let Some(root) = receiver.split('.').next() {
+    if let Some((root, _)) = receiver.split_once('.') {
         uses.insert(root.to_owned());
     }
 }

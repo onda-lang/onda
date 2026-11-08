@@ -1,0 +1,26 @@
+proc Voice:
+  init:
+    count = 10
+  sample:
+    count += 1
+    out1 = f32(count)
+
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+
+proc Rack:
+  init:
+    bank = Bank()
+    row = 0
+  sample:
+    voice = bank.voices[row]
+    row = 1 - row
+    out1 = voice()
+
+proc Main:
+  init:
+    rack = Rack()
+    unused = Bank()
+  sample:
+    out1 = rack()

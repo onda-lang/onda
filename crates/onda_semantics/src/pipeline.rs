@@ -4378,6 +4378,7 @@ pub fn analyze_with_options_and_inputs(
                 &def_proc_vars,
                 &def_proc_array_slots,
                 &proc_api,
+                &def_declared_symbols,
                 &mut errors,
             );
             let mut rewritten_def_body = Vec::<Stmt>::new();

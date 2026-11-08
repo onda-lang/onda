@@ -99,6 +99,17 @@ pub(super) fn register_storage_projections(
             let Some(child) = shapes.get(&array.proc_name) else {
                 continue;
             };
+            let array_projection = ResolvedStorageProjection {
+                selections: selections.to_vec(),
+                field: Some(format!("{logical_prefix}{declaration}")),
+            };
+            symbols.insert(
+                format!("{source_prefix}{declaration}"),
+                array_projection.clone(),
+            );
+            for alias in scalar_aliases {
+                symbols.insert(format!("{alias}.{declaration}"), array_projection.clone());
+            }
             for (coordinate, binding) in array.binding_names().enumerate() {
                 let source = format!("{source_prefix}{binding}");
                 let mut projected = selections.to_vec();

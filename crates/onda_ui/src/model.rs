@@ -482,6 +482,10 @@ impl RunUi {
                 for (key, value) in incoming {
                     self.state[key] = value.clone();
                 }
+                self.commands.extend(
+                    self.interaction
+                        .set_engine_generation(&self.state["engineGeneration"]),
+                );
                 self.resolve_theme();
                 if self.state["paramLayout"] == "knobs" {
                     self.knobs = true;

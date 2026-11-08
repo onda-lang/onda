@@ -11,7 +11,7 @@ pub(crate) trait CallTypeRewriter {
     fn context(&self) -> CallTypeContext<'_>;
     fn rewrite_expr(&mut self, expr: &mut Expr, env: &CallTypeEnv);
 
-    fn expand_assignment(
+    fn expand_statement(
         &mut self,
         _stmt: &mut Stmt,
         _env: &CallTypeEnv,
@@ -43,13 +43,11 @@ pub(crate) trait CallTypeRewriter {
     ) -> StatementFlow {
         let mut pending = std::collections::VecDeque::from(std::mem::take(stmts));
         while let Some(mut stmt) = pending.pop_front() {
-            if matches!(stmt, Stmt::Assign { .. }) {
-                if let Some(expanded) = self.expand_assignment(&mut stmt, env, temp_counter) {
-                    for statement in expanded.into_iter().rev() {
-                        pending.push_front(statement);
-                    }
-                    continue;
+            if let Some(expanded) = self.expand_statement(&mut stmt, env, temp_counter) {
+                for statement in expanded.into_iter().rev() {
+                    pending.push_front(statement);
                 }
+                continue;
             }
             let flow = with_stmt_diag_context_mut(&mut stmt, |_diag, stmt| match stmt {
                 Stmt::Assign {
@@ -143,4 +141,21 @@ pub(crate) trait CallTypeRewriter {
         }
         StatementFlow::Continues
     }
+}
+
+/// Registration observes the same branch joins and shadowing as call rewriting.
+/// Its source statements stay immutable; the observer only retains their types.
+pub(crate) fn observe_call_type_bindings(
+    stmts: &[Stmt],
+    env: &mut CallTypeEnv,
+    context: CallTypeContext<'_>,
+) -> StatementFlow {
+    struct Observer<'a>(CallTypeContext<'a>);
+    impl CallTypeRewriter for Observer<'_> {
+        fn context(&self) -> CallTypeContext<'_> {
+            self.0
+        }
+        fn rewrite_expr(&mut self, _expr: &mut Expr, _env: &CallTypeEnv) {}
+    }
+    Observer(context).rewrite_stmts(&mut stmts.to_vec(), env)
 }

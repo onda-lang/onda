@@ -1188,29 +1188,56 @@ test("GPU events belong to the rendered processor across replacements and buffer
   assert.equal(calls.length, 3);
 });
 
-test("an old GPU event rejection cannot fault a replacement processor", async () => {
-  let reject;
-  const errors = [];
-  const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
-    engineGeneration: 1,
-    state: { connected: true, schemaReady: true, engineGeneration: "1",
-      events: [{ name: "note", args: [] }] },
-    handlers: {
-      triggerEvent: () => new Promise((resolve, fail) => { reject = fail; }),
-      error: error => errors.push(error),
-    },
-    postState() {},
-    postVisualization() {},
+for (const type of ["triggerEvent", "midiNote"]) {
+  test(`an old GPU ${type} rejection cannot fault a replacement processor`, async () => {
+    let reject;
+    const errors = [];
+    const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
+      engineGeneration: 1,
+      state: { connected: true, schemaReady: true, engineGeneration: "1",
+        events: [{ name: "note", args: [] }], midi: { noteOn: true, noteOff: true } },
+      handlers: {
+        triggerEvent: () => new Promise((resolve, fail) => { reject = fail; }),
+        error: error => errors.push(error),
+      },
+      postState() {},
+      postVisualization() {},
+    });
+    const pending = host.handleMessage({ type, name: "note", key: 60, pressed: true, engineGeneration: "1" });
+    host.setStopped();
+    host.setRunning(48_000);
+    reject(new Error("old processor was closed"));
+    await pending;
+    assert.deepEqual(errors, []);
+    host.handlers.triggerEvent = () => { throw new Error("current handler failed"); };
+    await host.handleMessage({ type, name: "note", key: 60, pressed: true, engineGeneration: host.state.engineGeneration });
+    assert.equal(errors[0].message, "current handler failed");
   });
-  const pending = host.handleMessage({ type: "triggerEvent", name: "note", engineGeneration: "1" });
-  host.setStopped();
-  host.setRunning(48_000);
-  reject(new Error("old processor was closed"));
-  await pending;
-  assert.deepEqual(errors, []);
-  host.handlers.triggerEvent = () => { throw new Error("current handler failed"); };
-  await host.handleMessage({ type: "triggerEvent", name: "note", engineGeneration: host.state.engineGeneration });
-  assert.equal(errors[0].message, "current handler failed");
+}
+
+test("GPU MIDI accepts only the ready processor's own commands", async () => {
+  const calls = [];
+  const host = Object.assign(Object.create(BrowserRunViewHost.prototype), {
+    state: { connected: true, schemaReady: true, engineGeneration: "2",
+      midi: { noteOn: true, noteOff: true } },
+    handlers: { triggerEvent: (...args) => calls.push(args) },
+  });
+  const note = engineGeneration => host.handleMessage({
+    type: "midiNote", engineGeneration, key: 60, pressed: true, velocity: 0.5,
+  });
+  for (const generation of ["1", null, undefined]) await note(generation);
+  assert.deepEqual(calls, []);
+  host.state.schemaReady = false;
+  await note("2");
+  host.state.schemaReady = true;
+  host.state.connected = false;
+  await note("2");
+  assert.deepEqual(calls, []);
+  host.state.connected = true;
+  await note("2");
+  assert.deepEqual(calls, [["note_on", [-1, 0, 60, 0.5]]]);
+  await host.handleMessage({ type: "midiNote", engineGeneration: "2", key: 60, pressed: false });
+  assert.deepEqual(calls.at(-1), ["note_off", [-1, 0, 60, 0]]);
 });
 
 test("saved GPU event values survive recompilation and explicit project resets discard presentation", () => {

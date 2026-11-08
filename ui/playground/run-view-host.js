@@ -546,40 +546,32 @@ export class BrowserRunViewHost {
           ]);
           await this.handlers.setParam?.(message.name, message.value);
           break;
-        case "triggerEvent": {
+        case "triggerEvent":
+        case "midiNote": {
           const current = () => typeof message.engineGeneration === "string" &&
             message.engineGeneration === this.state.engineGeneration &&
             this.state.connected === true && this.state.schemaReady !== false;
           if (!current()) break;
-          const event = this.state.events.find(
-            (item) => item.name === message.name,
-          );
-          if (!event) break;
-          const values = message.values ?? [];
-          try {
-            await this.handlers.triggerEvent?.(
-              message.name,
-              event.args.map((arg, i) => eventValue(arg.shape, values[i])),
-            );
-          } catch (error) {
-            if (current()) throw error;
-          }
-          break;
-        }
-        case "midiNote": {
-          const name = message.pressed
-            ? this.state.midi.noteOn
-              ? "note_on"
-              : null
-            : this.state.midi.noteOff
-              ? "note_off"
-              : null;
-          if (name) {
+          let name, values;
+          if (message.type === "midiNote") {
+            const enabled = message.pressed ? this.state.midi.noteOn : this.state.midi.noteOff;
+            if (!enabled) break;
+            name = message.pressed ? "note_on" : "note_off";
             const key = Math.max(0, Math.min(127, Number(message.key) || 0));
             const velocity = message.pressed
               ? Math.max(0, Math.min(1, Number(message.velocity) || 0))
               : 0;
-            await this.handlers.triggerEvent?.(name, [-1, 0, key, velocity]);
+            values = [-1, 0, key, velocity];
+          } else {
+            const event = this.state.events.find((item) => item.name === message.name);
+            if (!event) break;
+            name = message.name;
+            values = event.args.map((arg, i) => eventValue(arg.shape, message.values?.[i]));
+          }
+          try {
+            await this.handlers.triggerEvent?.(name, values);
+          } catch (error) {
+            if (current()) throw error;
           }
           break;
         }

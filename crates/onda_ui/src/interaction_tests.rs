@@ -23,6 +23,23 @@ fn notes(ui: &mut RunUi) -> Vec<Value> {
         .filter(|v| v["type"] == "midiNote")
         .collect()
 }
+
+#[test]
+fn midi_commands_retain_their_engine_when_the_processor_changes() {
+    let mut ui = fixture();
+    ui.message(json!({"type":"state","state":{"engineGeneration":"old"}}));
+    keyboard(&mut ui, "a", true);
+    ui.message(json!({"type":"state","state":{"engineGeneration":"new"}}));
+    keyboard(&mut ui, "s", true);
+    let commands = notes(&mut ui);
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0]["engineGeneration"], "old");
+    assert_eq!(commands[0]["pressed"], true);
+    assert_eq!(commands[1]["engineGeneration"], "old");
+    assert_eq!(commands[1]["pressed"], false);
+    assert_eq!(commands[2]["engineGeneration"], "new");
+    assert_eq!(commands[2]["pressed"], true);
+}
 fn position(ui: &mut RunUi, note: u8) -> (f32, f32) {
     ui.prepare_scene();
     let r = ui
@@ -155,8 +172,8 @@ fn collapsed_keyboard_keeps_receiving_computer_and_host_midi() {
         assert_eq!(
             notes(&mut ui),
             [
-                json!({"type":"midiNote","key":note,"velocity":1.0,"pressed":true}),
-                json!({"type":"midiNote","key":note,"velocity":0.0,"pressed":false}),
+                json!({"type":"midiNote","engineGeneration":null,"key":note,"velocity":1.0,"pressed":true}),
+                json!({"type":"midiNote","engineGeneration":null,"key":note,"velocity":0.0,"pressed":false}),
             ]
         );
     }
@@ -182,8 +199,8 @@ fn collapsing_keyboard_preserves_keyboard_notes_and_releases_hidden_piano_gestur
     assert_eq!(
         notes(&mut ui),
         [
-            json!({"type":"midiNote","key":64,"velocity":0.0,"pressed":false}),
-            json!({"type":"midiNote","key":67,"velocity":0.0,"pressed":false}),
+            json!({"type":"midiNote","engineGeneration":null,"key":64,"velocity":0.0,"pressed":false}),
+            json!({"type":"midiNote","engineGeneration":null,"key":67,"velocity":0.0,"pressed":false}),
         ]
     );
     assert!(ui.interaction.midi().held(60));
@@ -195,7 +212,9 @@ fn collapsing_keyboard_preserves_keyboard_notes_and_releases_hidden_piano_gestur
     keyboard(&mut ui, "a", false);
     assert_eq!(
         notes(&mut ui),
-        [json!({"type":"midiNote","key":60,"velocity":0.0,"pressed":false})]
+        [
+            json!({"type":"midiNote","engineGeneration":null,"key":60,"velocity":0.0,"pressed":false})
+        ]
     );
 }
 
@@ -391,19 +410,25 @@ fn source_changes_and_presentation_resets_restore_midi_defaults() {
         keyboard(&mut ui, "a", true);
         assert_eq!(
             notes(&mut ui),
-            [json!({"type":"midiNote","key":36,"velocity":0.25,"pressed":true})]
+            [
+                json!({"type":"midiNote","engineGeneration":null,"key":36,"velocity":0.25,"pressed":true})
+            ]
         );
 
         ui.message(json!({"type":"state","state":state}));
         assert_eq!(
             notes(&mut ui),
-            [json!({"type":"midiNote","key":36,"velocity":0.0,"pressed":false})],
+            [
+                json!({"type":"midiNote","engineGeneration":null,"key":36,"velocity":0.0,"pressed":false})
+            ],
             "resetting presentation must release notes from the previous octave"
         );
         keyboard(&mut ui, "a", true);
         assert_eq!(
             notes(&mut ui),
-            [json!({"type":"midiNote","key":60,"velocity":1.0,"pressed":true})]
+            [
+                json!({"type":"midiNote","engineGeneration":null,"key":60,"velocity":1.0,"pressed":true})
+            ]
         );
 
         ui.message(json!({"type":"state","state":{
@@ -413,7 +438,9 @@ fn source_changes_and_presentation_resets_restore_midi_defaults() {
         keyboard(&mut ui, "a", true);
         assert_eq!(
             notes(&mut ui),
-            [json!({"type":"midiNote","key":72,"velocity":0.75,"pressed":true})],
+            [
+                json!({"type":"midiNote","engineGeneration":null,"key":72,"velocity":0.75,"pressed":true})
+            ],
             "a saved source must retain its explicit MIDI preferences"
         );
     }
@@ -642,7 +669,7 @@ fn schema_replacement_ends_a_numeric_drag_and_releases_owned_notes_once() {
         ui.take_commands(),
         vec![
             json!({"type":"endParamGesture","name":"gain"}),
-            json!({"type":"midiNote","key":60,"pressed":false,"velocity":0.0}),
+            json!({"type":"midiNote","engineGeneration":null,"key":60,"pressed":false,"velocity":0.0}),
         ]
     );
     ui.input(Input::FocusLost);

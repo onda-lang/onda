@@ -108,6 +108,14 @@ impl Interaction {
     pub(crate) fn midi(&self) -> &Midi {
         &self.midi
     }
+    pub(crate) fn set_engine_generation(&mut self, generation: &Value) -> Vec<Value> {
+        if self.midi.engine_generation == *generation {
+            return Vec::new();
+        }
+        let notes = self.midi.release();
+        self.midi.engine_generation = generation.clone();
+        notes
+    }
     pub(crate) fn set_octave(&mut self, octave: i32) -> Vec<Value> {
         let notes = self.midi.release();
         self.midi.octave = octave;

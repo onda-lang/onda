@@ -1401,9 +1401,15 @@ fn validate_expr_node<'a>(
                 return;
             }
             if let Some(sig) = env.fn_signatures.get(name).or_else(|| {
-                let proc_name = env.struct_name(name)?;
-                env.fn_signatures
-                    .get(&format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}"))
+                if let Some(proc_name) = env.struct_name(name) {
+                    env.fn_signatures
+                        .get(&format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}"))
+                } else {
+                    let (receiver, event) = name.rsplit_once('.')?;
+                    let proc_name = env.struct_name(receiver)?;
+                    env.fn_signatures
+                        .get(&format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}.{event}"))
+                }
             }) {
                 let display_name = sig.display_name.as_deref().unwrap_or(name);
                 if sig.type_params.is_empty() {
@@ -1868,6 +1874,14 @@ fn is_internal_proc_index_validation_arg(
         return true;
     }
     if arg_name.is_some() {
+        return false;
+    }
+    if args.iter().any(|arg| {
+        matches!(
+            arg.name.as_deref(),
+            Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+        )
+    }) {
         return false;
     }
     args.iter()
@@ -4101,16 +4115,52 @@ fn validate_internal_proc_index_call(
                 validate_expr(other, env, errors);
                 push_loc_error(
                     errors,
-                    other.loc().or(loc),
+                    other.loc().or(&loc),
                     format!("internal builtin '{name}' expects field selector as identifier"),
                 );
             }
             None => {
                 push_loc_error(
                     errors,
-                    loc,
+                    loc.clone(),
                     format!("internal builtin '{name}' is missing field selector argument"),
                 );
+            }
+        }
+    }
+
+    // Resolve source argument shapes before dispatch lowering. In particular,
+    // array literals need the same typed call validation as scalar receivers.
+    if !crate::proc_call_support::has_cached_proc_field_marker(args) {
+        if let Some(Expr::Var { name: base, .. }) = base_expr {
+            if let Some(proc_name) = array_data_struct_element_type(base, env) {
+                let event = name.strip_prefix(PROC_INDEX_CALL_SENTINEL).unwrap_or("");
+                let source_call = format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}{event}");
+                if env.fn_signatures.get(&source_call).is_some() {
+                    let arguments = args
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, arg)| {
+                            !is_internal_proc_index_validation_arg(
+                                args,
+                                *index,
+                                arg.name.as_deref(),
+                            )
+                        })
+                        .map(|(_, arg)| arg.clone())
+                        .collect();
+                    validate_expr(
+                        &Expr::UserCall {
+                            loc: loc.clone().into(),
+                            name: source_call,
+                            type_args: Vec::new(),
+                            args: arguments,
+                        },
+                        env,
+                        errors,
+                    );
+                    return;
+                }
             }
         }
     }

@@ -352,6 +352,14 @@ impl<'a> FunctionLowerer<'a> {
         let roots = globals
             .struct_roots
             .iter()
+            // Parent layouts already include arrays beneath scalar fields.
+            // Nested processor roots are logical views of that same storage,
+            // whose flattened field paths belong to the owning layout.
+            .filter(|(root, _)| {
+                !root
+                    .match_indices('.')
+                    .any(|(index, _)| globals.struct_roots.contains_key(&root[..index]))
+            })
             .map(|(root, struct_name)| (root.clone(), struct_name.clone()))
             .collect::<Vec<_>>();
         for (root, struct_name) in roots {

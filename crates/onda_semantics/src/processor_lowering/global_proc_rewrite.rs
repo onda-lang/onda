@@ -332,6 +332,7 @@ pub(super) fn rewrite_top_level_proc_calls(
     proc_defs_by_name: &HashMap<String, ProcessorDef>,
     lowering_shapes: &HashMap<String, ProcLoweringShape>,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> TopLevelProcRewriteMeta {
     let constructor_array_symbols = top_level_constructor_array_symbols(program);
@@ -708,6 +709,7 @@ pub(super) fn rewrite_top_level_proc_calls(
             &call_instances,
             &global_proc_array_slots,
             proc_api,
+            constants,
             errors,
         );
         inject_bound_proc_param_hooks_in_stmts(
@@ -913,6 +915,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &call_instances,
                     &global_proc_array_slots,
                     proc_api,
+                    constants,
                     errors,
                 );
                 if let Some(sample) = &mut exec.sample {
@@ -921,6 +924,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         &call_instances,
                         &global_proc_array_slots,
                         proc_api,
+                        constants,
                         errors,
                     );
                 }
@@ -929,6 +933,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &call_instances,
                     &global_proc_array_slots,
                     proc_api,
+                    constants,
                     errors,
                 );
             }
@@ -938,6 +943,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &call_instances,
                     &global_proc_array_slots,
                     proc_api,
+                    constants,
                     errors,
                 );
             }
@@ -947,6 +953,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                     &call_instances,
                     &global_proc_array_slots,
                     proc_api,
+                    constants,
                     errors,
                 );
             }
@@ -958,6 +965,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                         &call_instances,
                         &global_proc_array_slots,
                         proc_api,
+                        constants,
                         errors,
                     );
                 }
@@ -967,6 +975,7 @@ pub(super) fn rewrite_top_level_proc_calls(
                 &call_instances,
                 &global_proc_array_slots,
                 proc_api,
+                constants,
                 errors,
             ),
             _ => {}

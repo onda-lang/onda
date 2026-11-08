@@ -1188,8 +1188,10 @@ struct HookSafeCtx<'a> {
     child_proc_surfaces: &'a HashMap<String, ChildProcSurface>,
 }
 
-#[derive(Debug, Default)]
-struct ChildProcSurface {
+#[derive(Debug)]
+pub(super) struct ChildProcSurface {
+    source_call: FnSignature,
+    source_events: Vec<(String, FnSignature)>,
     constructor_per_slot: HashSet<String>,
     params: HashSet<String>,
     param_arrays: HashSet<String>,
@@ -1231,7 +1233,7 @@ pub(super) fn proc_options_for_shape(
     )
 }
 
-fn build_child_proc_surfaces(
+pub(super) fn build_child_proc_surfaces(
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
     options: AnalysisOptions,
     const_arrays: &HashMap<String, TypedArrayInfo>,
@@ -1243,12 +1245,93 @@ fn build_child_proc_surfaces(
         let declarations =
             prepare_proc_declarations(proc, proc_options, const_arrays, &mut scratch_errors);
 
+        let mut params: Vec<_> = declarations
+            .inputs
+            .declarations
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        let mut defaults: Vec<_> = declarations
+            .inputs
+            .declarations
+            .iter()
+            .map(|p| p.default.clone())
+            .collect();
+        let argument_type = |ty, len: Option<usize>| {
+            Some(
+                len.map_or(FnParamType::Primitive(ty), |len| FnParamType::SizedArray {
+                    elem: Some(ty),
+                    generic_name: None,
+                    size: Expr::int(len as i64),
+                }),
+            )
+        };
+        let mut param_types: Vec<_> = declarations
+            .inputs
+            .specs
+            .iter()
+            .map(|spec| {
+                let ty = spec
+                    .slots
+                    .first()
+                    .and_then(|slot| declarations.inputs.types.get(slot))
+                    .copied()
+                    .unwrap_or(PrimitiveType::F32);
+                argument_type(ty, spec.is_array.then_some(spec.slots.len()))
+            })
+            .collect();
+        for spec in &declarations.params {
+            params.push(spec.name.clone());
+            // Defaults are validated at their declarations. Source calls only
+            // need optionality: omitted live params keep their stored values.
+            defaults.push(Some(Expr::number(0.0)));
+            let ty = spec
+                .slots
+                .first()
+                .map_or(PrimitiveType::F32, |slot| slot.ty);
+            param_types.push(argument_type(
+                ty,
+                (!spec.is_scalar).then_some(spec.slots.len()),
+            ));
+        }
+        let readonly_data_params = params
+            .iter()
+            .zip(&param_types)
+            .filter(|(_, ty)| matches!(ty, Some(FnParamType::SizedArray { .. })))
+            .map(|(name, _)| name.clone())
+            .collect();
         let mut surface = ChildProcSurface {
+            source_call: FnSignature {
+                defaults_validated: true,
+                display_name: None,
+                requires_call_specialization: false,
+                params,
+                defaults: defaults.into(),
+                param_types,
+                type_params: Vec::new(),
+                return_type: None,
+                readonly_data_params,
+            },
+            source_events: proc
+                .events
+                .iter()
+                .map(|event| {
+                    (
+                        event.name.clone(),
+                        FnSignature::from_event_params(&event.params),
+                    )
+                })
+                .collect(),
             constructor_per_slot: proc_array_init::per_slot_arguments(
                 &declarations.params,
                 &declarations.buffers,
             ),
-            ..Default::default()
+            params: HashSet::new(),
+            param_arrays: HashSet::new(),
+            inputs: HashSet::new(),
+            input_arrays: HashSet::new(),
+            outputs: HashSet::new(),
+            output_arrays: HashSet::new(),
         };
         surface.inputs.extend(declarations.inputs.slots);
         surface
@@ -2517,6 +2600,7 @@ pub(super) fn compute_proc_shape(
     fn_signatures_full: &HashMap<String, FnSignature>,
     fn_defs_full: &[FunctionDef],
     proc_defs_by_name: &HashMap<String, onda_frontend::ProcessorDef>,
+    child_proc_surfaces: &HashMap<String, ChildProcSurface>,
     source_proc_types: &HashMap<String, Vec<TypedStructField>>,
     const_arrays: &HashMap<String, TypedArrayInfo>,
     const_scalars: &HashMap<String, PrimitiveType>,
@@ -2524,7 +2608,6 @@ pub(super) fn compute_proc_shape(
     errors: &mut Vec<Diagnostic>,
 ) -> ProcBaseShape {
     let proc_options = proc_runtime_analysis_options(options, sample_oversample_factor);
-    let child_proc_surfaces = build_child_proc_surfaces(proc_defs_by_name, options, const_arrays);
     check_local_param_duplicates(&proc.params, errors);
     let ProcDeclarations {
         inputs:
@@ -2991,7 +3074,7 @@ pub(super) fn compute_proc_shape(
             .or_insert(slots.len());
     }
 
-    // Build enriched fn_signatures with nested proc instance stubs
+    // Nominal signatures also cover aliases of children reached through other processors.
     let mut proc_fn_signatures = fn_signatures;
     proc_fn_signatures
         .entry(PROC_INDEX_CALL_SENTINEL.to_owned())
@@ -3001,35 +3084,22 @@ pub(super) fn compute_proc_shape(
             "{PROC_FIELD_SENTINEL_PREFIX}{PROC_INDEX_CALL_SENTINEL}"
         ))
         .or_insert_with(|| internal_proc_index_call_signature(true));
+    for (name, surface) in child_proc_surfaces {
+        let source_call = format!("{name}{PROC_SOURCE_CALL_FN_SUFFIX}");
+        proc_fn_signatures.insert(source_call.clone(), surface.source_call.clone());
+        for (event, signature) in &surface.source_events {
+            proc_fn_signatures.insert(format!("{source_call}.{event}"), signature.clone());
+        }
+    }
     for (instance_name, nested) in &state.nested_procs {
         if let Some(target_proc) = proc_defs_by_name.get(&nested.proc_name) {
             let target_proc_options = proc_options_for_shape(target_proc, options);
             let declarations =
                 prepare_proc_declarations(target_proc, target_proc_options, const_arrays, errors);
-            let target_ins = &declarations.inputs.declarations;
-            let mut params: Vec<String> = target_ins.iter().map(|p| p.name.clone()).collect();
-            let mut defaults: Vec<Option<Expr>> =
-                target_ins.iter().map(|p| p.default.clone()).collect();
-            for spec in &declarations.params {
-                params.push(spec.name.clone());
-                defaults.push(Some(Expr::number(0.0)));
-            }
-            let signature = FnSignature {
-                defaults_validated: false,
-                display_name: None,
-                requires_call_specialization: false,
-                params,
-                defaults: defaults.into(),
-                param_types: Vec::new(),
-                type_params: Vec::new(),
-                return_type: None,
-                readonly_data_params: HashSet::new(),
-            };
             proc_fn_signatures.insert(
-                format!("{}{PROC_SOURCE_CALL_FN_SUFFIX}", nested.proc_name),
-                signature.clone(),
+                instance_name.clone(),
+                child_proc_surfaces[&nested.proc_name].source_call.clone(),
             );
-            proc_fn_signatures.insert(instance_name.clone(), signature);
 
             let primary_ty = declarations
                 .outputs
@@ -3240,7 +3310,7 @@ pub(super) fn compute_proc_shape(
         &init_bindings,
         &block_bindings,
         &mut state,
-        &typed_struct_defs,
+        &source_struct_defs,
         &proc_declared_symbols,
         &reserved,
         errors,
@@ -3332,7 +3402,7 @@ pub(super) fn compute_proc_shape(
         &output_array_names,
         &state,
         &nested_proc_array_slots,
-        &child_proc_surfaces,
+        child_proc_surfaces,
         errors,
     );
 

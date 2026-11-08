@@ -1,7 +1,7 @@
 use super::*;
 use crate::def_semantics::call_types::{
-    infer_array_arg_type, infer_struct_expr_type, update_call_type_env_after_assign, CallArrayType,
-    CallTypeContext, CallTypeEnv,
+    infer_array_arg_type, infer_struct_expr_type, observe_call_type_bindings,
+    update_call_type_env_after_assign, CallArrayType, CallTypeContext, CallTypeEnv,
 };
 use crate::internal_names::runtime_buffer_alias_selector_symbol;
 
@@ -368,6 +368,12 @@ pub(crate) fn register_scope_state<'a>(
             );
             data
         } else {
+            if matches!(
+                stmt,
+                Stmt::If { .. } | Stmt::For { .. } | Stmt::While { .. }
+            ) {
+                observe_call_type_bindings(std::slice::from_ref(stmt), &mut types, context);
+            }
             false
         };
         if !data_binding {

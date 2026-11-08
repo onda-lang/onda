@@ -815,6 +815,10 @@ pub(crate) fn rewrite_proc_expr_symbols(
         }
         Expr::UserCall { args, .. } => {
             for arg in args {
+                // Endpoint identifiers are metadata, not owner-state reads.
+                if arg.name.as_deref() == Some(PROC_FIELD_SENTINEL_ARG) {
+                    continue;
+                }
                 rewrite_proc_expr_symbols(
                     &mut arg.expr,
                     owner_proc,

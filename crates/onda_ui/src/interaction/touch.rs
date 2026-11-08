@@ -225,7 +225,10 @@ impl RunUi {
             } => {
                 let delta = delta_y.unwrap_or(touch.previous[1] - y);
                 if delta.is_finite() {
-                    let remaining = delta - self.scroll_region_by(region, delta);
+                    let mut remaining = delta - self.scroll_region_by(region, delta);
+                    if region == ScrollRegion::Scope && remaining != 0.0 {
+                        remaining -= self.scroll_region_by(ScrollRegion::Document, remaining);
+                    }
                     if remaining != 0.0 {
                         self.commands.push(serde_json::json!({
                             "type":"scrollParent", "deltaY":remaining
@@ -289,6 +292,52 @@ impl RunUi {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn scope_pans_scroll_the_document_before_forwarding_to_the_host() {
+        let mut ui = RunUi::default();
+        ui.resize(720.0, 400.0, 1.0);
+        ui.message(json!({"type":"state","state":{
+            "path":"scroll.onda","outputChannels":2,"viewState":{"scopePinned":true},
+            "params":(0..16).map(|i|json!({"name":format!("p{i}"),"type":"f64","value":0})).collect::<Vec<_>>()
+        }}));
+        ui.prepare_scene();
+        ui.take_commands();
+        assert_eq!(ui.scroll_region(300.0, 160.0), ScrollRegion::Scope);
+        assert_eq!(ui.scene.scope_scroll_max, 0.0);
+        let bottom = ui.scene.content_height - ui.scene.viewport_height;
+        assert!(bottom > 40.0);
+        ui.input(Input::TouchStart {
+            id: 1,
+            x: 300.0,
+            y: 160.0,
+        });
+        for (delta, expected, forwarded) in [
+            (40.0, 40.0, 0.0),
+            (bottom, bottom, 40.0),
+            (-25.0, bottom - 25.0, 0.0),
+            (-bottom, 0.0, -25.0),
+        ] {
+            ui.input(Input::TouchMove {
+                id: 1,
+                x: 300.0,
+                y: 120.0,
+                delta_y: Some(delta),
+            });
+            assert_eq!(ui.scroll, expected);
+            let commands = ui.take_commands();
+            if forwarded == 0.0 {
+                assert!(commands
+                    .iter()
+                    .all(|command| command["type"] != "scrollParent"));
+            } else {
+                assert_eq!(
+                    commands,
+                    [json!({"type":"scrollParent","deltaY":forwarded})]
+                );
+            }
+        }
+    }
 
     #[test]
     fn touch_pans_forward_only_the_distance_left_after_reaching_an_edge() {

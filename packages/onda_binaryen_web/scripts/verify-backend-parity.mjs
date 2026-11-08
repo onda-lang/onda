@@ -38,6 +38,59 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "named processor params preserve statement evaluation order",
+    source: join(packageDir, "test/fixtures/processor-statement-param-order.onda"),
+    blocks: 1,
+    expectedChannels: [
+      [1, 4, 7, 10],
+      [2, 5, 8, 11],
+      [3, 6, 9, 12],
+      [3, 6, 9, 12],
+    ],
+    expectedPrintText: "1.0 0 2.0\n4.0 0 5.0\n7.0 0 8.0\n10.0 0 11.0\n",
+  },
+  {
+    name: "named processor params preserve surrounding argument evaluation order",
+    source: join(packageDir, "test/fixtures/processor-named-param-order.onda"),
+    blocks: 1,
+    expectedChannels: [[1, 2, 3, 4], [1, 2, 3, 4]],
+  },
+  {
+    name: "scalar owners retain used and unused nested processor arrays",
+    source: join(packageDir, "test/fixtures/processor-scalar-owner-arrays.onda"),
+    blocks: 2,
+    expectedChannels: [[11, 11, 12, 12, 13, 13, 14, 14]],
+  },
+  {
+    name: "borrowed processor named params clamp and invoke each update hook once",
+    source: join(packageDir, "test/fixtures/processor-alias-named-params.onda"),
+    blocks: 1,
+    expectedChannels: [[206, 406, 606, 806], [312, 512, 712, 912]],
+  },
+  {
+    name: "block-pre forwarding preserves joined processor identity across blocks",
+    source: join(packageDir, "test/fixtures/processor-block-forwarded-join.onda"),
+    actions: [
+      { kind: "segments", segments: [{ start_frame: 0, frames: 2, flags: 1 }, { start_frame: 2, frames: 2, flags: 2 }] },
+      { kind: "render" },
+      { kind: "render" },
+    ],
+    expectedChannels: [[3, 6, 9, 12, 3, 6, 9, 12, 15, 18, 21, 24]],
+  },
+  {
+    name: "nested processor aliases retain callable identity inside processors",
+    source: join(packageDir, "test/fixtures/processor-nested-alias-calls.onda"),
+    blocks: 2,
+    expectedChannels: [
+      [13, 13, 16, 16, 19, 19, 22, 22],
+      [24, 24, 28, 28, 32, 32, 36, 36],
+      [13, 13, 16, 16, 19, 19, 22, 22],
+      [13, 16, 19, 22, 13, 16, 19, 22],
+      [24, 28, 32, 36, 24, 28, 32, 36],
+      [13, 16, 19, 22, 13, 16, 19, 22],
+    ],
+  },
+  {
     name: "Main inputs use ordinary proc names, array shapes and ranges",
     source: join(packageDir, "test/fixtures/main-entry-inputs.onda"),
     blocks: 1,

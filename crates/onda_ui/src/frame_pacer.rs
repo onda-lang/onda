@@ -3,6 +3,7 @@
 //! Choose one pair for a pacer's lifetime:
 //! - Timer hosts: [`FramePacer::timer_delay_ms`] and [`FramePacer::timer_submitted`].
 //! - Display callbacks: [`FramePacer::display_delay_ms`] and [`FramePacer::display_submitted`].
+//!
 //! Record only successful submissions. Neither pair measures when pixels reach the display.
 
 /// Optional cadence arithmetic using host-supplied timestamps.

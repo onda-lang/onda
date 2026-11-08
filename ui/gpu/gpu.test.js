@@ -234,13 +234,19 @@ test("vsynced host keeps 60 Hz through display and callback jitter", { timeout:6
   const origin = await serveGpuUi(t);
   const chrome = await openChrome(t, ["--use-angle=swiftshader"]);
   const page = await chrome.page({width:720,height:840,
-    source:"window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail))"});
+    // Hold every RAF, including the host's first draw, so its pacer starts on
+    // the synthetic clock instead of inheriting an uncontrolled real-time phase.
+    source:`window.commands=[];addEventListener('ondaCommand',e=>commands.push(e.detail));
+      window.testFrames=new Map();window.testFrameId=0;
+      window.requestAnimationFrame=callback=>{
+        const id=++testFrameId;testFrames.set(id,callback);return id;
+      };
+      window.cancelAnimationFrame=id=>testFrames.delete(id);`});
   await page.navigate(origin + "/index.html?backend=webgl");
   await eventually(() => page.evaluate("commands.some(c=>c.type==='uiReady')"), "GPU UI");
   await page.evaluate(`_onHostMessage({type:'state',state:{path:'jitter.onda',
     supportsScope:false,supportsTransport:false,viewState:{readyId:98},
     params:[{name:'gain',type:'f64',value:0.5,rangeMin:0,rangeMax:1}]}})`);
-  await eventually(() => page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===98)"), "initial frame");
   const result = await page.evaluate(`(async()=>{
     const {CanvasUi}=await import('./pkg/onda_ui.js');
     const render=CanvasUi.prototype.render,message=CanvasUi.prototype.message;
@@ -258,8 +264,8 @@ test("vsynced host keeps 60 Hz through display and callback jitter", { timeout:6
     // Drive the actual host and Wasm renderer with independent display and
     // execution clocks, including input phases that can miss a late RAF timer.
     let base=performance.now()+1000;
-    let now=base-5,id=0,maxPending=0;
-    const timers=new Map(),frames=new Map();
+    let now=base-5,id=testFrameId,maxPending=0;
+    const timers=new Map(),frames=testFrames;
     performance.now=()=>now;
     window.setTimeout=(callback,delay=0)=>{
       timers.set(++id,{callback,due:now+delay});return id;
@@ -298,6 +304,7 @@ test("vsynced host keeps 60 Hz through display and callback jitter", { timeout:6
     return results;
   })()`);
   assert.deepEqual(result, Array(3).fill({draws:120,lastRendered:1,maxPending:1,timers:0,frames:0}));
+  assert.equal(await page.evaluate("commands.some(c=>c.type==='runViewReady'&&c.readyId===98)"), true);
 });
 
 test("GPU rejects malformed scope packets without losing the frame or later updates", { timeout:60000 }, async t => {
@@ -1147,7 +1154,7 @@ for (const backend of ["webgpu", "webgl"])
     await evaluate("window.dispatchEvent(new Event('blur'))");
     assert.deepEqual(
       await evaluate(`commands.findLast(c=>c.type==='midiNote')`),
-      {type:"midiNote",key:60,pressed:false,velocity:0},
+      {type:"midiNote",engineGeneration:"42",key:60,pressed:false,velocity:0},
       "window blur must release held notes without a visibility change",
     );
     await page("Input.dispatchKeyEvent", { type:"keyUp", key:"a" });

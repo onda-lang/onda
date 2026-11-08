@@ -99,7 +99,14 @@ pub(crate) fn projection_temp_counter(stmts: &[Stmt]) -> usize {
                 ..
             } = stmt
             {
-                if name.starts_with("__onda_proc_output_tuple_index_") {
+                if [
+                    "__onda_proc_output_tuple_index_",
+                    "__onda_proc_call_arg_tmp_",
+                    "__onda_proc_call_result_tmp_",
+                ]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+                {
                     if let Some(index) = name
                         .rsplit('_')
                         .next()
@@ -114,7 +121,63 @@ pub(crate) fn projection_temp_counter(stmts: &[Stmt]) -> usize {
     next
 }
 
-pub(crate) fn expand_processor_projection_assignment(
+pub(crate) fn expand_processor_projection_statement(
+    stmt: &mut Stmt,
+    env: &CallTypeEnv,
+    temp_counter: &mut usize,
+    errors: &mut Vec<Diagnostic>,
+) -> Option<Vec<Stmt>> {
+    let mut has_named_args = false;
+    call_arguments::visit_statement_operands_mut(stmt, |expression, _| {
+        has_named_args |= expression.walk().any(|node| {
+            matches!(node, Expr::UserCall { args, .. } if args.iter().any(|arg| {
+                arg.name.is_some() && !call_arguments::proc_named_arg_is_internal(arg.name.as_deref())
+            }))
+        });
+    });
+    if has_named_args {
+        let mut instances = HashMap::new();
+        let mut arrays = ProcArrayDeclarations::new();
+        call_arguments::visit_statement_operands_mut(stmt, |expression, _| {
+            let (expression_instances, expression_arrays) =
+                projection_call_bindings(expression, env);
+            instances.extend(expression_instances);
+            arrays.extend(expression_arrays);
+        });
+        let mut needs_lowering = false;
+        call_arguments::visit_statement_operands_mut(stmt, |expression, _| {
+            needs_lowering |= call_arguments::has_named_proc_param_calls(
+                expression,
+                &instances,
+                &arrays,
+                &env.processor_apis,
+            );
+        });
+        if needs_lowering {
+            let error_count = errors.len();
+            let mut prelude = call_arguments::lower_named_proc_param_calls_in_statement(
+                stmt,
+                &instances,
+                &arrays,
+                &env.processor_apis,
+                &ProcArrayAliases::new(),
+                temp_counter,
+                &env.const_symbols,
+                errors,
+            );
+            if errors.len() != error_count {
+                return None;
+            }
+            if !prelude.is_empty() {
+                prelude.push(stmt.clone());
+                return Some(prelude);
+            }
+        }
+    }
+    expand_processor_projection_assignment(stmt, env, temp_counter, errors)
+}
+
+fn expand_processor_projection_assignment(
     stmt: &mut Stmt,
     env: &CallTypeEnv,
     temp_counter: &mut usize,
@@ -326,7 +389,16 @@ fn projection_call_bindings(
         let Expr::UserCall { name, args, .. } = expression else {
             continue;
         };
-        let indexed = proc_index_base_name(args);
+        // A direct call's first argument may be an ordinary scalar variable,
+        // including a temporary introduced by named-parameter lowering.
+        let indexed = (name
+            .strip_prefix(PROC_INDEX_CALL_SENTINEL)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('.'))
+            || name
+                .strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+                .is_some_and(|receiver| receiver == PROC_INDEX_CALL_SENTINEL))
+        .then(|| proc_index_base_name(args))
+        .flatten();
         let receiver = indexed.unwrap_or(name);
         let resolved = env
             .processor_view_shape(&Expr::var(receiver))
@@ -366,11 +438,9 @@ fn projection_call_bindings(
             if indexed.is_none() {
                 continue;
             }
-            let declaration = if let Some(len) = shape.array_len() {
-                ProcArrayDeclaration::new(receiver.to_owned(), shape.proc_name.clone(), len, true)
-            } else {
-                ProcArrayDeclaration::borrowed(receiver, shape.proc_name.clone())
-            };
+            // These bindings describe borrowed views, even with a fixed extent.
+            // Their family symbol is not an independently owned element slot.
+            let declaration = ProcArrayDeclaration::borrowed(receiver, shape.proc_name.clone());
             let binding = declaration
                 .first_binding()
                 .expect("processor array has a family binding")
