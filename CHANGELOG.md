@@ -39,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Onda-authored code is now licensed under Apache-2.0 starting with 0.9.0, including
+  the compiler, standard library, runtime, browser packages, and editor/plugin integrations.
+  Third-party components retain their respective licenses.
 - Linux release packages use a Debian 12 build baseline with glibc 2.36 and
   PipeWire 0.3.65; Windows release packages use the Visual Studio 2022 toolchain.
 - Large nested processor arrays compile without the previous aggregate-size limit or generating

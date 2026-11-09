@@ -3,7 +3,7 @@
   "version": "0.9.0",
   "type": "module",
   "description": "Binaryen backend for versioned Onda MIR in browsers and Node.js",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/onda-lang/onda.git",

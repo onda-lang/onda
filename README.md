@@ -297,3 +297,9 @@ It provides:
 - `.onda` and `.on` filetype detection
 - builtin LSP through `onda lsp`
 - `:OndaRunFile` to launch the standalone run window
+
+## License
+
+Starting with the Onda 0.9.0 release, Onda-authored code in this repository is licensed
+under the [Apache License, Version 2.0](LICENSE). Third-party components retain their
+respective licenses.
