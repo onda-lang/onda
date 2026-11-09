@@ -279,6 +279,18 @@ impl Scene {
     }
 }
 impl RunUi {
+    pub(crate) fn highlight_hovered_option(&mut self) -> bool {
+        let [x, y] = self.interaction.pointer;
+        let Some(Target::Option(index)) = self.target(x, y) else {
+            return false;
+        };
+        let Some(menu) = &mut self.interaction.chooser else {
+            return false;
+        };
+        let changed = menu.highlighted != index;
+        menu.highlighted = index;
+        changed
+    }
     pub(crate) fn open_select(&mut self, id: SelectId) {
         let spec = id.spec(self);
         if !spec.enabled {
@@ -420,6 +432,7 @@ impl RunUi {
                 menu.highlighted = index;
             }
         }
+        self.interaction.focus_visible = true;
         self.ensure_choice_visible();
         self.invalidate();
     }
@@ -467,7 +480,8 @@ pub(crate) fn build_menu(ui: &RunUi, s: &mut Scene, p: Palette) {
         if !s.visible(r[1], r[3]) {
             continue;
         }
-        if index == menu.highlighted || s.hovered(ui, r) {
+        // Hit testing owns the active row; adjacent hover rectangles can share an edge.
+        if index == menu.highlighted && (s.hovered(ui, r) || ui.interaction.focus_visible) {
             s.shape(r, p.accent_soft, 3.0);
         }
         if choice.value == spec.value {
@@ -631,6 +645,161 @@ mod tests {
         }
         for id in [SelectId::AudioInput, SelectId::AudioOutput] {
             assert!(id.spec(&ui).choices[0].value.is_null());
+        }
+    }
+
+    #[test]
+    fn dropdown_hover_has_one_row_in_both_directions_and_keyboard_takes_over() {
+        for light in [false, true] {
+            for id in [
+                SelectId::SampleRate,
+                SelectId::BlockSize,
+                SelectId::AudioInput,
+                SelectId::AudioOutput,
+                SelectId::MidiInput,
+            ] {
+                let mut ui = RunUi::default();
+                ui.message(json!({"type":"state","state":{
+                    "path":"dropdowns.onda",
+                    "supportsSourceSelection":true,"supportsRunSettings":true,
+                    "sampleRateHz":48000,"blockSamples":512,
+                    "canSetSampleRate":true,"canSetBlockSize":true,
+                    "supportsDeviceSelection":true,"supportsMidiInputSelection":true,
+                    "inputDevices":["Microphone","USB"],
+                    "outputDevices":["Speakers","Headphones"],"midiInputDevices":["USB MIDI"],
+                    "themeMode":if light { "light" } else { "dark" }
+                }}));
+                ui.interaction.devices_open = true;
+                ui.open_select(id.clone());
+                ui.prepare_scene();
+                assert_highlight(&mut ui, false);
+                let rows: Vec<_> = ui
+                    .scene
+                    .hits
+                    .iter()
+                    .filter_map(|hit| matches!(hit.target, Target::Option(_)).then_some(hit.rect.0))
+                    .collect();
+                let top = rows[0][1] as i32;
+                let last = rows.last().unwrap();
+                let bottom = (last[1] + last[3]) as i32;
+                // Include each shared edge, then continue through the row interior.
+                // A cached double highlight used to persist only on the downward pass.
+                let down = top..bottom;
+                for y in down.clone().chain(down.rev()) {
+                    ui.input(crate::Input::PointerMove {
+                        x: rows[0][0] + 2.0,
+                        y: y as f32,
+                        fine: false,
+                    });
+                    assert_highlight(&mut ui, true);
+                }
+                ui.input(crate::Input::PointerLeave);
+                assert_highlight(&mut ui, false);
+                ui.input(crate::Input::PointerMove {
+                    x: rows[0][0] + 2.0,
+                    y: rows[0][1] + 2.0,
+                    fine: false,
+                });
+                ui.input(crate::Input::Key {
+                    key: Key::ArrowDown,
+                    shift: false,
+                });
+                assert_highlight(&mut ui, true);
+                assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn dropdown_typeahead_highlights_and_commits_the_match_after_mouse_input() {
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{
+            "supportsSourceSelection":true,"supportsRunSettings":true,"sampleRateHz":48000
+        }}));
+        ui.open_select(SelectId::SampleRate);
+        ui.prepare_scene();
+        let row = ui
+            .scene
+            .hits
+            .iter()
+            .find(|hit| hit.target == Target::Option(0))
+            .unwrap()
+            .rect
+            .0;
+        ui.input(crate::Input::PointerMove {
+            x: row[0] + 10.0,
+            y: row[1] + 14.0,
+            fine: false,
+        });
+        ui.input(crate::Input::Text { text: "192".into() });
+        assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 4);
+        assert_highlight(&mut ui, true);
+        ui.input(crate::Input::Key {
+            key: Key::Enter,
+            shift: false,
+        });
+        assert_eq!(ui.state["sampleRateHz"], 192000);
+    }
+
+    #[test]
+    fn dropdown_wheel_scrolling_keeps_the_row_under_the_pointer_active() {
+        let mut ui = RunUi::default();
+        ui.message(json!({"type":"state","state":{
+            "path":"dropdowns.onda", "supportsDeviceSelection":true,
+            "outputDevices":(0..40).map(|i| format!("Device {i}")).collect::<Vec<_>>()
+        }}));
+        ui.interaction.devices_open = true;
+        ui.open_select(SelectId::AudioOutput);
+        ui.prepare_scene();
+        let row = ui
+            .scene
+            .hits
+            .iter()
+            .find(|hit| hit.target == Target::Option(0))
+            .unwrap()
+            .rect
+            .0;
+        let x = row[0] + 10.0;
+        let y = row[1] + 14.0;
+        ui.input(crate::Input::PointerMove { x, y, fine: false });
+        assert_highlight(&mut ui, true);
+        for (delta, index) in [(28.0, 1), (280.0, 11), (-56.0, 9), (-252.0, 0)] {
+            assert!(ui.input(crate::Input::Scroll { delta }));
+            ui.prepare_scene();
+            assert_eq!(ui.target(x, y), Some(Target::Option(index)));
+            assert_highlight(&mut ui, true);
+            assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, index);
+        }
+        ui.input(crate::Input::Key {
+            key: Key::ArrowDown,
+            shift: false,
+        });
+        assert_highlight(&mut ui, true);
+        assert_eq!(ui.interaction.chooser.as_ref().unwrap().highlighted, 1);
+    }
+
+    fn assert_highlight(ui: &mut RunUi, visible: bool) {
+        ui.prepare_scene();
+        let highlights: Vec<_> = ui.scene.shapes[ui.scene.menu_shapes..]
+            .iter()
+            .filter(|shape| shape.color == Palette::new(ui.light).accent_soft)
+            .collect();
+        assert_eq!(
+            highlights.len(),
+            usize::from(visible),
+            "only the active row may have a background highlight"
+        );
+        if visible {
+            let index = ui.interaction.chooser.as_ref().unwrap().highlighted;
+            let row = ui
+                .scene
+                .hits
+                .iter()
+                .find(|hit| hit.target == Target::Option(index))
+                .unwrap()
+                .rect
+                .0;
+            assert_eq!(highlights[0].rect, row);
         }
     }
 

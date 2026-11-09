@@ -125,8 +125,12 @@ impl RunUi {
             }
         };
         self.invalidate();
-        if self.editor.editing() {
+        if self.editor.editing() || region == ScrollRegion::Menu {
             self.prepare_scene();
+        }
+        // Scrolling can move a different option under a stationary pointer.
+        if region == ScrollRegion::Menu && self.highlight_hovered_option() {
+            self.invalidate();
         }
         moved
     }

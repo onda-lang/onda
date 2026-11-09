@@ -187,12 +187,7 @@ impl RunUi {
                         .tooltip_at(self.interaction.pointer[0], self.interaction.pointer[1])
                         != self.scene.tooltip_at(x, y);
                 self.interaction.pointer = [x, y];
-                if let Some(Target::Option(index)) = self.target(x, y) {
-                    if let Some(menu) = &mut self.interaction.chooser {
-                        hover_changed |= menu.highlighted != index;
-                        menu.highlighted = index;
-                    }
-                }
+                hover_changed |= self.highlight_hovered_option();
                 if hover_changed {
                     self.invalidate();
                 }
@@ -799,7 +794,7 @@ impl RunUi {
                     "text"
                 }
             }
-            Some(Target::Scrollbar(_)) => "default",
+            Some(Target::Scrollbar(_) | Target::Overlay) => "default",
             Some(_) => "pointer",
             None => "default",
         }

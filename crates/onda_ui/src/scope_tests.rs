@@ -36,6 +36,33 @@ fn click(ui: &mut RunUi, target: Target) {
 }
 
 #[test]
+fn scope_popup_uses_default_cursor_except_on_its_controls() {
+    let mut ui = fixture(2);
+    click(&mut ui, Target::Scope);
+    let [x, y, w, h] = ui.scene.scope_panel;
+    ui.input(Input::PointerMove {
+        x: x + w * 0.5,
+        y: y + h * 0.5,
+        fine: false,
+    });
+    assert_eq!(ui.cursor(), "default");
+    let r = ui
+        .scene
+        .hits
+        .iter()
+        .find(|hit| hit.target == Target::PinScope)
+        .unwrap()
+        .rect
+        .0;
+    ui.input(Input::PointerMove {
+        x: r[0] + r[2] * 0.5,
+        y: r[1] + r[3] * 0.5,
+        fine: false,
+    });
+    assert_eq!(ui.cursor(), "pointer");
+}
+
+#[test]
 fn new_sources_pin_the_scope_and_saved_presentation_keeps_the_users_choice() {
     let mut ui = RunUi::default();
     assert!(!ui.scope_enabled());

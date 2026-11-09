@@ -335,14 +335,24 @@ impl ApplicationHandler for App {
             return;
         }
         let result = (|| {
+            let attributes = WindowAttributes::default()
+                .with_title("Onda Run")
+                .with_surface_size(winit::dpi::LogicalSize::new(720.0, 840.0))
+                .with_min_surface_size(winit::dpi::LogicalSize::new(360.0, 400.0));
+            #[cfg(target_os = "windows")]
+            let attributes = {
+                use winit::platform::windows::{WinIcon, WindowAttributesWindows};
+                // Resource 1 is embedded in both CLI executables by assets/windows/onda.rc.
+                let icon = WinIcon::from_resource(1, None).map_err(|e| e.to_string())?;
+                attributes
+                    .with_window_icon(Some(icon.clone().into()))
+                    .with_platform_attributes(Box::new(
+                        WindowAttributesWindows::default().with_taskbar_icon(Some(icon.into())),
+                    ))
+            };
             let window: Arc<dyn Window> = Arc::from(
                 event_loop
-                    .create_window(
-                        WindowAttributes::default()
-                            .with_title("Onda Run")
-                            .with_surface_size(winit::dpi::LogicalSize::new(720.0, 840.0))
-                            .with_min_surface_size(winit::dpi::LogicalSize::new(360.0, 400.0)),
-                    )
+                    .create_window(attributes)
                     .map_err(|e| e.to_string())?,
             );
             let size = window.surface_size();
