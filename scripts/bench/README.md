@@ -380,6 +380,9 @@ Dated reports and their raw JSON evidence live in `results/`; compiler design be
 setup out of the public documentation. The [2026-10-23 report](results/2026-10-23.md) combines the
 runtime audit, implementation results, and follow-up codegen review, including known regressions.
 
+Before committing reports, express checkout-local paths relative to the checkout root and
+home-directory tool paths using `$HOME`.
+
 The [2026-10-22 performance cleanup results](results/2026-10-22.json) record the retained
 improvements, removed experiments, worker identities, paired samples, validation and reproduction
 steps. The final 12-case native check produces byte-identical objects to the compiler before the

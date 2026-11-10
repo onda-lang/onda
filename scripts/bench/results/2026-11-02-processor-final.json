@@ -1356,7 +1356,7 @@
       "kind": "derived-active-example",
       "warmup": 512,
       "max_output_abs": null,
-      "derived_from": "/home/francesco/Sources/onda-proc-state/examples/plugins/instruments/fm_bells.onda",
+      "derived_from": "examples/plugins/instruments/fm_bells.onda",
       "source_sha256": "a24e58e7afb169334b5ff7e5f5ae4e1fa08aba35fa2acd53e1f5400de7c09d52"
     },
     {
@@ -1365,7 +1365,7 @@
       "kind": "derived-active-example",
       "warmup": 512,
       "max_output_abs": null,
-      "derived_from": "/home/francesco/Sources/onda-proc-state/examples/plugins/instruments/poly_saw.onda",
+      "derived_from": "examples/plugins/instruments/poly_saw.onda",
       "source_sha256": "161ee3d72462c920c36ba40c384d6ef98b8830c36ed50683d004085cf90bbbd3"
     }
   ],
@@ -25146,22 +25146,22 @@
       {
         "name": "proc-helper-callback-16",
         "worker": "base",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-helper-callback-16-base.log"
+        "log": "target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-helper-callback-16-base.log"
       },
       {
         "name": "proc-helper-callback-128",
         "worker": "base",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-helper-callback-128-base.log"
+        "log": "target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-helper-callback-128-base.log"
       },
       {
         "name": "proc-bank-1024",
         "worker": "base",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-bank-1024-base.log"
+        "log": "target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-bank-1024-base.log"
       },
       {
         "name": "proc-helper-callback-1024",
         "worker": "base",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-helper-callback-1024-base.log"
+        "log": "target/proc-storage-evidence/final-2026-11-02/timings-logs/proc-helper-callback-1024-base.log"
       }
     ],
     "outputs": [
@@ -29269,7 +29269,7 @@
         "name": "delay-integer-96000",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/delay-integer-96000/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/delay-integer-96000/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29335,7 +29335,7 @@
         "name": "delay-integer-96000",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/delay-integer-96000/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/delay-integer-96000/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29401,7 +29401,7 @@
         "name": "example-spectral-spectral_freeze",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/example-spectral-spectral_freeze/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/example-spectral-spectral_freeze/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29469,7 +29469,7 @@
         "name": "example-spectral-spectral_freeze",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/example-spectral-spectral_freeze/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/example-spectral-spectral_freeze/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29537,7 +29537,7 @@
         "name": "fft-real-f64-256",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/fft-real-f64-256/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/fft-real-f64-256/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29601,7 +29601,7 @@
         "name": "fft-real-f64-256",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/fft-real-f64-256/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/fft-real-f64-256/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29665,7 +29665,7 @@
         "name": "passthrough",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/passthrough/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/passthrough/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29731,7 +29731,7 @@
         "name": "passthrough",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/passthrough/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/passthrough/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29797,7 +29797,7 @@
         "name": "gain-smoothed",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/gain-smoothed/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/gain-smoothed/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29863,7 +29863,7 @@
         "name": "gain-smoothed",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/gain-smoothed/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/gain-smoothed/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29929,7 +29929,7 @@
         "name": "fft-stft-1024",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/fft-stft-1024/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/fft-stft-1024/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -29993,7 +29993,7 @@
         "name": "fft-stft-1024",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/fft-stft-1024/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/fft-stft-1024/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30057,7 +30057,7 @@
         "name": "proc-bank-16",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-16/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-16/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30121,7 +30121,7 @@
         "name": "proc-bank-16",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-16/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-16/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30185,7 +30185,7 @@
         "name": "proc-bank-128",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-128/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-128/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30249,7 +30249,7 @@
         "name": "proc-bank-128",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-128/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/proc-bank-128/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30313,7 +30313,7 @@
         "name": "example-basic-voice_bank",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/example-basic-voice_bank/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/example-basic-voice_bank/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30377,7 +30377,7 @@
         "name": "example-basic-voice_bank",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/example-basic-voice_bank/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/example-basic-voice_bank/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30441,7 +30441,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/example-soundscapes-glass_garden/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/example-soundscapes-glass_garden/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30506,7 +30506,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/example-soundscapes-glass_garden/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/example-soundscapes-glass_garden/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30571,7 +30571,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-fm_bells/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-fm_bells/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30636,7 +30636,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-fm_bells/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-fm_bells/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30701,7 +30701,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-poly_saw/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-poly_saw/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30766,7 +30766,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "base",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-poly_saw/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/0/active-plugin-poly_saw/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30831,7 +30831,7 @@
         "name": "delay-integer-96000",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/delay-integer-96000/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/delay-integer-96000/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30897,7 +30897,7 @@
         "name": "delay-integer-96000",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/delay-integer-96000/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/delay-integer-96000/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -30963,7 +30963,7 @@
         "name": "example-spectral-spectral_freeze",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/example-spectral-spectral_freeze/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/example-spectral-spectral_freeze/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31031,7 +31031,7 @@
         "name": "example-spectral-spectral_freeze",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/example-spectral-spectral_freeze/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/example-spectral-spectral_freeze/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31099,7 +31099,7 @@
         "name": "fft-real-f64-256",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/fft-real-f64-256/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/fft-real-f64-256/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31163,7 +31163,7 @@
         "name": "fft-real-f64-256",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/fft-real-f64-256/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/fft-real-f64-256/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31227,7 +31227,7 @@
         "name": "passthrough",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/passthrough/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/passthrough/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31293,7 +31293,7 @@
         "name": "passthrough",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/passthrough/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/passthrough/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31359,7 +31359,7 @@
         "name": "gain-smoothed",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/gain-smoothed/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/gain-smoothed/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31425,7 +31425,7 @@
         "name": "gain-smoothed",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/gain-smoothed/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/gain-smoothed/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31491,7 +31491,7 @@
         "name": "fft-stft-1024",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/fft-stft-1024/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/fft-stft-1024/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31555,7 +31555,7 @@
         "name": "fft-stft-1024",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/fft-stft-1024/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/fft-stft-1024/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31619,7 +31619,7 @@
         "name": "proc-bank-16",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-16/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-16/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31683,7 +31683,7 @@
         "name": "proc-bank-16",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-16/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-16/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31747,7 +31747,7 @@
         "name": "proc-bank-128",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-128/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-128/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31811,7 +31811,7 @@
         "name": "proc-bank-128",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-128/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/proc-bank-128/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31875,7 +31875,7 @@
         "name": "example-basic-voice_bank",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/example-basic-voice_bank/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/example-basic-voice_bank/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -31939,7 +31939,7 @@
         "name": "example-basic-voice_bank",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/example-basic-voice_bank/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/example-basic-voice_bank/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32003,7 +32003,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/example-soundscapes-glass_garden/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/example-soundscapes-glass_garden/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32068,7 +32068,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/example-soundscapes-glass_garden/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/example-soundscapes-glass_garden/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32133,7 +32133,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-fm_bells/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-fm_bells/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32198,7 +32198,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-fm_bells/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-fm_bells/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32263,7 +32263,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "base",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-poly_saw/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-poly_saw/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32328,7 +32328,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-poly_saw/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/1/active-plugin-poly_saw/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32393,7 +32393,7 @@
         "name": "delay-integer-96000",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/delay-integer-96000/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/delay-integer-96000/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32459,7 +32459,7 @@
         "name": "delay-integer-96000",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/delay-integer-96000/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/delay-integer-96000/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32525,7 +32525,7 @@
         "name": "example-spectral-spectral_freeze",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/example-spectral-spectral_freeze/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/example-spectral-spectral_freeze/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32593,7 +32593,7 @@
         "name": "example-spectral-spectral_freeze",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/example-spectral-spectral_freeze/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/example-spectral-spectral_freeze/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32661,7 +32661,7 @@
         "name": "fft-real-f64-256",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/fft-real-f64-256/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/fft-real-f64-256/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32725,7 +32725,7 @@
         "name": "fft-real-f64-256",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/fft-real-f64-256/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/fft-real-f64-256/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32789,7 +32789,7 @@
         "name": "passthrough",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/passthrough/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/passthrough/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32855,7 +32855,7 @@
         "name": "passthrough",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/passthrough/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/passthrough/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32921,7 +32921,7 @@
         "name": "gain-smoothed",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/gain-smoothed/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/gain-smoothed/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -32987,7 +32987,7 @@
         "name": "gain-smoothed",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/gain-smoothed/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/gain-smoothed/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33053,7 +33053,7 @@
         "name": "fft-stft-1024",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/fft-stft-1024/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/fft-stft-1024/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33117,7 +33117,7 @@
         "name": "fft-stft-1024",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/fft-stft-1024/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/fft-stft-1024/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33181,7 +33181,7 @@
         "name": "proc-bank-16",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-16/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-16/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33245,7 +33245,7 @@
         "name": "proc-bank-16",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-16/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-16/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33309,7 +33309,7 @@
         "name": "proc-bank-128",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-128/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-128/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33373,7 +33373,7 @@
         "name": "proc-bank-128",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-128/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/proc-bank-128/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33437,7 +33437,7 @@
         "name": "example-basic-voice_bank",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/example-basic-voice_bank/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/example-basic-voice_bank/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33501,7 +33501,7 @@
         "name": "example-basic-voice_bank",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/example-basic-voice_bank/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/example-basic-voice_bank/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33565,7 +33565,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/example-soundscapes-glass_garden/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/example-soundscapes-glass_garden/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33630,7 +33630,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/example-soundscapes-glass_garden/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/example-soundscapes-glass_garden/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33695,7 +33695,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-fm_bells/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-fm_bells/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33760,7 +33760,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-fm_bells/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-fm_bells/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33825,7 +33825,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-poly_saw/current",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-poly_saw/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -33890,7 +33890,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "base",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-poly_saw/base",
+        "directory": "target/proc-storage-evidence/final-2026-11-02/followup/2/active-plugin-poly_saw/base",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -35707,7 +35707,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/passthrough/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/passthrough/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -35771,7 +35771,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/passthrough/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/passthrough/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -35835,7 +35835,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/gain-smoothed/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/gain-smoothed/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -35899,7 +35899,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/gain-smoothed/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/gain-smoothed/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -35963,7 +35963,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/fft-stft-1024/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/fft-stft-1024/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36025,7 +36025,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/fft-stft-1024/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/fft-stft-1024/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36087,7 +36087,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/delay-integer-96000/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/delay-integer-96000/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36151,7 +36151,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/delay-integer-96000/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/delay-integer-96000/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36215,7 +36215,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/example-spectral-spectral_freeze/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/example-spectral-spectral_freeze/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36281,7 +36281,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/example-spectral-spectral_freeze/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/example-spectral-spectral_freeze/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36347,7 +36347,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/fft-real-f64-256/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/fft-real-f64-256/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36409,7 +36409,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/fft-real-f64-256/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/fft-real-f64-256/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36471,7 +36471,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/example-basic-voice_bank/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/example-basic-voice_bank/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36533,7 +36533,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/0/example-basic-voice_bank/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/0/example-basic-voice_bank/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36595,7 +36595,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/passthrough/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/passthrough/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36659,7 +36659,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/passthrough/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/passthrough/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36723,7 +36723,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/gain-smoothed/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/gain-smoothed/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36787,7 +36787,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/gain-smoothed/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/gain-smoothed/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36851,7 +36851,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/fft-stft-1024/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/fft-stft-1024/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36913,7 +36913,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/fft-stft-1024/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/fft-stft-1024/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -36975,7 +36975,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/delay-integer-96000/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/delay-integer-96000/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37039,7 +37039,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/delay-integer-96000/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/delay-integer-96000/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37103,7 +37103,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/example-spectral-spectral_freeze/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/example-spectral-spectral_freeze/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37169,7 +37169,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/example-spectral-spectral_freeze/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/example-spectral-spectral_freeze/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37235,7 +37235,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/fft-real-f64-256/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/fft-real-f64-256/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37297,7 +37297,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/fft-real-f64-256/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/fft-real-f64-256/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37359,7 +37359,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/example-basic-voice_bank/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/example-basic-voice_bank/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37421,7 +37421,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/1/example-basic-voice_bank/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/1/example-basic-voice_bank/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37483,7 +37483,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/passthrough/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/passthrough/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37547,7 +37547,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/passthrough/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/passthrough/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37611,7 +37611,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/gain-smoothed/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/gain-smoothed/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37675,7 +37675,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/gain-smoothed/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/gain-smoothed/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37739,7 +37739,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/fft-stft-1024/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/fft-stft-1024/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37801,7 +37801,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/fft-stft-1024/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/fft-stft-1024/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37863,7 +37863,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/delay-integer-96000/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/delay-integer-96000/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37927,7 +37927,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/delay-integer-96000/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/delay-integer-96000/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -37991,7 +37991,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/example-spectral-spectral_freeze/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/example-spectral-spectral_freeze/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -38057,7 +38057,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/example-spectral-spectral_freeze/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/example-spectral-spectral_freeze/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -38123,7 +38123,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/fft-real-f64-256/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/fft-real-f64-256/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -38185,7 +38185,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/fft-real-f64-256/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/fft-real-f64-256/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -38247,7 +38247,7 @@
           "worker": "current",
           "mir_version": "base",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/example-basic-voice_bank/base",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/example-basic-voice_bank/base",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -38309,7 +38309,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/replay/2/example-basic-voice_bank/current",
+          "directory": "target/proc-storage-evidence/final-2026-11-02/replay/2/example-basic-voice_bank/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -39122,7 +39122,7 @@
       "family": "bank",
       "representation": "flat",
       "extent": 16384,
-      "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/large-capacity/bank/flat",
+      "directory": "target/proc-storage-evidence/final-2026-11-02/large-capacity/bank/flat",
       "ok": true,
       "returncode": 0,
       "row": {
@@ -39184,7 +39184,7 @@
       "family": "bank",
       "representation": "processor",
       "extent": 16384,
-      "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/large-capacity/bank/processor",
+      "directory": "target/proc-storage-evidence/final-2026-11-02/large-capacity/bank/processor",
       "ok": true,
       "returncode": 0,
       "row": {
@@ -39246,7 +39246,7 @@
       "family": "callback",
       "representation": "flat",
       "extent": 16384,
-      "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/large-capacity/callback/flat",
+      "directory": "target/proc-storage-evidence/final-2026-11-02/large-capacity/callback/flat",
       "ok": true,
       "returncode": 0,
       "row": {
@@ -39308,7 +39308,7 @@
       "family": "callback",
       "representation": "processor",
       "extent": 16384,
-      "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/final-2026-11-02/large-capacity/callback/processor",
+      "directory": "target/proc-storage-evidence/final-2026-11-02/large-capacity/callback/processor",
       "ok": true,
       "returncode": 0,
       "row": {

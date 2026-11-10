@@ -8,7 +8,7 @@
       "columns": 355
     },
     "extension": "/tmp/onda-vscode-gpu-FYlYNP/extensions/onda-lang.onda-vscode-0.1.38",
-    "vsix": "/home/francesco/Sources/onda-shader2/target/onda-gpu.vsix",
+    "vsix": "target/onda-gpu.vsix",
     "checks": [
       "real extension host",
       "real playback",

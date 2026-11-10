@@ -9,15 +9,15 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/audio-direct.onda",
-            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/audio-helper.onda",
-            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-current.onda",
-            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-on-write.onda"
+            "target/bench/codegen-stack-review-2026-10-23/sources/audio-direct.onda",
+            "target/bench/codegen-stack-review-2026-10-23/sources/audio-helper.onda",
+            "target/bench/codegen-stack-review-2026-10-23/sources/pan-current.onda",
+            "target/bench/codegen-stack-review-2026-10-23/sources/pan-on-write.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/probes",
+          "output": "target/bench/codegen-stack-review-2026-10-23/probes",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -48,7 +48,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -58,7 +58,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -538,13 +538,13 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-on-write.onda",
-            "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/pan-current.onda"
+            "target/bench/codegen-stack-review-2026-10-23/sources/pan-on-write.onda",
+            "target/bench/codegen-stack-review-2026-10-23/sources/pan-current.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/pan-reversed",
+          "output": "target/bench/codegen-stack-review-2026-10-23/pan-reversed",
           "backend": "both",
           "inspect_only": false,
           "ir": false,
@@ -575,7 +575,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -585,7 +585,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -3005,8 +3005,8 @@
         "CPUAffinity=3",
         "node",
         "--max-old-space-size=256",
-        "/home/francesco/Sources/onda/scripts/bench/wasm.mjs",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-0-before/audio-direct.config.json"
+        "scripts/bench/wasm.mjs",
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-0-before/audio-direct.config.json"
       ],
       "wasm-param-0-after": [
         "systemd-run",
@@ -3033,8 +3033,8 @@
         "CPUAffinity=3",
         "node",
         "--max-old-space-size=256",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-0-after/audio-direct.config.json"
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-0-after/audio-direct.config.json"
       ],
       "wasm-param-1-after": [
         "systemd-run",
@@ -3061,8 +3061,8 @@
         "CPUAffinity=3",
         "node",
         "--max-old-space-size=256",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-1-after/audio-direct.config.json"
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-1-after/audio-direct.config.json"
       ],
       "wasm-param-1-before": [
         "systemd-run",
@@ -3089,8 +3089,8 @@
         "CPUAffinity=3",
         "node",
         "--max-old-space-size=256",
-        "/home/francesco/Sources/onda/scripts/bench/wasm.mjs",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-1-before/audio-direct.config.json"
+        "scripts/bench/wasm.mjs",
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-1-before/audio-direct.config.json"
       ],
       "wasm-param-2-before": [
         "systemd-run",
@@ -3117,8 +3117,8 @@
         "CPUAffinity=3",
         "node",
         "--max-old-space-size=256",
-        "/home/francesco/Sources/onda/scripts/bench/wasm.mjs",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-2-before/audio-direct.config.json"
+        "scripts/bench/wasm.mjs",
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-2-before/audio-direct.config.json"
       ],
       "wasm-param-2-after": [
         "systemd-run",
@@ -3145,14 +3145,14 @@
         "CPUAffinity=3",
         "node",
         "--max-old-space-size=256",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
-        "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-2-after/audio-direct.config.json"
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-worker.mjs",
+        "target/bench/codegen-stack-review-2026-10-23/wasm-param-2-after/audio-direct.config.json"
       ]
     },
     "config": {
       "schema_version": 1,
-      "source": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/sources/audio-direct.onda",
-      "prefix": "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/wasm-param-0-after/audio-direct",
+      "source": "target/bench/codegen-stack-review-2026-10-23/sources/audio-direct.onda",
+      "prefix": "target/bench/codegen-stack-review-2026-10-23/wasm-param-0-after/audio-direct",
       "mode": "bench",
       "sample_rate": 48000,
       "block_size": 128,

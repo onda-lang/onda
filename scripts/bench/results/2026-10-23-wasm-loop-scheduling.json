@@ -21,11 +21,11 @@
   },
   "runtime_workers": {
     "baseline": {
-      "path": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline-worker",
+      "path": "target/wasm-loop-fix/baseline-worker",
       "sha256": "22caba45e5969989d735f660057366ec4cd9f94f845461fc4556c5742da96dd5"
     },
     "candidate": {
-      "path": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate-worker",
+      "path": "target/wasm-loop-fix/candidate-worker",
       "sha256": "180c858734d9ed1554064d7e9df7899ebd0447d0d65f3c5444c08fa102f45803"
     }
   },
@@ -1295,7 +1295,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-32",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-32",
               "ns_per_frame": 118.68379974365244,
               "rounds": [
                 116.83428955078126,
@@ -1311,7 +1311,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-32",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-32",
               "ns_per_frame": 113.95870208740249,
               "rounds": [
                 111.20734024047847,
@@ -1332,7 +1332,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-32",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-32",
               "ns_per_frame": 114.9700984954833,
               "rounds": [
                 113.951093673706,
@@ -1348,7 +1348,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-32",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-32",
               "ns_per_frame": 119.07154273986814,
               "rounds": [
                 116.67138290405269,
@@ -1369,7 +1369,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-32",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-32",
               "ns_per_frame": 118.18801116943341,
               "rounds": [
                 116.21474456787124,
@@ -1385,7 +1385,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-32",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-32",
               "ns_per_frame": 113.61347579956038,
               "rounds": [
                 111.81947326660168,
@@ -1413,7 +1413,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-64",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-64",
               "ns_per_frame": 234.2484970092769,
               "rounds": [
                 231.48118591308568,
@@ -1429,7 +1429,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-64",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-64",
               "ns_per_frame": 221.82209014892564,
               "rounds": [
                 219.1204605102538,
@@ -1450,7 +1450,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-64",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-64",
               "ns_per_frame": 227.3810615539551,
               "rounds": [
                 223.6316566467285,
@@ -1466,7 +1466,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-64",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-64",
               "ns_per_frame": 235.85729598999066,
               "rounds": [
                 230.06179046630868,
@@ -1487,7 +1487,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-64",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-64",
               "ns_per_frame": 233.3580856323245,
               "rounds": [
                 230.84184265136693,
@@ -1503,7 +1503,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-64",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-64",
               "ns_per_frame": 222.5172576904291,
               "rounds": [
                 219.10412597656287,
@@ -1531,7 +1531,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-128",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-128",
               "ns_per_frame": 462.99598693847787,
               "rounds": [
                 453.94106292724524,
@@ -1547,7 +1547,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-128",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-128",
               "ns_per_frame": 439.03241729736396,
               "rounds": [
                 428.8890380859372,
@@ -1568,7 +1568,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-128",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-128",
               "ns_per_frame": 440.27802276611243,
               "rounds": [
                 430.40625762939476,
@@ -1584,7 +1584,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-128",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-128",
               "ns_per_frame": 461.3182601928695,
               "rounds": [
                 449.3902816772458,
@@ -1605,7 +1605,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-128",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-128",
               "ns_per_frame": 465.0574417114257,
               "rounds": [
                 452.43494415283214,
@@ -1621,7 +1621,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-128",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-128",
               "ns_per_frame": 435.8676300048828,
               "rounds": [
                 424.3176498413088,
@@ -1649,7 +1649,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-256",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-256",
               "ns_per_frame": 902.7594299316419,
               "rounds": [
                 898.2446594238293,
@@ -1665,7 +1665,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-256",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-256",
               "ns_per_frame": 839.0597686767572,
               "rounds": [
                 827.3627166748045,
@@ -1686,7 +1686,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-256",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-256",
               "ns_per_frame": 847.7958831787108,
               "rounds": [
                 838.7064208984375,
@@ -1702,7 +1702,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-256",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-256",
               "ns_per_frame": 903.34307861328,
               "rounds": [
                 891.06640625,
@@ -1723,7 +1723,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f32-256",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f32-256",
               "ns_per_frame": 911.3342742919916,
               "rounds": [
                 900.1856689453118,
@@ -1739,7 +1739,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f32-256",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f32-256",
               "ns_per_frame": 844.3048553466795,
               "rounds": [
                 824.5048675537114,
@@ -1767,7 +1767,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-32",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-32",
               "ns_per_frame": 168.6878166198731,
               "rounds": [
                 168.57138442993164,
@@ -1783,7 +1783,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-32",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-32",
               "ns_per_frame": 163.2519302368165,
               "rounds": [
                 163.2519302368165,
@@ -1804,7 +1804,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-32",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-32",
               "ns_per_frame": 162.49575805664037,
               "rounds": [
                 162.36314010620117,
@@ -1820,7 +1820,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-32",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-32",
               "ns_per_frame": 168.0592651367187,
               "rounds": [
                 168.0592651367187,
@@ -1841,7 +1841,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-32",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-32",
               "ns_per_frame": 169.89382171630868,
               "rounds": [
                 167.6378173828127,
@@ -1857,7 +1857,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-32",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-32",
               "ns_per_frame": 164.04818725585923,
               "rounds": [
                 162.0223236083985,
@@ -1885,7 +1885,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-64",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-64",
               "ns_per_frame": 329.38967132568365,
               "rounds": [
                 330.7528228759767,
@@ -1901,7 +1901,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-64",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-64",
               "ns_per_frame": 316.65339660644565,
               "rounds": [
                 317.04178619384754,
@@ -1922,7 +1922,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-64",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-64",
               "ns_per_frame": 315.1958312988274,
               "rounds": [
                 317.9419097900393,
@@ -1938,7 +1938,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-64",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-64",
               "ns_per_frame": 329.5483322143557,
               "rounds": [
                 329.2690277099603,
@@ -1959,7 +1959,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-64",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-64",
               "ns_per_frame": 327.5866165161128,
               "rounds": [
                 326.08917236328153,
@@ -1975,7 +1975,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-64",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-64",
               "ns_per_frame": 315.40580749511673,
               "rounds": [
                 315.40580749511673,
@@ -2003,7 +2003,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-128",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-128",
               "ns_per_frame": 645.0732421875022,
               "rounds": [
                 652.3096466064457,
@@ -2019,7 +2019,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-128",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-128",
               "ns_per_frame": 610.1772918701183,
               "rounds": [
                 610.1772918701183,
@@ -2040,7 +2040,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-128",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-128",
               "ns_per_frame": 615.0006256103527,
               "rounds": [
                 624.0447845458976,
@@ -2056,7 +2056,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-128",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-128",
               "ns_per_frame": 643.7649688720709,
               "rounds": [
                 643.7649688720709,
@@ -2077,7 +2077,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-128",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-128",
               "ns_per_frame": 644.0335235595694,
               "rounds": [
                 649.5212402343742,
@@ -2093,7 +2093,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-128",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-128",
               "ns_per_frame": 613.8132476806637,
               "rounds": [
                 613.8132476806637,
@@ -2121,7 +2121,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-256",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-256",
               "ns_per_frame": 1267.483428955076,
               "rounds": [
                 1267.483428955076,
@@ -2137,7 +2137,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-256",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-256",
               "ns_per_frame": 1195.1084594726547,
               "rounds": [
                 1192.5079345703089,
@@ -2158,7 +2158,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-256",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-256",
               "ns_per_frame": 1191.1954345703164,
               "rounds": [
                 1189.1274719238281,
@@ -2174,7 +2174,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-256",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-256",
               "ns_per_frame": 1272.8735961914026,
               "rounds": [
                 1277.1094360351578,
@@ -2195,7 +2195,7 @@
           "bitwise_equal_samples": 4096,
           "result": [
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/baseline/voices-f64-256",
+              "prefix": "target/wasm-loop-fix/baseline/voices-f64-256",
               "ns_per_frame": 1263.7776489257783,
               "rounds": [
                 1263.7776489257783,
@@ -2211,7 +2211,7 @@
               "ratio": 1
             },
             {
-              "prefix": "/home/francesco/Sources/onda/target/wasm-loop-fix/candidate/voices-f64-256",
+              "prefix": "target/wasm-loop-fix/candidate/voices-f64-256",
               "ns_per_frame": 1199.5596313476576,
               "rounds": [
                 1196.119964599611,

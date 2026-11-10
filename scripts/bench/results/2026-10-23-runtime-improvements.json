@@ -20,31 +20,31 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda",
+            "examples/spectral/spectral_freeze.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+            "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+            "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native",
+          "output": "target/bench/runtime-improvements-2026-10-23/before-native",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -75,7 +75,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -85,7 +85,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -1288,8 +1288,8 @@
       "configs": {
         "additive_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/additive_synth",
+          "source": "examples/instruments/additive_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/additive_synth",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1321,8 +1321,8 @@
         },
         "audio-map.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/audio-map",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/audio-map",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1354,8 +1354,8 @@
         },
         "bounds-reverse.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/bounds-reverse",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/bounds-reverse",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1387,8 +1387,8 @@
         },
         "bounds-shift.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/bounds-shift",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/bounds-shift",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1420,8 +1420,8 @@
         },
         "coefficient-updates.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/coefficient-updates",
+          "source": "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/coefficient-updates",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1453,8 +1453,8 @@
         },
         "fdn_reverb.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/fdn_reverb",
+          "source": "examples/effects/fdn_reverb.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/fdn_reverb",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1486,8 +1486,8 @@
         },
         "neural_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/neural_synth",
+          "source": "examples/feedback/neural_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/neural_synth",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1519,8 +1519,8 @@
         },
         "ordered-voice-rendering.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/ordered-voice-rendering",
+          "source": "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/ordered-voice-rendering",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1552,8 +1552,8 @@
         },
         "polyphonic_saw.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/polyphonic_saw",
+          "source": "examples/basic/polyphonic_saw.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/polyphonic_saw",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1585,8 +1585,8 @@
         },
         "saw_filter_saturator.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/saw_filter_saturator",
+          "source": "examples/basic/saw_filter_saturator.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/saw_filter_saturator",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1618,8 +1618,8 @@
         },
         "sine.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/sine.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/sine",
+          "source": "examples/basic/sine.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/sine",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1651,8 +1651,8 @@
         },
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/slice-derived-bounds",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1684,8 +1684,8 @@
         },
         "spectral_freeze.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/spectral_freeze",
+          "source": "examples/spectral/spectral_freeze.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/spectral_freeze",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1717,8 +1717,8 @@
         },
         "tape_echo.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/tape_echo",
+          "source": "examples/effects/tape_echo.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/tape_echo",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1750,8 +1750,8 @@
         },
         "voice_bank.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/voice_bank",
+          "source": "examples/basic/voice_bank.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/voice_bank",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1783,8 +1783,8 @@
         },
         "voices-fused-128.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-128",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-128",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1816,8 +1816,8 @@
         },
         "voices-fused-16.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-16",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-16",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1849,8 +1849,8 @@
         },
         "voices-fused-256.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-256",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-256",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1882,8 +1882,8 @@
         },
         "voices-fused-32.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-32",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-32",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -1915,8 +1915,8 @@
         },
         "voices-fused-64.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-64",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-native/voices-fused-64",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -2781,31 +2781,31 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda",
+            "examples/spectral/spectral_freeze.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+            "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+            "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native",
+          "output": "target/bench/runtime-improvements-2026-10-23/after-native",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -2836,7 +2836,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -2846,7 +2846,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -4069,8 +4069,8 @@
       "configs": {
         "additive_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/additive_synth",
+          "source": "examples/instruments/additive_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/additive_synth",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4102,8 +4102,8 @@
         },
         "audio-map.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/audio-map",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/audio-map",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4135,8 +4135,8 @@
         },
         "bounds-reverse.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/bounds-reverse",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/bounds-reverse",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4168,8 +4168,8 @@
         },
         "bounds-shift.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/bounds-shift",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/bounds-shift",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4201,8 +4201,8 @@
         },
         "coefficient-updates.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/coefficient-updates",
+          "source": "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/coefficient-updates",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4234,8 +4234,8 @@
         },
         "fdn_reverb.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/fdn_reverb",
+          "source": "examples/effects/fdn_reverb.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/fdn_reverb",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4267,8 +4267,8 @@
         },
         "neural_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/neural_synth",
+          "source": "examples/feedback/neural_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/neural_synth",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4300,8 +4300,8 @@
         },
         "ordered-voice-rendering.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/ordered-voice-rendering",
+          "source": "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/ordered-voice-rendering",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4333,8 +4333,8 @@
         },
         "polyphonic_saw.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/polyphonic_saw",
+          "source": "examples/basic/polyphonic_saw.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/polyphonic_saw",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4366,8 +4366,8 @@
         },
         "saw_filter_saturator.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/saw_filter_saturator",
+          "source": "examples/basic/saw_filter_saturator.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/saw_filter_saturator",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4399,8 +4399,8 @@
         },
         "sine.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/sine.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/sine",
+          "source": "examples/basic/sine.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/sine",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4432,8 +4432,8 @@
         },
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/slice-derived-bounds",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4465,8 +4465,8 @@
         },
         "spectral_freeze.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/spectral_freeze",
+          "source": "examples/spectral/spectral_freeze.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/spectral_freeze",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4498,8 +4498,8 @@
         },
         "tape_echo.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/tape_echo",
+          "source": "examples/effects/tape_echo.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/tape_echo",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4531,8 +4531,8 @@
         },
         "voice_bank.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/voice_bank",
+          "source": "examples/basic/voice_bank.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/voice_bank",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4564,8 +4564,8 @@
         },
         "voices-fused-128.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-128",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-128",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4597,8 +4597,8 @@
         },
         "voices-fused-16.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-16",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-16",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4630,8 +4630,8 @@
         },
         "voices-fused-256.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-256",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-256",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4663,8 +4663,8 @@
         },
         "voices-fused-32.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-32",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-32",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -4696,8 +4696,8 @@
         },
         "voices-fused-64.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-64",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-native/voices-fused-64",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -5635,31 +5635,31 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda",
+            "examples/spectral/spectral_freeze.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+            "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+            "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm",
+          "output": "target/bench/runtime-improvements-2026-10-23/before-wasm",
           "backend": "wasm",
           "inspect_only": false,
           "ir": true,
@@ -5690,7 +5690,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -5700,7 +5700,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -6619,8 +6619,8 @@
       "configs": {
         "additive_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/additive_synth",
+          "source": "examples/instruments/additive_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/additive_synth",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6652,8 +6652,8 @@
         },
         "audio-map.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/audio-map",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/audio-map",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6685,8 +6685,8 @@
         },
         "bounds-reverse.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/bounds-reverse",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/bounds-reverse",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6718,8 +6718,8 @@
         },
         "bounds-shift.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/bounds-shift",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/bounds-shift",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6751,8 +6751,8 @@
         },
         "coefficient-updates.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/coefficient-updates",
+          "source": "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/coefficient-updates",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6784,8 +6784,8 @@
         },
         "fdn_reverb.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/fdn_reverb",
+          "source": "examples/effects/fdn_reverb.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/fdn_reverb",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6817,8 +6817,8 @@
         },
         "neural_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/neural_synth",
+          "source": "examples/feedback/neural_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/neural_synth",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6850,8 +6850,8 @@
         },
         "ordered-voice-rendering.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/ordered-voice-rendering",
+          "source": "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/ordered-voice-rendering",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6883,8 +6883,8 @@
         },
         "polyphonic_saw.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/polyphonic_saw",
+          "source": "examples/basic/polyphonic_saw.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/polyphonic_saw",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6916,8 +6916,8 @@
         },
         "saw_filter_saturator.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/saw_filter_saturator",
+          "source": "examples/basic/saw_filter_saturator.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/saw_filter_saturator",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6949,8 +6949,8 @@
         },
         "sine.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/sine.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/sine",
+          "source": "examples/basic/sine.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/sine",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -6982,8 +6982,8 @@
         },
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/slice-derived-bounds",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7015,8 +7015,8 @@
         },
         "spectral_freeze.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/spectral_freeze",
+          "source": "examples/spectral/spectral_freeze.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/spectral_freeze",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7048,8 +7048,8 @@
         },
         "tape_echo.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/tape_echo",
+          "source": "examples/effects/tape_echo.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/tape_echo",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7081,8 +7081,8 @@
         },
         "voice_bank.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/voice_bank",
+          "source": "examples/basic/voice_bank.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/voice_bank",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7114,8 +7114,8 @@
         },
         "voices-fused-128.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-128",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-128",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7147,8 +7147,8 @@
         },
         "voices-fused-16.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-16",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-16",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7180,8 +7180,8 @@
         },
         "voices-fused-256.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-256",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-256",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7213,8 +7213,8 @@
         },
         "voices-fused-32.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-32",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-32",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7246,8 +7246,8 @@
         },
         "voices-fused-64.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-64",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-wasm/voices-fused-64",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -7816,31 +7816,31 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda",
+            "examples/spectral/spectral_freeze.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+            "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+            "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+            "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm",
+          "output": "target/bench/runtime-improvements-2026-10-23/after-wasm",
           "backend": "wasm",
           "inspect_only": false,
           "ir": true,
@@ -7871,7 +7871,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -7881,7 +7881,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -8800,8 +8800,8 @@
       "configs": {
         "additive_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/additive_synth",
+          "source": "examples/instruments/additive_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/additive_synth",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -8833,8 +8833,8 @@
         },
         "audio-map.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/audio-map",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/audio-map",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -8866,8 +8866,8 @@
         },
         "bounds-reverse.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/bounds-reverse",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/bounds-reverse",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -8899,8 +8899,8 @@
         },
         "bounds-shift.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/bounds-shift",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/bounds-shift",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -8932,8 +8932,8 @@
         },
         "coefficient-updates.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/coefficient-updates",
+          "source": "packages/onda_binaryen_web/test/fixtures/coefficient-updates.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/coefficient-updates",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -8965,8 +8965,8 @@
         },
         "fdn_reverb.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/fdn_reverb",
+          "source": "examples/effects/fdn_reverb.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/fdn_reverb",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -8998,8 +8998,8 @@
         },
         "neural_synth.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/neural_synth",
+          "source": "examples/feedback/neural_synth.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/neural_synth",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9031,8 +9031,8 @@
         },
         "ordered-voice-rendering.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/ordered-voice-rendering",
+          "source": "packages/onda_binaryen_web/test/fixtures/ordered-voice-rendering.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/ordered-voice-rendering",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9064,8 +9064,8 @@
         },
         "polyphonic_saw.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/polyphonic_saw",
+          "source": "examples/basic/polyphonic_saw.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/polyphonic_saw",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9097,8 +9097,8 @@
         },
         "saw_filter_saturator.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/saw_filter_saturator",
+          "source": "examples/basic/saw_filter_saturator.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/saw_filter_saturator",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9130,8 +9130,8 @@
         },
         "sine.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/sine.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/sine",
+          "source": "examples/basic/sine.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/sine",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9163,8 +9163,8 @@
         },
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/slice-derived-bounds",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9196,8 +9196,8 @@
         },
         "spectral_freeze.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/spectral_freeze",
+          "source": "examples/spectral/spectral_freeze.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/spectral_freeze",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9229,8 +9229,8 @@
         },
         "tape_echo.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/tape_echo",
+          "source": "examples/effects/tape_echo.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/tape_echo",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9262,8 +9262,8 @@
         },
         "voice_bank.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/voice_bank",
+          "source": "examples/basic/voice_bank.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/voice_bank",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9295,8 +9295,8 @@
         },
         "voices-fused-128.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-128",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-128.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-128",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9328,8 +9328,8 @@
         },
         "voices-fused-16.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-16",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-16",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9361,8 +9361,8 @@
         },
         "voices-fused-256.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-256",
+          "source": "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-256",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9394,8 +9394,8 @@
         },
         "voices-fused-32.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-32",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-32.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-32",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -9427,8 +9427,8 @@
         },
         "voices-fused-64.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-64",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-fused-64.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-wasm/voices-fused-64",
           "mode": "prepare",
           "sample_rate": 48000,
           "block_size": 128,
@@ -10085,7 +10085,7 @@
           "filter": "fft-real-f32-1024|fft-real-f32-4096|fft-real-f64-1024|fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft",
+          "output": "target/bench/runtime-improvements-2026-10-23/before-fft",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -10116,7 +10116,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": true,
           "compare_to": null,
           "label": ""
@@ -10126,7 +10126,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -10493,8 +10493,8 @@
       "configs": {
         "fft-real-f32-1024.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-1024.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-1024",
+          "source": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-1024.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-1024",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -10526,8 +10526,8 @@
         },
         "fft-real-f32-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f32-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -10559,8 +10559,8 @@
         },
         "fft-real-f64-1024.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-1024.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-1024",
+          "source": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-1024.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-1024",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -10592,8 +10592,8 @@
         },
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/before-fft/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -10862,7 +10862,7 @@
           "filter": "fft-real-f32-1024|fft-real-f32-4096|fft-real-f64-1024|fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft",
+          "output": "target/bench/runtime-improvements-2026-10-23/after-fft",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -10893,7 +10893,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": true,
           "compare_to": null,
           "label": ""
@@ -10903,7 +10903,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -11274,8 +11274,8 @@
       "configs": {
         "fft-real-f32-1024.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-1024.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-1024",
+          "source": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-1024.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-1024",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -11307,8 +11307,8 @@
         },
         "fft-real-f32-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f32-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -11340,8 +11340,8 @@
         },
         "fft-real-f64-1024.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-1024.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-1024",
+          "source": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-1024.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-1024",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -11373,8 +11373,8 @@
         },
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/after-fft/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -11643,7 +11643,7 @@
           "filter": "fft-accuracy",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-accuracy",
           "backend": "both",
           "inspect_only": false,
           "ir": false,
@@ -11674,7 +11674,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -11684,7 +11684,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -12155,8 +12155,8 @@
       "configs": {
         "fft-accuracy-f32-256.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-256.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-256",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-256.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-256",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -12188,8 +12188,8 @@
         },
         "fft-accuracy-f32-512.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-512.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-512",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-512.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f32-512",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -12221,8 +12221,8 @@
         },
         "fft-accuracy-f64-256.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-256.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-256",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-256.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-256",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -12254,8 +12254,8 @@
         },
         "fft-accuracy-f64-512.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-512.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-512",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-512.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-accuracy/fft-accuracy-f64-512",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -12296,13 +12296,13 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/projects/embedded_room/code/main.onda",
-            "/home/francesco/Sources/onda/examples/buffers/sample_player.onda"
+            "examples/projects/embedded_room/code/main.onda",
+            "examples/buffers/sample_player.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/large-inspection",
+          "output": "target/bench/runtime-improvements-2026-10-23/large-inspection",
           "backend": "native",
           "inspect_only": true,
           "ir": true,
@@ -12333,7 +12333,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -12343,7 +12343,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -12464,8 +12464,8 @@
       "configs": {
         "main.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/projects/embedded_room/code/main.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/large-inspection/main",
+          "source": "examples/projects/embedded_room/code/main.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/large-inspection/main",
           "mode": "inspect",
           "sample_rate": 48000,
           "block_size": 128,
@@ -12497,8 +12497,8 @@
         },
         "sample_player.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/examples/buffers/sample_player.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/large-inspection/sample_player",
+          "source": "examples/buffers/sample_player.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/large-inspection/sample_player",
           "mode": "inspect",
           "sample_rate": 48000,
           "block_size": 128,
@@ -12713,12 +12713,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-split-32.onda"
+            "target/bench/runtime-improvements-2026-10-23/voices-split-32.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/small-loop-schedule",
+          "output": "target/bench/runtime-improvements-2026-10-23/small-loop-schedule",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -12749,7 +12749,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -12759,7 +12759,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "903d4cc135c2b87b3bd9f084443bb3bf537d71d171d635b717ab8e5e45c8735f"
         },
         "tools_sha256": {
@@ -12935,8 +12935,8 @@
       "configs": {
         "voices-split-32.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/voices-split-32.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/small-loop-schedule/voices-split-32",
+          "source": "target/bench/runtime-improvements-2026-10-23/voices-split-32.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/small-loop-schedule/voices-split-32",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -13020,12 +13020,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/small-bounds-capped.onda"
+            "target/bench/runtime-improvements-2026-10-23/small-bounds-capped.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/small-bounds-capped",
+          "output": "target/bench/runtime-improvements-2026-10-23/small-bounds-capped",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -13056,7 +13056,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -13066,7 +13066,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -13185,8 +13185,8 @@
       "configs": {
         "small-bounds-capped.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/small-bounds-capped.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/small-bounds-capped/small-bounds-capped",
+          "source": "target/bench/runtime-improvements-2026-10-23/small-bounds-capped.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/small-bounds-capped/small-bounds-capped",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -13266,12 +13266,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-baseline",
+          "output": "target/bench/runtime-improvements-2026-10-23/short-loop-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -13302,7 +13302,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -13312,7 +13312,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -13430,8 +13430,8 @@
       "configs": {
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-baseline/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/short-loop-baseline/slice-derived-bounds",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -13494,12 +13494,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-bounds",
+          "output": "target/bench/runtime-improvements-2026-10-23/short-loop-bounds",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -13530,7 +13530,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/bounds/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/bounds/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -13540,7 +13540,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/bounds/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/bounds/benchmark_dsp",
           "sha256": "34cb2247e969b17a9b0c9429c0ed8c78dc8d86c0fbfcd4aa39127a9c1c32ac20"
         },
         "tools_sha256": {
@@ -13658,8 +13658,8 @@
       "configs": {
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-bounds/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/short-loop-bounds/slice-derived-bounds",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -13720,12 +13720,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-memory-coefficients",
+          "output": "target/bench/runtime-improvements-2026-10-23/short-loop-memory-coefficients",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -13756,7 +13756,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/memory-coefficients/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/memory-coefficients/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -13766,7 +13766,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/memory-coefficients/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/memory-coefficients/benchmark_dsp",
           "sha256": "88348f752e10a6e9f92efef16872682e2b70a11d7c10f779250702f4d60b7426"
         },
         "tools_sha256": {
@@ -13884,8 +13884,8 @@
       "configs": {
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-memory-coefficients/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/short-loop-memory-coefficients/slice-derived-bounds",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -13948,12 +13948,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
+            "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-after",
+          "output": "target/bench/runtime-improvements-2026-10-23/short-loop-after",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -13984,7 +13984,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -13994,7 +13994,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -14113,8 +14113,8 @@
       "configs": {
         "slice-derived-bounds.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/short-loop-after/slice-derived-bounds",
+          "source": "packages/onda_binaryen_web/test/fixtures/slice-derived-bounds.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/short-loop-after/slice-derived-bounds",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -14180,7 +14180,7 @@
           "filter": "fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-0-before",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-pair-0-before",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -14211,7 +14211,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -14221,7 +14221,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -14337,8 +14337,8 @@
       "configs": {
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-0-before/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-0-before/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-pair-0-before/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-pair-0-before/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -14382,7 +14382,7 @@
           "filter": "fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-0-after",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-pair-0-after",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -14413,7 +14413,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -14423,7 +14423,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -14540,8 +14540,8 @@
       "configs": {
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-0-after/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-0-after/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-pair-0-after/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-pair-0-after/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -14585,7 +14585,7 @@
           "filter": "fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-1-before",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-pair-1-before",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -14616,7 +14616,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -14626,7 +14626,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -14742,8 +14742,8 @@
       "configs": {
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-1-before/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-1-before/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-pair-1-before/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-pair-1-before/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -14787,7 +14787,7 @@
           "filter": "fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-1-after",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-pair-1-after",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -14818,7 +14818,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -14828,7 +14828,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -14945,8 +14945,8 @@
       "configs": {
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-1-after/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-1-after/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-pair-1-after/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-pair-1-after/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -14990,7 +14990,7 @@
           "filter": "fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-2-before",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-pair-2-before",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -15021,7 +15021,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -15031,7 +15031,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/runtime-improvements-2026-10-23/baseline/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -15147,8 +15147,8 @@
       "configs": {
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-2-before/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-2-before/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-pair-2-before/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-pair-2-before/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,
@@ -15192,7 +15192,7 @@
           "filter": "fft-real-f64-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-2-after",
+          "output": "target/bench/runtime-improvements-2026-10-23/fft-pair-2-after",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -15223,7 +15223,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -15233,7 +15233,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -15350,8 +15350,8 @@
       "configs": {
         "fft-real-f64-4096.config.json": {
           "schema_version": 1,
-          "source": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-2-after/fft-real-f64-4096.onda",
-          "prefix": "/home/francesco/Sources/onda/target/bench/runtime-improvements-2026-10-23/fft-pair-2-after/fft-real-f64-4096",
+          "source": "target/bench/runtime-improvements-2026-10-23/fft-pair-2-after/fft-real-f64-4096.onda",
+          "prefix": "target/bench/runtime-improvements-2026-10-23/fft-pair-2-after/fft-real-f64-4096",
           "mode": "bench",
           "sample_rate": 48000,
           "block_size": 128,

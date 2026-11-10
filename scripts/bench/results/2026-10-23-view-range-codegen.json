@@ -4811,7 +4811,7 @@
           "filter": "state-window-shared|state-window-bounded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/windows-0-baseline",
+          "output": "target/bench/view-range-codegen/windows-0-baseline",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -4842,7 +4842,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -4852,7 +4852,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -5520,7 +5520,7 @@
           "filter": "state-window-shared|state-window-bounded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/windows-0-candidate",
+          "output": "target/bench/view-range-codegen/windows-0-candidate",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -5551,7 +5551,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -5561,7 +5561,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -6229,7 +6229,7 @@
           "filter": "state-window-shared|state-window-bounded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/windows-1-baseline",
+          "output": "target/bench/view-range-codegen/windows-1-baseline",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -6260,7 +6260,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -6270,7 +6270,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -6938,7 +6938,7 @@
           "filter": "state-window-shared|state-window-bounded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/windows-1-candidate",
+          "output": "target/bench/view-range-codegen/windows-1-candidate",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -6969,7 +6969,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -6979,7 +6979,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -7647,7 +7647,7 @@
           "filter": "state-window-shared|state-window-bounded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/windows-2-baseline",
+          "output": "target/bench/view-range-codegen/windows-2-baseline",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -7678,7 +7678,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -7688,7 +7688,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -8356,7 +8356,7 @@
           "filter": "state-window-shared|state-window-bounded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/windows-2-candidate",
+          "output": "target/bench/view-range-codegen/windows-2-candidate",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -8387,7 +8387,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -8397,7 +8397,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -9065,7 +9065,7 @@
           "filter": "osc-sine|osc-sine-fm|filter-onepole|filter-svf|filter-biquad|filter-svf-block-update|filter-svf-audio-update|delay-linear-8192|delay-cubic-8192|gain-smoothed|gain-smootheddb|slice-fixed|slice-dynamic|voice-bank-16|voice-bank-256|state-window-array-f32|state-window-slice-f32|array-guarded-helper-f32|array-guarded-state-f32|operator-arithmetic-f32|state-window-array-f64|state-window-slice-f64|array-guarded-helper-f64|array-guarded-state-f64|operator-arithmetic-f64",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/kernels-0-baseline",
+          "output": "target/bench/view-range-codegen/kernels-0-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -9096,7 +9096,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -9106,7 +9106,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -10620,7 +10620,7 @@
           "filter": "osc-sine|osc-sine-fm|filter-onepole|filter-svf|filter-biquad|filter-svf-block-update|filter-svf-audio-update|delay-linear-8192|delay-cubic-8192|gain-smoothed|gain-smootheddb|slice-fixed|slice-dynamic|voice-bank-16|voice-bank-256|state-window-array-f32|state-window-slice-f32|array-guarded-helper-f32|array-guarded-state-f32|operator-arithmetic-f32|state-window-array-f64|state-window-slice-f64|array-guarded-helper-f64|array-guarded-state-f64|operator-arithmetic-f64",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/kernels-0-candidate",
+          "output": "target/bench/view-range-codegen/kernels-0-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -10651,7 +10651,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -10661,7 +10661,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -12175,7 +12175,7 @@
           "filter": "osc-sine|osc-sine-fm|filter-onepole|filter-svf|filter-biquad|filter-svf-block-update|filter-svf-audio-update|delay-linear-8192|delay-cubic-8192|gain-smoothed|gain-smootheddb|slice-fixed|slice-dynamic|voice-bank-16|voice-bank-256|state-window-array-f32|state-window-slice-f32|array-guarded-helper-f32|array-guarded-state-f32|operator-arithmetic-f32|state-window-array-f64|state-window-slice-f64|array-guarded-helper-f64|array-guarded-state-f64|operator-arithmetic-f64",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/kernels-1-baseline",
+          "output": "target/bench/view-range-codegen/kernels-1-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -12206,7 +12206,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -12216,7 +12216,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -13730,7 +13730,7 @@
           "filter": "osc-sine|osc-sine-fm|filter-onepole|filter-svf|filter-biquad|filter-svf-block-update|filter-svf-audio-update|delay-linear-8192|delay-cubic-8192|gain-smoothed|gain-smootheddb|slice-fixed|slice-dynamic|voice-bank-16|voice-bank-256|state-window-array-f32|state-window-slice-f32|array-guarded-helper-f32|array-guarded-state-f32|operator-arithmetic-f32|state-window-array-f64|state-window-slice-f64|array-guarded-helper-f64|array-guarded-state-f64|operator-arithmetic-f64",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/kernels-1-candidate",
+          "output": "target/bench/view-range-codegen/kernels-1-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -13761,7 +13761,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -13771,7 +13771,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -15282,19 +15282,19 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/examples-0-baseline",
+          "output": "target/bench/view-range-codegen/examples-0-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -15325,7 +15325,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -15335,7 +15335,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -15869,19 +15869,19 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/examples-0-candidate",
+          "output": "target/bench/view-range-codegen/examples-0-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -15912,7 +15912,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -15922,7 +15922,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -16456,19 +16456,19 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/examples-1-baseline",
+          "output": "target/bench/view-range-codegen/examples-1-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -16499,7 +16499,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -16509,7 +16509,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -17043,19 +17043,19 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/examples-1-candidate",
+          "output": "target/bench/view-range-codegen/examples-1-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -17086,7 +17086,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -17096,7 +17096,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -17630,21 +17630,21 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-7.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-7.onda"
+            "target/bench/view-range-codegen/bounded-f32-0.onda",
+            "target/bench/view-range-codegen/bounded-f32-1.onda",
+            "target/bench/view-range-codegen/bounded-f32-16.onda",
+            "target/bench/view-range-codegen/bounded-f32-63.onda",
+            "target/bench/view-range-codegen/bounded-f32-7.onda",
+            "target/bench/view-range-codegen/bounded-f64-0.onda",
+            "target/bench/view-range-codegen/bounded-f64-1.onda",
+            "target/bench/view-range-codegen/bounded-f64-16.onda",
+            "target/bench/view-range-codegen/bounded-f64-63.onda",
+            "target/bench/view-range-codegen/bounded-f64-7.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/short-0-baseline",
+          "output": "target/bench/view-range-codegen/short-0-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -17675,7 +17675,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -17685,7 +17685,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -18321,21 +18321,21 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-7.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-7.onda"
+            "target/bench/view-range-codegen/bounded-f32-0.onda",
+            "target/bench/view-range-codegen/bounded-f32-1.onda",
+            "target/bench/view-range-codegen/bounded-f32-16.onda",
+            "target/bench/view-range-codegen/bounded-f32-63.onda",
+            "target/bench/view-range-codegen/bounded-f32-7.onda",
+            "target/bench/view-range-codegen/bounded-f64-0.onda",
+            "target/bench/view-range-codegen/bounded-f64-1.onda",
+            "target/bench/view-range-codegen/bounded-f64-16.onda",
+            "target/bench/view-range-codegen/bounded-f64-63.onda",
+            "target/bench/view-range-codegen/bounded-f64-7.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/short-0-candidate",
+          "output": "target/bench/view-range-codegen/short-0-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -18366,7 +18366,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -18376,7 +18376,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -19012,21 +19012,21 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-7.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-7.onda"
+            "target/bench/view-range-codegen/bounded-f32-0.onda",
+            "target/bench/view-range-codegen/bounded-f32-1.onda",
+            "target/bench/view-range-codegen/bounded-f32-16.onda",
+            "target/bench/view-range-codegen/bounded-f32-63.onda",
+            "target/bench/view-range-codegen/bounded-f32-7.onda",
+            "target/bench/view-range-codegen/bounded-f64-0.onda",
+            "target/bench/view-range-codegen/bounded-f64-1.onda",
+            "target/bench/view-range-codegen/bounded-f64-16.onda",
+            "target/bench/view-range-codegen/bounded-f64-63.onda",
+            "target/bench/view-range-codegen/bounded-f64-7.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/short-1-baseline",
+          "output": "target/bench/view-range-codegen/short-1-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -19057,7 +19057,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -19067,7 +19067,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -19703,21 +19703,21 @@
         "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f32-7.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-0.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-1.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-16.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-63.onda",
-            "/home/francesco/Sources/onda/target/bench/view-range-codegen/bounded-f64-7.onda"
+            "target/bench/view-range-codegen/bounded-f32-0.onda",
+            "target/bench/view-range-codegen/bounded-f32-1.onda",
+            "target/bench/view-range-codegen/bounded-f32-16.onda",
+            "target/bench/view-range-codegen/bounded-f32-63.onda",
+            "target/bench/view-range-codegen/bounded-f32-7.onda",
+            "target/bench/view-range-codegen/bounded-f64-0.onda",
+            "target/bench/view-range-codegen/bounded-f64-1.onda",
+            "target/bench/view-range-codegen/bounded-f64-16.onda",
+            "target/bench/view-range-codegen/bounded-f64-63.onda",
+            "target/bench/view-range-codegen/bounded-f64-7.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/short-1-candidate",
+          "output": "target/bench/view-range-codegen/short-1-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -19748,7 +19748,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "MIR alternative state views and bounded runtime dependence proofs; strict FP"
@@ -19758,7 +19758,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -20394,12 +20394,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda"
+            "examples/basic/voice_bank.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/voice-followup-0-baseline",
+          "output": "target/bench/view-range-codegen/voice-followup-0-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -20430,7 +20430,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -20440,7 +20440,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -20563,12 +20563,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda"
+            "examples/basic/voice_bank.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/voice-followup-0-candidate",
+          "output": "target/bench/view-range-codegen/voice-followup-0-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -20599,7 +20599,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -20609,7 +20609,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -20732,12 +20732,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda"
+            "examples/basic/voice_bank.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/voice-followup-1-baseline",
+          "output": "target/bench/view-range-codegen/voice-followup-1-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -20768,7 +20768,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -20778,7 +20778,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -20901,12 +20901,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda"
+            "examples/basic/voice_bank.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/voice-followup-1-candidate",
+          "output": "target/bench/view-range-codegen/voice-followup-1-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -20937,7 +20937,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -20947,7 +20947,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {
@@ -21070,12 +21070,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda"
+            "examples/basic/voice_bank.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/voice-followup-2-baseline",
+          "output": "target/bench/view-range-codegen/voice-followup-2-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -21106,7 +21106,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "runner": "target/bench/view-range-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -21116,7 +21116,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/baseline-worker",
+          "path": "target/bench/view-range-codegen/baseline-worker",
           "sha256": "385bbc553fc5da10275b62712546fb5801dbb7b447dc796b000140f2702fc01c"
         },
         "tools_sha256": {
@@ -21239,12 +21239,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda"
+            "examples/basic/voice_bank.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/view-range-codegen/voice-followup-2-candidate",
+          "output": "target/bench/view-range-codegen/voice-followup-2-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -21275,7 +21275,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "runner": "target/bench/view-range-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -21285,7 +21285,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/view-range-codegen/candidate-worker",
+          "path": "target/bench/view-range-codegen/candidate-worker",
           "sha256": "3ac779fd15f7deba19515f1f2ef0b90f8e5eeff0a59bb12adc93aafda353b35c"
         },
         "tools_sha256": {

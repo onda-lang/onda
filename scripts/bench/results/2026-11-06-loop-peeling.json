@@ -10,7 +10,7 @@
       "sha256": "a51bbe30cd81af683c4b4e78666d76dcc1a5f10b466413020665156e887bab7d"
     },
     "after": {
-      "path": "/home/francesco/Sources/onda-proc-state/target/debug/examples/benchmark_dsp",
+      "path": "target/debug/examples/benchmark_dsp",
       "sha256": "a1549c1f6fae46cfec6c8e69b1176158297071f3d88b3d18f609b0c31378d72e"
     }
   },

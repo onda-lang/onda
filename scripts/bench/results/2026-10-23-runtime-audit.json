@@ -28,20 +28,20 @@
         "label": "Runtime audit: representative examples, LLVM O3 strict arithmetic",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda",
+            "examples/spectral/spectral_freeze.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/examples-strict",
+          "output": "target/bench/runtime-audit-2026-10-23/examples-strict",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -72,7 +72,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": "Runtime audit: representative examples, LLVM O3 strict arithmetic"
@@ -82,7 +82,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -561,7 +561,7 @@
           "filter": "passthrough|slice-|voice-bank-|operator-arithmetic-f32|operator-reduction-f32|fft-real-f32-1024|fft-real-f32-4096|filter-biquad|delay-linear-8192|delay-linear-96000|convolution-timedomainconvolver-256-128|convolution-blockconvolver-256-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/kernels-strict",
+          "output": "target/bench/runtime-audit-2026-10-23/kernels-strict",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -592,7 +592,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": "Runtime audit: focused shared MIR and LLVM/Binaryen kernels, strict arithmetic"
@@ -602,7 +602,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -1747,19 +1747,19 @@
         "label": "Diagnostic source variants: derived bounds and ordered reduction isolation",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-direct.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-split-16.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/voices-split-256.onda",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/audio-map.onda"
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-direct.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-shift.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/bounds-reverse.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-16.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-split-16.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-fused-256.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/voices-split-256.onda",
+            "target/bench/runtime-audit-2026-10-23/probes/audio-map.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes-strict",
+          "output": "target/bench/runtime-audit-2026-10-23/probes-strict",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -1790,7 +1790,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": "Diagnostic source variants: derived bounds and ordered reduction isolation"
@@ -1800,7 +1800,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -2448,13 +2448,13 @@
         "label": "Diagnostic MIR only: one manually proved reverse-index bound, no compiler changes",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/reverse-baseline.json",
-            "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/probes/reverse-proven.json"
+            "target/bench/runtime-audit-2026-10-23/probes/reverse-baseline.json",
+            "target/bench/runtime-audit-2026-10-23/probes/reverse-proven.json"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/reverse-proof",
+          "output": "target/bench/runtime-audit-2026-10-23/reverse-proof",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -2485,7 +2485,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": "Diagnostic MIR only: one manually proved reverse-index bound, no compiler changes"
@@ -2495,7 +2495,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -2722,7 +2722,7 @@
           "filter": "operator-reduction-f32|voice-bank-256|fft-real-f32-1024|convolution-timedomainconvolver-256-128",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/kernels-reassoc",
+          "output": "target/bench/runtime-audit-2026-10-23/kernels-reassoc",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -2753,9 +2753,9 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
-          "compare_to": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/kernels-strict",
+          "compare_to": "target/bench/runtime-audit-2026-10-23/kernels-strict",
           "label": "Diagnostic only: reassociation and ignoring signed zero, contraction remains disabled"
         },
         "platform": "Linux-7.2.11-1-cachyos-x86_64-with-glibc2.44",
@@ -2763,7 +2763,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -3230,7 +3230,7 @@
           "filter": "filter-biquad|filter-onepole|fft-real-f32-1024|fft-real-f32-4096",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/references-strict",
+          "output": "target/bench/runtime-audit-2026-10-23/references-strict",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -3261,7 +3261,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": true,
           "compare_to": null,
           "label": "Matched strict C scalar filters and FFTW reference diagnostic"
@@ -3271,7 +3271,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {
@@ -3615,13 +3615,13 @@
         "label": "Inspection only: host-buffer sample player and large convolution project entry",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/buffers/sample_player.onda",
-            "/home/francesco/Sources/onda/examples/projects/embedded_room/code/main.onda"
+            "examples/buffers/sample_player.onda",
+            "examples/projects/embedded_room/code/main.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/runtime-audit-2026-10-23/large-inspection",
+          "output": "target/bench/runtime-audit-2026-10-23/large-inspection",
           "backend": "native",
           "inspect_only": true,
           "ir": false,
@@ -3652,7 +3652,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": "Inspection only: host-buffer sample player and large convolution project entry"
@@ -3662,7 +3662,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "5b6d4703a971848b98459c448d6446f54e83e395f48bb0aea1dacd5d6a2c6c53"
         },
         "tools_sha256": {

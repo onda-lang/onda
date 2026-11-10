@@ -237,7 +237,7 @@
           "filter": "state-window|array-guarded|operator-|slice-|voice-bank",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/review-fixes/baseline-kernels",
+          "output": "target/review-fixes/baseline-kernels",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -268,7 +268,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "runner": "target/review-fixes/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -278,7 +278,7 @@
         "python": "3.14.8",
         "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "path": "target/review-fixes/baseline-worker",
           "sha256": "031c66925744763a8a08c7f7375ba6691cb53b8ff7624c418eb6ebc6cd3fabc6"
         },
         "tools_sha256": {
@@ -377,7 +377,7 @@
         }
       },
       "timed_after_worker": {
-        "path": "/home/francesco/Sources/onda/target/review-fixes/candidate-worker",
+        "path": "target/review-fixes/candidate-worker",
         "sha256": "7601738652fae2088ab2f93a7e7e5bd1b3f8c4c17109cd2ce2c2a0f10aa7ddd1"
       },
       "programs": [
@@ -2144,20 +2144,20 @@
         "label": "before-after within each backend; cross-backend feedback tolerance relaxed",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda",
-            "/home/francesco/Sources/onda/examples/spectral/spectral_freeze.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda",
+            "examples/spectral/spectral_freeze.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/review-fixes/baseline-examples",
+          "output": "target/review-fixes/baseline-examples",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -2188,7 +2188,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "runner": "target/review-fixes/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "before-after within each backend; cross-backend feedback tolerance relaxed"
@@ -2198,7 +2198,7 @@
         "python": "3.14.8",
         "head": "681a2faea629bb84c303f29a91ddd05c928c0ecf",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/review-fixes/baseline-worker",
+          "path": "target/review-fixes/baseline-worker",
           "sha256": "031c66925744763a8a08c7f7375ba6691cb53b8ff7624c418eb6ebc6cd3fabc6"
         },
         "tools_sha256": {
@@ -2279,7 +2279,7 @@
         }
       },
       "timed_after_worker": {
-        "path": "/home/francesco/Sources/onda/target/review-fixes/candidate-worker",
+        "path": "target/review-fixes/candidate-worker",
         "sha256": "7601738652fae2088ab2f93a7e7e5bd1b3f8c4c17109cd2ce2c2a0f10aa7ddd1"
       },
       "programs": [

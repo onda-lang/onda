@@ -77,14 +77,14 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-direct.onda",
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-helper.onda",
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/exp2.onda"
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-direct.onda",
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-helper.onda",
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/exp2.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts",
+          "output": "target/bench/codegen-fixes-2026-10-23/isolated/artifacts",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -115,7 +115,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -125,7 +125,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "b992bea11c0f77fcbc281aa2c6e916ed9fd24e6332b0343896ad1aae40d4ff88"
         },
         "tools_sha256": {
@@ -508,12 +508,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda"
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before",
+          "output": "target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -544,7 +544,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -554,7 +554,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -733,12 +733,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda"
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after",
+          "output": "target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -769,7 +769,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -779,7 +779,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "b992bea11c0f77fcbc281aa2c6e916ed9fd24e6332b0343896ad1aae40d4ff88"
         },
         "tools_sha256": {
@@ -958,12 +958,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda"
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-after",
+          "output": "target/bench/codegen-fixes-2026-10-23/isolated/pan-1-after",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -994,7 +994,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "runner": "target/release/examples/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -1004,7 +1004,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+          "path": "target/release/examples/benchmark_dsp",
           "sha256": "b992bea11c0f77fcbc281aa2c6e916ed9fd24e6332b0343896ad1aae40d4ff88"
         },
         "tools_sha256": {
@@ -1183,12 +1183,12 @@
         "label": "",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda"
+            "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-before",
+          "output": "target/bench/codegen-fixes-2026-10-23/isolated/pan-1-before",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -1219,7 +1219,7 @@
           "memory_mib": 2048,
           "timeout_seconds": 30,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "runner": "target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
           "references": false,
           "compare_to": null,
           "label": ""
@@ -1229,7 +1229,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
+          "path": "target/bench/codegen-fixes-2026-10-23/baseline/benchmark_dsp",
           "sha256": "30d54968ca71c0367da87660e52789e2cac84608bed1cf73918540fbaa6828d8"
         },
         "tools_sha256": {
@@ -3339,15 +3339,15 @@
       "python3",
       "scripts/bench/run.py",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-direct.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-direct.onda",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-helper.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/audio-helper.onda",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/exp2.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/exp2.onda",
       "--output",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts",
+      "target/bench/codegen-fixes-2026-10-23/isolated/artifacts",
       "--runner",
-      "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "target/release/examples/benchmark_dsp",
       "--backend",
       "both",
       "--cpu",
@@ -3369,11 +3369,11 @@
       "python3",
       "scripts/bench/run.py",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda",
       "--output",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before",
+      "target/bench/codegen-fixes-2026-10-23/isolated/pan-0-before",
       "--runner",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/baseline/benchmark_dsp",
+      "target/bench/codegen-fixes-2026-10-23/isolated/baseline/benchmark_dsp",
       "--backend",
       "both",
       "--cpu",
@@ -3395,11 +3395,11 @@
       "python3",
       "scripts/bench/run.py",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda",
       "--output",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after",
+      "target/bench/codegen-fixes-2026-10-23/isolated/pan-0-after",
       "--runner",
-      "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "target/release/examples/benchmark_dsp",
       "--backend",
       "both",
       "--cpu",
@@ -3421,11 +3421,11 @@
       "python3",
       "scripts/bench/run.py",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-after.onda",
       "--output",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-after",
+      "target/bench/codegen-fixes-2026-10-23/isolated/pan-1-after",
       "--runner",
-      "/home/francesco/Sources/onda/target/release/examples/benchmark_dsp",
+      "target/release/examples/benchmark_dsp",
       "--backend",
       "both",
       "--cpu",
@@ -3447,11 +3447,11 @@
       "python3",
       "scripts/bench/run.py",
       "--source",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda",
+      "target/bench/codegen-fixes-2026-10-23/isolated/sources/pan-before.onda",
       "--output",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/pan-1-before",
+      "target/bench/codegen-fixes-2026-10-23/isolated/pan-1-before",
       "--runner",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/baseline/benchmark_dsp",
+      "target/bench/codegen-fixes-2026-10-23/isolated/baseline/benchmark_dsp",
       "--backend",
       "both",
       "--cpu",
@@ -3474,44 +3474,44 @@
       "-O3",
       "-ffp-contract=off",
       "-Iinclude",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio_alias_bench.c",
-      "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/probes/audio-helper.o",
+      "target/bench/codegen-fixes-2026-10-23/isolated/audio_alias_bench.c",
+      "target/bench/codegen-stack-review-2026-10-23/probes/audio-helper.o",
       "-lm",
       "-o",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio-before"
+      "target/bench/codegen-fixes-2026-10-23/isolated/audio-before"
     ],
     [
       "cc",
       "-O3",
       "-ffp-contract=off",
       "-Iinclude",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio_alias_bench.c",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts/audio-helper.o",
+      "target/bench/codegen-fixes-2026-10-23/isolated/audio_alias_bench.c",
+      "target/bench/codegen-fixes-2026-10-23/isolated/artifacts/audio-helper.o",
       "-lm",
       "-o",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/audio-after"
+      "target/bench/codegen-fixes-2026-10-23/isolated/audio-after"
     ],
     [
       "cc",
       "-O3",
       "-ffp-contract=off",
       "-Iinclude",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math_probe.c",
-      "/home/francesco/Sources/onda/target/bench/codegen-stack-review-2026-10-23/exp2.o",
+      "target/bench/codegen-fixes-2026-10-23/isolated/math_probe.c",
+      "target/bench/codegen-stack-review-2026-10-23/exp2.o",
       "-lm",
       "-o",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math-before"
+      "target/bench/codegen-fixes-2026-10-23/isolated/math-before"
     ],
     [
       "cc",
       "-O3",
       "-ffp-contract=off",
       "-Iinclude",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math_probe.c",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/artifacts/exp2.o",
+      "target/bench/codegen-fixes-2026-10-23/isolated/math_probe.c",
+      "target/bench/codegen-fixes-2026-10-23/isolated/artifacts/exp2.o",
       "-lm",
       "-o",
-      "/home/francesco/Sources/onda/target/bench/codegen-fixes-2026-10-23/isolated/math-after"
+      "target/bench/codegen-fixes-2026-10-23/isolated/math-after"
     ]
   ],
   "git_head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",

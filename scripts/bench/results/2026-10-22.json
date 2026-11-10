@@ -843,6 +843,6 @@
       "npm run test:playground"
     ],
     "raw_artifacts": "Local target/performance-closeout-2026-10-22 contains per-invocation configs, commands, logs, outputs, objects, complete timing rows and compiler-phase samples. The compact measurements and identities in this report survive target cleanup.",
-    "prerequisites": "Use the repository LLVM setup and installed npm dependencies. Browser rebuild requires wasm-pack and cargo-about on PATH; this host appends /home/francesco/.cargo/bin to its normal PATH."
+    "prerequisites": "Use the repository LLVM setup and installed npm dependencies. Browser rebuild requires wasm-pack and cargo-about on PATH; this host appends $HOME/.cargo/bin to its normal PATH."
   }
 }

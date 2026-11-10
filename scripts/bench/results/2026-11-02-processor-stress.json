@@ -1320,7 +1320,7 @@
       "kind": "derived-active-example",
       "warmup": 512,
       "max_output_abs": null,
-      "derived_from": "/home/francesco/Sources/onda-proc-state/examples/plugins/instruments/fm_bells.onda",
+      "derived_from": "examples/plugins/instruments/fm_bells.onda",
       "source_sha256": "a24e58e7afb169334b5ff7e5f5ae4e1fa08aba35fa2acd53e1f5400de7c09d52"
     },
     {
@@ -1329,7 +1329,7 @@
       "kind": "derived-active-example",
       "warmup": 512,
       "max_output_abs": null,
-      "derived_from": "/home/francesco/Sources/onda-proc-state/examples/plugins/instruments/poly_saw.onda",
+      "derived_from": "examples/plugins/instruments/poly_saw.onda",
       "source_sha256": "161ee3d72462c920c36ba40c384d6ef98b8830c36ed50683d004085cf90bbbd3"
     }
   ],
@@ -37818,37 +37818,37 @@
       {
         "name": "proc-helper-callback-16",
         "worker": "original",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-16-original.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-16-original.log"
       },
       {
         "name": "proc-helper-callback-16",
         "worker": "phase1",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-16-phase1.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-16-phase1.log"
       },
       {
         "name": "proc-helper-callback-128",
         "worker": "phase1",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-128-phase1.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-128-phase1.log"
       },
       {
         "name": "proc-helper-callback-128",
         "worker": "original",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-128-original.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-128-original.log"
       },
       {
         "name": "proc-bank-1024",
         "worker": "original",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-bank-1024-original.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-bank-1024-original.log"
       },
       {
         "name": "proc-helper-callback-1024",
         "worker": "original",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-1024-original.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-1024-original.log"
       },
       {
         "name": "proc-helper-callback-1024",
         "worker": "phase1",
-        "log": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-1024-phase1.log"
+        "log": "target/proc-storage-evidence/stress-2026-11-02/timings-logs/proc-helper-callback-1024-phase1.log"
       }
     ],
     "outputs": [
@@ -45342,7 +45342,7 @@
         "name": "passthrough",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/passthrough/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/passthrough/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45408,7 +45408,7 @@
         "name": "passthrough",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/passthrough/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/passthrough/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45474,7 +45474,7 @@
         "name": "passthrough",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/passthrough/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/passthrough/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45540,7 +45540,7 @@
         "name": "gain-smoothed",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/gain-smoothed/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/gain-smoothed/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45606,7 +45606,7 @@
         "name": "gain-smoothed",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/gain-smoothed/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/gain-smoothed/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45672,7 +45672,7 @@
         "name": "gain-smoothed",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/gain-smoothed/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/gain-smoothed/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45738,7 +45738,7 @@
         "name": "fft-stft-1024",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/fft-stft-1024/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/fft-stft-1024/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45802,7 +45802,7 @@
         "name": "fft-stft-1024",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/fft-stft-1024/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/fft-stft-1024/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45866,7 +45866,7 @@
         "name": "fft-stft-1024",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/fft-stft-1024/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/fft-stft-1024/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45930,7 +45930,7 @@
         "name": "proc-bank-16",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-16/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-16/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -45994,7 +45994,7 @@
         "name": "proc-bank-16",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-16/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-16/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46058,7 +46058,7 @@
         "name": "proc-bank-16",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-16/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-16/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46122,7 +46122,7 @@
         "name": "proc-bank-128",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-128/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-128/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46186,7 +46186,7 @@
         "name": "proc-bank-128",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-128/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-128/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46250,7 +46250,7 @@
         "name": "proc-bank-128",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-128/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/proc-bank-128/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46314,7 +46314,7 @@
         "name": "example-basic-voice_bank",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/example-basic-voice_bank/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/example-basic-voice_bank/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46378,7 +46378,7 @@
         "name": "example-basic-voice_bank",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/example-basic-voice_bank/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/example-basic-voice_bank/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46442,7 +46442,7 @@
         "name": "example-basic-voice_bank",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/example-basic-voice_bank/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/example-basic-voice_bank/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46506,7 +46506,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/example-soundscapes-glass_garden/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/example-soundscapes-glass_garden/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46571,7 +46571,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/example-soundscapes-glass_garden/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/example-soundscapes-glass_garden/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46636,7 +46636,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/example-soundscapes-glass_garden/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/example-soundscapes-glass_garden/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46701,7 +46701,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-fm_bells/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-fm_bells/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46766,7 +46766,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-fm_bells/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-fm_bells/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46831,7 +46831,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-fm_bells/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-fm_bells/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46896,7 +46896,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "current",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-poly_saw/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-poly_saw/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -46961,7 +46961,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "original",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-poly_saw/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-poly_saw/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47026,7 +47026,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "phase1",
         "trial": 0,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-poly_saw/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/0/active-plugin-poly_saw/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47091,7 +47091,7 @@
         "name": "passthrough",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/passthrough/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/passthrough/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47157,7 +47157,7 @@
         "name": "passthrough",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/passthrough/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/passthrough/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47223,7 +47223,7 @@
         "name": "passthrough",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/passthrough/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/passthrough/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47289,7 +47289,7 @@
         "name": "gain-smoothed",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/gain-smoothed/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/gain-smoothed/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47355,7 +47355,7 @@
         "name": "gain-smoothed",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/gain-smoothed/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/gain-smoothed/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47421,7 +47421,7 @@
         "name": "gain-smoothed",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/gain-smoothed/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/gain-smoothed/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47487,7 +47487,7 @@
         "name": "fft-stft-1024",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/fft-stft-1024/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/fft-stft-1024/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47551,7 +47551,7 @@
         "name": "fft-stft-1024",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/fft-stft-1024/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/fft-stft-1024/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47615,7 +47615,7 @@
         "name": "fft-stft-1024",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/fft-stft-1024/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/fft-stft-1024/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47679,7 +47679,7 @@
         "name": "proc-bank-16",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-16/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-16/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47743,7 +47743,7 @@
         "name": "proc-bank-16",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-16/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-16/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47807,7 +47807,7 @@
         "name": "proc-bank-16",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-16/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-16/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47871,7 +47871,7 @@
         "name": "proc-bank-128",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-128/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-128/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47935,7 +47935,7 @@
         "name": "proc-bank-128",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-128/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-128/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -47999,7 +47999,7 @@
         "name": "proc-bank-128",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-128/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/proc-bank-128/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48063,7 +48063,7 @@
         "name": "example-basic-voice_bank",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/example-basic-voice_bank/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/example-basic-voice_bank/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48127,7 +48127,7 @@
         "name": "example-basic-voice_bank",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/example-basic-voice_bank/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/example-basic-voice_bank/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48191,7 +48191,7 @@
         "name": "example-basic-voice_bank",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/example-basic-voice_bank/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/example-basic-voice_bank/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48255,7 +48255,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/example-soundscapes-glass_garden/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/example-soundscapes-glass_garden/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48320,7 +48320,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/example-soundscapes-glass_garden/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/example-soundscapes-glass_garden/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48385,7 +48385,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/example-soundscapes-glass_garden/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/example-soundscapes-glass_garden/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48450,7 +48450,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-fm_bells/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-fm_bells/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48515,7 +48515,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-fm_bells/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-fm_bells/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48580,7 +48580,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-fm_bells/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-fm_bells/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48645,7 +48645,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "original",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-poly_saw/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-poly_saw/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48710,7 +48710,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "phase1",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-poly_saw/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-poly_saw/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48775,7 +48775,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "current",
         "trial": 1,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-poly_saw/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/1/active-plugin-poly_saw/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48840,7 +48840,7 @@
         "name": "passthrough",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/passthrough/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/passthrough/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48906,7 +48906,7 @@
         "name": "passthrough",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/passthrough/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/passthrough/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -48972,7 +48972,7 @@
         "name": "passthrough",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/passthrough/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/passthrough/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49038,7 +49038,7 @@
         "name": "gain-smoothed",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/gain-smoothed/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/gain-smoothed/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49104,7 +49104,7 @@
         "name": "gain-smoothed",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/gain-smoothed/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/gain-smoothed/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49170,7 +49170,7 @@
         "name": "gain-smoothed",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/gain-smoothed/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/gain-smoothed/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49236,7 +49236,7 @@
         "name": "fft-stft-1024",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/fft-stft-1024/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/fft-stft-1024/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49300,7 +49300,7 @@
         "name": "fft-stft-1024",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/fft-stft-1024/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/fft-stft-1024/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49364,7 +49364,7 @@
         "name": "fft-stft-1024",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/fft-stft-1024/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/fft-stft-1024/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49428,7 +49428,7 @@
         "name": "proc-bank-16",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-16/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-16/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49492,7 +49492,7 @@
         "name": "proc-bank-16",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-16/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-16/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49556,7 +49556,7 @@
         "name": "proc-bank-16",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-16/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-16/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49620,7 +49620,7 @@
         "name": "proc-bank-128",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-128/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-128/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49684,7 +49684,7 @@
         "name": "proc-bank-128",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-128/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-128/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49748,7 +49748,7 @@
         "name": "proc-bank-128",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-128/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/proc-bank-128/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49812,7 +49812,7 @@
         "name": "example-basic-voice_bank",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/example-basic-voice_bank/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/example-basic-voice_bank/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49876,7 +49876,7 @@
         "name": "example-basic-voice_bank",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/example-basic-voice_bank/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/example-basic-voice_bank/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -49940,7 +49940,7 @@
         "name": "example-basic-voice_bank",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/example-basic-voice_bank/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/example-basic-voice_bank/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50004,7 +50004,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/example-soundscapes-glass_garden/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/example-soundscapes-glass_garden/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50069,7 +50069,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/example-soundscapes-glass_garden/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/example-soundscapes-glass_garden/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50134,7 +50134,7 @@
         "name": "example-soundscapes-glass_garden",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/example-soundscapes-glass_garden/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/example-soundscapes-glass_garden/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50199,7 +50199,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-fm_bells/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-fm_bells/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50264,7 +50264,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-fm_bells/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-fm_bells/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50329,7 +50329,7 @@
         "name": "active-plugin-fm_bells",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-fm_bells/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-fm_bells/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50394,7 +50394,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "phase1",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-poly_saw/phase1",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-poly_saw/phase1",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50459,7 +50459,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "current",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-poly_saw/current",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-poly_saw/current",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -50524,7 +50524,7 @@
         "name": "active-plugin-poly_saw",
         "worker": "original",
         "trial": 2,
-        "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-poly_saw/original",
+        "directory": "target/proc-storage-evidence/stress-2026-11-02/followup/2/active-plugin-poly_saw/original",
         "ok": true,
         "returncode": 0,
         "row": {
@@ -52995,7 +52995,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/0/passthrough/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/0/passthrough/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53059,7 +53059,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/0/passthrough/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/0/passthrough/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53123,7 +53123,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/0/gain-smoothed/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/0/gain-smoothed/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53187,7 +53187,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/0/gain-smoothed/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/0/gain-smoothed/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53251,7 +53251,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/0/fft-stft-1024/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/0/fft-stft-1024/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53313,7 +53313,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 0,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/0/fft-stft-1024/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/0/fft-stft-1024/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53375,7 +53375,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/1/passthrough/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/1/passthrough/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53439,7 +53439,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/1/passthrough/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/1/passthrough/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53503,7 +53503,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/1/gain-smoothed/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/1/gain-smoothed/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53567,7 +53567,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/1/gain-smoothed/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/1/gain-smoothed/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53631,7 +53631,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/1/fft-stft-1024/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/1/fft-stft-1024/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53693,7 +53693,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 1,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/1/fft-stft-1024/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/1/fft-stft-1024/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53755,7 +53755,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/2/passthrough/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/2/passthrough/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53819,7 +53819,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/2/passthrough/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/2/passthrough/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53883,7 +53883,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/2/gain-smoothed/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/2/gain-smoothed/current",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -53947,7 +53947,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/2/gain-smoothed/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/2/gain-smoothed/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -54011,7 +54011,7 @@
           "worker": "current",
           "mir_version": "original",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/2/fft-stft-1024/original",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/2/fft-stft-1024/original",
           "ok": true,
           "returncode": 0,
           "row": {
@@ -54073,7 +54073,7 @@
           "worker": "current",
           "mir_version": "current",
           "trial": 2,
-          "directory": "/home/francesco/Sources/onda-proc-state/target/proc-storage-evidence/stress-2026-11-02/replay/2/fft-stft-1024/current",
+          "directory": "target/proc-storage-evidence/stress-2026-11-02/replay/2/fft-stft-1024/current",
           "ok": true,
           "returncode": 0,
           "row": {

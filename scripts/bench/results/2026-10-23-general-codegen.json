@@ -3170,7 +3170,7 @@
           "filter": "array-guarded|slice-|filter-onepole|filter-svf|filter-biquad|delay-linear-8192|delay-cubic-8192|gain-smoothed|voice-bank-16|voice-bank-256|operator-arithmetic|osc-sine",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/kernels-0-baseline",
+          "output": "target/bench/general-codegen/kernels-0-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -3201,7 +3201,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -3211,7 +3211,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -4499,7 +4499,7 @@
           "filter": "array-guarded|slice-|filter-onepole|filter-svf|filter-biquad|delay-linear-8192|delay-cubic-8192|gain-smoothed|voice-bank-16|voice-bank-256|operator-arithmetic|osc-sine",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/kernels-0-candidate",
+          "output": "target/bench/general-codegen/kernels-0-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -4530,7 +4530,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -4540,7 +4540,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
@@ -5828,7 +5828,7 @@
           "filter": "array-guarded|slice-|filter-onepole|filter-svf|filter-biquad|delay-linear-8192|delay-cubic-8192|gain-smoothed|voice-bank-16|voice-bank-256|operator-arithmetic|osc-sine",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/kernels-1-baseline",
+          "output": "target/bench/general-codegen/kernels-1-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -5859,7 +5859,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -5869,7 +5869,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -7136,7 +7136,7 @@
           "filter": "array-guarded|slice-|filter-onepole|filter-svf|filter-biquad|delay-linear-8192|delay-cubic-8192|gain-smoothed|voice-bank-16|voice-bank-256|operator-arithmetic|osc-sine",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/kernels-1-candidate",
+          "output": "target/bench/general-codegen/kernels-1-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -7167,7 +7167,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -7177,7 +7177,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
@@ -8444,7 +8444,7 @@
           "filter": "array-guarded|slice-|filter-onepole|filter-svf|filter-biquad|delay-linear-8192|delay-cubic-8192|gain-smoothed|voice-bank-16|voice-bank-256|operator-arithmetic|osc-sine",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/kernels-2-baseline",
+          "output": "target/bench/general-codegen/kernels-2-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -8475,7 +8475,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -8485,7 +8485,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -9752,7 +9752,7 @@
           "filter": "array-guarded|slice-|filter-onepole|filter-svf|filter-biquad|delay-linear-8192|delay-cubic-8192|gain-smoothed|voice-bank-16|voice-bank-256|operator-arithmetic|osc-sine",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/kernels-2-candidate",
+          "output": "target/bench/general-codegen/kernels-2-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -9783,7 +9783,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -9793,7 +9793,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
@@ -11057,19 +11057,19 @@
         "label": "General MIR bounds and array dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/examples-1-baseline",
+          "output": "target/bench/general-codegen/examples-1-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -11100,7 +11100,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -11110,7 +11110,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -11646,19 +11646,19 @@
         "label": "General MIR bounds and array dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/examples-1-candidate",
+          "output": "target/bench/general-codegen/examples-1-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": true,
@@ -11689,7 +11689,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -11699,7 +11699,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
@@ -12235,19 +12235,19 @@
         "label": "General MIR bounds and array dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/examples-2-baseline",
+          "output": "target/bench/general-codegen/examples-2-baseline",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -12278,7 +12278,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -12288,7 +12288,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -12816,19 +12816,19 @@
         "label": "General MIR bounds and array dependence proofs; strict FP",
         "settings": {
           "source": [
-            "/home/francesco/Sources/onda/examples/basic/sine.onda",
-            "/home/francesco/Sources/onda/examples/basic/voice_bank.onda",
-            "/home/francesco/Sources/onda/examples/basic/polyphonic_saw.onda",
-            "/home/francesco/Sources/onda/examples/basic/saw_filter_saturator.onda",
-            "/home/francesco/Sources/onda/examples/instruments/additive_synth.onda",
-            "/home/francesco/Sources/onda/examples/effects/fdn_reverb.onda",
-            "/home/francesco/Sources/onda/examples/effects/tape_echo.onda",
-            "/home/francesco/Sources/onda/examples/feedback/neural_synth.onda"
+            "examples/basic/sine.onda",
+            "examples/basic/voice_bank.onda",
+            "examples/basic/polyphonic_saw.onda",
+            "examples/basic/saw_filter_saturator.onda",
+            "examples/instruments/additive_synth.onda",
+            "examples/effects/fdn_reverb.onda",
+            "examples/effects/tape_echo.onda",
+            "examples/feedback/neural_synth.onda"
           ],
           "filter": null,
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/examples-2-candidate",
+          "output": "target/bench/general-codegen/examples-2-candidate",
           "backend": "native",
           "inspect_only": false,
           "ir": false,
@@ -12859,7 +12859,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -12869,7 +12869,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
@@ -13400,7 +13400,7 @@
           "filter": "array-guarded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/wasm-arrays-0-baseline",
+          "output": "target/bench/general-codegen/wasm-arrays-0-baseline",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -13431,7 +13431,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -13441,7 +13441,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -13917,7 +13917,7 @@
           "filter": "array-guarded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/wasm-arrays-0-candidate",
+          "output": "target/bench/general-codegen/wasm-arrays-0-candidate",
           "backend": "both",
           "inspect_only": false,
           "ir": true,
@@ -13948,7 +13948,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -13958,7 +13958,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
@@ -14434,7 +14434,7 @@
           "filter": "array-guarded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/wasm-arrays-1-baseline",
+          "output": "target/bench/general-codegen/wasm-arrays-1-baseline",
           "backend": "both",
           "inspect_only": false,
           "ir": false,
@@ -14465,7 +14465,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "runner": "target/bench/general-codegen/baseline-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -14475,7 +14475,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/baseline-worker",
+          "path": "target/bench/general-codegen/baseline-worker",
           "sha256": "7e1c60f899184b9487fd01c63cf0a28cc5706ef784ed46f0ab17256b59abe63b"
         },
         "tools_sha256": {
@@ -14947,7 +14947,7 @@
           "filter": "array-guarded",
           "all": false,
           "list": false,
-          "output": "/home/francesco/Sources/onda/target/bench/general-codegen/wasm-arrays-1-candidate",
+          "output": "target/bench/general-codegen/wasm-arrays-1-candidate",
           "backend": "both",
           "inspect_only": false,
           "ir": false,
@@ -14978,7 +14978,7 @@
           "memory_mib": 4096,
           "timeout_seconds": 120,
           "node_heap_mib": 256,
-          "runner": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "runner": "target/bench/general-codegen/candidate-worker",
           "references": false,
           "compare_to": null,
           "label": "General MIR bounds and array dependence proofs; strict FP"
@@ -14988,7 +14988,7 @@
         "python": "3.14.8",
         "head": "c1df539c2c68326cc61414121e1bd5051aa56cfb",
         "worker": {
-          "path": "/home/francesco/Sources/onda/target/bench/general-codegen/candidate-worker",
+          "path": "target/bench/general-codegen/candidate-worker",
           "sha256": "81d766e3a9459ef7ff563a10a97a113b4459745f670e5e29d370c3e59c78630c"
         },
         "tools_sha256": {
