@@ -2,48 +2,18 @@
 use crate::{scene::Palette, Renderer, RunUi};
 use serde_json::json;
 
-// Write directly to stderr so libtest cannot lose captured probes on SIGSEGV.
-// Only the Linux CI diagnostic run enables these temporary probes.
-fn probe(stage: impl std::fmt::Display) {
-    use std::io::Write;
-    use std::sync::OnceLock;
-    use std::time::Instant;
-
-    if std::env::var_os("ONDA_UI_GPU_PROBES").is_none() {
-        return;
-    }
-    static START: OnceLock<Instant> = OnceLock::new();
-    let elapsed = START.get_or_init(Instant::now).elapsed();
-    let thread = std::thread::current();
-    let native_thread = std::fs::read_link("/proc/thread-self").unwrap_or_default();
-    let _ = writeln!(
-        std::io::stderr().lock(),
-        "[DEBUG-gpu-ci] {elapsed:?} native={} test={} {stage}",
-        native_thread.display(),
-        thread.name().unwrap_or("unnamed"),
-    );
-}
-
 #[test]
 fn measured_layout_changes_resolve_hidden_drafts() {
     use crate::{editing::Field, Input, Key};
 
     pollster::block_on(async {
-        probe("test start; create instance");
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        probe("instance ready; request adapter");
         let adapter = instance.request_adapter(&Default::default()).await.unwrap();
-        probe(format_args!(
-            "adapter ready: {:?}; create renderer",
-            adapter.get_info()
-        ));
         let mut renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8UnormSrgb)
             .await
             .unwrap();
-        probe("renderer ready");
         let render = |renderer: &mut Renderer, ui: &mut RunUi, width| {
-            probe(format_args!("render layout width={width}"));
             let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("diagnostic layout regression"),
                 size: wgpu::Extent3d {
@@ -67,12 +37,10 @@ fn measured_layout_changes_resolve_hidden_drafts() {
                     1.0,
                 )
                 .unwrap();
-            probe("render layout submitted");
         };
         let error = "compile error word ".repeat(18);
         for resize in [true, false] {
             for draft in ["valid", "invalid", "preedit", "marked"] {
-                probe(format_args!("layout case resize={resize} draft={draft}"));
                 let mut ui = RunUi::default();
                 ui.message(json!({"type":"state","state":{
                     "path":"diagnostic.onda","supportsScope":false,"supportsTransport":false,
@@ -128,25 +96,16 @@ fn measured_layout_changes_resolve_hidden_drafts() {
                 assert!(!ui.input(Input::Text { text: "1".into() }));
             }
         }
-        probe("assertions complete; GPU scope teardown begins");
     });
-    probe("test complete; GPU scope teardown finished");
 }
 
 #[test]
 fn host_device_renders_into_a_preexisting_host_texture() {
     pollster::block_on(async {
-        probe("test start; create instance");
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        probe("instance ready; request adapter");
         let adapter = instance.request_adapter(&Default::default()).await.unwrap();
-        probe(format_args!(
-            "adapter ready: {:?}; request device",
-            adapter.get_info()
-        ));
         let (device, queue) = adapter.request_device(&Default::default()).await.unwrap();
-        probe("device ready");
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("host-owned UI target"),
@@ -163,14 +122,11 @@ fn host_device_renders_into_a_preexisting_host_texture() {
             view_formats: &[],
         });
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        probe("create renderer from host device");
         let mut renderer = Renderer::from_device(device.clone(), queue.clone(), format);
-        probe("renderer ready");
         let mut ui = RunUi::default();
         ui.message(json!({"type":"state","state":{
             "path":"host.onda","params":[{"name":"gain","type":"f64","value":0.5}]
         }}));
-        probe("render host texture");
         let submission = renderer
             .render(
                 &mut ui,
@@ -180,40 +136,28 @@ fn host_device_renders_into_a_preexisting_host_texture() {
                 1.0,
             )
             .unwrap();
-        probe("host render submitted; wait for GPU");
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(submission),
                 timeout: Some(std::time::Duration::from_secs(10)),
             })
             .unwrap();
-        probe("host GPU wait finished; pop validation scope");
         assert!(scope.pop().await.is_none(), "host device validation failed");
         let pixels = read_pixels(&renderer, &texture);
         assert!(pixels.as_chunks::<4>().0.iter().any(|p| *p != pixels[..4]));
-        probe("assertions complete; GPU scope teardown begins");
     });
-    probe("test complete; GPU scope teardown finished");
 }
 
 #[test]
 fn horizontal_log_scrolling_keeps_output_reachable() {
     pollster::block_on(async {
-        probe("test start; create instance");
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        probe("instance ready; request adapter");
         let adapter = instance.request_adapter(&Default::default()).await.unwrap();
-        probe(format_args!(
-            "adapter ready: {:?}; create renderer",
-            adapter.get_info()
-        ));
         let mut renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8UnormSrgb)
             .await
             .unwrap();
-        probe("renderer ready");
         let render = |renderer: &mut Renderer, ui: &mut RunUi, width| {
-            probe(format_args!("render log width={width}"));
             let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("log scrolling regression"),
                 size: wgpu::Extent3d {
@@ -237,7 +181,6 @@ fn horizontal_log_scrolling_keeps_output_reachable() {
                     1.0,
                 )
                 .unwrap();
-            probe("render log submitted");
             let [x, y, _, _] = ui.scene.log_rect;
             ui.input(crate::Input::PointerMove {
                 x: x + 10.0,
@@ -323,13 +266,10 @@ fn horizontal_log_scrolling_keeps_output_reachable() {
             .find(|command| command["type"] == "viewState")
             .unwrap();
         assert_eq!(saved["state"]["logScrollX"], 0.0);
-        probe("assertions complete; GPU scope teardown begins");
     });
-    probe("test complete; GPU scope teardown finished");
 }
 
 fn read_pixels(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<u8> {
-    probe("readback prepare");
     let width = texture.width();
     let height = texture.height();
     let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
@@ -352,42 +292,30 @@ fn read_pixels(renderer: &Renderer, texture: &wgpu::Texture) -> Vec<u8> {
         texture.size(),
     );
     renderer.queue.submit([encoder.finish()]);
-    probe("readback copy submitted; map buffer");
     let (tx, rx) = std::sync::mpsc::channel();
     readback.map_async(wgpu::MapMode::Read, .., move |result| {
         tx.send(result).unwrap();
     });
-    probe("readback wait for GPU");
     renderer
         .device
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
-    probe("readback GPU wait finished; receive map result");
     rx.recv().unwrap().unwrap();
-    probe("readback mapped; copy pixels");
     readback.get_mapped_range(..).unwrap().to_vec()
 }
 
 #[test]
 fn circular_strokes_keep_antialiased_edges_at_all_ui_sizes() {
     pollster::block_on(async {
-        probe("test start; create instance");
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        probe("instance ready; request adapter");
         let Ok(adapter) = instance.request_adapter(&Default::default()).await else {
-            probe("no GPU adapter; skip");
             eprintln!("No GPU adapter available for logo rendering checks");
             return;
         };
-        probe(format_args!(
-            "adapter ready: {:?}; create renderer",
-            adapter.get_info()
-        ));
         let mut renderer = Renderer::new(&adapter, wgpu::TextureFormat::Rgba8UnormSrgb)
             .await
             .unwrap();
-        probe("renderer ready");
         let linear = |v: f32| {
             if v <= 0.04045 {
                 v / 12.92
@@ -415,7 +343,6 @@ fn circular_strokes_keep_antialiased_edges_at_all_ui_sizes() {
             let view = texture.create_view(&Default::default());
             for (size, thin_ring) in [(76.0, false), (32.0, false), (64.0, true)] {
                 for offset in [0.0, 0.35] {
-                    probe(format_args!("stroke case scale={scale} size={size} thin_ring={thin_ring} offset={offset}"));
                     let mut ui = RunUi::default();
                     ui.resize(256.0, 256.0, scale);
                     ui.prepare_scene();
@@ -431,11 +358,9 @@ fn circular_strokes_keep_antialiased_edges_at_all_ui_sizes() {
                     ui.scene.scope_shape_end = ui.scene.shapes.len();
                     ui.scene.overlay_shapes = ui.scene.shapes.len();
                     ui.scene.menu_shapes = ui.scene.shapes.len();
-                    probe("render stroke");
                     renderer
                         .render(&mut ui, &view, width, width, scale)
                         .unwrap();
-                    probe("render stroke submitted");
                     let pixels = read_pixels(&renderer, &texture);
                     // Include both edges of a thin ring, where derivatives can
                     // cross its centerline, and the silhouette of each logo.
@@ -471,30 +396,20 @@ fn circular_strokes_keep_antialiased_edges_at_all_ui_sizes() {
                 }
             }
         }
-        probe("assertions complete; GPU scope teardown begins");
     });
-    probe("test complete; GPU scope teardown finished");
 }
 
 #[test]
 fn opening_settings_after_text_rendering_preserves_valid_gpu_bindings() {
     pollster::block_on(async {
-        probe("test start; create instance");
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        probe("instance ready; request adapter");
         let Ok(adapter) = instance.request_adapter(&Default::default()).await else {
-            probe("no GPU adapter; skip");
             eprintln!("No GPU adapter available for popup rendering checks");
             return;
         };
-        probe(format_args!(
-            "adapter ready: {:?}; create renderer",
-            adapter.get_info()
-        ));
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let mut renderer = Renderer::new(&adapter, format).await.unwrap();
-        probe("renderer ready");
         let (width, height) = (768, 840);
         let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("settings popup regression"),
@@ -517,11 +432,8 @@ fn opening_settings_after_text_rendering_preserves_valid_gpu_bindings() {
             "supportsDeviceSelection":true,"inputDevices":["Input A","Input B"],
             "sampleRateHz":48000, "blockSamples":512
         }}));
-        probe("render initial text");
         renderer.render(&mut ui, &view, width, height, 1.0).unwrap();
-        probe("render initial text submitted");
         for open in [true, false, true] {
-            probe(format_args!("settings case open={open}"));
             ui.prepare_scene();
             let button = ui
                 .scene
@@ -541,9 +453,7 @@ fn opening_settings_after_text_rendering_preserves_valid_gpu_bindings() {
             let scope = renderer
                 .device
                 .push_error_scope(wgpu::ErrorFilter::Validation);
-            probe("render settings");
             renderer.render(&mut ui, &view, width, height, 1.0).unwrap();
-            probe("render settings submitted");
             if open {
                 ui.prepare_scene();
                 let select = ui
@@ -566,47 +476,35 @@ fn opening_settings_after_text_rendering_preserves_valid_gpu_bindings() {
                 });
                 ui.input(crate::Input::PointerUp);
                 assert!(ui.interaction.menu().is_some());
-                probe("render dropdown");
                 renderer.render(&mut ui, &view, width, height, 1.0).unwrap();
-                probe("render dropdown submitted");
             }
-            probe("settings wait for GPU");
             renderer
                 .device
                 .poll(wgpu::PollType::wait_indefinitely())
                 .unwrap();
-            probe("settings GPU wait finished; pop validation scope");
             let error = scope.pop().await;
             assert!(
                 error.is_none(),
                 "settings popup GPU validation failed: {error:?}"
             );
         }
-        probe("assertions complete; GPU scope teardown begins");
     });
-    probe("test complete; GPU scope teardown finished");
 }
 
 #[test]
 fn both_surface_formats_preserve_the_theme_and_use_one_scope_color() {
     pollster::block_on(async {
-        probe("test start; create instance");
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        probe("instance ready; request adapter");
         let Ok(adapter) = instance.request_adapter(&Default::default()).await else {
-            probe("no GPU adapter; skip");
             eprintln!("No GPU adapter available for pixel checks");
             return;
         };
-        probe(format_args!("adapter ready: {:?}", adapter.get_info()));
         for format in [
             wgpu::TextureFormat::Rgba8UnormSrgb,
             wgpu::TextureFormat::Rgba8Unorm,
         ] {
-            probe(format_args!("create renderer format={format:?}"));
             let mut renderer = Renderer::new(&adapter, format).await.unwrap();
-            probe("renderer ready");
             let (width, height) = (768, 840);
             let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("theme regression"),
@@ -624,15 +522,12 @@ fn both_surface_formats_preserve_the_theme_and_use_one_scope_color() {
             });
             let view = texture.create_view(&Default::default());
             for light in [false, true] {
-                probe(format_args!("theme case format={format:?} light={light}"));
                 let mut ui = RunUi::default();
                 ui.message(json!({"type":"state","state":{"path":"colors.onda","running":true,"themeMode":if light{"light"}else{"dark"}}}));
                 ui.presentation.scope_pinned = false;
                 ui.interaction.scope_open = true;
                 ui.set_scope_interleaved(2, &[0.25, 0.25, 0.25, 0.25]);
-                probe("render theme");
                 renderer.render(&mut ui, &view, width, height, 1.0).unwrap();
-                probe("render theme submitted");
                 let pixels = read_pixels(&renderer, &texture);
                 let p = Palette::new(light);
                 let matches = |pixel: &[u8], color: [f32; 4]| {
@@ -663,9 +558,6 @@ fn both_surface_formats_preserve_the_theme_and_use_one_scope_color() {
                     );
                 }
             }
-            probe("format assertions complete; renderer teardown begins");
         }
-        probe("assertions complete; GPU scope teardown begins");
     });
-    probe("test complete; GPU scope teardown finished");
 }

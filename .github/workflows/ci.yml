@@ -33,7 +33,6 @@ jobs:
     env:
       ONDA_CLI: ${{ github.workspace }}/target/debug/onda
       WGPU_BACKEND: vulkan
-      ONDA_UI_DIAGNOSTICS_DIR: ${{ github.workspace }}/target/gpu-diagnostics
     steps:
       - uses: actions/checkout@v6
 
@@ -63,6 +62,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            cmake \
             pkg-config \
             libpipewire-0.3-dev \
             libdbus-1-dev \
@@ -77,42 +77,44 @@ jobs:
             libxinerama-dev \
             libgl1-mesa-dev \
             mesa-vulkan-drivers \
-            vulkan-tools \
-            gdb
+            vulkan-tools
+
+      # Loader versions before 1.4.345 race during parallel GPU tests:
+      # https://github.com/KhronosGroup/Vulkan-Loader/issues/1863
+      - name: Check out Vulkan loader 1.4.363
+        uses: actions/checkout@v6
+        with:
+          repository: KhronosGroup/Vulkan-Loader
+          ref: 9e9518d2cf00054a220ae1a40f4406804b420ef5
+          path: .deps/vulkan-loader
+          persist-credentials: false
+
+      - name: Build and select Vulkan loader
+        shell: bash
+        run: |
+          cmake -S .deps/vulkan-loader -B .deps/vulkan-loader/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUPDATE_DEPS=ON \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/vulkan-loader" \
+            -DCMAKE_INSTALL_LIBDIR=lib
+          cmake --build .deps/vulkan-loader/build --parallel 4
+          cmake --install .deps/vulkan-loader/build
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/vulkan-loader/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          vulkaninfo --summary
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
 
-      - name: Prepare GPU crash diagnostics
-        run: bash scripts/ci-gpu-diagnostics.sh prepare
-
       - name: Test and lint Rust
-        id: rust-tests
         shell: bash
-        env:
-          ONDA_UI_GPU_PROBES: "1"
-          RUST_BACKTRACE: full
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: bash ${{ github.workspace }}/scripts/ci-gpu-diagnostics.sh run
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace 2>&1 | tee "$ONDA_UI_DIAGNOSTICS_DIR/workspace-tests.log"
+          cargo test --workspace
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
           cargo build --release -p onda_api
-
-      - name: Inspect GPU core dumps
-        if: failure() && steps.rust-tests.outcome == 'failure'
-        timeout-minutes: 5
-        run: bash scripts/ci-gpu-diagnostics.sh collect
-
-      - name: Upload GPU crash diagnostics
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: linux-gpu-diagnostics
-          path: ${{ env.ONDA_UI_DIAGNOSTICS_DIR }}
-          if-no-files-found: ignore
-          retention-days: 7
 
       - name: Test CMake SDK
         shell: bash
