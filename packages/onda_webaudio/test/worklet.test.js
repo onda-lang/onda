@@ -871,6 +871,20 @@ test("smoothed whole-array writes retain each element's startup value and ramp t
   }
 });
 
+test("rejected whole-array writes preserve active smoothing targets", () => {
+  for (const scalar of ["f32", "f64"]) {
+    const host = rampProcessor({ scalar });
+    host.process();
+    host.processor.setParam("gain", [1, 0]);
+    assert.throws(() => host.processor.setParam("gain", [99, 1n]),
+      (status) => status === ERROR.INVALID_PARAMETER);
+    assert.deepEqual([host.read(0), host.read(1)], [0, 0.5]);
+    host.process(48 * 3);
+    assert.deepEqual([host.read(0), host.read(1)], [1, 0]);
+    assert.equal(host.processor.initialized, true);
+  }
+});
+
 test("host ramps settle initial values and finish exactly without restarting identical targets", () => {
   for (const scalar of ["f32", "f64"]) {
     for (const length of [1, 2]) {
@@ -1163,6 +1177,32 @@ function connectedHost({ shared = true, initialize = false, descriptor = metadat
   const adapter = new OndaAudioProcessor(node, descriptor, undefined, null, statusBuffer);
   return { worklet, adapter };
 }
+
+test("adapter rejects non-i64 bigint array elements without changing parameters or readiness", async () => {
+  for (const shared of [true, false]) {
+    for (const scalar of ["i32", "f32", "f64"]) {
+      const width = scalar === "f64" ? 8 : 4;
+      const descriptor = metadata();
+      descriptor.runtime.param_size_bytes = width * 2;
+      descriptor.metadata.params = [{
+        name: "values", scalar, type_repr: `${scalar}[2]`, array_len: 2,
+        element_size_bytes: width, byte_offset: 0, byte_size: width * 2,
+        slot_offset: 0, default_reprs: ["11", "22"], param_control: null,
+      }];
+      const { worklet, adapter } = connectedHost({ shared, initialize: true, descriptor });
+      try {
+        await assert.rejects(adapter.setParam("values", [99, 1n]),
+          (error) => error instanceof OndaRuntimeError && error.code === ERROR.INVALID_PARAMETER);
+        assert.deepEqual(worklet.readStorage(worklet.paramsPtr, descriptor.metadata.params[0]), [11, 22]);
+        assert.equal(worklet.initialized, true);
+        await adapter.setParam("values", [33, 44]);
+        assert.deepEqual(worklet.readStorage(worklet.paramsPtr, descriptor.metadata.params[0]), [33, 44]);
+      } finally {
+        adapter.close();
+      }
+    }
+  }
+});
 
 test("adapter and worklet settle burst requests, typed failures, snapshots and recovery on both transports", async () => {
   for (const shared of [true, false]) {

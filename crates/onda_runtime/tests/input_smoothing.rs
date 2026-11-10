@@ -202,6 +202,62 @@ fn oversampling_matches_an_explicit_stdlib_smoother() {
 }
 
 #[test]
+fn oversampled_proc_smoothing_uses_its_owner_context() {
+    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+        for (default, range, duration) in [
+            ("3000.0", "0.0, SR, ", "0.004"),
+            ("0.0", "", "4.0 / SR"),
+            ("0.0", "", "4.0 / HOST_SR"),
+        ] {
+            for (owner, tail) in [
+                ("Main", String::new()),
+                ("Voice", "init:\n  voice = Voice()\nsample:\n  out1 = voice(in1)\n".into()),
+                ("Voice", "proc Parent:\n  ins 1\n  init:\n    voice = Voice()\n  sample:\n    out1 = voice(in1)\ninit:\n  parent = Parent()\nsample:\n  out1 = parent(in1)\n".into()),
+            ] {
+                let implicit = format!("proc {owner}:\n  ins:\n    x = {default} {{{range}{attribute} = {duration}}}\n  sample 4:\n    out1 = x\n{tail}");
+                let explicit = format!("import std/smoothing\nproc {owner}:\n  ins:\n    x = {default}\n  init:\n    smoother = std::smoothing::{processor}(time_s = {duration})\n    smoother.reset(clamp({default}, 0.0, SR))\n  sample 4:\n    out1 = smoother(x)\n{tail}");
+                let input = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
+                assert_close(&render(&implicit, &input), &render(&explicit, &input));
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_proc_smoothing_inherits_its_callers_sample_rate() {
+    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+        let implicit = format!(
+            "proc Voice:\n  ins:\n    x = 0.5 {{{attribute} = 0.004}}\n  sample:\n    out1 = x\n"
+        );
+        let explicit = format!("import std/smoothing\nproc Voice:\n  ins:\n    x = 0.5\n  init:\n    smoother = std::smoothing::{processor}(time_s = 0.004)\n    smoother.reset(0.5)\n  sample:\n    out1 = smoother(x)\n");
+        let tail = "proc Main:\n  ins 1\n  init:\n    voice = Voice()\n  sample 4:\n    out1 = voice(in1)\n";
+        let input = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
+        assert_close(
+            &render(&(implicit + tail), &input),
+            &render(&(explicit + tail), &input),
+        );
+    }
+}
+
+#[test]
+fn oversampled_generic_array_inputs_share_the_declared_smoothing_context() {
+    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+        for ty in ["f32", "f64"] {
+            let implicit = format!("proc Voice<T>:\n  ins:\n    x: T[2] = [3000.0, 5000.0] {{0.0, SR, {attribute} = 4.0 / SR}}\n  sample 4:\n    out1 = f32(x[0] + x[1])\n");
+            let explicit = format!("import std/smoothing\nproc Voice<T>:\n  ins:\n    x: T[2]\n  init:\n    a = std::smoothing::{processor}<T>(time_s = 4.0 / SR)\n    b = std::smoothing::{processor}<T>(time_s = 4.0 / SR)\n    a.reset(clamp(3000.0, 0.0, SR))\n    b.reset(clamp(5000.0, 0.0, SR))\n  sample 4:\n    out1 = f32(a(x[0]) + b(x[1]))\n");
+            let tail = format!(
+                "init:\n  voice = Voice<{ty}>()\nsample:\n  out1 = voice([{ty}(in1), {ty}(in1)])\n"
+            );
+            let input = [0.0; FRAMES];
+            assert_close(
+                &render(&(implicit + &tail), &input),
+                &render(&(explicit + &tail), &input),
+            );
+        }
+    }
+}
+
+#[test]
 fn zero_smoothing_creates_no_additional_state() {
     for proc in [false, true] {
         let source = |attribute: &str| {

@@ -4,7 +4,7 @@ ins:
   level = 0.5 {ramp = 8.0 / SR}
   bus: f32[2] = [0.25, 0.75] {lag = 4.0 / SR}
 
-outs 4
+outs 5
 
 proc Smoothed<T>:
   ins<T>:
@@ -28,11 +28,24 @@ proc Lagged:
   sample:
     out1 = target
 
+proc Oversampled<T>:
+  ins<T>:
+    ramped = 3.0 {0.0, SR / HOST_SR, ramp = 4.0 / SR}
+    lagged = 3.0 {0.0, SR / HOST_SR, lag = 4.0 / SR}
+  init<T>:
+    ramp = std::smoothing::Ramp<T>(time_s = 4.0 / SR)
+    lag = std::smoothing::Lag<T>(time_s = 4.0 / SR)
+    ramp.reset(3.0)
+    lag.reset(3.0)
+  sample 4:
+    out1 = f32(ramped - ramp(0.0) + lagged - lag(0.0))
+
 init:
   parent = Parent()
   lagged: Lagged[2]
   reference = std::smoothing::Lag(time_s = 4.0 / SR)
   reference.reset(0.25)
+  oversampled = Oversampled<f64>()
   frame = 0
 
 sample:
@@ -47,4 +60,5 @@ sample:
   a = lagged[0](target)
   b = lagged[1](target)
   out4 = a + b - 2.0 * reference(target)
+  out5 = oversampled(0.0, 0.0)
   frame += 1

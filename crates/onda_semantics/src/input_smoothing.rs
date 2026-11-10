@@ -1,5 +1,8 @@
 //! Input attributes lower to ordinary stdlib instances. The input boundary owns
 //! stepping and caching; reads never step a smoother.
+use crate::processor_lowering::{
+    proc_runtime_analysis_options, validated_sample_oversample_factor,
+};
 use crate::*;
 use onda_frontend::{InputSmoothingKind, Span};
 
@@ -228,9 +231,15 @@ pub(crate) fn prepare(
                 aliases.extend(port_aliases);
             }
             Block::Proc(proc) if proc.type_params.is_empty() => {
+                let factor = validated_sample_oversample_factor(
+                    proc.sample_oversample_factor.as_ref(),
+                    options,
+                    &format!("processor '{}' sample block", proc.name),
+                    errors,
+                );
                 let (mut prelude, _, _) = prepare_ports(
                     &mut proc.ins,
-                    options,
+                    proc_runtime_analysis_options(options, factor),
                     const_arrays,
                     false,
                     &mut smoothers,

@@ -77,6 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Evaluate processor input-smoothing durations, ranges, and defaults at the processor's
+  declared sample rate, including oversampling.
 - Restore run controls and buffers before initialization, including when authored defaults would
   fail a runtime safety check. Paused startup and metadata queries no longer execute `init`;
   playback, offline rendering, and benchmarks apply `--set` overrides before initialization.

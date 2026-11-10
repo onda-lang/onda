@@ -1150,7 +1150,7 @@ const scenarios = [
       { kind: "restore" },
       ...Array.from({ length: 5 }, () => ({ kind: "render" })),
     ],
-    expectedChannels: Array.from({ length: 4 }, () => Array(28).fill(0)),
+    expectedChannels: Array.from({ length: 5 }, () => Array(28).fill(0)),
   },
 ];
 

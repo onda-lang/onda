@@ -1295,7 +1295,7 @@ class OndaWasmProcessor extends AudioWorkletProcessor {
   validateScalarValue(scalar, value) {
     if (scalar === "i64") {
       exactI64(value);
-    } else if (value === undefined || value === null || typeof value === "object" || typeof value === "symbol" || typeof value === "function") {
+    } else if (typeof value !== "number" && typeof value !== "boolean" && typeof value !== "string") {
       throw ERROR.INVALID_PARAMETER;
     }
   }
