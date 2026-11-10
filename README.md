@@ -91,11 +91,11 @@ The CLI surface is:
 ```text
 onda
 onda compile <input>
-onda bench <input>
 onda run [input]
 onda run play <input>
 onda run render <input>
 onda project <directory> [--from <input.onda>]
+onda bench <input>
 onda daemon diagnose <input>
 onda daemon stdio
 onda lsp
@@ -125,15 +125,6 @@ Cross-target IR and object emission is also supported:
 
 ```bash
 onda compile examples/basic/sine.onda --target-spec ./targets/arm64.toml --emit obj
-```
-
-### `onda bench`
-
-Benchmarks native Onda processing and reports timings, throughput, and estimated realtime DSP CPU use.
-Compilation, warmup, and host overhead are excluded.
-
-```bash
-onda bench examples/basic/sine.onda --runs 10 --blocks 1000 --block-size 128
 ```
 
 ### `onda run`
@@ -185,6 +176,15 @@ onda run my-project/my-project.ondaproject
 onda project portable-sampler \
   --from sampler.onda \
   --buffer sample=recording.wav
+```
+
+### `onda bench`
+
+Benchmarks native Onda processing and reports timings, throughput, and estimated realtime DSP CPU use.
+Compilation, warmup, and host overhead are excluded.
+
+```bash
+onda bench examples/basic/sine.onda --runs 10 --blocks 1000 --block-size 128
 ```
 
 ### `onda daemon diagnose`
