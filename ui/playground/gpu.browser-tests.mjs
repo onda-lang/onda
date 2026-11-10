@@ -1067,13 +1067,13 @@ for (const host of ["example", "website"]) {
 
     await section("settings");
     let g = await geometry();
-    await click(g.width - 150, 134);
+    await click(g.width - 150, 174);
     await key("Home", "Home");
     await key("Enter", "Enter");
     await eventually(() => frame("probe.state.sampleRateHz===44100 && probe.state.connected===true"), "sample-rate recompilation");
     assert.equal(await page.evaluate("testAudioContexts.at(-1).sampleRate"), 44100);
 
-    await click(g.width - 150, 202);
+    await click(g.width - 150, 242);
     await key("Home", "Home");
     await key("ArrowDown", "ArrowDown");
     await key("Enter", "Enter");
@@ -1081,7 +1081,7 @@ for (const host of ["example", "website"]) {
     assert.deepEqual(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1'))"), { sampleRate: 44100, blockSize: 256, codegen: { fastMath: false } });
 
     assert.equal(await frame("probe.state.supportsThemeSelection"), false);
-    await click(g.width - 150, 230);
+    await click(g.width - 150, 270);
     await eventually(() => frame("probe.state.fastMath===true && probe.state.connected===true"), "Fast Math recompilation");
     assert.equal(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1')).codegen.fastMath"), true);
 
@@ -1092,11 +1092,11 @@ for (const host of ["example", "website"]) {
     const contexts = await page.evaluate("testAudioContexts.length");
     const previousGeneration = await frame("probe.state.engineGeneration");
     await section("settings");
-    await click(g.width - 150, 230);
+    await click(g.width - 150, 270);
     await eventually(() => frame(`probe.state.fastMath===false && probe.state.schemaReady===true && probe.state.engineGeneration!==${JSON.stringify(previousGeneration)}`), "paused Fast Math recompilation");
     assert.equal(await frame("probe.state.running"), false);
     assert.equal(await page.evaluate("testAudioContexts.length"), contexts, "paused recompilation must not create an audio context");
-    await click(g.width - 150, 230);
+    await click(g.width - 150, 270);
     await eventually(() => frame("probe.state.fastMath===true && probe.state.schemaReady===true"), "restore Fast Math before playing");
     await key("Escape", "Escape");
     await click(g.stopX, g.stopY);
