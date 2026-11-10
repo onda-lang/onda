@@ -33,6 +33,7 @@ jobs:
     env:
       ONDA_CLI: ${{ github.workspace }}/target/debug/onda
       WGPU_BACKEND: vulkan
+      ONDA_UI_DIAGNOSTICS_DIR: ${{ github.workspace }}/target/gpu-diagnostics
     steps:
       - uses: actions/checkout@v6
 
@@ -75,19 +76,43 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libgl1-mesa-dev \
-            mesa-vulkan-drivers
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            gdb
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
 
+      - name: Prepare GPU crash diagnostics
+        run: bash scripts/ci-gpu-diagnostics.sh prepare
+
       - name: Test and lint Rust
+        id: rust-tests
         shell: bash
+        env:
+          ONDA_UI_GPU_PROBES: "1"
+          RUST_BACKTRACE: full
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: bash ${{ github.workspace }}/scripts/ci-gpu-diagnostics.sh run
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace
+          cargo test --workspace 2>&1 | tee "$ONDA_UI_DIAGNOSTICS_DIR/workspace-tests.log"
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
           cargo build --release -p onda_api
+
+      - name: Inspect GPU core dumps
+        if: failure() && steps.rust-tests.outcome == 'failure'
+        timeout-minutes: 5
+        run: bash scripts/ci-gpu-diagnostics.sh collect
+
+      - name: Upload GPU crash diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-gpu-diagnostics
+          path: ${{ env.ONDA_UI_DIAGNOSTICS_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Test CMake SDK
         shell: bash
