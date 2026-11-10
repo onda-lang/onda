@@ -62,7 +62,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            cmake \
             pkg-config \
             libpipewire-0.3-dev \
             libdbus-1-dev \
@@ -76,33 +75,7 @@ jobs:
             libxrandr-dev \
             libxinerama-dev \
             libgl1-mesa-dev \
-            mesa-vulkan-drivers \
-            vulkan-tools
-
-      # Loader versions before 1.4.345 race during parallel GPU tests:
-      # https://github.com/KhronosGroup/Vulkan-Loader/issues/1863
-      - name: Check out Vulkan loader 1.4.363
-        uses: actions/checkout@v6
-        with:
-          repository: KhronosGroup/Vulkan-Loader
-          ref: 9e9518d2cf00054a220ae1a40f4406804b420ef5
-          path: .deps/vulkan-loader
-          persist-credentials: false
-
-      - name: Build and select Vulkan loader
-        shell: bash
-        run: |
-          cmake -S .deps/vulkan-loader -B .deps/vulkan-loader/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUPDATE_DEPS=ON \
-            -DBUILD_TESTS=OFF \
-            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/vulkan-loader" \
-            -DCMAKE_INSTALL_LIBDIR=lib
-          cmake --build .deps/vulkan-loader/build --parallel 4
-          cmake --install .deps/vulkan-loader/build
-          export LD_LIBRARY_PATH="$RUNNER_TEMP/vulkan-loader/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-          vulkaninfo --summary
+            mesa-vulkan-drivers
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
@@ -111,7 +84,10 @@ jobs:
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace
+          cargo test --workspace --exclude onda_ui
+          # The runner's Vulkan loader races between independent GPU tests:
+          # https://github.com/KhronosGroup/Vulkan-Loader/issues/1863
+          cargo test -p onda_ui -- --test-threads=1
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
           cargo build --release -p onda_api
