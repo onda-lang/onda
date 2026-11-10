@@ -77,6 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Refresh language-server diagnostics when external dependencies introduced by unsaved
+  editor changes are modified.
 - Evaluate processor input-smoothing durations, ranges, and defaults at the processor's
   declared sample rate, including oversampling.
 - Restore run controls and buffers before initialization, including when authored defaults would

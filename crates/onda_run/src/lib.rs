@@ -39,7 +39,7 @@ mod midi;
 mod playback;
 mod project_io;
 mod source_graph;
-pub use source_graph::{run_source_graph, RunSourceGraph};
+pub use source_graph::{run_source_graph, run_source_graph_with_overlays, RunSourceGraph};
 
 mod event_value_json;
 mod param_value_json;

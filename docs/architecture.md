@@ -468,7 +468,9 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `source_graph.rs` — frontend dependency discovery for editor reloads, sharing native Run’s
   source manifest and project recovery paths, including incomplete graphs. Graphs carry SHA-256
   hashes of captured documents and project files so editors can validate the discovery-to-watch
-  gap; playback and metadata replies, including failed builds, report the exact
+  gap. Daemon `run_sources` resolves open-document overlays for language clients; overlay paths
+  remain watchable without claiming their in-memory contents are disk hashes.
+  Playback and metadata replies, including failed builds, report the exact
   compiled source manifest and hashes of the manifest/asset bytes actually loaded. The frontend
   retains rejected UTF-8 bytes and failed reads so failure fingerprints never reread restored files.
   Playback reports these
