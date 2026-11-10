@@ -90,7 +90,7 @@ pub(crate) fn build(ui: &RunUi) -> Scene {
         s.focus_layer = crate::interaction::FocusLayer::Popup;
         // Keep popup painting and hit testing above the entire document and dock.
         let popup_width = width.min(256.0);
-        let popup_top = header_bottom.clamp(GUTTER, (h - GUTTER - 60.0).max(GUTTER));
+        let popup_top = (header_bottom - 1.0).clamp(GUTTER, (h - GUTTER - 60.0).max(GUTTER));
         let rect = [
             GUTTER + width - popup_width,
             popup_top,

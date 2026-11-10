@@ -35,7 +35,7 @@
         out1 = high
     ```
 
-    The spelling is tentative; the existing [enum model](../syntax.md#enumerations) supplies the
+    The spelling is tentative; the existing [enum model](../syntax.md#enums) supplies the
     finite set of cases.
   - Reuse ordinary branch scopes, definite-assignment and return-flow analysis, and effect/rate
     checking in init, event, block, and sample code. Support the same semantics in `const def`

@@ -275,15 +275,17 @@ mod tests {
         ui.resize(360.0, 400.0, 1.0);
         ui.interaction.devices_open = true;
         ui.invalidate();
+        let mut scrolled = false;
         for _ in 0..8 {
             tab(&mut ui, false);
+            scrolled |= ui.interaction.popup_scroll > 0.0;
             let target = ui.interaction.focus.as_ref().unwrap();
             assert!(matches!(
                 target,
                 Target::Theme | Target::Choose(_) | Target::Command(_)
             ));
         }
-        assert!(ui.interaction.popup_scroll > 0.0);
+        assert!(scrolled);
         assert_eq!(ui.scroll, 0.0);
     }
 }

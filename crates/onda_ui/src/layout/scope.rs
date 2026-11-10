@@ -82,7 +82,7 @@ pub(super) fn overlay(ui: &RunUi, s: &mut Scene, p: Palette) {
     }
     let [hx, hy, hw, hh] = s.header_rect;
     let w = hw.min(320.0);
-    let top = (hy + hh + 6.0).clamp(4.0, (s.viewport_height - 72.0).max(4.0));
+    let top = (hy + hh - 1.0).clamp(4.0, (s.viewport_height - 72.0).max(4.0));
     let h = 208.0_f32.min((s.viewport_height - top - 8.0).max(64.0));
     let r = [hx + hw - w, top, w, h];
     s.scope_panel = r;

@@ -2,22 +2,30 @@ use crate::{
     icons::Icon,
     interaction::SelectId,
     model::RunUi,
-    scene::{Palette, Scene, Target},
+    scene::{Palette, Scene, Target, TextStyle},
 };
 use serde_json::json;
 
 pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f32 {
     let [x, top, w, _] = rect;
-    let mut y = top;
-    if ui.state["supportsThemeSelection"] != false {
-        let mode = if ui.light { "Light" } else { "Dark" };
-        s.text_row(format!("Theme: {mode}"), [x, y + 6.0, w - 38.0, 20.0], p);
-        let button = [x + w - 32.0, y, 32.0, 32.0];
+    let theme = ui.state["supportsThemeSelection"] != false;
+    s.styled(
+        "Settings",
+        [x, top, w - if theme { 40.0 } else { 0.0 }, 28.0],
+        14.0,
+        p.ink,
+        TextStyle {
+            bold: true,
+            ..Default::default()
+        },
+    );
+    if theme {
+        let button = [x + w - 28.0, top, 28.0, 28.0];
         s.button(ui, "", button, Target::Theme, p);
-        s.icon(Icon::Theme, [button[0] + 16.0, y + 16.0], p.ink_color());
+        s.icon(Icon::Theme, [button[0] + 14.0, top + 14.0], p.ink_color());
         s.tooltip(button, "Toggle dark / light theme".into());
-        y += 44.0;
     }
+    let mut y = top + 40.0;
     for (label, id, key) in [
         ("Sample rate", SelectId::SampleRate, "sampleRateHz"),
         ("Block size", SelectId::BlockSize, "blockSamples"),
@@ -82,5 +90,5 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         );
         y += 44.0;
     }
-    (y - top - 12.0).max(0.0)
+    y - top - 12.0
 }

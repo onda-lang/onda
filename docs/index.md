@@ -25,6 +25,7 @@ eyebrow: Onda docs
 - [CLI and editors]({{ '/docs/tooling/' | relative_url }}) — Command-line usage, VS Code, and Neovim.
 - [Releases](https://github.com/onda-lang/onda/releases/latest) — Precompiled packages for Linux, macOS, and Windows.
 - [VST3 plugins](https://github.com/onda-lang/onda-plugin) — OndaSynth and OndaFX for running Onda in a DAW.
+- [Agentic programming]({{ '/docs/agentic-programming/' | relative_url }}) — Give coding agents the language and standard-library references to write idiomatic Onda.
 
 ## Embedding
 

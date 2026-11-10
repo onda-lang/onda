@@ -697,7 +697,7 @@ fn settings_popup_aligns_with_header_edges() {
                 let popup = scene.popup_rect;
                 assert_eq!(popup[0] + popup[2], header[0] + header[2]);
                 if header[1] + header[3] + 60.0 <= height - crate::theme::GUTTER {
-                    assert_eq!(popup[1], header[1] + header[3]);
+                    assert_eq!(popup[1], header[1] + header[3] - 1.0);
                 } else {
                     assert!(
                         popup[1] < header[1] + header[3],

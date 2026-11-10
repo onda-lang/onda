@@ -172,6 +172,8 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
 .prose h2 { margin: 1.5rem 0 .8rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--ink); font-size: 1.55rem; line-height: 1.25; }
 .prose h3 { margin: 2rem 0 .6rem; color: var(--ink); font-size: 1.16rem; line-height: 1.35; }
 .prose h4 { margin-top: 1.6rem; color: var(--ink); }
+.prose .heading-anchor { display: inline-block; margin-left: .2em; padding: 0 .25em; color: var(--muted); font-size: .8em; text-decoration: none; }
+.prose .heading-anchor:hover, .prose .heading-anchor:focus-visible { color: var(--ink); text-decoration: underline; }
 .prose p, .prose li { color: var(--text); }
 .prose > :is(p, ul, ol, blockquote) { max-width: var(--reading-width); }
 .prose strong { color: var(--ink); }

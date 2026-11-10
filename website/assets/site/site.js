@@ -81,4 +81,15 @@ import { highlightOnda } from "./onda-highlighter.js";
     }, { rootMargin: '-15% 0px -75%' });
     headings.forEach((heading) => observer.observe(heading));
   }
+
+  // Build the contents first so permalink markers stay out of its labels.
+  document.querySelectorAll('.prose :is(h1, h2, h3, h4, h5, h6)[id]').forEach((heading) => {
+    const link = document.createElement('a');
+    link.className = 'heading-anchor';
+    link.href = `#${encodeURIComponent(heading.id)}`;
+    link.textContent = '#';
+    link.setAttribute('aria-label', `Permalink to ${heading.textContent.trim()}`);
+    link.title = 'Link to this section';
+    heading.appendChild(link);
+  });
 })();
