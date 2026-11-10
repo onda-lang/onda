@@ -7,10 +7,10 @@ init:
   index = 0
 
 block:
-  frames = mono[0].len()
+  samples = mono[0].samples()
 
   sample:
     out1 = mono[0][index] + fixed[2][1, index] + dynamic[3][1, index]
     index = index + 1
-    if index >= frames:
+    if index >= samples:
       index = 0

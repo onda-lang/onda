@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import {
   compileTrustedMir as compileMir,
-  createDefaultImports,
 } from "../src/index.js";
 import { resolveOndaCli } from "./onda-cli.mjs";
 
@@ -52,7 +51,7 @@ try {
 
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process, onda_event_0 } =
     instance.exports;
@@ -300,21 +299,19 @@ function dispatchEvent(processor, artifact, name, values) {
   const event = artifact.metadata.metadata.events.find((event) => event.name === name);
   assert.ok(event, `missing event '${name}'`);
   const start = processor.port.messages.length;
+  const requestId = start + 1;
   processor.port.onmessage({
     data: {
       type: "event",
       event: name,
-      requestId: "dispatch",
+      requestId,
       payload: new PayloadPlan(event.schema).encode(values),
     },
   });
   const messages = processor.port.messages.slice(start);
-  assert.equal(
-    messages.some((message) => message.type === "onda-error"),
-    false,
-    JSON.stringify(messages),
+  const response = messages.find((message) =>
+    message.type === "onda-status" && message.requestId === requestId
   );
-  assert.ok(messages.some((message) =>
-    message.type === "onda-ok" && message.requestId === "dispatch"
-  ));
+  assert.ok(response, JSON.stringify(messages));
+  assert.equal(response.status, 0, JSON.stringify(messages));
 }

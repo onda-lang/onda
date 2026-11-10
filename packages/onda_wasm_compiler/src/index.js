@@ -607,9 +607,6 @@ async function initializeToolchain(frontendWasm) {
   return { frontend, compileTrustedMir: backend.compileTrustedMir };
 }
 
-export function createDefaultImports() {
-  return {};
-}
 
 function normalizeCompileOptions(options) {
   const compile = normalizeCompileInputOptions(options);
@@ -795,6 +792,7 @@ function decodeCompileConstDescriptors(encoded) {
     kind: descriptor.kind,
     elementCount: descriptor.element_count,
     value: decodeCompileConstValue(descriptor.element, descriptor.kind, descriptor.values),
+    ...(descriptor.enumeration ? { enumeration: descriptor.enumeration } : {}),
   }));
 }
 

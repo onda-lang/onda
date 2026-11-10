@@ -1,0 +1,49 @@
+proc Voice:
+  params:
+    gain: i32 = 1
+  delegate fired(value: i32)
+  init:
+    values: i32[2] = [0, 0]
+  sample:
+    values[1] += gain
+    fired(values[1])
+    out1 = f32(values[1])
+proc Bank:
+  params:
+    weight: i32 = 1
+  init:
+    voices: Voice[2] = Voice(gain = weight)
+    total: i32 = 0
+  when voices[0].fired(value):
+    total += value * weight
+  sample:
+    out1 = f32(total)
+def step(voice) -> f32:
+  return voice()
+def observe(bank: Bank) -> f32:
+  return bank()
+def exercise(left: Bank[3], right: Bank[3], outer: bool, inner: bool) -> f32:
+  if outer:
+    if inner:
+      a: Bank[3] = left
+      owner = a[1]
+      selected = owner.voices[0]
+    else:
+      b: Bank[3] = right
+      owner = b[1]
+      selected = owner.voices[0]
+  else:
+    c: Bank[3] = left
+    owner = c[0]
+    selected = owner.voices[0]
+  one = step(selected)
+  two = step(selected)
+  return one + two * 10.0 + observe(owner) * 100.0
+init:
+  left: Bank[3] = Bank(weight = [3, 2, 5])
+  right: Bank[3] = Bank(weight = 7)
+  index: i32 = 0
+sample:
+  out1 = exercise(left, right, index % 2 == 0, index % 4 < 2)
+  out2 = left[0]() + right[0]()
+  index += 1

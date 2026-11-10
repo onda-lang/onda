@@ -1,0 +1,30 @@
+proc Voice:
+  buffers:
+    marks: f32
+  delegate fired(value: i32)
+  sample:
+    fired(1)
+    out1 = marks[0]
+proc Bank:
+  buffers:
+    marks: f32
+  init:
+    voices: Voice[2] = Voice(marks = marks)
+    count: i32 = 0
+  when voices[0].fired(value):
+    count += value
+  sample:
+    out1 = f32(count)
+def step(voice) -> f32:
+  return voice()
+def exercise(bank: Bank) -> f32:
+  copy: Bank = bank
+  value = step(copy.voices[0])
+  return value + copy()
+buffers:
+  marks: f32
+init:
+  bank = Bank(marks = marks)
+  saved: Bank = bank
+sample:
+  out1 = exercise(saved)

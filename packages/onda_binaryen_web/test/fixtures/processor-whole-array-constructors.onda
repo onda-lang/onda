@@ -1,0 +1,19 @@
+proc Voice:
+  params:
+    gains: f32[2] = [0.0, 0.0]
+  sample:
+    out1 = gains[0] + gains[1]
+proc Bank:
+  init:
+    gains: f32[2] = [0.25, 0.75]
+    voices: Voice[16] = Voice(gains = gains)
+  sample:
+    total = 0.0
+    for index in 0..16:
+      total += voices[index]()
+    out1 = total
+init:
+  voices: Voice[16] = Voice(gains = [0.25, 0.75])
+  bank = Bank()
+sample:
+  out1 = bank() + voices[0]() + voices[15]()

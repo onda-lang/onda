@@ -19,7 +19,7 @@ params:
 init:
   tape_l: f32[TapeCapacity]
   tape_r: f32[TapeCapacity]
-  captured_frames = 0
+  captured_samples = 0
   write_index = 0
   read_position = 0.0
   recording = true
@@ -36,7 +36,7 @@ init:
 
 event recapture():
   recording = true
-  captured_frames = 0
+  captured_samples = 0
   write_index = 0
   read_position = 0.0
 
@@ -45,7 +45,7 @@ event reverse():
 
 event clear():
   recording = false
-  captured_frames = 0
+  captured_samples = 0
   write_index = 0
   read_position = 0.0
 
@@ -71,7 +71,7 @@ sample:
   audition = audition * envelope() * 0.44
   input_l = audition * (1.0 - live_input) + in1 * live_input
   input_r = audition * (1.0 - live_input) + in2 * live_input
-  target_frames = min(max(i32(loop_s * SR), 8), TapeCapacity)
+  target_samples = min(max(i32(loop_s * SR), 8), TapeCapacity)
 
   loop_l = 0.0
   loop_r = 0.0
@@ -79,21 +79,21 @@ sample:
     tape_l[write_index] = input_l
     tape_r[write_index] = input_r
     write_index = write_index + 1
-    captured_frames = captured_frames + 1
-    if write_index >= target_frames:
+    captured_samples = captured_samples + 1
+    if write_index >= target_samples:
       recording = false
-      captured_frames = target_frames
+      captured_samples = target_samples
       read_position = 0.0
-  elif captured_frames > 1:
+  elif captured_samples > 1:
     loop_l = std::lookup::readCW(tape_l, read_position)
     loop_r = std::lookup::readCW(tape_r, read_position)
     if overdub > 0.0:
-      overdub_index = i32(read_position) % captured_frames
+      overdub_index = i32(read_position) % captured_samples
       tape_l[overdub_index] = loop_l * overdub + input_l * (1.0 - overdub)
       tape_r[overdub_index] = loop_r * overdub + input_r * (1.0 - overdub)
 
     transport_speed = speed * direction * (1.0 + wow_lfo() * wow)
-    read_position = wrap(read_position + transport_speed, 0.0, captured_frames)
+    read_position = wrap(read_position + transport_speed, 0.0, captured_samples)
 
   out1 = tanh((input_l * (1.0 - mix) + loop_l * mix) * level)
   out2 = tanh((input_r * (1.0 - mix) + loop_r * mix) * level)

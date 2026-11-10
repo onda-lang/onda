@@ -1,0 +1,173 @@
+use crate::{Input, PresentationOptions, RunUi, SurfaceRenderer};
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace=console,js_name=error)]
+    fn log_panic(message: &str);
+}
+
+#[wasm_bindgen]
+pub struct CanvasUi {
+    ui: RunUi,
+    gpu: SurfaceRenderer,
+    scale: f32,
+    rendered: Option<(u64, u64)>,
+}
+
+#[wasm_bindgen]
+impl CanvasUi {
+    #[wasm_bindgen(js_name = create)]
+    pub async fn create(
+        canvas: web_sys::HtmlCanvasElement,
+        webgpu: bool,
+        present_mode: u32,
+        maximum_frame_latency: u32,
+    ) -> Result<CanvasUi, JsValue> {
+        std::panic::set_hook(Box::new(|info| log_panic(&info.to_string())));
+        let width = canvas.width();
+        let height = canvas.height();
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = if webgpu {
+            wgpu::Backends::BROWSER_WEBGPU
+        } else {
+            wgpu::Backends::GL
+        };
+        let instance = wgpu::Instance::new(descriptor);
+        let surface = instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let presentation = PresentationOptions::from_raw(present_mode, maximum_frame_latency)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let gpu = SurfaceRenderer::new(instance, surface, width, height, presentation)
+            .await
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(Self {
+            ui: RunUi::default(),
+            gpu,
+            scale: 1.0,
+            rendered: None,
+        })
+    }
+    /// Device loss is asynchronous and can happen while the canvas is idle.
+    pub fn on_device_lost(&self, callback: js_sys::Function) {
+        self.gpu
+            .renderer
+            .device
+            .set_device_lost_callback(move |_, message| {
+                let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&message));
+            });
+    }
+    pub fn message(&mut self, message: &str) -> Result<(), JsValue> {
+        self.ui
+            .message(serde_json::from_str(message).map_err(|e| JsValue::from_str(&e.to_string()))?);
+        Ok(())
+    }
+    pub fn scope_samples(&mut self, channels: usize, samples: &[f32]) {
+        self.ui.set_scope_interleaved(channels, samples);
+    }
+    pub fn scope_packet(&mut self, packet: &[u8]) -> Result<(), JsValue> {
+        self.ui.set_scope_packet(packet).map_err(JsValue::from_str)
+    }
+    pub fn meter_enabled(&mut self) -> bool {
+        self.ui.meter_enabled()
+    }
+    pub fn scope_enabled(&mut self) -> bool {
+        self.ui.scope_enabled()
+    }
+    pub fn scope_columns(&self) -> usize {
+        self.ui.scope_columns()
+    }
+    pub fn input(&mut self, input: &str) -> Result<(), JsValue> {
+        let input: Input =
+            serde_json::from_str(input).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.ui.input(input);
+        Ok(())
+    }
+    pub fn scroll(&mut self, delta: f32, horizontal: bool) -> bool {
+        self.ui.scroll(delta, horizontal)
+    }
+    pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
+        self.rendered = None;
+        self.scale = scale;
+        self.gpu.resize(width, height);
+        self.ui
+            .resize(width as f32 / scale, height as f32 / scale, scale);
+    }
+    pub fn render(&mut self) -> Result<bool, JsValue> {
+        self.ui.update();
+        let rendered = self
+            .gpu
+            .render(&mut self.ui, self.scale)
+            .map_err(|e| JsValue::from_str(&e))?;
+        if rendered {
+            self.rendered = Some(self.ui.revisions());
+        }
+        Ok(rendered)
+    }
+    pub fn commands(&mut self) -> String {
+        serde_json::to_string(&self.ui.take_commands()).unwrap_or_else(|_| "[]".into())
+    }
+    pub fn present_modes(&self) -> u32 {
+        self.gpu.present_mode_mask()
+    }
+    pub fn present_mode(&self) -> u32 {
+        self.gpu.presentation().present_mode as u32
+    }
+    pub fn set_presentation(
+        &mut self,
+        mode: u32,
+        maximum_frame_latency: u32,
+    ) -> Result<(), JsValue> {
+        self.gpu
+            .set_presentation(
+                PresentationOptions::from_raw(mode, maximum_frame_latency)
+                    .map_err(|e| JsValue::from_str(&e))?,
+            )
+            .map_err(|e| JsValue::from_str(&e))?;
+        self.rendered = None;
+        Ok(())
+    }
+    /// Advance timed state/layout without drawing; commands must still be drained.
+    pub fn update(&mut self) -> bool {
+        self.ui.update();
+        self.rendered != Some(self.ui.revisions())
+    }
+    pub fn wake_delay_ms(&self) -> Option<f64> {
+        self.ui.wake_deadline().map(|deadline| {
+            deadline
+                .saturating_duration_since(web_time::Instant::now())
+                .as_secs_f64()
+                * 1000.0
+        })
+    }
+    pub fn buffer_target(&mut self, x: f32, y: f32) -> Option<String> {
+        self.ui.buffer_target(x, y)
+    }
+    pub fn cursor(&mut self) -> String {
+        self.ui.cursor().into()
+    }
+    pub fn editing(&self) -> bool {
+        self.ui.editing()
+    }
+    pub fn text_edit(&mut self) -> String {
+        serde_json::to_string(&self.ui.text_edit()).unwrap_or_else(|_| "null".into())
+    }
+    pub fn fallback_fonts(&mut self) -> String {
+        self.ui.prepare_scene();
+        serde_json::to_string(&self.gpu.renderer.missing_fonts(&self.ui))
+            .unwrap_or_else(|_| "[]".into())
+    }
+    pub fn load_font(&mut self, name: String, bytes: &[u8]) -> Result<(), JsValue> {
+        self.gpu
+            .renderer
+            .add_font(name, bytes.to_vec())
+            .map_err(|e| JsValue::from_str(&e))?;
+        self.ui.invalidate();
+        self.rendered = None;
+        Ok(())
+    }
+    pub fn pointer_stops(&mut self, x: f32, y: f32) -> bool {
+        self.ui.pointer_stops(x, y)
+    }
+}

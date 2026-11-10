@@ -1,0 +1,64 @@
+import std/smoothing
+
+ins:
+  level = 0.5 {ramp = 8.0 / SR}
+  bus: f32[2] = [0.25, 0.75] {lag = 4.0 / SR}
+
+outs 5
+
+proc Smoothed<T>:
+  ins<T>:
+    target = 0.5 {0.0, 1.0, ramp = 8.0 / SR}
+  outs<T> 1
+  sample:
+    out1 = target + target + ins[0]
+
+proc Parent:
+  ins 1
+  init:
+    child = Smoothed<f64>()
+    reference = std::smoothing::Ramp<f64>(time_s = 8.0 / SR)
+    reference.reset(0.5)
+  sample:
+    out1 = f32(child(in1) - 3.0 * reference(f64(clamp(in1, 0.0, 1.0))))
+
+proc Lagged:
+  ins:
+    target = 0.25 {lag = 4.0 / SR}
+  sample:
+    out1 = target
+
+proc Oversampled<T>:
+  ins<T>:
+    ramped = 3.0 {0.0, SR / HOST_SR, ramp = 4.0 / SR}
+    lagged = 3.0 {0.0, SR / HOST_SR, lag = 4.0 / SR}
+  init<T>:
+    ramp = std::smoothing::Ramp<T>(time_s = 4.0 / SR)
+    lag = std::smoothing::Lag<T>(time_s = 4.0 / SR)
+    ramp.reset(3.0)
+    lag.reset(3.0)
+  sample 4:
+    out1 = f32(ramped - ramp(0.0) + lagged - lag(0.0))
+
+init:
+  parent = Parent()
+  lagged: Lagged[2]
+  reference = std::smoothing::Lag(time_s = 4.0 / SR)
+  reference.reset(0.25)
+  oversampled = Oversampled<f64>()
+  frame = 0
+
+sample:
+  target = 2.0
+  if frame >= 3:
+    target = -0.5
+  if frame >= 12:
+    target = 0.75
+  out1 = f32(level - ins[0])
+  out2 = f32(bus[0] - ins[1] + bus[1] - ins[2] + bus.read_unsafe(0) - bus[0])
+  out3 = parent(target)
+  a = lagged[0](target)
+  b = lagged[1](target)
+  out4 = a + b - 2.0 * reference(target)
+  out5 = oversampled(0.0, 0.0)
+  frame += 1

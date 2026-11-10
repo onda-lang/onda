@@ -72,8 +72,8 @@ impl Program {
             Type::Slice { element, .. } => PayloadType::Slice {
                 element: Box::new(PayloadType::scalar(payload_scalar(*element))),
             },
-            Type::Buffer { .. } | Type::BufferSpan { .. } => {
-                return Err(PayloadError::InvalidSchema)
+            Type::Buffer { .. } | Type::BufferSpan { .. } | Type::BufferMap { .. } => {
+                return Err(PayloadError::InvalidSchema);
             }
         };
         active.remove(&id);

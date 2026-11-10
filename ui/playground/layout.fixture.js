@@ -1,7 +1,8 @@
 // Render the real editor in the layout fixtures without starting the compiler.
 import { OndaProjectEditor } from "./editor.js";
 import { bindEditorFontSize } from "./editor-font-size.js";
-import { bindCompileSettingLabels } from "./compile-setting-labels.js";
+import { bindProjectMenu } from "./project-menu.js";
+import { bindNewFileButton } from "./new-file.js";
 import "./layout.css";
 import source from "./default.onda";
 
@@ -15,9 +16,11 @@ const editor = new OndaProjectEditor({
   },
 });
 window.__testEditor = editor;
+bindNewFileButton(document.querySelector("[data-new-file]"), editor);
 const status = document.querySelector("[data-status]");
 status.textContent = "Playing";
-status.classList.add("playing");
+document.querySelector("[data-run-loading]").hidden = true;
+document.querySelector("[data-run-view]").parentElement.setAttribute("aria-busy", "false");
 const fontSize = document.querySelector("[data-editor-font-size]");
 bindEditorFontSize(fontSize, editor);
-bindCompileSettingLabels(document);
+bindProjectMenu(document.querySelector("[data-project-menu]"));

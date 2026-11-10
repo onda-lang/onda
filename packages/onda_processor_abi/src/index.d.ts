@@ -1,6 +1,6 @@
 export const PROCESSOR_ARTIFACT_FORMAT: "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 6;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION: 7;
 export const PROCESSOR_ABI_VERSION: 7;
 export const PROCESSOR_EXECUTION_OK: 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: 1;
@@ -58,7 +58,13 @@ export type OndaIntegrationProfile =
       heap_base_export: string;
     };
 
+export interface OndaEnumMetadata {
+  name: string;
+  members: { name: string; label: string }[];
+}
+
 export interface OndaIoMetadata {
+  enumeration?: OndaEnumMetadata | null;
   name: string;
   type_repr: string;
   scalar: OndaScalarType;
@@ -158,7 +164,7 @@ export interface OndaBufferArrayMetadata {
 
 export type OndaPayloadDefault = string | OndaPayloadDefault[];
 export type OndaPayloadType =
-  | { kind: "scalar"; encoding: OndaScalarType; integer_range?: OndaStateMetadata["integer_range"] }
+  | { kind: "scalar"; encoding: OndaScalarType; enumeration?: OndaEnumMetadata | null; integer_range?: OndaStateMetadata["integer_range"] }
   | { kind: "tuple"; elements: OndaPayloadType[] }
   | { kind: "struct"; name: string; fields: [OndaPayloadField, ...OndaPayloadField[]] }
   | { kind: "array"; element: OndaPayloadType; len: number }
@@ -272,7 +278,7 @@ export interface OndaStateMetadata {
 
 export interface OndaProcessorMetadata {
   format: "onda-processor";
-  format_version: 6;
+  format_version: 7;
   artifact_kind: OndaArtifactKind;
   abi_version: 7;
   backend: string;

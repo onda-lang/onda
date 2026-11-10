@@ -10,6 +10,10 @@ mod use_scope;
 use const_validation::validate_template_consts;
 use use_scope::collect_visible_use_candidates;
 
+mod enums;
+mod type_rewriting;
+use type_rewriting::*;
+
 mod path_helpers;
 use path_helpers::{
     format_call_args_as_type_suffix, looks_like_namespace_ref, namespace_candidates,
@@ -51,6 +55,10 @@ struct UseScope {
 
 #[derive(Debug, Default)]
 struct NamespaceFlattenState {
+    enums: HashMap<String, EnumType>,
+    next_enum_id: u32,
+    type_params: Vec<String>,
+    other_declarations: HashSet<String>,
     templates: HashMap<String, Rc<NamespaceTemplateRecord>>,
     aliases: HashMap<String, NamespaceAliasRecord>,
     private_aliases: HashMap<(String, String), NamespaceAliasRecord>,
@@ -70,13 +78,34 @@ struct NamespaceFlattenState {
 }
 
 impl NamespaceFlattenState {
+    fn enum_scope(&self) -> impl Fn(&str) -> Option<PrimitiveType> + Copy + '_ {
+        |name| {
+            if self.type_params.iter().any(|param| param == name) {
+                return None;
+            }
+            self.enums.get(name).copied().map(PrimitiveType::Enum)
+        }
+    }
+
+    fn with_type_params<T>(
+        &mut self,
+        params: Vec<String>,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = std::mem::replace(&mut self.type_params, params);
+        let result = operation(self);
+        self.type_params = saved;
+        result
+    }
+
     fn with_artifacts<T>(
         &mut self,
         artifacts: SemanticConstArtifacts,
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
         let saved = std::mem::replace(&mut self.artifacts, artifacts);
-        let result = operation(self);
+        // A captured declaration does not inherit the caller's generic bindings.
+        let result = self.with_type_params(Vec::new(), operation);
         self.artifacts = saved;
         result
     }
@@ -104,6 +133,16 @@ pub(super) fn flatten_namespaces_for_semantics(
         );
     }
 
+    for block in &out {
+        if let Block::Enum(def) = block {
+            if state.other_declarations.contains(&def.name) {
+                errors.push(Diagnostic::semantic_span(
+                    format!("enum '{}' conflicts with another declaration", def.name),
+                    &def.loc,
+                ));
+            }
+        }
+    }
     if errors.is_empty() {
         program.blocks = out;
         // Include specializations emitted inside scopes that have been restored.
@@ -177,6 +216,7 @@ fn collect_global_value_names(blocks: &[Block]) -> HashSet<String> {
             | Block::Const(_)
             | Block::Assert(_)
             | Block::Proc(_)
+            | Block::Enum(_)
             | Block::Struct(_)
             | Block::Def(_)
             | Block::Tasks(_)
@@ -208,6 +248,7 @@ fn typed_const_value_key(value: TypedConstValue) -> String {
     match value {
         TypedConstValue::F32(v) => format!("f32({v})"),
         TypedConstValue::F64(v) => format!("f64({v})"),
+        TypedConstValue::Enum { ty, ordinal } => format!("enum_{}({ordinal})", ty.id),
         TypedConstValue::I32(v) => format!("i32({v})"),
         TypedConstValue::I64(v) => format!("i64({v})"),
         TypedConstValue::Bool(v) => format!("bool({v})"),
@@ -220,17 +261,28 @@ fn register_member_for_item(
     state: &mut NamespaceFlattenState,
 ) {
     match item {
+        NamespaceItem::Enum(def) => enums::register_members(def, namespace, state),
         NamespaceItem::Struct(s) => {
+            state
+                .other_declarations
+                .insert(namespace_join(namespace, &s.name));
             state.members.insert(namespace_join(namespace, &s.name));
         }
         NamespaceItem::Def(d) => {
+            state
+                .other_declarations
+                .insert(namespace_join(namespace, &d.name));
             state.members.insert(namespace_join(namespace, &d.name));
         }
         NamespaceItem::Proc(p) => {
+            state
+                .other_declarations
+                .insert(namespace_join(namespace, &p.name));
             state.members.insert(namespace_join(namespace, &p.name));
         }
         NamespaceItem::Const(decl) => {
             let full_name = namespace_join(namespace, &decl.name);
+            state.other_declarations.insert(full_name.clone());
             state.members.insert(full_name.clone());
             if is_const_array_decl(decl) {
                 state.const_array_names.insert(full_name);
@@ -326,6 +378,7 @@ fn process_top_level_block(
     errors: &mut Vec<Diagnostic>,
 ) {
     match block {
+        Block::Enum(def) => enums::emit(def, options, state, out, errors),
         Block::Namespace(decl) => {
             process_namespace_decl(decl, "", template_consts, options, state, out, errors);
         }
@@ -336,6 +389,9 @@ fn process_top_level_block(
             register_use_decl("", &use_decl, template_consts, options, state, out, errors);
         }
         mut block => {
+            if let Some(name) = block_decl_name(&block) {
+                state.other_declarations.insert(name.to_owned());
+            }
             register_top_level_member_for_block(&block, state);
             let current_ns = match &block {
                 Block::Struct(s) => namespace_of_symbol(&s.name),
@@ -391,7 +447,7 @@ fn process_namespace_decl(
         let error_start = errors.len();
         let validation_scope = namespace_template_validation_scope(&decl, &full_ns, None);
         validate_namespace_template_proc_refs(&decl, &full_ns, state, &validation_scope, errors);
-        let (const_metadata, captured_artifacts) =
+        let (const_metadata, captured_artifacts, _) =
             validate_template_consts(&decl, &full_ns, state, None, template_consts, errors);
         state.templates.insert(
             full_ns,
@@ -453,6 +509,7 @@ fn namespace_template_validation_scope(
                 scope.aliases.insert(name, target);
             }
             NamespaceItem::Assert(_)
+            | NamespaceItem::Enum(_)
             | NamespaceItem::Struct(_)
             | NamespaceItem::Def(_)
             | NamespaceItem::Proc(_)
@@ -511,6 +568,7 @@ fn validate_namespace_template_proc_refs(
                     errors,
                 );
             }
+            NamespaceItem::Enum(_) => {}
             NamespaceItem::Struct(struct_def) => {
                 for field in &struct_def.fields {
                     if let Some(default) = &field.default {
@@ -600,6 +658,16 @@ fn validate_template_proc_refs(
         .extend(proc.type_params.iter().cloned());
 
     for decl in &proc.ins {
+        if let Some(smoothing) = &decl.smoothing {
+            validate_template_expr_refs(
+                &smoothing.time_s,
+                current_ns,
+                state,
+                &proc_scope,
+                "processor input smoothing",
+                errors,
+            );
+        }
         validate_template_optional_expr_refs(
             decl.default.as_ref(),
             current_ns,
@@ -1355,6 +1423,10 @@ fn namespace_item_path_exists(items: &[NamespaceItem], parts: &[&str]) -> bool {
             NamespaceItem::Const(decl) if decl.name == *first && rest.is_empty() => return true,
             NamespaceItem::Def(def) if def.name == *first && rest.is_empty() => return true,
             NamespaceItem::Proc(proc) if proc.name == *first && rest.is_empty() => return true,
+            NamespaceItem::Enum(def) if def.name == *first => {
+                return rest.is_empty()
+                    || (rest.len() == 1 && def.members.iter().any(|m| m.name == rest[0]));
+            }
             NamespaceItem::Struct(def) if def.name == *first && rest.is_empty() => return true,
             NamespaceItem::Alias(alias) if alias.name == *first && rest.is_empty() => return true,
             NamespaceItem::Namespace(child) if child.name == *first => {
@@ -1364,6 +1436,7 @@ fn namespace_item_path_exists(items: &[NamespaceItem], parts: &[&str]) -> bool {
             | NamespaceItem::Const(_)
             | NamespaceItem::Def(_)
             | NamespaceItem::Proc(_)
+            | NamespaceItem::Enum(_)
             | NamespaceItem::Struct(_)
             | NamespaceItem::Namespace(_)
             | NamespaceItem::Alias(_)
@@ -1485,6 +1558,11 @@ fn emit_namespace_items(
                 register_artifact_for_block(&block, options, state, errors);
                 out.push(block);
             }
+            NamespaceItem::Enum(def) => {
+                let mut def = def.clone();
+                def.name = namespace_join(namespace, &def.name);
+                enums::emit(def, options, state, out, errors);
+            }
             NamespaceItem::Struct(s) => {
                 let mut s = s.clone();
                 s.name = namespace_join(namespace, &s.name);
@@ -1582,6 +1660,7 @@ fn emit_namespace_items(
 fn block_decl_name(block: &Block) -> Option<&str> {
     match block {
         Block::Const(c) => Some(c.name.as_str()),
+        Block::Enum(def) => Some(def.name.as_str()),
         Block::Struct(s) => Some(s.name.as_str()),
         Block::Def(d) => Some(d.name.as_str()),
         Block::Proc(p) => Some(p.name.as_str()),
@@ -1614,7 +1693,7 @@ fn register_top_level_member_for_block(block: &Block, state: &mut NamespaceFlatt
                 state.scalar_const_names.insert(name.to_owned());
             }
         }
-        Block::Struct(_) | Block::Def(_) | Block::Proc(_) => {
+        Block::Enum(_) | Block::Struct(_) | Block::Def(_) | Block::Proc(_) => {
             state.members.insert(name.to_owned());
         }
         _ => {}
@@ -2621,66 +2700,6 @@ fn rewrite_namespace_ref_args(
     }
 }
 
-fn rewrite_named_type_ref_name(
-    name: &mut String,
-    current_ns: &str,
-    template_consts: &HashMap<String, Expr>,
-    options: AnalysisOptions,
-    state: &mut NamespaceFlattenState,
-    generated: &mut Vec<Block>,
-    errors: &mut Vec<Diagnostic>,
-    use_site_loc: impl Into<SourceLoc>,
-) {
-    let use_site_loc = use_site_loc.into();
-    let use_site_span = use_site_loc.span();
-    if let Some(qualified) =
-        resolve_visible_unqualified_member_name(name, current_ns, state, &use_site_loc, errors)
-    {
-        *name = qualified;
-        return;
-    }
-
-    let (base, suffix) = split_named_type_base_and_suffix(name);
-    if !suffix.is_empty() {
-        if let Some(qualified) =
-            resolve_visible_unqualified_member_name(base, current_ns, state, use_site_loc, errors)
-        {
-            *name = format!("{qualified}{suffix}");
-            return;
-        }
-        if looks_like_namespace_ref(base) {
-            if let Some(resolved) = resolve_namespace_symbol_name(
-                base,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                use_site_span,
-            ) {
-                *name = format!("{resolved}{suffix}");
-            }
-            return;
-        }
-    }
-
-    if looks_like_namespace_ref(name) {
-        if let Some(resolved) = resolve_namespace_symbol_name(
-            name,
-            current_ns,
-            template_consts,
-            options,
-            state,
-            generated,
-            errors,
-            use_site_span,
-        ) {
-            *name = resolved;
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn qualify_or_resolve_symbol_name(
     name: &str,
@@ -2755,7 +2774,13 @@ fn rewrite_block_namespace_refs(
     generated: &mut Vec<Block>,
     errors: &mut Vec<Diagnostic>,
 ) {
-    match block {
+    let type_params = match block {
+        Block::Struct(def) => def.type_params.clone(),
+        Block::Proc(def) => def.type_params.clone(),
+        _ => Vec::new(),
+    };
+    state.with_type_params(type_params, |state| match block {
+        Block::Enum(_) => {}
         Block::Ins(port_block) | Block::Outs(port_block) | Block::KOuts(port_block) => {
             rewrite_deferred_port_count(
                 port_block,
@@ -2797,6 +2822,33 @@ fn rewrite_block_namespace_refs(
             );
         }
         Block::Const(decl) => {
+            if let Some(ty) = &mut decl.ty {
+                let element = match ty {
+                    ConstType::Scalar(ty)
+                    | ConstType::Array { elem: ty, .. }
+                    | ConstType::Slice { elem: ty } => ty,
+                };
+                if let ScalarTypeRef::Named(name) = element {
+                    rewrite_named_type_ref_name(
+                        name,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        &decl.loc,
+                    );
+                }
+                enums::scalar_ref(element, state.enum_scope());
+                if let ScalarTypeRef::Named(name) = element {
+                    errors.push(Diagnostic::semantic_span(
+                        format!("constant type '{name}' must be a primitive or enum type"),
+                        &decl.loc,
+                    ));
+                    *element = PrimitiveType::F32.into();
+                }
+            }
             if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
                 rewrite_expr(
                     size,
@@ -3294,7 +3346,7 @@ fn rewrite_block_namespace_refs(
             );
         }
         Block::Namespace(_) | Block::NamespaceAlias(_) | Block::Use(_) => {}
-    }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3512,6 +3564,17 @@ fn rewrite_port_decls(
     errors: &mut Vec<Diagnostic>,
 ) {
     for decl in decls {
+        if let Some(smoothing) = &mut decl.smoothing {
+            rewrite_expr(
+                &mut smoothing.time_s,
+                current_ns,
+                template_consts,
+                options,
+                state,
+                generated,
+                errors,
+            );
+        }
         rewrite_decl_type_default_range(
             &mut decl.ty,
             &mut decl.default,
@@ -3708,57 +3771,61 @@ fn rewrite_function_def_with_scope(
     errors: &mut Vec<Diagnostic>,
     parent_scope: &RewriteNameScope,
 ) {
-    for param in &mut def.params {
-        if let Some(ty) = &mut param.ty {
-            rewrite_fn_param_type(
-                ty,
+    let mut type_params = state.type_params.clone();
+    type_params.extend(def.type_params.iter().cloned());
+    state.with_type_params(type_params, |state| {
+        for param in &mut def.params {
+            if let Some(ty) = &mut param.ty {
+                rewrite_fn_param_type(
+                    ty,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
+                );
+            }
+            if let Some(default) = &mut param.default {
+                rewrite_expr(
+                    default,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                );
+            }
+        }
+        if let Some(return_ty) = &mut def.return_ty {
+            rewrite_fn_return_type(
+                return_ty,
                 current_ns,
                 template_consts,
                 options,
                 state,
                 generated,
                 errors,
-                param.ty_loc.as_ref().or(param.loc.as_ref()),
+                def.return_ty_loc.as_ref().or(def.loc.as_ref()),
             );
         }
-        if let Some(default) = &mut param.default {
-            rewrite_expr(
-                default,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-            );
-        }
-    }
-    if let Some(return_ty) = &mut def.return_ty {
-        rewrite_fn_return_type(
-            return_ty,
+        let mut local_scope = parent_scope.clone();
+        local_scope.fresh_assignments_are_local = def.is_const;
+        local_scope.extend(def.type_params.iter().cloned());
+        local_scope.extend(def.params.iter().map(|param| param.name.clone()));
+        rewrite_stmts_scoped(
+            &mut def.body,
             current_ns,
             template_consts,
             options,
             state,
             generated,
             errors,
-            def.return_ty_loc.as_ref().or(def.loc.as_ref()),
+            &mut local_scope,
         );
-    }
-    let mut local_scope = parent_scope.clone();
-    local_scope.fresh_assignments_are_local = def.is_const;
-    local_scope.extend(def.type_params.iter().cloned());
-    local_scope.extend(def.params.iter().map(|param| param.name.clone()));
-    rewrite_stmts_scoped(
-        &mut def.body,
-        current_ns,
-        template_consts,
-        options,
-        state,
-        generated,
-        errors,
-        &mut local_scope,
-    );
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3830,9 +3897,21 @@ fn rewrite_event_def_with_scope(
                     param.ty_loc.as_ref().or(param.loc.as_ref()),
                 );
             }
-            EventParamType::Tuple(_) | EventParamType::Scalar(_) | EventParamType::Slice { .. } => {
+            EventParamType::Tuple(types) => {
+                type_rewriting::rewrite_tuple_types(
+                    types,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    param.ty_loc.as_ref().or(param.loc.as_ref()),
+                );
             }
+            EventParamType::Scalar(_) | EventParamType::Slice { .. } => {}
         }
+        enums::event_type(&mut param.ty, state.enum_scope());
         if let Some(default) = &mut param.default {
             rewrite_expr(
                 default,
@@ -3928,260 +4007,6 @@ fn rewrite_when_def_with_scope(
         errors,
         &mut local_scope,
     );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rewrite_decl_type(
-    ty: &mut DeclType,
-    current_ns: &str,
-    template_consts: &HashMap<String, Expr>,
-    options: AnalysisOptions,
-    state: &mut NamespaceFlattenState,
-    generated: &mut Vec<Block>,
-    errors: &mut Vec<Diagnostic>,
-    loc: impl Into<SourceLoc>,
-) {
-    let loc = loc.into();
-    match ty {
-        DeclType::Generic(name) | DeclType::Slice(ArrayElemType::Struct(name)) => {
-            rewrite_named_type_ref_name(
-                name,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                loc,
-            );
-        }
-        DeclType::ArrayGeneric { elem, size } => {
-            rewrite_named_type_ref_name(
-                elem,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                loc,
-            );
-            rewrite_expr(
-                size,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-            );
-        }
-        DeclType::Array { size, .. } => {
-            rewrite_expr(
-                size,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-            );
-        }
-        DeclType::Slice(ArrayElemType::Primitive(_)) | DeclType::Scalar(_) | DeclType::Tuple(_) => {
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rewrite_field_type(
-    ty: &mut FieldType,
-    current_ns: &str,
-    template_consts: &HashMap<String, Expr>,
-    options: AnalysisOptions,
-    state: &mut NamespaceFlattenState,
-    generated: &mut Vec<Block>,
-    errors: &mut Vec<Diagnostic>,
-    loc: impl Into<SourceLoc>,
-) {
-    let loc = loc.into();
-    match ty {
-        FieldType::Generic(name) => {
-            rewrite_named_type_ref_name(
-                name,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                loc,
-            );
-        }
-        FieldType::Array(spec) => {
-            if let ArrayElemType::Struct(name) = &mut spec.elem {
-                rewrite_named_type_ref_name(
-                    name,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    loc,
-                );
-            }
-            rewrite_expr(
-                &mut spec.size,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-            );
-        }
-        FieldType::Scalar(_) | FieldType::Tuple(_) => {}
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rewrite_fn_param_type(
-    ty: &mut FnParamType,
-    current_ns: &str,
-    template_consts: &HashMap<String, Expr>,
-    options: AnalysisOptions,
-    state: &mut NamespaceFlattenState,
-    generated: &mut Vec<Block>,
-    errors: &mut Vec<Diagnostic>,
-    loc: impl Into<SourceLoc>,
-) {
-    let loc = loc.into();
-    match ty {
-        FnParamType::Struct(name) | FnParamType::ArrayGeneric(name) => {
-            rewrite_named_type_ref_name(
-                name,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                loc,
-            );
-        }
-        FnParamType::SizedArray {
-            generic_name, size, ..
-        } => {
-            if let Some(name) = generic_name {
-                rewrite_named_type_ref_name(
-                    name,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    loc,
-                );
-            }
-            rewrite_expr(
-                size,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-            );
-        }
-        FnParamType::Buffer(buffer_ty)
-        | FnParamType::BufferArray {
-            buffer: buffer_ty, ..
-        } => {
-            rewrite_buffer_type(
-                buffer_ty,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                loc,
-            );
-        }
-        FnParamType::Primitive(_)
-        | FnParamType::Array(_)
-        | FnParamType::BareBuffer
-        | FnParamType::Tuple(_) => {}
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rewrite_fn_return_type(
-    ty: &mut FnReturnType,
-    current_ns: &str,
-    template_consts: &HashMap<String, Expr>,
-    options: AnalysisOptions,
-    state: &mut NamespaceFlattenState,
-    generated: &mut Vec<Block>,
-    errors: &mut Vec<Diagnostic>,
-    loc: impl Into<SourceLoc>,
-) {
-    let loc = loc.into();
-    match ty {
-        FnReturnType::Scalar(FnReturnScalarType::Named(name)) => {
-            rewrite_named_type_ref_name(
-                name,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-                loc,
-            );
-        }
-        FnReturnType::Tuple(elems) => {
-            for elem in elems {
-                if let FnReturnScalarType::Named(name) = elem {
-                    rewrite_named_type_ref_name(
-                        name,
-                        current_ns,
-                        template_consts,
-                        options,
-                        state,
-                        generated,
-                        errors,
-                        &loc,
-                    );
-                }
-            }
-        }
-        FnReturnType::Array { elem, size } => {
-            if let FnReturnScalarType::Named(name) = elem {
-                rewrite_named_type_ref_name(
-                    name,
-                    current_ns,
-                    template_consts,
-                    options,
-                    state,
-                    generated,
-                    errors,
-                    loc,
-                );
-            }
-            rewrite_expr(
-                size,
-                current_ns,
-                template_consts,
-                options,
-                state,
-                generated,
-                errors,
-            );
-        }
-        FnReturnType::Scalar(FnReturnScalarType::Primitive(_)) => {}
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4338,6 +4163,29 @@ fn rewrite_stmt_scoped(
             if let Some(name) = generic_decl_ty {
                 rewrite_named_type_ref_name(
                     name,
+                    current_ns,
+                    template_consts,
+                    options,
+                    state,
+                    generated,
+                    errors,
+                    typed_decl_ty_loc
+                        .as_ref()
+                        .or(target_loc.as_ref())
+                        .map(SourceLoc::from)
+                        .unwrap_or_default(),
+                );
+            }
+            if let Some(ty) = generic_decl_ty
+                .as_deref()
+                .and_then(|name| (state.enum_scope())(name))
+            {
+                *decl_ty = Some(DeclType::Scalar(ty));
+                *generic_decl_ty = None;
+            }
+            if let Some(ty) = decl_ty {
+                rewrite_decl_type(
+                    ty,
                     current_ns,
                     template_consts,
                     options,
@@ -4661,7 +4509,30 @@ fn rewrite_expr_scoped(
                     );
                 }
             }
-            Expr::UserCall { name, .. } => {
+            Expr::UserCall {
+                name, type_args, ..
+            } => {
+                for argument in type_args {
+                    let CallTypeArg::Generic(name) = argument else {
+                        continue;
+                    };
+                    if local_scope.contains_value_name(name) {
+                        continue;
+                    }
+                    rewrite_named_type_ref_name(
+                        name,
+                        current_ns,
+                        template_consts,
+                        options,
+                        state,
+                        generated,
+                        errors,
+                        &use_site_loc,
+                    );
+                    if let Some(ty) = (state.enum_scope())(name) {
+                        *argument = CallTypeArg::Primitive(ty);
+                    }
+                }
                 qualify_instance_method_call_name(
                     name,
                     current_ns,
@@ -4703,6 +4574,7 @@ fn rewrite_expr_scoped(
             }
             _ => {}
         }
+        enums::rewrite_expression(expr, state.enum_scope(), errors);
         true
     });
 }

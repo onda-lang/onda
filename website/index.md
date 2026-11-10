@@ -7,7 +7,7 @@ description: Expressive and performant JIT-compiled audio programming language
 <main class="home-main">
   <section class="home-intro">
     <div class="home-title">
-      <div class="home-logo" aria-hidden="true">
+      <div class="home-logo">
         <img class="theme-logo theme-logo-light" src="{{ '/assets/svg/onda-logo-circle.svg' | relative_url }}" alt="">
         <img class="theme-logo theme-logo-dark" src="{{ '/assets/svg/onda-logo-dark-circle.svg' | relative_url }}" alt="">
       </div>
@@ -27,7 +27,7 @@ description: Expressive and performant JIT-compiled audio programming language
     </div>
   </section>
 
-  <nav class="home-docs" aria-label="Documentation">
+  <nav class="home-docs">
     <div class="doc-list">
       <a href="{{ '/docs/getting-started/' | relative_url }}"><strong>Getting started</strong><span>Try Onda in your browser, install the CLI, run a program, and render audio</span></a>
       <a href="{{ '/docs/language/' | relative_url }}"><strong>Language guide</strong><span>Syntax and semantics from basic programs through processors, graphs, generics, and modules</span></a>

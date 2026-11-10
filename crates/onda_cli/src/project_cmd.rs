@@ -26,6 +26,29 @@ pub(crate) struct RunProjectError {
     pub sources: Option<onda_run::RunSourceGraph>,
 }
 
+pub(crate) fn load_initial_buffers(
+    project_buffers: impl IntoIterator<Item = (String, BufferAsset, Option<PathBuf>)>,
+    overrides: &[(String, PathBuf)],
+) -> Result<Vec<onda_daemon::InitialBufferBinding>, String> {
+    let mut buffers = project_buffers
+        .into_iter()
+        .map(|(name, asset, path)| onda_daemon::InitialBufferBinding::from_asset(name, asset, path))
+        .collect::<Vec<_>>();
+    for (name, path) in overrides {
+        buffers.push(
+            onda_daemon::InitialBufferBinding::load_file(
+                name.clone(),
+                path,
+                ProjectLimits::default(),
+            )
+            .map_err(|error| {
+                format!("failed to load buffer asset '{}': {error}", path.display())
+            })?,
+        );
+    }
+    Ok(buffers)
+}
+
 pub(crate) fn resolve_run_project(
     input: &Path,
     overrides: &[(String, PathBuf)],

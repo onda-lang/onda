@@ -16,8 +16,9 @@ members = [
   "crates/onda_api",
   "crates/onda_cpal",
   "crates/onda_run",
-  "crates/onda_egui",
-  "crates/onda_webview",
+  "crates/onda_ui",
+  "crates/onda_scope",
+  "crates/onda_gpu",
   "crates/onda_examples",
 ]
 default-members = [
@@ -28,8 +29,8 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
-version = "0.8.40"
+license = "Apache-2.0"
+version = "0.9.0"
 authors = ["Francesco Cameli"]
 
 [workspace.lints.clippy]

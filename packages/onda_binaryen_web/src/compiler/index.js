@@ -170,7 +170,7 @@ export class MirCompiler extends MirCompilerLowering {
       const prelude = [];
       let selector = null;
       if (
-        source.data.parameter?.kind === "array_element"
+        ["array_element", "local_element"].includes(source.data.parameter?.kind)
         && staticSelector === null
       ) {
         const selectorLocal = this.allocateGeneratedLocal(
@@ -203,7 +203,7 @@ export class MirCompiler extends MirCompilerLowering {
         context,
       );
       if (
-        source.data.parameter?.kind === "array_element"
+        ["array_element", "local_element"].includes(source.data.parameter?.kind)
         && staticSelector === null
         && this.bufferChannelMetadata(
           type.data.channels,
@@ -1405,7 +1405,7 @@ export class MirCompiler extends MirCompilerLowering {
         lhs.data.element === rhs.data.element &&
         JSON.stringify(lhs.data.channels) === JSON.stringify(rhs.data.channels) &&
         lhs.data.access === rhs.data.access;
-    } else if (lhs.kind === "buffer_span") {
+    } else if (["buffer_span", "buffer_map"].includes(lhs.kind)) {
       equivalent =
         lhs.data.element === rhs.data.element &&
         JSON.stringify(lhs.data.channels) === JSON.stringify(rhs.data.channels) &&
@@ -1709,6 +1709,7 @@ export class MirCompiler extends MirCompilerLowering {
         outputs: this.portMetadata(this.mir.interface.outputs, this.outputLayout),
         control_outputs: this.mir.interface.control_outputs.map((output, id) => ({
           name: output.name,
+          ...(output.enumeration ? { enumeration: output.enumeration } : {}),
           type_repr: typeName(this.type(output.ty), this),
           scalar: this.storageShape(output.ty).scalar,
           array_len: this.storageShape(output.ty).length,
@@ -1727,6 +1728,7 @@ export class MirCompiler extends MirCompilerLowering {
         })),
         params: this.mir.interface.params.map((param, id) => ({
           name: param.name,
+          ...(param.enumeration ? { enumeration: param.enumeration } : {}),
           type_repr: typeName(this.type(param.ty), this),
           scalar: this.storageShape(param.ty).scalar,
           array_len: this.storageShape(param.ty).length,

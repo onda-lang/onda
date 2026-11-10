@@ -1,0 +1,90 @@
+{
+  "logical_windows_equal": true,
+  "capacity_frames": 4096,
+  "rounds": 7,
+  "rows": [
+    {
+      "channels": 2,
+      "block_frames": 64,
+      "iterations_per_round": 50999,
+      "current_ns": 140.86193846938176,
+      "bulk_ns": 6.382752602992215,
+      "ratio": 22.06915217164239
+    },
+    {
+      "channels": 2,
+      "block_frames": 512,
+      "iterations_per_round": 36266,
+      "current_ns": 1104.3182319527932,
+      "bulk_ns": 27.077014283350795,
+      "ratio": 40.78434277858398
+    },
+    {
+      "channels": 8,
+      "block_frames": 64,
+      "iterations_per_round": 68921,
+      "current_ns": 554.0094746158645,
+      "bulk_ns": 24.03874000667431,
+      "ratio": 23.046527166650367
+    },
+    {
+      "channels": 8,
+      "block_frames": 512,
+      "iterations_per_round": 9055,
+      "current_ns": 4411.673660960795,
+      "bulk_ns": 186.09232468249587,
+      "ratio": 23.706908216058004
+    },
+    {
+      "channels": 64,
+      "block_frames": 64,
+      "iterations_per_round": 8710,
+      "current_ns": 4418.094833524684,
+      "bulk_ns": 191.35464982778416,
+      "ratio": 23.08851568279575
+    },
+    {
+      "channels": 64,
+      "block_frames": 512,
+      "iterations_per_round": 1130,
+      "current_ns": 35260.333628318585,
+      "bulk_ns": 1785.5743362831859,
+      "ratio": 19.747334463663808
+    }
+  ],
+  "affinity_cpu": 0,
+  "affinity_allowed_before": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ]
+}

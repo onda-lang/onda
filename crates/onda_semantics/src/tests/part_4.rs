@@ -2627,7 +2627,7 @@ sample:
     }
 
     #[test]
-    fn top_level_main_uses_the_normal_entry_semantics() {
+    fn top_level_main_projects_an_ordinary_processor() {
         let source = r#"
 proc Main:
   params:
@@ -2642,9 +2642,9 @@ proc Main:
 
         let typed = analyze(parse_program(source).expect("Main entry should parse"))
             .expect("Main entry should analyze as a top-level program");
-        assert_eq!(typed.outs, ["output"]);
+        assert_eq!(typed.interface_name(&typed.outs[0]), "output");
         assert_eq!(typed.param_default("gain"), Some(0.5));
-        assert!(typed.state_vars.iter().any(|name| name == "state"));
+        assert!(typed.state_vars.iter().any(|name| name.ends_with(".state")));
     }
 
     #[test]

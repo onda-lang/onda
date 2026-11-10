@@ -177,7 +177,7 @@ typedef enum onda_processor_param_scalar {
  * Decoded host-control metadata for one scalar numeric parameter.
  *
  * A descriptor without a numeric host-control domain uses scale NONE.
- * step_count == 0 means continuous. has_curve distinguishes an absent curve
+ * step_count == 0 means continuous, or a fixed i32 choice when min == max. has_curve distinguishes an absent curve
  * from curve == 0. scalar is the parameter's declared storage scalar. The
  * descriptor contract guarantees finite values and the additional scale/step
  * invariants checked by onda_processor_param_domain_is_valid().
@@ -337,100 +337,6 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_next(
   );
 }
 
-/* Validates the complete shared batch and returns 1 for the indexed record, 0 when a valid batch
- * has no such record, or -1 for invalid/malformed input. */
-ONDA_PROCESSOR_STATIC_INLINE int onda_processor_batch_record_at(
-  const uint8_t* storage,
-  uint32_t capacity_bytes,
-  uint32_t used_bytes,
-  uint32_t record_count,
-  uint32_t index,
-  uint32_t* record_index,
-  uint32_t* payload_size,
-  uint32_t* sequence,
-  const uint8_t** payload
-) {
-  if (record_index == NULL || payload_size == NULL || sequence == NULL || payload == NULL) {
-    return -1;
-  }
-  onda_processor_batch_cursor_t cursor = { 0u, 0u };
-  int found = 0;
-  for (uint32_t current = 0u; current < record_count; ++current) {
-    uint32_t next_record_index;
-    uint32_t next_payload_size;
-    uint32_t next_sequence;
-    const uint8_t* next_payload;
-    if (
-      onda_processor_batch_next_record(
-        storage,
-        capacity_bytes,
-        used_bytes,
-        record_count,
-        &cursor,
-        &next_record_index,
-        &next_payload_size,
-        &next_sequence,
-        &next_payload
-      ) != 1
-    ) {
-      return -1;
-    }
-    if (current == index) {
-      *record_index = next_record_index;
-      *payload_size = next_payload_size;
-      *sequence = next_sequence;
-      *payload = next_payload;
-      found = 1;
-    }
-  }
-  return cursor.byte_offset == used_bytes ? found : -1;
-}
-
-/* Indexed access returns 1 for a record, 0 for an absent index, or -1 for invalid/malformed input.
- * Use the cursor APIs for linear iteration. */
-ONDA_PROCESSOR_STATIC_INLINE int onda_processor_delegate_batch_occurrence_at(
-  const onda_processor_delegate_batch_t* batch,
-  uint32_t index,
-  onda_processor_delegate_occurrence_t* occurrence
-) {
-  if (batch == NULL || occurrence == NULL) {
-    return -1;
-  }
-  return onda_processor_batch_record_at(
-    batch->storage,
-    batch->capacity_bytes,
-    batch->used_bytes,
-    batch->record_count,
-    index,
-    &occurrence->delegate_index,
-    &occurrence->payload_size_bytes,
-    &occurrence->sequence,
-    &occurrence->payload
-  );
-}
-
-/* Print equivalent of onda_processor_delegate_batch_occurrence_at. */
-ONDA_PROCESSOR_STATIC_INLINE int onda_processor_print_batch_occurrence_at(
-  const onda_processor_print_batch_t* batch,
-  uint32_t index,
-  onda_processor_print_occurrence_t* occurrence
-) {
-  if (batch == NULL || occurrence == NULL) {
-    return -1;
-  }
-  return onda_processor_batch_record_at(
-    batch->storage,
-    batch->capacity_bytes,
-    batch->used_bytes,
-    batch->record_count,
-    index,
-    &occurrence->site_index,
-    &occurrence->payload_size_bytes,
-    &occurrence->sequence,
-    &occurrence->payload
-  );
-}
-
 ONDA_PROCESSOR_STATIC_INLINE int onda_processor_float_grid_value_matches(
   onda_processor_param_scalar scalar,
   double minimum,
@@ -483,7 +389,7 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
     domain->scale == ONDA_PROCESSOR_PARAM_SCALE_NONE ||
     !isfinite(domain->minimum) ||
     !isfinite(domain->maximum) ||
-    domain->minimum >= domain->maximum
+    domain->minimum > domain->maximum
   ) {
     return 0;
   }
@@ -558,6 +464,11 @@ ONDA_PROCESSOR_STATIC_INLINE int onda_processor_param_domain_is_valid(
     )
   ) {
     return 0;
+  }
+  if (domain->minimum == domain->maximum) {
+    return domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_I32 &&
+      domain->scale == ONDA_PROCESSOR_PARAM_SCALE_LINEAR &&
+      !domain->has_curve && domain->step == 1.0 && domain->step_count == 0;
   }
   if (domain->step_count == 0) {
     return domain->scalar == ONDA_PROCESSOR_PARAM_SCALAR_F32 ||

@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{FnReturnScalarType, FnReturnType, ScalarTypeRef};
+use crate::ast::{FnReturnType, ScalarTypeRef};
 
 pub(super) fn parse_section_default_decl_type(
     pair: Pair<'_, Rule>,
@@ -59,34 +59,95 @@ pub(super) fn parse_section_default_buffer_type(
     parse_buffer_inner(inner)
 }
 
-pub(super) fn parse_decl_range_pair(pair: Pair<'_, Rule>) -> Result<DeclRange, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::decl_range {
-        return Err(vec![syntax_at_pair(
-            &pair,
-            "internal parser error: expected declaration range",
-        )]);
-    }
+pub(super) fn parse_port_domain_pair(
+    pair: Pair<'_, Rule>,
+) -> Result<(Option<DeclRange>, Option<crate::InputSmoothing>), Vec<Diagnostic>> {
+    use crate::{InputSmoothing, InputSmoothingKind};
+
     let loc = stmt_loc_from_pair(&pair);
-    let mut inner = pair.into_inner();
-    let Some(first_pair) = inner.next() else {
+    let mut fields = std::collections::HashMap::new();
+    let mut positional = Vec::new();
+    let mut saw_named = false;
+    for item in pair.into_inner() {
+        let value = item.into_inner().next().expect("port domain item");
+        if value.as_rule() == Rule::port_domain_named {
+            saw_named = true;
+            let field_loc = stmt_loc_from_pair(&value);
+            let mut parts = value.into_inner();
+            let name = parts.next().expect("port field name").as_str();
+            if !crate::INPUT_DOMAIN_FIELDS.contains(&name) {
+                return Err(vec![syntax_at_loc(
+                    field_loc.as_ref(),
+                    format!("unknown input attribute '{name}'"),
+                )]);
+            }
+            let expr = parse_expr(parts.next().expect("port field value"))?;
+            if fields.insert(name.to_owned(), expr).is_some() {
+                return Err(vec![syntax_at_loc(
+                    field_loc.as_ref(),
+                    format!("duplicate input attribute '{name}'"),
+                )]);
+            }
+        } else {
+            if saw_named {
+                return Err(vec![syntax_at_pair(
+                    &value,
+                    "positional input range fields must precede named attributes",
+                )]);
+            }
+            positional.push(parse_expr(value)?);
+        }
+    }
+    if positional.len() > 2 {
         return Err(vec![syntax_at_loc(
             loc.as_ref(),
-            "missing declaration range expression",
-        )]);
-    };
-    let first = parse_expr_inner(first_pair);
-    let second = inner.next().map(parse_expr_inner);
-    if inner.next().is_some() {
-        return Err(vec![syntax_at_loc(
-            loc.as_ref(),
-            "declaration range accepts at most two expressions",
+            "input ranges accept at most two positional fields; ramp and lag are named-only",
         )]);
     }
-    let (min, max) = match second {
-        Some(max) => (Some(first), max),
-        None => (None, first),
+    let single_is_max = positional.len() == 1 && !fields.contains_key("max");
+    for (index, value) in positional.into_iter().enumerate() {
+        let field = if index == 0 && !single_is_max {
+            "min"
+        } else {
+            "max"
+        };
+        if fields.insert(field.to_owned(), value).is_some() {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                format!("duplicate input attribute '{field}'"),
+            )]);
+        }
+    }
+    if fields.contains_key("ramp") && fields.contains_key("lag") {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "input attributes 'ramp' and 'lag' are mutually exclusive",
+        )]);
+    }
+    let smoothing = fields
+        .remove("ramp")
+        .map(|time_s| InputSmoothing {
+            kind: InputSmoothingKind::Ramp,
+            time_s,
+        })
+        .or_else(|| {
+            fields.remove("lag").map(|time_s| InputSmoothing {
+                kind: InputSmoothingKind::Lag,
+                time_s,
+            })
+        });
+    let min = fields.remove("min");
+    let range = match fields.remove("max") {
+        Some(max) => Some(DeclRange { min, max }),
+        None if min.is_some() => {
+            return Err(vec![syntax_at_loc(
+                loc.as_ref(),
+                "input range requires a 'max' value",
+            )])
+        }
+        None => None,
     };
-    Ok(DeclRange { min, max })
+    Ok((range, smoothing))
 }
 
 pub(super) struct ParsedBindingAttributes {
@@ -544,6 +605,21 @@ pub(super) fn parse_primitive_type(text: &str) -> Result<PrimitiveType, Diagnost
         .ok_or_else(|| Diagnostic::syntax(format!("unsupported primitive type '{text}'"), 0, 0))
 }
 
+pub(super) fn parse_tuple_type(
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<ScalarTypeRef>, Vec<Diagnostic>> {
+    pair.into_inner()
+        .map(|element| {
+            let loc = stmt_loc_from_pair(&element);
+            let element = element
+                .into_inner()
+                .next()
+                .ok_or_else(|| vec![syntax_at_loc(loc.as_ref(), "missing tuple element type")])?;
+            parse_scalar_type_ref(element, "tuple element")
+        })
+        .collect()
+}
+
 pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diagnostic>> {
     match pair.as_rule() {
         Rule::type_name => Ok(DeclType::Scalar(
@@ -584,14 +660,7 @@ pub(super) fn parse_decl_type(pair: Pair<'_, Rule>) -> Result<DeclType, Vec<Diag
                 )]),
             }
         }
-        Rule::tuple_type => {
-            let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = pair
-                .into_inner()
-                .filter(|p| p.as_rule() == Rule::type_name)
-                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
-                .collect();
-            Ok(DeclType::Tuple(elems?))
-        }
+        Rule::tuple_type => Ok(DeclType::Tuple(parse_tuple_type(pair)?)),
         _ => Err(vec![syntax_at_pair(&pair, "unsupported declaration type")]),
     }
 }
@@ -664,14 +733,7 @@ pub(super) fn parse_fn_param_type(pair: Pair<'_, Rule>) -> Result<FnParamType, V
         }
         Rule::fn_untyped_array_param => FnParamType::Array(None),
         Rule::fn_bare_buffer => FnParamType::BareBuffer,
-        Rule::fn_tuple_param => {
-            let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = inner
-                .into_inner()
-                .filter(|p| p.as_rule() == Rule::type_name)
-                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
-                .collect();
-            FnParamType::Tuple(elems?)
-        }
+        Rule::tuple_type => FnParamType::Tuple(parse_tuple_type(inner)?),
         Rule::buffer_type => FnParamType::Buffer(parse_buffer_type(inner)?),
         Rule::type_name => {
             FnParamType::Primitive(parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?)
@@ -751,22 +813,7 @@ pub(super) fn parse_fn_return_type(pair: Pair<'_, Rule>) -> Result<FnReturnType,
                 size: parse_expr(size_pair)?,
             })
         }
-        Rule::fn_return_tuple_type => {
-            let elems: Result<Vec<FnReturnScalarType>, Vec<Diagnostic>> = inner
-                .into_inner()
-                .filter(|p| p.as_rule() == Rule::fn_return_scalar_type)
-                .map(|p| {
-                    let scalar_pair = p.into_inner().next().ok_or_else(|| {
-                        vec![syntax_at_loc(
-                            loc.as_ref(),
-                            "missing function return tuple element type",
-                        )]
-                    })?;
-                    parse_scalar_type_ref(scalar_pair, "function return")
-                })
-                .collect();
-            Ok(FnReturnType::Tuple(elems?))
-        }
+        Rule::tuple_type => Ok(FnReturnType::Tuple(parse_tuple_type(inner)?)),
         _ => Err(vec![syntax_at_loc(
             loc.as_ref(),
             "unsupported function return type",
@@ -791,13 +838,7 @@ pub(super) fn parse_event_param_type(
         )]);
     };
     match inner.as_rule() {
-        Rule::tuple_type => Ok(EventParamType::Tuple(
-            inner
-                .into_inner()
-                .filter(|p| p.as_rule() == Rule::type_name)
-                .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
-                .collect::<Result<_, _>>()?,
-        )),
+        Rule::tuple_type => Ok(EventParamType::Tuple(parse_tuple_type(inner)?)),
         Rule::type_name => Ok(EventParamType::Scalar(
             parse_primitive_type(inner.as_str()).map_err(|d| vec![d])?,
         )),
@@ -1195,23 +1236,7 @@ pub(super) fn parse_field_type(pair: Pair<'_, Rule>) -> Result<FieldType, Vec<Di
             Rule::array_type => {
                 return Ok(FieldType::Array(parse_array_type_spec(child)?));
             }
-            Rule::field_tuple_type => {
-                let elems: Result<Vec<ScalarTypeRef>, Vec<Diagnostic>> = child
-                    .into_inner()
-                    .filter(|p| p.as_rule() == Rule::generic_type_arg)
-                    .map(|p| {
-                        let Some(element) = p.into_inner().next() else {
-                            return Err(vec![Diagnostic::syntax(
-                                "missing tuple field element type",
-                                0,
-                                0,
-                            )]);
-                        };
-                        parse_scalar_type_ref(element, "tuple field element")
-                    })
-                    .collect();
-                return Ok(FieldType::Tuple(elems?));
-            }
+            Rule::tuple_type => return Ok(FieldType::Tuple(parse_tuple_type(child)?)),
             _ => {}
         }
     }

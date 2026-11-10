@@ -1,0 +1,36 @@
+proc Voice:
+  delegate fired(value: i32)
+  sample:
+    fired(1)
+    out1 = 0.0
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    total: i32 = 0
+  when voices[0].fired(value):
+    total += value
+  when voices[1].fired(value):
+    total += value * 10
+  sample:
+    out1 = f32(total)
+
+def step(voice) -> f32:
+  return voice()
+def exercise(banks, others, choose_first: bool, index: i32):
+  if choose_first:
+    owner = banks[index]
+    selected = owner.voices[1]
+  else:
+    owner = others[index]
+    selected = owner.voices[0]
+  step(selected)
+init:
+  banks: Bank[2] = Bank()
+  others: Bank[3] = Bank()
+  choose_first = true
+  index: i32 = 0
+sample:
+  exercise(banks, others, choose_first, index)
+  choose_first = !choose_first
+  index = 1 - index
+  out1 = banks[0]() + banks[1]() * 10.0 + others[0]() * 100.0 + others[1]() * 1000.0

@@ -88,3 +88,11 @@ impl<'a> ArrayInitializer<'a> {
 pub(crate) fn is_array_reference(expr: &Expr) -> bool {
     matches!(expr, Expr::Var { .. } | Expr::Slice { .. })
 }
+
+/// A selection borrows existing storage; an owned declaration copies it.
+pub(crate) fn selects_storage(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Var { .. } | Expr::Index { .. } | Expr::Slice { .. }
+    ) || crate::indexed_read_source(expr).is_some()
+}

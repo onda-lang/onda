@@ -4,9 +4,9 @@ outs 4
 
 init:
   linear = std::smoothing::Ramp(time_s = 8.0 / SR)
-  curved = std::smoothing::Ramp(time_s = 8.0 / SR, shape = std::smoothing::shape::S_CURVE)
+  curved = std::smoothing::Ramp(time_s = 8.0 / SR, shape = std::smoothing::RampShape::SCurve)
   linear_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR))
-  curved_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR), shape = std::smoothing::shape::S_CURVE)
+  curved_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR), shape = std::smoothing::RampShape::SCurve)
   frame = 0
 
 sample:

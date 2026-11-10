@@ -1468,7 +1468,7 @@ fn declaration_defaults_demand_values_only_when_used() {
     for (declaration, use_default, override_default) in [
         ("struct Value:\n  value: i32 = Broken[0]\n", "init:\n  value = Value()\nsample:\n  out1 = f32(value.value)\n", "init:\n  value = Value(value = 7)\nsample:\n  out1 = f32(value.value)\n"),
         ("proc Value:\n  params:\n    value: i32 = Broken[0]\n  sample:\n    out1 = f32(value)\n", "init:\n  value = Value()\nsample:\n  out1 = value()\n", "init:\n  value = Value(value = 7)\nsample:\n  out1 = value()\n"),
-        ("proc Value:\n  params:\n    value: i32[1] = Broken\n  sample:\n    out1 = f32(value[0])\n", "init:\n  value = Value()\nsample:\n  out1 = value()\n", "init:\n  value = Value(value = 7)\nsample:\n  out1 = value()\n"),
+        ("proc Value:\n  params:\n    value: i32[1] = Broken\n  sample:\n    out1 = f32(value[0])\n", "init:\n  value = Value()\nsample:\n  out1 = value()\n", "init:\n  value = Value(value = [7])\nsample:\n  out1 = value()\n"),
         ("proc Value:\n  ins:\n    in1: i32 = Broken[0]\n  sample:\n    out1 = f32(in1)\n", "init:\n  value = Value()\nsample:\n  out1 = value()\n", "init:\n  value = Value()\nsample:\n  out1 = value(7)\n"),
         ("proc Value:\n  init:\n    selected: i32 = 0\n  event read(value: i32 = Broken[0]):\n    selected = value\n  sample:\n    out1 = f32(selected)\n", "init:\n  value = Value()\n  value.read()\nsample:\n  out1 = value()\n", "init:\n  value = Value()\n  value.read(7)\nsample:\n  out1 = value()\n"),
     ] {

@@ -1,6 +1,6 @@
 use super::{
     compile_cmd, parse_args, project_cmd, run_compile, run_run, Command, CompileEmit,
-    DaemonCommand, RunCommand, RunHostKind,
+    DaemonCommand, RunCommand,
 };
 use onda_codegen_llvm::{
     TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
@@ -110,7 +110,7 @@ fn project_creates_a_resolvable_runnable_project() {
 }
 
 #[test]
-fn project_packages_an_existing_source_and_typed_buffer() {
+fn project_packages_a_main_source_and_typed_buffer() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be after unix epoch")
@@ -123,7 +123,7 @@ fn project_packages_an_existing_source_and_typed_buffer() {
     std::fs::create_dir_all(&root).expect("create package test directory");
     std::fs::write(
         &source,
-        "buffers:\n  values: buffer<i32>\nouts:\n  out1\nsample:\n  out1 = 0.0\n",
+        "proc Main:\n  buffers:\n    values: buffer<i32>\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
     )
     .expect("write package source");
     let asset = onda_project::BufferAsset::new(
@@ -393,7 +393,7 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
     std::fs::create_dir_all(&root).expect("create compile project test directory");
     std::fs::write(
         root.join("main.onda"),
-        "buffers:\n  values: buffer<i32>\nouts:\n  out1\nsample:\n  out1 = 0.0\n",
+        "proc Main:\n  buffers:\n    values: buffer<i32>\n  outs:\n    out1\n  sample:\n    out1 = 0.0\n",
     )
     .expect("write project entry source");
     std::fs::write(
@@ -416,7 +416,6 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
     .expect("write project manifest");
 
     let error = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         emit: CompileEmit::Check,
         output: None,
@@ -526,7 +525,7 @@ fn compile_library_checks_constants_without_evaluating_unused_arrays() {
         ),
     ] {
         std::fs::write(&source_path, source).expect("write library source");
-        let result = run_compile(compile_cmd::CompileRequest { math: Default::default(),
+        let result = run_compile(compile_cmd::CompileRequest {
             input: &source_path,
             emit: CompileEmit::Check,
             output: None,
@@ -569,7 +568,6 @@ fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
 
     let overrides = [("Selected".to_owned(), "8".to_owned())];
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Check,
         output: None,
@@ -631,7 +629,6 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
     ));
 
     run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         emit: CompileEmit::Check,
         output: None,
@@ -655,7 +652,6 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
 
     let overrides = [("Selected".to_owned(), "3".to_owned())];
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
         emit: CompileEmit::Check,
         output: None,
@@ -700,7 +696,6 @@ fn cli_constant_literals_cover_all_supported_value_const_types() {
         ("Dynamic".to_owned(), "[0.25, 0.5, 1.0]".to_owned()),
     ];
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Check,
         output: None,
@@ -983,7 +978,6 @@ fn compile_emits_complete_portable_mir_slice() {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Mir,
         output: Some(&output_path),
@@ -1030,7 +1024,6 @@ fn compile_emits_versioned_mir_json() {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::MirJson,
         output: Some(&output_path),
@@ -1077,7 +1070,6 @@ fn compile_emits_versioned_mir_messagepack() {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::MirMessagePack,
         output: Some(&output_path),
@@ -1133,7 +1125,6 @@ events {
     .expect("source should write");
 
     let result = run_compile(compile_cmd::CompileRequest {
-        math: Default::default(),
         input: &source_path,
         emit: CompileEmit::Object,
         output: Some(&object_path),
@@ -1360,6 +1351,31 @@ fn source_reporting_requires_explicit_control_opt_in() {
 }
 
 #[test]
+fn paused_playback_requires_a_control_client() {
+    for control in [false, true] {
+        let mut args = vec!["onda", "run", "play", "x.onda", "--start-paused"];
+        if control {
+            args.push("--control-json");
+        }
+        let result = parse_args(args.into_iter().map(str::to_owned));
+        if control {
+            assert!(matches!(
+                result,
+                Ok(Command::Run(RunCommand::Play {
+                    start_paused: true,
+                    ..
+                }))
+            ));
+        } else {
+            assert_eq!(
+                result.err().unwrap(),
+                "--start-paused requires --control-json"
+            );
+        }
+    }
+}
+
+#[test]
 fn parse_run_command_alias_accepts_window_play_and_render() {
     let window = parse_args(["onda", "run", "x.onda"].into_iter().map(str::to_owned))
         .expect("run window args should parse");
@@ -1430,18 +1446,15 @@ fn parse_explicit_help_returns_help_command() {
 #[test]
 fn parse_run_window_accepts_options_before_input_file() {
     let cmd = parse_args(
-        ["onda", "run", "--theme", "light", "x.onda", "--webview"]
+        ["onda", "run", "--theme", "light", "x.onda"]
             .into_iter()
             .map(str::to_owned),
     )
     .expect("run window args should parse");
     match cmd {
-        Command::Run(RunCommand::Window {
-            input, theme, host, ..
-        }) => {
+        Command::Run(RunCommand::Window { input, theme, .. }) => {
             assert_eq!(input, Some(PathBuf::from("x.onda")));
-            assert_eq!(theme, RunThemeMode::Light);
-            assert_eq!(host, RunHostKind::Webview);
+            assert_eq!(theme, Some(RunThemeMode::Light));
         }
         _ => panic!("expected run window command"),
     }
@@ -1750,22 +1763,6 @@ fn parse_run_commands_accept_opt_level() {
 }
 
 #[test]
-fn parse_run_window_accepts_webview_flag() {
-    let cmd = parse_args(
-        ["onda", "run", "x.onda", "--webview"]
-            .into_iter()
-            .map(str::to_owned),
-    )
-    .expect("run window args should parse");
-    match cmd {
-        Command::Run(RunCommand::Window { host, .. }) => {
-            assert_eq!(host, RunHostKind::Webview);
-        }
-        _ => panic!("expected run window command"),
-    }
-}
-
-#[test]
 fn parse_run_window_accepts_theme_flag() {
     let cmd = parse_args(
         ["onda", "run", "x.onda", "--theme", "dark"]
@@ -1775,10 +1772,25 @@ fn parse_run_window_accepts_theme_flag() {
     .expect("run window args should parse");
     match cmd {
         Command::Run(RunCommand::Window { theme, .. }) => {
-            assert_eq!(theme, RunThemeMode::Dark);
+            assert_eq!(theme, Some(RunThemeMode::Dark));
         }
         _ => panic!("expected run window command"),
     }
+}
+
+#[test]
+fn run_window_detects_an_unspecified_theme_and_only_accepts_binary_choices() {
+    let cmd = parse_args(["onda", "run"].into_iter().map(str::to_owned)).unwrap();
+    assert!(matches!(
+        cmd,
+        Command::Run(RunCommand::Window { theme: None, .. })
+    ));
+    assert!(parse_args(
+        ["onda", "run", "--theme", "auto"]
+            .into_iter()
+            .map(str::to_owned)
+    )
+    .is_err());
 }
 
 #[test]

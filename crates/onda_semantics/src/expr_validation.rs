@@ -4,6 +4,16 @@ use crate::array_semantics::{
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::*;
 
+pub(crate) fn has_indexed_proc_receiver(
+    args: &[CallArg],
+    proc_array_roots: &HashMap<String, ProcNestedArrayState>,
+) -> bool {
+    args.first().is_some_and(|arg| {
+        arg.name.as_deref() == Some(METHOD_RECEIVER_ARG)
+            && matches!(&arg.expr, Expr::Index { base, .. } if proc_array_roots.contains_key(base))
+    })
+}
+
 fn push_expr_error(errors: &mut Vec<Diagnostic>, expr: &Expr, message: impl Into<String>) {
     errors.push(Diagnostic::semantic_span(message, expr.loc()));
 }
@@ -452,6 +462,10 @@ fn validate_expr_node<'a>(
                     );
                     return;
                 }
+            }
+            if let Some(name) = dynamic_param_surface_name(name, env) {
+                push_dynamic_param_surface_value_error(errors, expr.loc(), name);
+                return;
             }
             if let Some((base, field)) = split_field_path(name, errors) {
                 if let Some(struct_name) = env.struct_name(base) {
@@ -1083,9 +1097,21 @@ fn validate_expr_node<'a>(
                 }
             }
         }
-        Expr::Cast { expr, .. } | Expr::UnaryBitNot { expr, .. } => {
-            children.push(expr);
+        Expr::Cast {
+            to, expr: inner, ..
+        } => {
+            if let Some(source) = infer_call_argument_scalar_type(inner, env) {
+                if !crate::enum_support::valid_cast(source, *to) {
+                    push_expr_error(
+                        errors,
+                        expr,
+                        "enum conversion requires an integer ordinal; use i32(value) to extract it",
+                    );
+                }
+            }
+            children.push(inner);
         }
+        Expr::UnaryBitNot { expr, .. } => children.push(expr),
         Expr::UnaryNot { expr, .. } => {
             require_expr_bool_type(
                 expr,
@@ -1115,7 +1141,10 @@ fn validate_expr_node<'a>(
                         PrimitiveType::Bool,
                         PrimitiveType::Bool
                     )
-                ) {
+                ) && !(matches!(op, CmpOp::Eq | CmpOp::Ne)
+                    && lhs_ty == rhs_ty
+                    && matches!(lhs_ty, PrimitiveType::Enum(_)))
+                {
                     merge_numeric_types(lhs_ty, rhs_ty, "comparison", expr.loc(), errors);
                 }
             }
@@ -1276,7 +1305,7 @@ fn validate_expr_node<'a>(
                 }
                 return;
             }
-            if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+            if name == PROCESSOR_RESOURCE_SELECT {
                 validate_internal_proc_index_buffer_select_call(
                     name,
                     args,
@@ -1302,6 +1331,20 @@ fn validate_expr_node<'a>(
                 if let Some(base) = parse_array_len_instance_base(name) {
                     if is_builtin_len_receiver(base, env) {
                         validate_data_len_builtin_call(name, args, expr.loc(), errors);
+                        return;
+                    }
+                }
+                if let Some(base) = parse_buffer_samples_instance_base(name) {
+                    if is_builtin_buffer_receiver(base, env) {
+                        validate_buffer_metadata_builtin_call(
+                            name,
+                            base,
+                            args,
+                            "samples",
+                            env,
+                            expr.loc(),
+                            errors,
+                        );
                         return;
                     }
                 }
@@ -1357,7 +1400,17 @@ fn validate_expr_node<'a>(
                 }
                 return;
             }
-            if let Some(sig) = env.fn_signatures.get(name) {
+            if let Some(sig) = env.fn_signatures.get(name).or_else(|| {
+                if let Some(proc_name) = env.struct_name(name) {
+                    env.fn_signatures
+                        .get(&format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}"))
+                } else {
+                    let (receiver, event) = name.rsplit_once('.')?;
+                    let proc_name = env.struct_name(receiver)?;
+                    env.fn_signatures
+                        .get(&format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}.{event}"))
+                }
+            }) {
                 let display_name = sig.display_name.as_deref().unwrap_or(name);
                 if sig.type_params.is_empty() {
                     if !type_args.is_empty() {
@@ -1418,6 +1471,9 @@ fn validate_expr_node<'a>(
                 for (idx, arg) in resolved.iter().copied().enumerate() {
                     if let Some(arg) = arg {
                         let param_ty = sig.param_types.get(idx).and_then(|t| t.as_ref());
+                        if crate::processor_views::is_bound_resource_argument(arg, param_ty) {
+                            continue;
+                        }
                         let param_readonly = sig
                             .params
                             .get(idx)
@@ -1565,14 +1621,16 @@ fn validate_expr_node<'a>(
                             continue;
                         }
                         if let Some(FnParamType::Tuple(expected)) = param_ty {
-                            validate_tuple_param_call_arg(
-                                display_name,
-                                &sig.params[idx],
-                                expected,
-                                arg,
-                                env,
-                                errors,
-                            );
+                            if let Some(expected) = ScalarTypeRef::primitives(expected) {
+                                validate_tuple_param_call_arg(
+                                    display_name,
+                                    &sig.params[idx],
+                                    &expected,
+                                    arg,
+                                    env,
+                                    errors,
+                                );
+                            }
                         }
                         if let Some(FnParamType::Primitive(expected)) = param_ty {
                             if infer_call_argument_tuple_types(arg, env).is_some()
@@ -1631,14 +1689,16 @@ fn validate_expr_node<'a>(
                                 );
                             }
                             Some(FnParamType::Tuple(expected)) => {
-                                validate_tuple_param_call_arg(
-                                    display_name,
-                                    &sig.params[idx],
-                                    expected,
-                                    default,
-                                    env,
-                                    errors,
-                                );
+                                if let Some(expected) = ScalarTypeRef::primitives(expected) {
+                                    validate_tuple_param_call_arg(
+                                        display_name,
+                                        &sig.params[idx],
+                                        &expected,
+                                        default,
+                                        env,
+                                        errors,
+                                    );
+                                }
                             }
                             Some(param_ty) if is_function_array_param(Some(param_ty)) => {
                                 validate_array_param_call_arg(
@@ -1687,19 +1747,14 @@ fn validate_expr_node<'a>(
                 return;
             }
 
-            if env.proc_event_names.contains(name) {
-                let has_indexed_proc_receiver = args.first().is_some_and(|arg| {
-                    matches!(
-                        &arg.expr,
-                        Expr::Index { base, .. } if env.proc_array_roots.contains_key(base)
-                    ) && matches!(arg.name.as_deref(), None | Some(METHOD_RECEIVER_ARG))
-                });
-                if has_indexed_proc_receiver {
-                    for arg in args {
-                        children.push(&arg.expr);
-                    }
-                    return;
+            if has_indexed_proc_receiver(args, env.proc_array_roots) {
+                for arg in args {
+                    children.push(&arg.expr);
                 }
+                return;
+            }
+
+            if env.proc_event_names.contains(name) {
                 push_expr_error(
                     errors,
                     expr,
@@ -1752,7 +1807,11 @@ fn validate_indexed_buffer_metadata_call(
     };
     if !matches!(
         method,
-        ARRAY_LEN_METHOD | BUFFER_BOUND_METHOD | BUFFER_CHANS_METHOD | BUFFER_SAMPLERATE_METHOD
+        ARRAY_LEN_METHOD
+            | BUFFER_SAMPLES_METHOD
+            | BUFFER_BOUND_METHOD
+            | BUFFER_CHANS_METHOD
+            | BUFFER_SAMPLERATE_METHOD
     ) {
         return false;
     }
@@ -1810,10 +1869,19 @@ fn is_internal_proc_index_validation_arg(
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG)
+            | Some(PROC_CACHED_FIELD_ARG)
     ) {
         return true;
     }
     if arg_name.is_some() {
+        return false;
+    }
+    if args.iter().any(|arg| {
+        matches!(
+            arg.name.as_deref(),
+            Some(PROC_INDEX_BASE_ARG) | Some(PROC_INDEX_EXPR_ARG)
+        )
+    }) {
         return false;
     }
     args.iter()
@@ -3014,11 +3082,11 @@ pub(crate) fn validate_array_value_type(
             && matches!(expected_elem, Some(ArrayElemType::Primitive(_))))
     {
         let expected = match expected_elem.expect("mismatched typed array element") {
-            ArrayElemType::Primitive(elem) => elem.name().to_owned(),
+            ArrayElemType::Primitive(elem) => elem.name().into_owned(),
             ArrayElemType::Struct(name) => name,
         };
         let actual = match &actual.elem {
-            CallArrayArgElem::Primitive(elem) => elem.name().to_owned(),
+            CallArrayArgElem::Primitive(elem) => elem.name().into_owned(),
             CallArrayArgElem::Nominal(name) => name.clone(),
             CallArrayArgElem::Unknown => "unknown".to_owned(),
             CallArrayArgElem::NominalUnknown => "nominal".to_owned(),
@@ -3261,7 +3329,7 @@ fn validate_buffer_array_param_call_arg(
         format!("function '{fn_name}' parameter #{param_idx}")
     };
     if let Expr::UserCall { name, args, .. } = arg {
-        if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+        if name == PROCESSOR_RESOURCE_SELECT {
             for choice in args.iter().filter(|arg| arg.name.is_none()) {
                 validate_buffer_array_param_call_arg(
                     fn_name,
@@ -3366,19 +3434,19 @@ fn validate_buffer_param_call_arg(
         format!("function '{fn_name}' parameter #{param_idx}")
     };
     if let Expr::UserCall { name, args, .. } = arg {
-        if name == PROC_INDEX_BUFFER_SELECT_SENTINEL {
+        if name == PROCESSOR_RESOURCE_SELECT {
             validate_internal_proc_index_buffer_select_call(name, args, env, loc, errors);
             for slot_expr in args.iter().filter(|a| a.name.is_none()).map(|a| &a.expr) {
-                if let Expr::Var { name: symbol, .. } = slot_expr {
-                    validate_buffer_symbol_for_param(
-                        &context,
-                        expected,
-                        symbol,
-                        env,
-                        slot_expr.loc(),
-                        errors,
-                    );
-                }
+                validate_buffer_param_call_arg(
+                    fn_name,
+                    param_idx,
+                    param_names,
+                    expected,
+                    slot_expr,
+                    env,
+                    slot_expr.loc(),
+                    errors,
+                );
             }
             return;
         }
@@ -3865,6 +3933,20 @@ fn unsafe_storage_shape(base: &str, env: ExprEnv<'_>) -> Option<UnsafeStorageSha
         });
     }
 
+    if let Some(element) = split_simple_field_path(base).and_then(|(root, field)| {
+        resolve_flattened_struct_array_leaf_type(env.struct_name(root)?, field, env.struct_defs)
+    }) {
+        // Scalar tensors projected through aggregate arrays are read views.
+        // Writes retain the indexed receiver so field ranges and processor
+        // parameter hooks still run at their ordinary assignment boundary.
+        return Some(UnsafeStorageShape {
+            index_count: 1,
+            element: UnsafeStorageElement::Primitive(Some(element)),
+            readable: true,
+            writable: false,
+        });
+    }
+
     let (port, readable, writable) = match base {
         "ins" => (env.port_index_ins, true, false),
         "outs" => (
@@ -4033,16 +4115,52 @@ fn validate_internal_proc_index_call(
                 validate_expr(other, env, errors);
                 push_loc_error(
                     errors,
-                    other.loc().or(loc),
+                    other.loc().or(&loc),
                     format!("internal builtin '{name}' expects field selector as identifier"),
                 );
             }
             None => {
                 push_loc_error(
                     errors,
-                    loc,
+                    loc.clone(),
                     format!("internal builtin '{name}' is missing field selector argument"),
                 );
+            }
+        }
+    }
+
+    // Resolve source argument shapes before dispatch lowering. In particular,
+    // array literals need the same typed call validation as scalar receivers.
+    if !crate::proc_call_support::has_cached_proc_field_marker(args) {
+        if let Some(Expr::Var { name: base, .. }) = base_expr {
+            if let Some(proc_name) = array_data_struct_element_type(base, env) {
+                let event = name.strip_prefix(PROC_INDEX_CALL_SENTINEL).unwrap_or("");
+                let source_call = format!("{proc_name}{PROC_SOURCE_CALL_FN_SUFFIX}{event}");
+                if env.fn_signatures.get(&source_call).is_some() {
+                    let arguments = args
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, arg)| {
+                            !is_internal_proc_index_validation_arg(
+                                args,
+                                *index,
+                                arg.name.as_deref(),
+                            )
+                        })
+                        .map(|(_, arg)| arg.clone())
+                        .collect();
+                    validate_expr(
+                        &Expr::UserCall {
+                            loc: loc.clone().into(),
+                            name: source_call,
+                            type_args: Vec::new(),
+                            args: arguments,
+                        },
+                        env,
+                        errors,
+                    );
+                    return;
+                }
             }
         }
     }
@@ -4056,6 +4174,7 @@ fn validate_internal_proc_index_call(
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG) => {}
+            Some(PROC_CACHED_FIELD_ARG) => {}
             _ => {
                 if !is_by_ref_call_arg_expr(&arg.expr, env) {
                     validate_expr(&arg.expr, env, errors);
@@ -4138,6 +4257,11 @@ fn validate_internal_proc_index_buffer_select_call(
 
     for slot_expr in slot_exprs {
         match slot_expr {
+            Expr::Index { base, index, .. }
+                if is_declared_buffer_array_info(env.declared_symbols, base) =>
+            {
+                validate_expr(index, env, errors);
+            }
             Expr::Var { name: symbol, .. } => {
                 if !has_declared_buffer_symbol_info(env.declared_symbols, symbol) {
                     push_loc_error(

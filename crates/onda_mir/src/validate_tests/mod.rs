@@ -1,3 +1,5 @@
+mod enums;
+
 use crate::{
     AccessMode, Buffer, BufferChannels, BufferId, BufferRef, CallArgument, CompareOp,
     CompileConfig, ConstantValue, Delegate, DelegateParam, Event, EventId, EventParam, FieldId,
@@ -53,18 +55,58 @@ fn accepts_well_formed_empty_program() {
 }
 
 #[test]
-fn rejects_impractically_large_function_abi_and_local_tables() {
+fn accepts_wide_function_abi_and_validates_its_last_argument() {
     let mut program = empty_program();
-    let mut oversized = function("oversized", FunctionKind::User);
-    oversized.params = vec![
-        FunctionParam {
-            name: "value".to_owned(),
+    let mut wide = function("wide", FunctionKind::User);
+    wide.params = (0..1100)
+        .map(|index| FunctionParam {
+            name: format!("value{index}"),
             ty: TypeId::new(0),
             mode: PassingMode::Value,
             integer_range: None,
-        };
-        crate::MAX_FUNCTION_PARAMETER_COUNT + 1
-    ];
+        })
+        .collect();
+    wide.locals.push(Local {
+        name: None,
+        ty: TypeId::new(0),
+        integer_range: None,
+    });
+    wide.body.statements.push(Statement {
+        kind: StatementKind::Assign {
+            destination: Place::local(LocalId::new(0)),
+            value: Rvalue::Load(Place {
+                base: PlaceBase::Parameter(crate::ParameterId::new(1099)),
+                projections: Vec::new(),
+            }),
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+    program.functions.push(wide);
+    program.functions[1].body.statements.push(Statement {
+        kind: StatementKind::Call {
+            results: Vec::new(),
+            function: FunctionId::new(2),
+            args: vec![CallArgument::Value(Value::Constant(ScalarValue::I32(7))); 1100],
+        },
+        source: SourceSpan::UNKNOWN,
+    });
+
+    assert!(super::validate(&program).is_ok());
+
+    let StatementKind::Call { args, .. } = &mut program.functions[1].body.statements[0].kind else {
+        unreachable!()
+    };
+    args[1099] = CallArgument::Value(Value::Constant(ScalarValue::F32(7.0)));
+    let errors = super::validate(&program).expect_err("the final argument must still be checked");
+    assert!(errors
+        .iter()
+        .any(|error| error.message.contains("argument 1099 does not match")));
+}
+
+#[test]
+fn rejects_impractically_large_local_tables() {
+    let mut program = empty_program();
+    let mut oversized = function("oversized", FunctionKind::User);
     oversized.locals = vec![
         Local {
             name: None,
@@ -76,13 +118,7 @@ fn rejects_impractically_large_function_abi_and_local_tables() {
     program.functions.push(oversized);
 
     let errors = super::validate(&program).expect_err("oversized function must be rejected");
-    let parameter_limit = crate::MAX_FUNCTION_PARAMETER_COUNT.to_string();
     let local_limit = crate::MAX_FUNCTION_LOCAL_COUNT.to_string();
-    assert!(errors.iter().any(|error| {
-        error.message.contains(&format!(
-            "parameters, exceeding the limit of {parameter_limit}"
-        ))
-    }));
     assert!(errors.iter().any(|error| error
         .message
         .contains(&format!("locals, exceeding the limit of {local_limit}"))));
@@ -120,7 +156,7 @@ fn selected_buffer_parameter_metadata_requires_an_assigned_selector() {
     inspect.body.statements.push(Statement {
         kind: StatementKind::Assign {
             destination: Place::local(LocalId::new(1)),
-            value: Rvalue::BufferParamLen(crate::BufferParamRef::ArrayElement {
+            value: Rvalue::BufferParamSamples(crate::BufferParamRef::ArrayElement {
                 span: crate::ParameterId::new(0),
                 selector: Value::Local(LocalId::new(0)),
                 bounds: crate::BoundsMode::Clamp,
@@ -453,6 +489,7 @@ fn validates_numeric_interface_ranges_and_defaults() {
     });
     invalid.interface.params.extend([
         Param {
+            enumeration: None,
             name: "non_finite".to_owned(),
             ty: test_type(0),
             default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
@@ -463,6 +500,7 @@ fn validates_numeric_interface_ranges_and_defaults() {
             control: crate::ParamControl::default(),
         },
         Param {
+            enumeration: None,
             name: "boolean".to_owned(),
             ty: test_type(1),
             default: ConstantValue::Scalar(ScalarValue::Bool(false)),
@@ -473,6 +511,7 @@ fn validates_numeric_interface_ranges_and_defaults() {
             control: crate::ParamControl::default(),
         },
         Param {
+            enumeration: None,
             name: "outside".to_owned(),
             ty: TypeId::new(0),
             default: ConstantValue::Scalar(ScalarValue::I32(3)),
@@ -504,6 +543,7 @@ fn validates_parameter_control_metadata() {
     let mut valid = empty_program();
     valid.types.push(Type::Scalar(ScalarType::F32));
     valid.interface.params.push(Param {
+        enumeration: None,
         name: "cutoff".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::F32(440.0)),
@@ -541,6 +581,7 @@ fn validates_parameter_control_metadata() {
     let mut invalid = empty_program();
     invalid.types.push(Type::Scalar(ScalarType::I32));
     invalid.interface.params.push(Param {
+        enumeration: None,
         name: "mode".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::I32(4)),
@@ -562,6 +603,7 @@ fn validates_parameter_control_metadata() {
     let mut inexact_i64 = empty_program();
     inexact_i64.types.push(Type::Scalar(ScalarType::I64));
     inexact_i64.interface.params.push(Param {
+        enumeration: None,
         name: "wide".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::I64(9_007_199_254_740_992)),
@@ -590,6 +632,53 @@ fn rejects_noncanonical_process_parameter_count() {
     assert!(errors.iter().any(|error| error
         .message
         .contains("exactly 3 parameters (start_frame, frames, flags)")));
+}
+
+#[test]
+fn array_parameter_domains_validate_shared_controls_and_every_default() {
+    for scalar in [ScalarType::I32, ScalarType::F32, ScalarType::F64] {
+        let mut program = empty_program();
+        let scalar_id = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Scalar(scalar));
+        let array_id = TypeId::new(program.types.len() as u32);
+        program.types.push(Type::Array {
+            element: scalar_id,
+            len: 2,
+        });
+        let value = |n| match scalar {
+            ScalarType::I32 => ScalarValue::I32(n),
+            ScalarType::F32 => ScalarValue::F32(n as f32),
+            ScalarType::F64 => ScalarValue::F64(n as f64),
+            _ => unreachable!(),
+        };
+        program.interface.params.push(Param {
+            name: "choices".into(),
+            ty: array_id,
+            default: ConstantValue::Aggregate(vec![ConstantValue::Scalar(value(0)); 2]),
+            range: Some(crate::ValueRange {
+                min: value(0),
+                max: value(4),
+            }),
+            control: crate::ParamControl {
+                step: Some(value(2)),
+                step_count: Some(2),
+                ..Default::default()
+            },
+            enumeration: None,
+        });
+        super::validate(&program).unwrap();
+        program.interface.params[0].default = ConstantValue::Aggregate(vec![
+            ConstantValue::Scalar(value(0)),
+            ConstantValue::Scalar(value(1)),
+        ]);
+        let errors = super::validate(&program).expect_err("later off-grid defaults must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("default is not on the step grid")),
+            "{scalar:?}: {errors:?}"
+        );
+    }
 }
 
 #[test]
@@ -1376,6 +1465,7 @@ fn rejects_runtime_handles_nested_in_interface_storage() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "control_resource".to_owned(),
             ty: test_type(3),
             mirror: crate::StateId::new(0),
@@ -1389,6 +1479,7 @@ fn rejects_runtime_handles_nested_in_interface_storage() {
         pinned: false,
     });
     program.interface.params.push(Param {
+        enumeration: None,
         name: "parameter_view".to_owned(),
         ty: test_type(4),
         default: ConstantValue::Aggregate(Vec::new()),
@@ -1832,6 +1923,7 @@ fn rejects_readwrite_reference_to_a_readonly_place() {
     let mut program = empty_program();
     program.types.push(Type::Scalar(ScalarType::F32));
     program.interface.params.push(Param {
+        enumeration: None,
         name: "gain".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::F32(1.0)),
@@ -1911,7 +2003,7 @@ fn ordinary_validation_rejects_unchecked_buffer_collection_selectors() {
                 base: PlaceBase::Local(LocalId::new(0)),
                 projections: Vec::new(),
             },
-            value: Rvalue::BufferLen(BufferRef::ArrayElement {
+            value: Rvalue::BufferSamples(BufferRef::ArrayElement {
                 first: BufferId::new(0),
                 len: 1,
                 selector: Value::Constant(ScalarValue::I32(0)),
@@ -2681,6 +2773,7 @@ fn control_outputs_use_explicit_one_to_one_mirror_identity() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),
@@ -2691,6 +2784,7 @@ fn control_outputs_use_explicit_one_to_one_mirror_identity() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "other_meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),
@@ -2702,7 +2796,7 @@ fn control_outputs_use_explicit_one_to_one_mirror_identity() {
 }
 
 #[test]
-fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
+fn accepts_interface_names_shared_between_kinds() {
     let mut program = empty_program();
     program.types.push(Type::Scalar(ScalarType::F32));
     program.interface.inputs.push(crate::Input {
@@ -2711,7 +2805,37 @@ fn rejects_duplicate_host_interface_names_and_event_parameter_names() {
         default: None,
         range: None,
     });
+    program.interface.outputs.push(Output {
+        name: "shared".to_owned(),
+        ty: test_type(0),
+    });
     program.interface.params.push(Param {
+        enumeration: None,
+        name: "shared".to_owned(),
+        ty: test_type(0),
+        default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
+        range: None,
+        control: crate::ParamControl::default(),
+    });
+    super::validate(&program).expect("interface kinds have separate lookup tables");
+}
+
+#[test]
+fn rejects_duplicate_names_within_an_interface_kind_and_event_parameters() {
+    let mut program = empty_program();
+    program.types.push(Type::Scalar(ScalarType::F32));
+    program.interface.inputs.push(crate::Input {
+        name: "shared".to_owned(),
+        ty: test_type(0),
+        default: None,
+        range: None,
+    });
+    program
+        .interface
+        .inputs
+        .push(program.interface.inputs[0].clone());
+    program.interface.params.push(Param {
+        enumeration: None,
         name: "shared".to_owned(),
         ty: test_type(0),
         default: ConstantValue::Scalar(ScalarValue::F32(0.0)),
@@ -2885,6 +3009,7 @@ fn rejects_control_output_store_from_event_handler() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),
@@ -2929,6 +3054,7 @@ fn control_mirrors_are_readable_but_only_control_stores_can_mutate_them() {
         .interface
         .control_outputs
         .push(crate::ControlOutput {
+            enumeration: None,
             name: "meter".to_owned(),
             ty: test_type(0),
             mirror: crate::StateId::new(0),

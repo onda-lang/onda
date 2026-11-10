@@ -5,6 +5,119 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.9.0]
+
+### Added
+
+- Native Linux ARM64 release packages, including the CLI and C SDK libraries.
+- Declare `proc Main` as the program entry: Onda creates one instance per host instance
+  and exposes its public controls, inputs, outputs, buffers, events, and delegates.
+- Input attributes `ramp` and `lag` provide linear and exponential smoothing for scalar
+  and fixed-array floating-point inputs, including processor inputs.
+- Pass references to nested processors, processor arrays, and slices through helper functions
+  while preserving their state, bound buffers, and delegate subscriptions, including references
+  selected by conditional branches.
+- Call events on dynamically selected processor-array elements.
+- `onda bench` for benchmarking native Onda processing, with block timings, throughput,
+  estimated realtime DSP CPU use, and optional JSON output.
+- Fieldless nominal enums with dense `i32` ordinals, explicit ordinal conversions, and support
+  in state, functions, arrays, slices, and nested event/delegate payloads. External enum values
+  are clamped to the member range.
+- Automatic dropdowns for enum parameters and event fields, with inferred display labels,
+  optional member label overrides, and exported enum metadata for native and WebAssembly hosts.
+- Enum completion, hover, navigation, constructor signature help, highlighting, document symbols,
+  and source formatting in the language server.
+- Explicit enum constant annotations and enum `config const` scalars/arrays, with `i32` host
+  overrides and choice metadata in native and browser configuration inspection.
+- One GPU-accelerated run UI for standalone Onda, VS Code, the VST3 plugin, and
+  both browser editors. It includes parameters, input controls, buffers, typed
+  events, logs, scope/meters, MIDI, and run settings.
+- Shared clipboard/IME editing, mobile text input, multi-touch piano gestures,
+  and bundled fonts with script fallbacks.
+- A native UI library and header in release SDKs for custom hosts; see the
+  [UI host API](docs/ui-api.md).
+
+### Changed
+
+- Onda-authored code is now licensed under Apache-2.0 starting with 0.9.0, including
+  the compiler, standard library, runtime, browser packages, and editor/plugin integrations.
+  Third-party components retain their respective licenses.
+- Linux release packages use a Debian 12 build baseline with glibc 2.36 and
+  PipeWire 0.3.65; Windows release packages use the Visual Studio 2022 toolchain.
+- Large nested processor arrays compile without the previous aggregate-size limit or generating
+  a separate implementation for every element, making larger voice banks practical.
+- Faster native processor-bank processing, with roughly 4–5× speedups in measured 16- and
+  128-voice benchmarks; see the [benchmark report](scripts/bench/results/2026-11-02-processor-final.md).
+- Web Audio reports numeric execution and validation failures through an independent shared status
+  ring and constructs errors on the main thread. A bounded request window and control wakeups
+  avoid polling delays between commands; transport failure
+  rejects pending work. Wasm traps silence and invalidate the processor until recovery, and rejected
+  parameter arrays preserve existing values and smoothing targets.
+
+- Hosted instances derive configuration from the program and use one constructor with an optional
+  allocator followed by explicit initialization. Runtime execution returns generated `u32` statuses
+  or allocation-free `RuntimeError` values; compiler diagnostics retain their existing format.
+- Hosts own thread floating-point policy through an optional explicit helper. Full-block execution
+  bypasses segment validation, and binding calls validate and update descriptor tables immediately.
+- C metadata uses borrowed descriptors, including cached enum JSON and recursive message schemas.
+  Batch decoding uses cursors; redundant property getters, indexed occurrence helpers and empty
+  browser `createDefaultImports` helpers have been removed.
+- One allocation-free payload-layout query serves events and delegates, reporting packed offsets
+  and workspace sizes for nested arrays and slices so native hosts can share Onda's layout rules.
+
+- Buffer `.len()` returns the total element count across channels; `.samples()` returns the
+  per-channel length. `std::data::Data.samples()` replaces `.frames()`, and buffer UI metadata
+  and sample-player positions use sample terminology. Buffer collection `.len()` still counts buffers.
+- Standard-library filter modes, ramp shapes, envelope stages, and FFT window selections use
+  enums. Examples use the new types, including dropdowns for Benjolin's filter and output selectors.
+- MIR schema version 9 includes enum metadata and explicit per-channel buffer sample queries.
+  Processor descriptor version 7 carries enum metadata; the executable processor ABI remains version 7.
+- Run views retain control layouts, section folds, scrolling, and schema-matched
+  event arguments. Hidden views suspend drawing and visualization capture.
+
+### Fixed
+
+- Refresh language-server diagnostics when external dependencies introduced by unsaved
+  editor changes are modified.
+- Evaluate processor input-smoothing durations, ranges, and defaults at the processor's
+  declared sample rate, including oversampling.
+- Restore run controls and buffers before initialization, including when authored defaults would
+  fail a runtime safety check. Paused startup and metadata queries no longer execute `init`;
+  playback, offline rendering, and benchmarks apply `--set` overrides before initialization.
+- Respect declared primitive input/output types in native run hosts, including mixed arrays,
+  instead of binding every port as `f32`. Convert samples at the host audio boundary.
+- Use saturating integer audio-input conversion in native and Web Audio hosts, including
+  infinities and NaN, instead of wrapping or failing on non-finite values.
+- Preserve negative zero in JSON event payloads, metadata defaults, delegate responses,
+  and VS Code event edits and saved view state.
+- Preserve processor block-hook and callback ordering through aliases, branches, and helper calls,
+  including when hosts process a block in multiple segments.
+- Complete block hooks for locally owned processor arrays declared inside conditional branches,
+  including nested arrays.
+- Keep processor buffer references current after restoring snapshots and rebinding host buffers.
+- Evaluate processor selection indices only once, preserving side effects when selecting a receiver.
+- Preserve source evaluation order around named processor parameter updates, including assignment
+  selectors, print arguments, loop bounds, and earlier helper calls and state reads.
+- Preserve declared scalar types in indexed processor-parameter reads, compound writes, and
+  helper returns, including exact `i64` arithmetic in nested processor arrays.
+- Run parameter update hooks once per write, and after initialization during construction and
+  builtin `init(...)`, including nested processor arrays.
+- Preserve parameter ranges, private access checks, and update hooks through borrowed processor
+  aliases, and support tuple-output calls through branch-selected aliases.
+- Initialize private parameters in every processor-array element and keep task activation independent
+  when mixing constant and dynamic array indices.
+- Direct buffer-reference aliases retain their buffer identity and metadata queries.
+- Keep virtual MIDI input and pending failures attached to their original processor during
+  recompilation and playback restarts.
+- Touch scrolling continues through the run view before reaching the surrounding browser page.
+
+### Removed
+
+- Individual floating-point CLI flags; use `--fast-math` to enable all arithmetic relaxations.
+- Previous egui, native webview, and DOM-rendered run interfaces and their backend
+  selection options.
+- Run UI accessibility integration.
+
 ## [0.8.40]
 
 ### Fixed
@@ -1377,6 +1490,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.9.0]: https://github.com/onda-lang/onda/compare/0.8.40...0.9.0
 [0.8.40]: https://github.com/onda-lang/onda/compare/0.8.39...0.8.40
 [0.8.39]: https://github.com/onda-lang/onda/compare/0.8.38...0.8.39
 [0.8.38]: https://github.com/onda-lang/onda/compare/0.8.37...0.8.38

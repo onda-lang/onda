@@ -4,7 +4,6 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::TcpStream;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    mpsc::Sender,
     Arc, Mutex,
 };
 use std::thread;
@@ -27,12 +26,15 @@ impl IpcBridge {
         &self,
         port: u16,
         generation: u64,
-        event_tx: Sender<ControllerEvent>,
+        event_tx: super::EventSender,
     ) -> Result<(), String> {
         self.disconnect();
 
         let stream = TcpStream::connect(("127.0.0.1", port))
             .map_err(|e| format!("TCP connect failed: {e}"))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|e| format!("failed to configure control socket: {e}"))?;
         let reader_stream = stream
             .try_clone()
             .map_err(|e| format!("TCP clone failed: {e}"))?;

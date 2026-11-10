@@ -34,9 +34,8 @@ pub use messagepack::{
     to_messagepack_optimized, MirMessagePackError,
 };
 pub use passes::{
-    canonicalize, collect_direct_local_references, distribute_loops, optimize,
-    prune_dead_values_and_parameters, referenced_locals, rewrite_block_locals, OptimizedProgram,
-    PassStats,
+    canonicalize, collect_direct_local_references, optimize, prune_dead_values_and_parameters,
+    referenced_locals, rewrite_block_locals, schedule_vector_loops, OptimizedProgram, PassStats,
 };
 
 /// Removes parameters that are not referenced by internal MIR functions and
@@ -58,7 +57,7 @@ pub use validate::{
 /// additions retain this value; incompatible serialized-schema changes must
 /// increment it.
 // Synchronized from format-versions.json; do not edit this copy directly.
-pub const MIR_SCHEMA_VERSION: u32 = 7;
+pub const MIR_SCHEMA_VERSION: u32 = 9;
 
 /// Positional ABI indices for the three value parameters of the process entry.
 pub const PROCESS_START_FRAME_PARAM_INDEX: usize = 0;

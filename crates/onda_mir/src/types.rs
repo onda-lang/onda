@@ -22,8 +22,9 @@ pub enum IntegerRangeMode {
     Wrap,
 }
 
-/// A storage invariant for an integer scalar. Every value written to the
-/// storage is normalized into this inclusive interval using `mode`.
+/// A storage invariant for an integer scalar or every element of a fixed
+/// integer array. Every stored value is normalized into this inclusive interval
+/// using `mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct IntegerRangeInvariant {
     pub min: ScalarValue,
@@ -105,6 +106,35 @@ pub enum Type {
         access: AccessMode,
         len: u32,
     },
+    /// An immutable indexed view over current interface buffer descriptors.
+    /// Its map contains symbolic resource identities, never sample pointers.
+    BufferMap {
+        element: ScalarType,
+        channels: BufferChannels,
+        access: AccessMode,
+        len: u32,
+    },
+}
+
+impl Type {
+    /// Logical collection contract and whether selection uses an immutable map.
+    pub fn buffer_collection(&self) -> Option<(ScalarType, BufferChannels, AccessMode, u32, bool)> {
+        match *self {
+            Self::BufferSpan {
+                element,
+                channels,
+                access,
+                len,
+            } => Some((element, channels, access, len, false)),
+            Self::BufferMap {
+                element,
+                channels,
+                access,
+                len,
+            } => Some((element, channels, access, len, true)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -334,17 +364,23 @@ impl<'a> ParamDomain<'a> {
         let minimum = storage_value(minimum);
         let maximum = storage_value(maximum);
         let step = step.map(storage_value);
+        let constant_domain = scalar == ScalarType::I32
+            && minimum == maximum
+            && scale == ParamScale::Linear
+            && curve.is_none()
+            && step == Some(1.0)
+            && step_count == Some(0);
         if !matches!(
             scalar,
             ScalarType::F32 | ScalarType::F64 | ScalarType::I32 | ScalarType::I64
         ) || !minimum.is_finite()
             || !maximum.is_finite()
-            || minimum >= maximum
+            || (minimum >= maximum && !constant_domain)
             || curve.is_some_and(|curve| !curve.is_finite())
             || unit.is_some_and(|unit| unit.contains('\0'))
             || step.is_some_and(|step| !step.is_finite() || step <= 0.0)
             || step.is_some() != step_count.is_some()
-            || step_count == Some(0)
+            || (step_count == Some(0) && !constant_domain)
         {
             return None;
         }
@@ -368,7 +404,9 @@ impl<'a> ParamDomain<'a> {
             return None;
         }
         if let (Some(step), Some(step_count)) = (step, step_count) {
-            if validated_step_count(scalar, minimum, maximum, step) != Some(step_count) {
+            if !constant_domain
+                && validated_step_count(scalar, minimum, maximum, step) != Some(step_count)
+            {
                 return None;
             }
         }

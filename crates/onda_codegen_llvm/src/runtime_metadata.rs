@@ -35,6 +35,9 @@ pub(crate) struct ProgramMetadata {
 }
 
 impl DeclaredIo {
+    pub fn enumeration(&self) -> Option<&onda_processor_abi::EnumMetadata> {
+        self.enumeration.as_ref()
+    }
     pub fn name(&self) -> &str {
         &self.name
     }

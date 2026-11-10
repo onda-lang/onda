@@ -4,13 +4,15 @@ on:
   pull_request:
     paths-ignore:
       - "*.md"
-      - "assets/**"
+      - "assets/png/**"
+      - "assets/svg/**"
       - "docs/**"
   push:
     branches: [main]
     paths-ignore:
       - "*.md"
-      - "assets/**"
+      - "assets/png/**"
+      - "assets/svg/**"
       - "docs/**"
 
 permissions:
@@ -30,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ONDA_CLI: ${{ github.workspace }}/target/debug/onda
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v6
 
@@ -71,7 +74,8 @@ jobs:
             libxcursor-dev \
             libxrandr-dev \
             libxinerama-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            mesa-vulkan-drivers
 
       - name: Bootstrap LLVM
         run: ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
@@ -80,7 +84,10 @@ jobs:
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test --workspace
+          cargo test --workspace --exclude onda_ui
+          # Ubuntu's Vulkan loader (1.4.341) predates the upstream threading fix
+          # in 1.4.345: https://github.com/KhronosGroup/Vulkan-Loader/pull/1866
+          cargo test -p onda_ui -- --test-threads=1
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
           cargo build --release -p onda_api
@@ -117,7 +124,7 @@ jobs:
           npm run test:corpus --workspace @onda-lang/binaryen-web
 
   portable-vector-math:
-    name: Native vector math (${{ matrix.os }})
+    name: Native vector math and GPU UI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -132,7 +139,8 @@ jobs:
         run: |
           ./scripts/bootstrap-llvm.sh --version "$LLVM_VERSION"
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --no-fail-fast
+          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --test target_initialization --no-fail-fast
+          cargo test -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
       - name: Test Windows JIT, AOT linking, and target ABIs
         if: runner.os == 'Windows'
         shell: pwsh
@@ -140,12 +148,19 @@ jobs:
           ./scripts/bootstrap-llvm.ps1 -Version "$env:LLVM_VERSION"
           . ./scripts/use-msvc-env.ps1
           . ./scripts/use-llvm-env.ps1 -Flavor prebuilt -Version "$env:LLVM_VERSION"
-          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --no-fail-fast
+          cargo test -p onda_codegen_llvm --test math_policy --test vector_math --test slice_optimization --test target_initialization --no-fail-fast
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
+          # Hosted WARP faults when independent GPU tests run concurrently.
+          cargo test -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw "GPU UI validation failed" }
 
   browser:
     name: Browser and npm packages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      CHROME_BIN: /usr/bin/google-chrome
+      # Hosted runners exercise software WebGL; WebGPU tests require a GPU host.
+      ONDA_UI_TEST_WEBGPU: "0"
     steps:
       - uses: actions/checkout@v6
 
@@ -161,6 +176,8 @@ jobs:
 
       - name: Install browser build tools
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth
           npm ci
           cargo install wasm-pack --locked
           cargo install cargo-about --version 0.9.2 --locked --features cli
@@ -170,12 +187,16 @@ jobs:
           npm run check:versions
           npm run check:stdlib-docs
           npm run check:api-docs
-          npm run test:run-view
+          npm run build --workspace @onda-lang/wasm-compiler
+          npm run build:gpu-ui
+          bash examples/web/onda_wasm_playground/build-demo.sh --skip-build
+          node scripts/build-website-playground.mjs
           npm run test:playground
           npm test --workspace @onda-lang/processor-abi
           npm test --workspace @onda-lang/binaryen-web
           npm test --workspace @onda-lang/webaudio
-          npm run build --workspace @onda-lang/wasm-compiler
+          xvfb-run -a npm run test:gpu-ui
+          xvfb-run -a npm run test:gpu-web-editor
           npm run check:examples
           npm run test:built --workspace @onda-lang/wasm-compiler
           npm run test:pack:built --workspace @onda-lang/wasm-compiler

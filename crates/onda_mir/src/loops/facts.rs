@@ -24,14 +24,21 @@ impl LocalFacts {
     }
 }
 
-pub(super) struct FunctionFacts {
-    pub locals: Vec<LocalFacts>,
+pub(crate) struct FunctionFacts {
+    pub(super) locals: Vec<LocalFacts>,
     resets: HashMap<*const Block, i32>,
     #[cfg(test)]
     pub visits: usize,
 }
 
 impl FunctionFacts {
+    /// Storage exposed through a view or reference anywhere in the function.
+    /// Include views stored outside locals and aliases created before a loop.
+    pub fn storage_escapes(&self, local: LocalId) -> bool {
+        let facts = &self.locals[local.index()];
+        facts.escaped || facts.induction_escaped
+    }
+
     pub fn new(function: &Function) -> Self {
         let mut facts = Self {
             locals: (0..function.locals.len())

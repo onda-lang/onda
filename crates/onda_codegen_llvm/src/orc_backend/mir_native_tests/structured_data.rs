@@ -1678,7 +1678,7 @@ sample:
         }];
         let status = unsafe {
             native
-                .trigger_event_views_by_index_checked_with_status(
+                .trigger_event_views_by_index_checked(
                     &mut state,
                     &params,
                     0,
@@ -1823,7 +1823,7 @@ sample:
         seed_output(&mut batch, &mut execution);
         let status = unsafe {
             native
-                .trigger_event_by_index_checked_with_status(
+                .trigger_event_by_index_checked(
                     &mut state,
                     &params,
                     0,

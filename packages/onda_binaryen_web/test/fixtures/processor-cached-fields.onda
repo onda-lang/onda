@@ -1,0 +1,29 @@
+proc Voice:
+  outs:
+    main
+    aux
+  init:
+    count: i32 = 0
+  sample:
+    count = count + 1
+    main = f32(count)
+    aux = f32(count * 10)
+proc Bank:
+  outs:
+    out1
+  init:
+    voices: Voice[4] = Voice()
+    selector: i32 = 3
+  sample:
+    a, b = voices[selector]()
+    cached_indexed = voices[selector].aux
+    voice = voices[selector]
+    cached_alias = voice.aux
+    called_indexed = voices[selector]().aux
+    called_alias = voice().aux
+    untouched = voices[0].aux
+    out1 = a + b + cached_indexed + cached_alias + called_indexed + called_alias + untouched * 1000.0
+init:
+  bank = Bank()
+sample:
+  out1 = bank()

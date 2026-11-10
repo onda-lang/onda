@@ -1,0 +1,26 @@
+proc Voice:
+  delegate fired(value: i32)
+  sample:
+    fired(1)
+    out1 = 0.0
+proc Bank:
+  init:
+    voices: Voice[3] = Voice()
+    count: i32 = 0
+  when voices[1].fired(value):
+    count += value
+  sample:
+    out1 = f32(count)
+def step(voice) -> f32:
+  return voice()
+def step_tail(voices):
+  window = voices[0:3]
+  tail = window[1:3]
+  return step(tail[0])
+def exercise(bank: Bank) -> f32:
+  step_tail(bank.voices)
+  return bank()
+init:
+  bank = Bank()
+sample:
+  out1 = exercise(bank)

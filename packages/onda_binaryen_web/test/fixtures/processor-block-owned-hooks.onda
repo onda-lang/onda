@@ -1,0 +1,22 @@
+proc Voice:
+  init:
+    before: i32 = 0
+    after: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before * 10 + after)
+    after += 1
+proc Bank:
+  init:
+    voice = Voice()
+    voices: Voice[2] = Voice()
+def step(voice) -> f32:
+  return voice()
+init:
+  bank = Bank()
+block:
+  scalar: Voice = bank.voice
+  copies: Voice[2] = bank.voices
+  sample:
+    out1 = step(scalar) + step(copies[0]) + step(copies[0])

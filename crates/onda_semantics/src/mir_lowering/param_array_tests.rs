@@ -65,7 +65,7 @@ fn proc_array_ranges_validate_element_types_and_defaults() {
         "values: bool[2] = true {0, 1}",
         "values: f32[2] = 0 {2, 1}",
         "values: f32[2] = [0] {0, 1}",
-        "values: f32[2] = 0 {0, 1, unit = \"Hz\"}",
+        "values: f32[2] = 0 {0, 1, log}",
     ] {
         let source = format!("proc Voice:\n  params:\n    {declaration}\n  sample:\n    out1 = 0.0\ninit:\n  voice = Voice()\nsample:\n  out1 = voice()\n");
         assert!(

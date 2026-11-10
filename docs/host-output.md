@@ -114,8 +114,9 @@ decoder in [`include/onda.h`](https://github.com/onda-lang/onda/blob/main/includ
 
 ```c
 int delegate = onda_delegate_index(program, "meter");
-int exact_record_bytes = onda_delegate_record_bytes(program, delegate);
-int minimum_record_bytes = onda_delegate_record_min_bytes(program, delegate);
+const onda_message_info_t* info = onda_delegate_info(program, delegate);
+int exact_record_bytes = info->record_bytes;
+int minimum_record_bytes = info->record_min_bytes;
 if (delegate < 0 || minimum_record_bytes < 0) fail_unknown_delegate();
 size_t record_budget = exact_record_bytes >= 0
   ? (size_t)exact_record_bytes
@@ -138,7 +139,7 @@ onda_execution_output_t output = {
   .print_batch = NULL,
 };
 
-int status = onda_process_checked(instance, frames, &output);
+int status = onda_process_checked(instance, &output);
 if (status == 0) {
   onda_batch_cursor_t cursor = {0};
   onda_delegate_occurrence_t occurrence;
@@ -164,13 +165,11 @@ free(storage);
 ```
 
 `onda_delegate_batch_next` returns `1` for a record, `0` at normal exhaustion, and `-1` for invalid
-or malformed input. Indexed lookup returns `0` when the requested occurrence is absent and `-1` for
-invalid or malformed input.
+or malformed input. Consume the cursor through exhaustion to validate the complete batch.
 
-`onda_delegate_payload_bytes` and `onda_delegate_payload_min_bytes` exclude the record header and
-are useful for payload validation. `onda_delegate_record_bytes` and
-`onda_delegate_record_min_bytes` include it and are the appropriate allocation queries. Exact-size
-queries return `-1` for dynamic payloads; every query returns `-1` for an invalid index.
+The message descriptor's `payload_bytes` and `payload_min_bytes` exclude the record header;
+`record_bytes` and `record_min_bytes` include it. Fixed sizes are -1 for dynamic payloads.
+An invalid descriptor query returns null.
 
 For runtime-dependent parameter offsets, hosted Rust metadata returns `None`, the C offset query
 returns `-1`, and artifact metadata uses `null`.
@@ -190,7 +189,7 @@ onda_execution_output_t output = {
   .print_batch = &prints,
 };
 
-int status = onda_process_checked(instance, frames, &output);
+int status = onda_process_checked(instance, &output);
 
 onda_diag_t diag = {0};
 onda_owned_string_t text = {0};
@@ -208,16 +207,14 @@ allocation-free caller-buffer size query and formatting path. It always reports 
 non-NUL byte length, writes nothing when capacity is insufficient, and writes a trailing NUL when
 capacity is sufficient.
 
-For structured handling, use `onda_print_batch_occurrence_at`, `onda_log_site_info`, and the
+For structured handling, use `onda_print_batch_next`, `onda_log_site_info`, and the
 artifact-local source table exposed by `onda_source_file_count` / `onda_source_file_path`. Site
 metadata gives the decoded label, lexical owner, declaration, source span, argument primitive types,
 and fixed payload size.
-Batch iteration returns `1` for a decoded record, `0` at normal exhaustion or for an out-of-range
-indexed lookup, and `-1` for invalid or malformed input.
+Batch iteration returns `1` for a decoded record, `0` at normal exhaustion, and `-1` for invalid or malformed input.
 
-To collect initialization prints, supply an output to `onda_instance_create_initialized`,
-`onda_instance_create_initialized_with_allocator`, or `onda_init_checked`. Allocation-only
-constructors do not execute authored code and therefore take no output.
+To collect initialization prints, supply an output to `onda_init_checked` after
+`onda_instance_create`. Creation allocates storage and does not execute authored code.
 
 #### Ownership and allocation
 
@@ -230,8 +227,7 @@ call. Its destination must not overlap the packed batch storage. The convenience
 `onda_format_print_batch` instead creates an Onda-owned string; its output must start zeroed and be
 released with `onda_owned_string_dispose` before the value is passed as output again. A caller
 buffer must never be installed in `onda_owned_string_t`. Hosts that need custom allocation for
-instance-owned runtime state can use `onda_instance_create_with_allocator` or its initialized
-variant.
+instance-owned runtime state can use `onda_instance_create` with a non-null allocator.
 
 ## Rust runtime
 
@@ -253,14 +249,14 @@ let record_budget = match instance.delegate_record_bytes(meter) {
 let mut storage = vec![0_u8; 64 * record_budget];
 let mut batch = DelegateBatch::from_storage(&mut storage);
 
-process_checked(
+let status = process_checked(
     &mut instance,
-    frames,
     ExecutionOutput {
         delegate_batch: Some(&mut batch),
         print_batch: None,
     },
-)?;
+ )?;
+onda_codegen_llvm::check_execution_status(status)?;
 for occurrence in batch.occurrences() {
     let occurrence = occurrence?;
     if occurrence.delegate_index as usize == meter {
@@ -279,9 +275,7 @@ encoders and decoders, including exact `i64` values and nested defaults.
 
 Rust batch iterators yield `Result<Occurrence, BatchDecodeError>`: normal exhaustion ends the
 iterator, while an invalid envelope, malformed record, or trailing bytes produces one error.
-`DelegateBatch::occurrence` and `PrintBatch::occurrence` similarly return
-`Result<Option<Occurrence>, BatchDecodeError>`, keeping an absent index distinct from malformed
-storage.
+Consume the iterator through exhaustion to validate the complete batch.
 
 ### Format prints
 
@@ -293,14 +287,14 @@ use onda_runtime::{format_print_batch_into, process_checked, ExecutionOutput, Pr
 let mut storage = vec![0_u8; 64 * 1024];
 let mut text_storage = vec![0_u8; 64 * 1024];
 let mut prints = PrintBatch::from_storage(&mut storage);
-process_checked(
+let status = process_checked(
     &mut instance,
-    frames,
     ExecutionOutput {
         delegate_batch: None,
         print_batch: Some(&mut prints),
     },
 )?;
+onda_codegen_llvm::check_execution_status(status)?;
 
 let required = format_print_batch_into(&instance, &prints, &mut text_storage)?;
 if required <= text_storage.len() {
@@ -480,8 +474,8 @@ plus source graphs when `--report-sources` is requested. The localhost control s
 `print` notifications with `text`, structured `entries`,
 `overflowCount`, and `transportDropCount`.
 
-The native and webview run hosts display prints and subscribed top-level delegate occurrences in a
-compact chronological Log immediately after the scope. It remains hidden until the first print or
+Run views display prints and subscribed top-level delegate occurrences in a
+chronological Log. It remains hidden until the first print or
 delegate occurrence of the run session, then stays present for that session even when cleared. It
 provides clear, bottom-aware automatic following, print source context, and separate print and
 delegate loss counts. New output follows the bottom only while the log is already fully scrolled

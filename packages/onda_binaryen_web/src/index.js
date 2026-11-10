@@ -52,9 +52,6 @@ function parseMirInput(input) {
   return input;
 }
 
-export function createDefaultImports() {
-  return {};
-}
 
 function parseMirJson(json) {
   try {

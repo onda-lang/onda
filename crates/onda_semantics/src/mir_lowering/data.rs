@@ -139,29 +139,32 @@ impl FunctionLowerer<'_> {
             DataType::Array {
                 element: ArrayElemType::Struct(name),
                 len,
-            } => {
-                let outer = self.data_extent(*len, loc.clone())?;
-                self.struct_field_shapes(name, loc.clone())?
-                    .into_iter()
-                    .map(|shape| {
-                        let (name, element, width) = match shape {
-                            StructFieldShape::Scalar { name, ty } => (name, ty, 1),
-                            StructFieldShape::Array { name, element, len } => (name, element, len),
-                        };
-                        let len = outer
-                            .checked_mul(width)
-                            .filter(|len| *len <= i32::MAX as u32)
-                            .ok_or_else(|| {
-                                self.error(
-                                    "data tensor exceeds the supported index range",
-                                    loc.clone(),
-                                )
-                            })?;
-                        Ok(StructFieldShape::Array { name, element, len })
-                    })
-                    .collect()
-            }
+            } => self.struct_array_field_shapes(name, self.data_extent(*len, loc.clone())?, loc),
         }
+    }
+
+    pub(super) fn struct_array_field_shapes(
+        &self,
+        name: &str,
+        outer: u32,
+        loc: SourceLoc,
+    ) -> Result<Vec<StructFieldShape>, MirLoweringError> {
+        self.struct_field_shapes(name, loc.clone())?
+            .into_iter()
+            .map(|shape| {
+                let (name, element, width) = match shape {
+                    StructFieldShape::Scalar { name, ty } => (name, ty, 1),
+                    StructFieldShape::Array { name, element, len } => (name, element, len),
+                };
+                let len = outer
+                    .checked_mul(width)
+                    .filter(|len| *len <= i32::MAX as u32)
+                    .ok_or_else(|| {
+                        self.error("data tensor exceeds the supported index range", loc.clone())
+                    })?;
+                Ok(StructFieldShape::Array { name, element, len })
+            })
+            .collect()
     }
 
     pub(super) fn data_extent(&self, len: usize, loc: SourceLoc) -> Result<u32, MirLoweringError> {
@@ -183,13 +186,6 @@ impl FunctionLowerer<'_> {
         let id = self.next_data_id;
         self.next_data_id += 1;
         format!("__onda_data_{id}")
-    }
-
-    pub(super) fn data_expr_selects_storage(expr: &Expr) -> bool {
-        matches!(
-            expr,
-            Expr::Var { .. } | Expr::Index { .. } | Expr::Slice { .. }
-        ) || indexed_read_source(expr).is_some()
     }
 
     pub(super) fn bind_data_result_parameters(
@@ -276,6 +272,7 @@ impl FunctionLowerer<'_> {
                 }
                 Binding::StructView {
                     struct_name: struct_name.clone(),
+                    processor: None,
                 }
             }
             DataType::Array {
@@ -299,6 +296,8 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        self.prepare_scalar_processor_view(source, block, loc.clone())?;
+        let processor = self.processor_view(source)?;
         for shape in self.data_shapes(data, loc.clone())? {
             let (path, extent) = match shape {
                 StructFieldShape::Scalar { name, .. } => (name, None),
@@ -352,7 +351,32 @@ impl FunctionLowerer<'_> {
             self.bindings
                 .insert(Self::data_leaf_name(name, &path), binding);
         }
-        self.bind_data_root(name, data, loc)?;
+        self.bind_data_root(name, data, loc.clone())?;
+        if processor.is_some() {
+            if matches!(
+                self.bindings.get(name),
+                Some(Binding::StructArrayStorage { .. })
+            ) {
+                self.prepare_data_array_view(name, block, loc)?;
+            }
+            if let Some(
+                Binding::StructView {
+                    processor: value, ..
+                }
+                | Binding::StructParameter {
+                    processor: value, ..
+                }
+                | Binding::StructArrayParameter {
+                    processor: value, ..
+                }
+                | Binding::ProcArrayParameter {
+                    processor: value, ..
+                },
+            ) = self.bindings.get_mut(name)
+            {
+                *value = processor;
+            }
+        }
         Ok(())
     }
 
@@ -467,7 +491,7 @@ impl FunctionLowerer<'_> {
                 match self.bindings.get(name) {
                     Some(
                         Binding::StructParameter { struct_name, .. }
-                        | Binding::StructView { struct_name },
+                        | Binding::StructView { struct_name, .. },
                     ) => return Some(DataType::Struct(struct_name.clone())),
                     Some(
                         Binding::Array(_, element, len)
@@ -486,7 +510,12 @@ impl FunctionLowerer<'_> {
                             length: StructArrayLength::Fixed(len),
                             ..
                         }
-                        | Binding::StructArrayStorage { struct_name, len },
+                        | Binding::StructArrayStorage { struct_name, len }
+                        | Binding::ProcArrayParameter {
+                            proc_name: struct_name,
+                            fixed_len: len,
+                            ..
+                        },
                     ) => {
                         return Some(DataType::Array {
                             element: ArrayElemType::Struct(struct_name.clone()),
@@ -510,6 +539,28 @@ impl FunctionLowerer<'_> {
                             element: ArrayElemType::Primitive(*element),
                             len: *len as usize,
                         });
+                    }
+                }
+                if let Some((owner, field)) = name.rsplit_once('.') {
+                    let owner_type =
+                        self.owner_struct_name(owner)
+                            .map(str::to_owned)
+                            .or_else(|| match self.data_type_of(&Expr::var(owner)) {
+                                Some(DataType::Struct(name)) => Some(name),
+                                _ => None,
+                            });
+                    if let Some(owner_type) = owner_type {
+                        if let Some(declaration) =
+                            self.processor_views.declaration(&owner_type, field)
+                        {
+                            return Some(match declaration.len {
+                                None => DataType::Struct(declaration.proc_name.clone()),
+                                Some(len) => DataType::Array {
+                                    element: ArrayElemType::Struct(declaration.proc_name.clone()),
+                                    len,
+                                },
+                            });
+                        }
                     }
                 }
                 let (root, path) = name.split_once('.')?;
@@ -593,6 +644,11 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<LoweredValue, MirLoweringError> {
+        // Authored enum assignments are already nominally checked. External
+        // parameters, events and restored snapshots normalize at their entry.
+        if matches!(value.ty, PrimitiveType::Enum(_)) {
+            return Ok(value);
+        }
         let range = self
             .function
             .integer_range_params
@@ -654,10 +710,25 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
         loc: SourceLoc,
     ) -> Result<(), MirLoweringError> {
+        if let Some((owner, _)) = name.rsplit_once('.') {
+            self.prepare_scalar_processor_view(owner, block, loc.clone())?;
+        }
         if matches!(
             self.bindings.get(name),
-            Some(Binding::StructArrayParameter { .. })
+            Some(Binding::StructArrayParameter { .. } | Binding::ProcArrayParameter { .. })
         ) {
+            let processor = self.processor_view(name)?;
+            if let Some(
+                Binding::StructArrayParameter {
+                    processor: value, ..
+                }
+                | Binding::ProcArrayParameter {
+                    processor: value, ..
+                },
+            ) = self.bindings.get_mut(name)
+            {
+                *value = processor;
+            }
             return Ok(());
         }
         if self
@@ -666,6 +737,18 @@ impl FunctionLowerer<'_> {
         {
             return Ok(());
         }
+        if let Some((owner, array)) = self.nested_proc_array_source_any(name) {
+            let canonical = format!("{owner}.{}", array.field_name);
+            if canonical != name {
+                self.prepare_data_array_view(&canonical, block, loc.clone())?;
+                if let Some(binding @ Binding::StructArrayParameter { .. }) =
+                    self.bindings.get(&canonical).cloned()
+                {
+                    self.bindings.insert(name.to_owned(), binding);
+                    return Ok(());
+                }
+            }
+        }
         let Some(DataType::Array {
             element: ArrayElemType::Struct(struct_name),
             len,
@@ -673,6 +756,7 @@ impl FunctionLowerer<'_> {
         else {
             return Ok(());
         };
+        let processor = self.processor_view(name)?;
         let mut fields = Vec::new();
         for shape in self.struct_field_shapes(&struct_name, loc.clone())? {
             let (path, element) = match shape {
@@ -692,6 +776,7 @@ impl FunctionLowerer<'_> {
         self.bindings.insert(
             name.to_owned(),
             Binding::StructArrayParameter {
+                processor,
                 struct_name,
                 length: StructArrayLength::Fixed(self.data_extent(len, loc)?),
                 fields,
@@ -707,6 +792,7 @@ impl FunctionLowerer<'_> {
         block: &mut MirBlock,
     ) -> Result<String, MirLoweringError> {
         if let Expr::Var { name, .. } = expr {
+            self.prepare_scalar_processor_view(name, block, expr.loc())?;
             return Ok(name.clone());
         }
         if let Some(selection) = self.lower_indexed_data_field(expr, block)? {
@@ -952,7 +1038,7 @@ impl FunctionLowerer<'_> {
         let target = Self::data_leaf_name(root, &field.name);
         if let Some(data) = Self::field_data_type(field) {
             if let Some(expr) = expr {
-                if Self::data_expr_selects_storage(expr)
+                if crate::array_semantics::selects_storage(expr)
                     || matches!(
                         data,
                         DataType::Array {
@@ -1044,8 +1130,19 @@ impl FunctionLowerer<'_> {
         expr: &Expr,
         block: &mut MirBlock,
     ) -> Result<(), MirLoweringError> {
-        let values = match expr {
-            Expr::ArrayCtor { init: None, .. } => {
+        use crate::array_semantics::ArrayInitializer;
+        let initializer = match expr {
+            Expr::ArrayCtor {
+                init,
+                init_is_value,
+                ..
+            } => ArrayInitializer::new(init.as_deref(), *init_is_value),
+            Expr::ArrayLiteral { values, .. } => ArrayInitializer::Elements(values),
+            _ => unreachable!(),
+        };
+        let data = DataType::Struct(struct_name.to_owned());
+        let values = match initializer {
+            ArrayInitializer::Zero => {
                 return self.initialize_default_struct_array(
                     target,
                     struct_name,
@@ -1054,48 +1151,38 @@ impl FunctionLowerer<'_> {
                     expr.loc(),
                 );
             }
-            Expr::ArrayCtor {
-                init: Some(values), ..
-            }
-            | Expr::ArrayLiteral { values, .. } => values,
-            _ => unreachable!(),
-        };
-        let data = DataType::Struct(struct_name.to_owned());
-        if let (true, [value]) = (
-            matches!(
-                expr,
-                Expr::ArrayCtor {
-                    init_is_value: true,
-                    ..
-                }
-            ),
-            values.as_slice(),
-        ) {
-            if self.is_struct_array_expression(value) {
+            ArrayInitializer::Value(value) => {
+                let array_source = self.is_struct_array_expression(value);
                 let array = DataType::Array {
                     element: ArrayElemType::Struct(struct_name.to_owned()),
                     len,
                 };
-                let source = self.lower_data_expr(value, &array, block)?;
-                return self.copy_data(target, &source, &array, block, expr.loc());
+                let source =
+                    self.lower_data_expr(value, if array_source { &array } else { &data }, block)?;
+                if array_source {
+                    self.copy_data(target, &source, &array, block, expr.loc())?;
+                } else {
+                    // Capture once before touching any element of the destination.
+                    let captured = self.fresh_data_name();
+                    self.allocate_data(&captured, &data, expr.loc())?;
+                    self.copy_data(&captured, &source, &data, block, expr.loc())?;
+                    self.fill_data_array(
+                        target,
+                        &captured,
+                        struct_name,
+                        Value::Constant(
+                            ScalarValue::I32(self.data_extent(len, expr.loc())? as i32),
+                        ),
+                        block,
+                        expr.loc(),
+                    )?;
+                }
+                return self.bind_owned_processor_view(target, &source, block, expr.loc());
             }
-            if matches!(expr, Expr::ArrayCtor { .. }) {
-                let source = self.lower_data_expr(value, &data, block)?;
-                // Capture once before touching any element of the destination.
-                let captured = self.fresh_data_name();
-                self.allocate_data(&captured, &data, expr.loc())?;
-                self.copy_data(&captured, &source, &data, block, expr.loc())?;
-                return self.fill_data_array(
-                    target,
-                    &captured,
-                    struct_name,
-                    Value::Constant(ScalarValue::I32(self.data_extent(len, expr.loc())? as i32)),
-                    block,
-                    expr.loc(),
-                );
-            }
-        }
+            ArrayInitializer::Elements(values) => values,
+        };
         self.prepare_data_array_view(target, block, expr.loc())?;
+        let mut sources = Vec::with_capacity(values.len());
         for (index, value) in values.iter().enumerate() {
             let element = self.fresh_data_name();
             let selection = Expr::Index {
@@ -1104,14 +1191,16 @@ impl FunctionLowerer<'_> {
                 index: Box::new(Expr::int(index as i64)),
             };
             self.lower_struct_array_element_alias(&element, &selection, block, expr.loc())?;
-            if Self::data_expr_selects_storage(value) {
+            if crate::array_semantics::selects_storage(value) {
                 let source = self.lower_data_expr(value, &data, block)?;
                 self.copy_data(&element, &source, &data, block, expr.loc())?;
+                sources.push(source);
             } else {
                 self.initialize_data_expr(&element, value, &data, block)?;
+                sources.push(element);
             }
         }
-        Ok(())
+        self.bind_owned_processor_elements(target, &sources, block, expr.loc())
     }
 
     fn initialize_default_struct_array(

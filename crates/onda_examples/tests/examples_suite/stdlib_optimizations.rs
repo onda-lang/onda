@@ -61,7 +61,14 @@ sample:
         let (mut instance, ins, outs) = compile_instance(&source, values.len());
         assert_eq!((ins, outs), (0, 8));
         let outputs = output_buffers(&mut instance, values.len(), outs);
-        process_checked(&mut instance, values.len(), ExecutionOutput::none()).unwrap();
+        onda_runtime::process_checked_segment(
+            &mut instance,
+            0,
+            values.len(),
+            onda_runtime::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .unwrap();
         let tolerance = if width == "f32" { 5e-6 } else { 5e-14 };
         for (i, &x) in values.iter().enumerate() {
             let expected = [
@@ -99,7 +106,14 @@ sample:
         1,
     );
     let outputs = output_buffers(&mut instance, 1, 6);
-    process_checked(&mut instance, 1, ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     for (output, expected) in outputs.iter().zip([
         10.0_f64.powf(0.3),
         10.0_f64.powf(0.3),
@@ -190,7 +204,14 @@ block:
                 set_param_by_index(&mut instance, index, &value.to_ne_bytes()).unwrap();
             }
         }
-        process_checked(&mut instance, frames, ExecutionOutput::none()).unwrap();
+        onda_runtime::process_checked_segment(
+            &mut instance,
+            0,
+            frames,
+            onda_runtime::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .unwrap();
         let [threshold, ratio, knee, makeup, amplitude] = config.map(q);
         for (i, &value) in values.iter().enumerate() {
             let left = q(q(value) * amplitude);
@@ -278,7 +299,14 @@ block:
         let outputs = output_buffers(&mut instance, 128, 2);
         let mut nonzero = 0;
         for block in 0..320 {
-            process_checked(&mut instance, 128, ExecutionOutput::none()).unwrap();
+            onda_runtime::process_checked_segment(
+                &mut instance,
+                0,
+                128,
+                onda_runtime::PROCESSOR_FULL_BLOCK,
+                ExecutionOutput::none(),
+            )
+            .unwrap();
             for (i, (&current, &original)) in outputs[0].iter().zip(outputs[1].iter()).enumerate() {
                 close(
                     current,

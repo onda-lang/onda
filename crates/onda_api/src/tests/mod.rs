@@ -51,14 +51,6 @@ fn hosted_delegate_batch_is_independent_and_decodes_occurrences() {
         unsafe { onda_delegate_batch_next(&batch, &mut cursor, &mut occurrence) },
         0
     );
-    assert_eq!(
-        unsafe { onda_delegate_batch_occurrence_at(&batch, 1, &mut occurrence) },
-        1
-    );
-    assert_eq!(
-        unsafe { onda_delegate_batch_occurrence_at(&batch, 2, &mut occurrence) },
-        0
-    );
 
     unsafe { onda_delegate_batch_reset(&mut batch) };
     assert_eq!(
@@ -72,14 +64,18 @@ fn hosted_delegate_batch_is_independent_and_decodes_occurrences() {
         -1
     );
     assert_eq!(
-        unsafe { onda_delegate_batch_occurrence_at(&batch, 0, &mut occurrence) },
+        unsafe {
+            onda_delegate_batch_next(&batch, &mut onda_batch_cursor_t::default(), &mut occurrence)
+        },
         -1
     );
     batch.record_count = 1;
     assert_eq!(
-        unsafe { onda_delegate_batch_occurrence_at(&batch, 1, &mut occurrence) },
+        unsafe {
+            onda_delegate_batch_next(&batch, &mut onda_batch_cursor_t::default(), &mut occurrence)
+        },
         -1,
-        "an absent index must not hide malformed records"
+        "iteration rejects malformed records"
     );
     assert_eq!(
         unsafe { onda_delegate_batch_next(std::ptr::null(), &mut cursor, &mut occurrence) },
@@ -114,9 +110,15 @@ fn hosted_delegate_batch_is_independent_and_decodes_occurrences() {
     print_batch.capacity_bytes = 1;
     print_batch.record_count = 1;
     assert_eq!(
-        unsafe { onda_print_batch_occurrence_at(&print_batch, 1, &mut print_occurrence) },
+        unsafe {
+            onda_print_batch_next(
+                &print_batch,
+                &mut onda_batch_cursor_t::default(),
+                &mut print_occurrence,
+            )
+        },
         -1,
-        "an absent index must not hide malformed records"
+        "iteration rejects malformed records"
     );
 }
 

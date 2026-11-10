@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::*;
 
 mod facts;
+pub(crate) use facts::FunctionFacts;
 mod independent;
 #[cfg(test)]
 mod tests;
@@ -153,7 +154,7 @@ pub(crate) fn guarded_loop(block: &Block) -> Option<CountedLoop<'_>> {
 
 /// The nonempty form tests its final index before incrementing. Restrict this
 /// view to limits representable as an exclusive i32 bound.
-fn nonempty_loop(block: &Block) -> Option<CountedLoop<'_>> {
+pub(crate) fn nonempty_loop(block: &Block) -> Option<CountedLoop<'_>> {
     let statements = &block.statements;
     let tail = statements.len().checked_sub(2)?;
     let (

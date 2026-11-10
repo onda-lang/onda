@@ -2,14 +2,23 @@
 
 ## Optimization / runtime follow-ups
 
-- Remove or rename the existing `prepare_unchecked_process` /
-  `onda_prepare_unchecked_process` binding-validation APIs because they perform validation, not
-  initialization. Prefer the existing `validate_bindings` APIs; if a distinct convenience entry
-  remains, name it `validate_bindings_for_unchecked_process`.
-
 - RT-safety verification suite
-  - Add automated checks/assertions for callback-time allocation/lock regressions.
+  - Extend allocation/deallocation regression checks to lock detection.
   - Add repeatable stress tests around bind/rebind/process paths.
+
+- Actual runtime block length
+  - Consider `block_samples()` (or `block_frames()`) to expose the actual number of sample
+    frames in the current logical block, distinct from compile-time `BLOCK_SIZE` capacity.
+  - Keep the count unchanged across segments of the same logical block, including MIDI splits,
+    so block-rate timing can account for short blocks. Define its availability outside processing.
+
+- Onda-owned denormal handling
+  - Revisit denormal/subnormal suppression as a generic Onda feature across native JIT/AOT and
+    Wasm, independent of fast math, so hosts no longer need the explicit
+    `onda_configure_current_thread_audio_fp_mode` API.
+  - Define the numerical contract and scope across initialization, events, tasks, and processing.
+    Evaluate native host FP-mode preservation and Wasm software flushing, with scalar/SIMD f32/f64
+    correctness, cross-backend parity, and representative DSP performance measurements.
 
 Processor-array hook lowering and loop proofs belong in [compiler.md](compiler.md), target SIMD
 selection in [backends.md](backends.md#optimization-follow-ups), and DSP algorithm work in

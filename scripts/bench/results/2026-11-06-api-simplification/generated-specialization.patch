@@ -1,0 +1,382 @@
+--- a/crates/onda_codegen_llvm/src/orc_backend/mir_native.rs
++++ b/crates/onda_codegen_llvm/src/orc_backend/mir_native.rs
+@@ -7,6 +7,7 @@
+ mod event_input;
+ mod function_emitter;
+ mod host_abi;
++mod full_block;
+ mod loop_cost;
+ mod loop_metadata;
+ mod pointwise;
+@@ -204,6 +205,17 @@
+     u32,
+     u32,
+     u32,
++    *const *mut u8,
++    *const i32,
++    *const i32,
++    *const f32,
++    *mut onda_processor_abi::ExecutionOutput,
++) -> u32;
++type NativeBlockFn = unsafe extern "C" fn(
++    *mut u8,
++    *const u8,
++    *const *const u8,
++    *const *mut u8,
+     *const *mut u8,
+     *const i32,
+     *const i32,
+@@ -245,6 +257,7 @@
+ struct NativeOrcProcess {
+     lljit: LLVMOrcLLJITRef,
+     process: NativeProcessFn,
++    process_block: NativeBlockFn,
+     init: NativeInitFn,
+     events: Vec<NativeEventFn>,
+     event_views: Vec<NativeEventViewsFn>,
+@@ -3122,6 +3135,38 @@
+         }
+     }
+ 
++    /// Executes a compiled full block; storage has the same contract as `process_unchecked`.
++    ///
++    /// # Safety
++    /// All program storage and bindings must satisfy `process_unchecked`.
++    #[allow(clippy::too_many_arguments)]
++    pub unsafe fn process_block_unchecked(
++        &self,
++        state: &mut RuntimeState,
++        params: &[u8],
++        in_ptrs: &[*const u8],
++        out_ptrs: &[*mut u8],
++        buffer_ptrs: &[*mut u8],
++        buffer_frames: &[i32],
++        buffer_channels: &[i32],
++        buffer_sample_rates: &[f32],
++        output: Option<&mut onda_processor_abi::ExecutionOutput>,
++    ) -> u32 {
++        unsafe {
++            (self.compiled.process_block)(
++                abi_mut_ptr(state.state_words.as_mut_slice()).cast::<u8>(),
++                abi_const_ptr(params),
++                abi_const_ptr(in_ptrs),
++                abi_const_ptr(out_ptrs),
++                abi_const_ptr(buffer_ptrs),
++                abi_const_ptr(buffer_frames),
++                abi_const_ptr(buffer_channels),
++                abi_const_ptr(buffer_sample_rates),
++                output.map_or(std::ptr::null_mut(), |output| output as *mut _),
++            )
++        }
++    }
++
+     /// Validates hosted memory regions before entering generated code. The
+     /// generated entry performs payload preflight and preparation together.
+     ///
+@@ -3469,6 +3514,7 @@
+             )?;
+             let context = OwnedLlvm::new(context, LLVMContextDispose);
+             let module = OwnedLlvm::new(module, LLVMDisposeModule);
++            full_block::emit(module.get(), context.get(), program.config.block_size)?;
+             optimize_native_module(
+                 module.get(),
+                 target_machine.get(),
+@@ -3509,6 +3555,8 @@
+ 
+             let process = super::jit_utils::lookup_symbol(lljit, "onda_process", "MIR process")
+                 .map_err(codegen_diagnostic)?;
++            let process_block = super::jit_utils::lookup_symbol(lljit, "__onda_process_block", "MIR full block")
++                .map_err(codegen_diagnostic)?;
+             let init = super::jit_utils::lookup_symbol(lljit, "onda_processor_init", "MIR init")
+                 .map_err(codegen_diagnostic)?;
+             let mut events = Vec::with_capacity(program.interface.events.len());
+@@ -3537,6 +3585,7 @@
+                 NativeOrcProcess {
+                     lljit,
+                     process: std::mem::transmute::<usize, NativeProcessFn>(process as usize),
++                    process_block: std::mem::transmute::<usize, NativeBlockFn>(process_block as usize),
+                     init: std::mem::transmute::<usize, NativeInitFn>(init as usize),
+                     events,
+                     event_views,
+--- a/crates/onda_codegen_llvm/src/runtime_validation.rs
++++ b/crates/onda_codegen_llvm/src/runtime_validation.rs
+@@ -772,6 +772,56 @@
+         }
+     }
+ 
++    /// Executes a compiled full block.
++    ///
++    /// # Safety
++    /// All program storage and bindings must satisfy `process_unchecked`.
++    #[allow(clippy::too_many_arguments)]
++    pub unsafe fn process_block_unchecked(
++        &self,
++        state: &mut RuntimeState,
++        params: &[u8],
++        in_ptrs: &[*const u8],
++        out_ptrs: &[*mut u8],
++        buffer_ptrs: &[*mut u8],
++        buffer_frames: &[i32],
++        buffer_channels: &[i32],
++        buffer_sample_rates: &[f32],
++        output: Option<&mut onda_processor_abi::ExecutionOutput>,
++    ) -> Result<u32, RuntimeError> {
++        #[cfg(feature = "llvm-orc")]
++        {
++            Ok(unsafe {
++                self.compiled.process_block_unchecked(
++                    state,
++                    params,
++                    in_ptrs,
++                    out_ptrs,
++                    buffer_ptrs,
++                    buffer_frames,
++                    buffer_channels,
++                    buffer_sample_rates,
++                    output,
++                )
++            })
++        }
++        #[cfg(not(feature = "llvm-orc"))]
++        {
++            let _ = (
++                state,
++                params,
++                in_ptrs,
++                out_ptrs,
++                buffer_ptrs,
++                buffer_frames,
++                buffer_channels,
++                buffer_sample_rates,
++                output,
++            );
++            Err(RuntimeError::BackendUnavailable)
++        }
++    }
++
+     /// Validates hosted memory regions before entering generated event code.
+     /// The generated entry performs the single payload preflight while preparing
+     /// its aligned input workspace.
+--- /dev/null
++++ b/crates/onda_codegen_llvm/src/orc_backend/mir_native/full_block.rs
+@@ -0,0 +1,52 @@
++//! JIT-only specialization of the canonical process body. The raw ABI stays segmented.
++use super::*;
++
++pub(super) unsafe fn emit(
++    module: LLVMModuleRef,
++    context: LLVMContextRef,
++    frames: u32,
++) -> Result<(), MirCodegenError> {
++    let process = LLVMGetNamedFunction(module, c"onda_process".as_ptr());
++    let process_type = LLVMGlobalGetValueType(process);
++    let pointer = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
++    let i32_type = LLVMInt32TypeInContext(context);
++    let mut types = [pointer; 9];
++    let signature = LLVMFunctionType(i32_type, types.as_mut_ptr(), types.len() as u32, 0);
++    let function = LLVMAddFunction(module, c"__onda_process_block".as_ptr(), signature);
++    let entry = LLVMAppendBasicBlockInContext(context, function, c"entry".as_ptr());
++    let builder = OwnedLlvm::new(LLVMCreateBuilderInContext(context), LLVMDisposeBuilder);
++    LLVMPositionBuilderAtEnd(builder.get(), entry);
++    let mut arguments = [
++        LLVMGetParam(function, 0),
++        LLVMGetParam(function, 1),
++        LLVMGetParam(function, 2),
++        LLVMGetParam(function, 3),
++        LLVMConstInt(i32_type, 0, 0),
++        LLVMConstInt(i32_type, u64::from(frames), 0),
++        LLVMConstInt(i32_type, u64::from(crate::PROCESSOR_FULL_BLOCK), 0),
++        LLVMGetParam(function, 4),
++        LLVMGetParam(function, 5),
++        LLVMGetParam(function, 6),
++        LLVMGetParam(function, 7),
++        LLVMGetParam(function, 8),
++    ];
++    // Inline the canonical body before optimizing so offset, trip count and
++    // hook flags become constants inside this entry, irrespective of body size.
++    add_enum_attribute_at_index(
++        context,
++        process,
++        llvm_sys::LLVMAttributeFunctionIndex,
++        "alwaysinline",
++        0,
++    )?;
++    let result = LLVMBuildCall2(
++        builder.get(),
++        process_type,
++        process,
++        arguments.as_mut_ptr(),
++        arguments.len() as u32,
++        c"status".as_ptr(),
++    );
++    LLVMBuildRet(builder.get(), result);
++    Ok(())
++}
+--- /dev/null
++++ b/crates/onda_examples/examples/benchmark_full_block.rs
+@@ -0,0 +1,165 @@
++//! Paired native-kernel comparison, excluding hosted runtime checks.
++//! cargo run --release -p onda_examples --example benchmark_full_block -- <source|--tiny> <frames>
++use onda_codegen_llvm::{
++    jit_program_from_optimized_mir_with_options, JitProgram, MirCompileOptions, RuntimeState,
++    TargetOptLevel, PROCESSOR_FULL_BLOCK,
++};
++use onda_frontend::{load_program_file, parse_program, PrimitiveType};
++use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
++use std::{env, hint::black_box, time::Instant};
++
++struct Kernel<'a> {
++    program: &'a JitProgram,
++    state: RuntimeState,
++    params: Vec<u8>,
++    inputs: Vec<Vec<f32>>,
++    outputs: Vec<Vec<f32>>,
++    input_pointers: Vec<*const u8>,
++    output_pointers: Vec<*mut u8>,
++}
++impl<'a> Kernel<'a> {
++    fn new(program: &'a JitProgram) -> Self {
++        let params = program.default_param_bytes();
++        let state = program.initialize_state(&params).unwrap();
++        let inputs = vec![vec![0.0; program.block_size()]; program.required_in_channels()];
++        let mut outputs = vec![vec![0.0; program.block_size()]; program.required_out_channels()];
++        let input_pointers = inputs.iter().map(|port| port.as_ptr().cast()).collect();
++        let output_pointers = outputs
++            .iter_mut()
++            .map(|port| port.as_mut_ptr().cast())
++            .collect();
++        Self {
++            program,
++            state,
++            params,
++            inputs,
++            outputs,
++            input_pointers,
++            output_pointers,
++        }
++    }
++    fn run<const FULL: bool>(&mut self) {
++        // Storage is program-shaped, bound for this kernel's lifetime and disjoint.
++        let status = unsafe {
++            if FULL {
++                self.program.process_block_unchecked(
++                    &mut self.state,
++                    &self.params,
++                    &self.input_pointers,
++                    &self.output_pointers,
++                    &[],
++                    &[],
++                    &[],
++                    &[],
++                    None,
++                )
++            } else {
++                self.program.process_unchecked(
++                    &mut self.state,
++                    &self.params,
++                    0,
++                    self.program.block_size() as u32,
++                    PROCESSOR_FULL_BLOCK,
++                    &self.input_pointers,
++                    &self.output_pointers,
++                    &[],
++                    &[],
++                    &[],
++                    &[],
++                    None,
++                )
++            }
++        }
++        .unwrap();
++        assert_eq!(status, 0);
++    }
++    fn snapshot(&self) -> Vec<u8> {
++        let mut bytes = vec![0; self.program.state_size_bytes()];
++        self.program
++            .write_state_snapshot(&self.state, &mut bytes)
++            .unwrap();
++        bytes
++    }
++    fn time<const FULL: bool>(&mut self, blocks: usize) -> f64 {
++        let start = Instant::now();
++        for _ in 0..blocks {
++            self.run::<FULL>();
++        }
++        let elapsed = start.elapsed().as_secs_f64() * 1e9 / blocks as f64;
++        black_box((&self.inputs, &self.outputs));
++        elapsed
++    }
++}
++fn median(values: &[f64]) -> f64 {
++    let mut values = values.to_vec();
++    values.sort_by(f64::total_cmp);
++    values[values.len() / 2]
++}
++fn main() {
++    onda_realtime::configure_current_thread_audio_fp_mode();
++    let args: Vec<_> = env::args().collect();
++    let source = args.get(1).expect("source or --tiny");
++    let frames: usize = args.get(2).expect("frames").parse().unwrap();
++    let parsed = if source == "--tiny" {
++        parse_program("sample:\n  out1 = in1 * 0.5\n").unwrap()
++    } else {
++        load_program_file(std::path::Path::new(source))
++            .unwrap()
++            .program
++    };
++    let typed = analyze_with_options(
++        parsed,
++        AnalysisOptions {
++            sample_rate: 48_000.0,
++            block_size: frames,
++        },
++    )
++    .unwrap();
++    let mir = lower_program_to_optimized_mir(&typed).unwrap();
++    let program = jit_program_from_optimized_mir_with_options(
++        mir,
++        MirCompileOptions {
++            opt_level: TargetOptLevel::O3,
++            ..Default::default()
++        },
++    )
++    .unwrap();
++    assert_eq!(program.buffer_count(), 0);
++    assert!(program
++        .inputs()
++        .iter()
++        .chain(program.outputs())
++        .all(|port| port.elem_ty() == PrimitiveType::F32));
++    let mut full = Kernel::new(&program);
++    let mut segment = Kernel::new(&program);
++    for _ in 0..256 {
++        full.run::<true>();
++        segment.run::<false>();
++        assert_eq!(full.outputs, segment.outputs);
++        assert_eq!(full.snapshot(), segment.snapshot());
++    }
++    let mut blocks = 256;
++    while full.time::<true>(blocks) * (blocks as f64) < 50_000_000.0 {
++        blocks *= 2;
++    }
++    // Fresh equal state after calibration; alternate order to reduce thermal/frequency bias.
++    full = Kernel::new(&program);
++    segment = Kernel::new(&program);
++    let mut full_ns = Vec::new();
++    let mut segment_ns = Vec::new();
++    for round in 0..11 {
++        if round % 2 == 0 {
++            full_ns.push(full.time::<true>(blocks));
++            segment_ns.push(segment.time::<false>(blocks));
++        } else {
++            segment_ns.push(segment.time::<false>(blocks));
++            full_ns.push(full.time::<true>(blocks));
++        }
++        assert_eq!(full.outputs, segment.outputs);
++        assert_eq!(full.snapshot(), segment.snapshot());
++    }
++    println!(
++        "{}",
++        serde_json::json!({"source": source, "frames": frames, "blocks_per_round": blocks, "full_ns": full_ns, "segment_ns": segment_ns, "full_median_ns": median(&full_ns), "segment_median_ns": median(&segment_ns), "audio_and_state_equal": true})
++    );
++}

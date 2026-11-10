@@ -13,6 +13,7 @@ pub(super) enum ParamDomainValueKind {
 
 #[derive(Debug, Clone)]
 pub(super) struct ParamDomainCompletionContext {
+    pub(super) input: bool,
     pub(super) used_fields: BTreeSet<&'static str>,
     pub(super) allow_fields: bool,
     pub(super) value_kind: ParamDomainValueKind,
@@ -158,6 +159,9 @@ pub(super) fn completion_context_at(
 ) -> Option<ParamDomainCompletionContext> {
     let offset = offset.min(source.len());
     let open = active_param_domain_open(source, offset)?;
+    let stack = open_brace_stack(source, offset);
+    let section = domain_section_at(source, open, &stack[..stack.len() - 1])?;
+    let input = matches!(leading_identifier(section), Some("ins" | "inputs"));
     let items = split_top_level_items(source, open + 1, offset);
     let (current, previous) = items.split_last()?;
 
@@ -194,6 +198,7 @@ pub(super) fn completion_context_at(
 
     if let Some(field) = named_field(source, current.clone()) {
         return Some(ParamDomainCompletionContext {
+            input,
             used_fields,
             allow_fields: false,
             value_kind: value_kind_for_field(field),
@@ -203,13 +208,14 @@ pub(super) fn completion_context_at(
     let current_text = source[current.clone()].trim_start();
     if current_text.starts_with('"') {
         return Some(ParamDomainCompletionContext {
+            input,
             used_fields,
             allow_fields: false,
             value_kind: ParamDomainValueKind::Unit,
         });
     }
 
-    let value_kind = if saw_named {
+    let value_kind = if saw_named || (input && positional_count >= 2) {
         ParamDomainValueKind::None
     } else {
         PARAM_DOMAIN_POSITIONAL_FIELDS
@@ -218,6 +224,7 @@ pub(super) fn completion_context_at(
             .map_or(ParamDomainValueKind::None, value_kind_for_field)
     };
     Some(ParamDomainCompletionContext {
+        input,
         used_fields,
         allow_fields: true,
         value_kind,
@@ -296,7 +303,7 @@ pub(super) fn binding_range_identifier_role_at(
 
 fn value_kind_for_field(field: &str) -> ParamDomainValueKind {
     match field {
-        "min" | "max" | "curve" | "step" => ParamDomainValueKind::Expression,
+        "min" | "max" | "curve" | "step" | "ramp" | "lag" => ParamDomainValueKind::Expression,
         "scale" => ParamDomainValueKind::Scale,
         "unit" => ParamDomainValueKind::Unit,
         _ => ParamDomainValueKind::None,
@@ -310,6 +317,10 @@ fn active_param_domain_open(source: &str, offset: usize) -> Option<usize> {
 }
 
 fn is_param_domain_open(source: &str, open: usize, parent_braces: &[usize]) -> bool {
+    domain_section_at(source, open, parent_braces).is_some()
+}
+
+fn domain_section_at<'a>(source: &'a str, open: usize, parent_braces: &[usize]) -> Option<&'a str> {
     let line_start = source[..open].rfind('\n').map_or(0, |index| index + 1);
     let declaration_start = parent_braces
         .last()
@@ -318,19 +329,26 @@ fn is_param_domain_open(source: &str, open: usize, parent_braces: &[usize]) -> b
     if leading_identifier(declaration_prefix).is_none()
         || is_domain_section_header(declaration_prefix)
     {
-        return false;
+        return None;
     }
 
     if let Some(parent) = parent_braces.last() {
         let parent_line_start = source[..*parent].rfind('\n').map_or(0, |index| index + 1);
-        let parent_prefix = source[parent_line_start..*parent].trim();
-        return parent_braces.len() == 1 && is_domain_section_header(parent_prefix);
+        let parent_start = parent_braces
+            .iter()
+            .rev()
+            .nth(1)
+            .map_or(parent_line_start, |ancestor| {
+                parent_line_start.max(ancestor + 1)
+            });
+        let parent_prefix = source[parent_start..*parent].trim();
+        return is_domain_section_header(parent_prefix).then_some(parent_prefix);
     }
 
     let declaration_line = &source[line_start..open];
     let declaration_indent = leading_indent_len(declaration_line);
     if declaration_indent == 0 {
-        return false;
+        return None;
     }
     source[..line_start]
         .lines()
@@ -341,7 +359,8 @@ fn is_param_domain_open(source: &str, open: usize, parent_braces: &[usize]) -> b
                 && !trimmed.starts_with('#')
                 && leading_indent_len(line) < declaration_indent
         })
-        .is_some_and(|line| leading_indent_len(line) == 0 && is_domain_section_header(line.trim()))
+        .map(str::trim)
+        .filter(|line| is_domain_section_header(line))
 }
 
 fn is_buffer_count_open(source: &str, open: usize, parent_braces: &[usize]) -> bool {
@@ -431,6 +450,7 @@ fn leading_identifier(text: &str) -> Option<&str> {
 fn canonical_field(name: &str) -> Option<&'static str> {
     PARAM_DOMAIN_FIELDS
         .iter()
+        .chain(onda_frontend::INPUT_DOMAIN_FIELDS)
         .copied()
         .find(|field| *field == name)
 }
@@ -696,7 +716,8 @@ mod tests {
         for header in ["ins", "inputs", "ins<f64>"] {
             let source = format!("{header}:\n  cutoff = 440.0 {{20, 20000, lo");
             let context = completion_context_at(&source, source.len()).expect("input domain");
-            assert_eq!(context.value_kind, ParamDomainValueKind::Scale, "{header}");
+            assert!(context.input, "{header}");
+            assert_eq!(context.value_kind, ParamDomainValueKind::None, "{header}");
             assert!(
                 binding_range_completion_context_at(&source, source.len()).is_none(),
                 "{header}"
@@ -705,9 +726,17 @@ mod tests {
     }
 
     #[test]
-    fn ignores_processor_local_parameter_ranges() {
-        let source = "proc Voice:\n  params:\n    cutoff = 440.0 {sc";
-        assert!(completion_context_at(source, source.len()).is_none());
+    fn recognizes_processor_parameter_domains() {
+        for source in [
+            "proc Voice:\n  params:\n    cutoff = 440.0 {sc",
+            "proc Main { params { cutoff = 440.0 {sc",
+            "namespace DSP { proc Voice { params { cutoff = 440.0 {sc",
+        ] {
+            assert!(
+                completion_context_at(source, source.len()).is_some(),
+                "{source}"
+            );
+        }
     }
 
     #[test]

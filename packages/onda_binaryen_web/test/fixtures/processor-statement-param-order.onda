@@ -1,0 +1,26 @@
+proc Voice:
+  params:
+    gain = 0.0
+  sample:
+    out1 = gain
+
+def next(values: f32[]) -> i32:
+  values[0] += 1.0
+  return 0
+
+proc Main:
+  init:
+    voice = Voice()
+    values: f32[1] = [0.0]
+    saved: f32[1] = [0.0]
+  sample:
+    selected = voice
+    saved[next(values)] = selected(gain = values[0])
+    out1 = saved[0]
+    print(values[0], next(values), selected(gain = values[0]))
+    out2 = selected.out1
+    count = 0
+    for i in next(values)..i32(selected(gain = values[0])):
+      count += 1
+    out3 = f32(count)
+    out4 = values[0]

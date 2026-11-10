@@ -6,17 +6,24 @@
   metadata yet: namespace/template specialization details, doc comments once their syntax and
   attachment rules are defined, references, and source mapping for generated proc-local symbols.
 - Add cancellation-aware analysis scheduling.
-- Stabilize daemon/editor transport boundaries:
-  decide which run-control pieces stay private versus becoming a documented protocol.
+- Clarify daemon/editor transport ownership and versioning beyond the documented
+  [UI host protocol](../ui-api.md).
 - Keep VSCode syntax highlighting and semantic tokens aligned as the language grows.
-- Add an extension smoke-test path or automation for:
-  `onda lsp`, `Onda: Run File`, semantic tokens, and run webview controls.
-- Improve run panel UX:
-  better knob/slider affordances, richer status/errors, and explicit device/runtime state display.
+- Extend extension-host smoke coverage to language-service diagnostics, completion,
+  and semantic tokens.
+- Add bulk JSON editing for structured event payloads alongside the existing typed
+  controls, with schema validation and precise diagnostics.
+- Ship a static `onda_ui` library alongside the shared library in native release SDKs,
+  with CMake targets carrying platform link dependencies and tests linking it with static `libonda`.
+- Support native Wayland in the `onda_ui` C API alongside Xlib: accept borrowed
+  `wl_display*`/`wl_surface*` handles, document host-owned surface/event-loop lifetimes,
+  and test rendering, input, scaling, resize, and teardown without XWayland.
+  Keep the JUCE plugin on X11/XWayland until JUCE and DAW embedding support permit
+  native Wayland; standalone `onda run` already supports both backends through winit.
 - Expand declared-event-aware on-screen MIDI controls beyond piano notes:
   - show pitch bend, modulation (CC 1), sustain (CC 64), channel pressure, and configurable CC
     controls only when the corresponding canonical event is declared
-  - share control behavior and reset/lifecycle semantics across egui, native webview, and browser
+  - share control behavior and reset/lifecycle semantics across native and browser GPU hosts
   - validate the existing native timestamp-to-frame scheduling with hardware-backed
     Linux/macOS/Windows coverage, and cover browser MIDI timing separately
 - Improve print/delegate Log UX:
@@ -62,7 +69,7 @@
   - compact inspector for params, buffers, events, and generated code
   - graph minimap only if real patch sizes justify it
 - Integration options:
-  - VSCode webview panel first, sharing the existing run panel transport
+  - VSCode GPU panel first, sharing the existing run panel transport
   - standalone `onda run --graph` or `onda graph <file>` later
   - optional browser-hosted version reusing the existing playground compiler worker and AudioWorklet
     adapter

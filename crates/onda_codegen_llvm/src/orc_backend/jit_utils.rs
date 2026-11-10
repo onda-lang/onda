@@ -1,4 +1,5 @@
 use super::*;
+use std::ffi::c_char;
 
 pub(super) struct ResolvedTargetMachineConfig {
     pub(super) normalized_triple: String,
@@ -92,8 +93,8 @@ pub(super) unsafe fn create_host_target_machine(
     }
 
     let mut target: LLVMTargetRef = null_mut();
-    let mut target_err: *mut i8 = null_mut();
-    let target_status = LLVMGetTargetFromTriple(triple as *const i8, &mut target, &mut target_err);
+    let mut target_err = null_mut();
+    let target_status = LLVMGetTargetFromTriple(triple, &mut target, &mut target_err);
     if target_status != 0 {
         let detail = if target_err.is_null() {
             "unknown target lookup error".to_owned()
@@ -112,9 +113,9 @@ pub(super) unsafe fn create_host_target_machine(
 
     let tm = LLVMCreateTargetMachine(
         target,
-        triple as *const i8,
-        cpu as *const i8,
-        features as *const i8,
+        triple,
+        cpu,
+        features,
         map_opt_level(opt_level),
         LLVMRelocMode::LLVMRelocDefault,
         LLVMCodeModel::LLVMCodeModelJITDefault,
@@ -186,7 +187,7 @@ pub(super) unsafe fn create_target_machine_from_config(
     let triple = CString::new(config.normalized_triple.as_str())
         .map_err(|_| Diagnostic::internal("invalid target triple"))?;
     let mut target: LLVMTargetRef = null_mut();
-    let mut target_err: *mut i8 = null_mut();
+    let mut target_err = null_mut();
     let target_status = LLVMGetTargetFromTriple(triple.as_ptr(), &mut target, &mut target_err);
     if target_status != 0 {
         let detail = if target_err.is_null() {
@@ -332,7 +333,7 @@ unsafe fn normalize_target_triple(triple: &str) -> Result<String, Diagnostic> {
     llvm_owned_message_to_string("LLVMNormalizeTargetTriple", normalized)
 }
 
-unsafe fn llvm_owned_message_to_string(what: &str, ptr: *mut i8) -> Result<String, Diagnostic> {
+unsafe fn llvm_owned_message_to_string(what: &str, ptr: *mut c_char) -> Result<String, Diagnostic> {
     if ptr.is_null() {
         return Err(Diagnostic::internal(format!("{what} returned null")));
     }

@@ -340,7 +340,7 @@ suppressed. This resets instance scratch while preserving persistent state and t
 A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
-Processor ABI version 4 adds optional `integer_range` metadata to scalar `i32` and `i64` state.
+Processor ABI version 4 adds optional `integer_range` metadata to `i32` and `i64` state. For fixed arrays, the range applies independently to every element.
 After overlaying each such snapshot entry, the host must normalize it into the inclusive
 `min..=max` interval using the declared `clamp` or Euclidean `wrap` mode. This restores the storage
 invariant before generated code can rely on it to remove bounds checks. The packed snapshot byte
@@ -424,6 +424,15 @@ otherwise it contains:
 - `unit`: optional display text;
 - `step_repr`: the optional plain-domain step encoded in the declared scalar representation;
 - `step_count`: the number of equal intervals between the inclusive endpoints.
+
+Descriptor format version 7 adds optional `enumeration` metadata to scalar and fixed-array parameters/control outputs, and scalar leaves of recursive event/delegate schemas. It contains a qualified `name` and
+ordered `members`, each with a source `name` and display `label`. An enum's member index is its
+ordinary signed `i32` representation. Its range is `[0, members.length - 1]`; enum parameters use
+linear scale and unit step. A one-member enum has equal zero bounds and `step_count: 0`.
+
+MIR and descriptor enum strings are metadata only. Event preparation normalizes nested enum values
+through their scalar `integer_range`; snapshot restoration normalizes every element of enum state
+arrays. Executable processor ABI signatures and snapshot byte encoding are unchanged.
 
 The raw processor object does not export parameter conversion functions. Native hosts decode each
 numeric control into the `onda_processor_param_domain` structure from
@@ -547,11 +556,11 @@ This index is checked against `include/onda_processor_abi.h` so newly exposed fu
 released without appearing in this reference.
 
 <!-- BEGIN PROCESSOR C API FUNCTION INDEX -->
+
+```text
 onda_process
 onda_processor_batch_next_record
-onda_processor_batch_record_at
 onda_processor_delegate_batch_next
-onda_processor_delegate_batch_occurrence_at
 onda_processor_delegate_batch_reset
 onda_processor_execution_output_reset
 onda_processor_float_grid_value_matches
@@ -566,6 +575,7 @@ onda_processor_param_domain_is_valid
 onda_processor_param_normalized_to_plain
 onda_processor_param_plain_to_normalized
 onda_processor_print_batch_next
-onda_processor_print_batch_occurrence_at
 onda_processor_print_batch_reset
+```
+
 <!-- END PROCESSOR C API FUNCTION INDEX -->

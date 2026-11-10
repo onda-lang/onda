@@ -1,0 +1,7 @@
+{"rounds":7,"block_frames":512,"rows":[
+{"channels":2,"previous_writer_ns":1106.329,"enabled_capture_ns":32.20363,"disabled_capture_ns":0.53701}
+,
+{"channels":8,"previous_writer_ns":4409.5293,"enabled_capture_ns":194.71001,"disabled_capture_ns":0.53685}
+,
+{"channels":64,"previous_writer_ns":35238.0913,"enabled_capture_ns":1771.46363,"disabled_capture_ns":0.53695}
+]}

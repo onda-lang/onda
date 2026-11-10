@@ -129,7 +129,8 @@ pub(super) fn direct_initialization_children(
         | Type::Tuple(_)
         | Type::Slice { .. }
         | Type::Buffer { .. }
-        | Type::BufferSpan { .. } => None,
+        | Type::BufferSpan { .. }
+        | Type::BufferMap { .. } => None,
     }
 }
 

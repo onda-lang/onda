@@ -1,0 +1,36 @@
+struct Selection:
+  index: i32
+  calls: i32
+def choose(selection: Selection) -> i32:
+  selection.calls = selection.calls + 1
+  return selection.index
+proc Voice:
+  buffers:
+    clip: f32
+    bias: f32
+  sample:
+    out1 = clip[0] + bias[0]
+def forward(voice, selection: Selection) -> f32:
+  selection.index = 1
+  return voice()
+buffers:
+  clips: f32 {2}
+  other: f32
+  biases: f32 {2}
+init:
+  selection = Selection(0, 0)
+  voices: Voice[2] = [Voice(clip = clips[choose(selection)], bias = biases[0]), Voice(clip = other, bias = biases[1])]
+  selected = voices[0]
+  clips[0][0] = 7.0
+  clips[1][0] = 11.0
+  other[0] = 13.0
+  biases[0][0] = 100.0
+  biases[1][0] = 200.0
+sample:
+  selection.calls = 0
+  selection.index = 0
+  a = forward(selected, selection)
+  selection.index = 0
+  b = voices[0]()
+  c = forward(voices[1], selection)
+  out1 = a + b + c + f32(selection.calls) * 1000.0

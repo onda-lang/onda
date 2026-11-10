@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Onda Run</title>
+<style>
+@font-face { font-family:"Inter"; src:url("./pkg/fonts/Inter.ttf") format("truetype"); font-weight:100 900; font-display:swap; }
+@font-face { font-family:"JetBrains Mono"; src:url("./pkg/fonts/JetBrainsMono.ttf") format("truetype"); font-weight:100 800; font-display:swap; }
+html,body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:var(--background); }
+html { --background:#081522; --field:#0d1827; --ink:#d8e5f3; --accent:#c9dbf2; --danger:#ff7e7e; color-scheme:dark; }
+html[data-theme=light] { --background:#e8f1fc; --field:#fff; --ink:#143a63; --accent:#143a63; --danger:#b53333; color-scheme:light; }
+canvas { display:block; width:100%; height:100%; outline:none; touch-action:none; }
+.gpu-text-input { position:fixed; z-index:1; box-sizing:border-box; margin:0; padding:0 7px; resize:none; overflow:hidden; white-space:pre; border:1px solid var(--accent); border-radius:5px; outline:none; background:var(--field); color:var(--ink); caret-color:var(--ink); cursor:text; font:var(--field-font-size,13px)/18px "JetBrains Mono",monospace; }
+.gpu-text-input::selection { background:color-mix(in srgb,var(--ink) 25%,transparent); color:var(--ink); }
+.gpu-text-input[data-invalid=true] { border-color:var(--danger); }
+@media (pointer:coarse) { .gpu-text-input { font-size:max(16px,var(--field-font-size,13px)); } }
+#status { position:absolute; top:24px; left:24px; right:24px; color:var(--ink); font:14px system-ui; white-space:pre-wrap; pointer-events:none; }
+</style></head><body>
+<canvas id="onda-ui" tabindex="0"></canvas>
+<div id="status">Starting GPU renderer…</div>
+<script type="module" src="./host.js"></script>
+</body></html>

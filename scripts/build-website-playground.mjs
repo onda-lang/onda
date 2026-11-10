@@ -3,6 +3,8 @@ import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { stageGpuUi } from "./stage-gpu-ui.mjs";
+
 import { bundleCompilerWorker, bundlePlayground } from "./bundle-web-playground.mjs";
 import { writeBundledJavaScriptLicenses } from "./bundled-javascript-licenses.mjs";
 import { buildExampleProjectCatalog } from "./example-projects.mjs";
@@ -68,6 +70,7 @@ const [playgroundBuild] = await Promise.all([
   ),
   cp(resolve(abiRoot, "src/index.js"), resolve(assetsRoot, "processor-abi.js")),
   cp(resolve(abiRoot, "src/param-control.js"), resolve(assetsRoot, "param-control.js")),
+  cp(resolve(abiRoot, "src/enum-metadata.js"), resolve(assetsRoot, "enum-metadata.js")),
   cp(resolve(abiRoot, "src/payload.js"), resolve(assetsRoot, "payload.js")),
   cp(resolve(webAudioRoot, "src/index.js"), resolve(assetsRoot, "webaudio.js")),
   cp(resolve(webAudioRoot, "src/worklet.js"), resolve(assetsRoot, "worklet.js")),
@@ -76,6 +79,8 @@ const [playgroundBuild] = await Promise.all([
     resolve(assetsRoot, "processor-constants.js"),
   ),
   cp(resolve(webAudioRoot, "src/param-metadata.js"), resolve(assetsRoot, "param-metadata.js")),
+  cp(resolve(webAudioRoot, "src/runtime-status.js"), resolve(assetsRoot, "runtime-status.js")),
+  cp(resolve(webAudioRoot, "src/execution-status-ring.js"), resolve(assetsRoot, "execution-status-ring.js")),
   cp(
     resolve(webAudioRoot, "src/execution-output-ring.js"),
     resolve(assetsRoot, "execution-output-ring.js"),
@@ -84,9 +89,7 @@ const [playgroundBuild] = await Promise.all([
     resolve(assetsRoot, "example-projects.json"),
     `${JSON.stringify(catalog)}\n`,
   )),
-  cp(resolve(repoRoot, "ui/run/run.html"), resolve(assetsRoot, "run.html")),
-  cp(resolve(repoRoot, "ui/run/buffers.js"), resolve(assetsRoot, "buffers.js")),
-  cp(resolve(repoRoot, "ui/number-input.js"), resolve(assetsRoot, "number-input.js")),
+  stageGpuUi(resolve(assetsRoot, "gpu")),
 ]);
 
 const workerBuild = await bundleCompilerWorker(resolve(assetsRoot, "compiler-worker.js"));

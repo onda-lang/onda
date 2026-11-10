@@ -7,6 +7,7 @@ pub struct PayloadLeaf<'a> {
     pub encoding: ScalarEncoding,
     pub shape: Vec<usize>,
     pub integer_range: Option<&'a crate::IntegerRangeMetadata>,
+    pub enumeration: Option<&'a crate::EnumMetadata>,
 }
 
 impl PayloadType {
@@ -21,12 +22,33 @@ impl PayloadType {
                 Self::Scalar {
                     encoding,
                     integer_range,
-                } => leaves.push(PayloadLeaf {
-                    path,
-                    encoding: *encoding,
-                    shape,
-                    integer_range: integer_range.as_ref(),
-                }),
+                    enumeration,
+                } => {
+                    if let Some(enumeration) = enumeration {
+                        let valid_range = enumeration.is_valid()
+                            && integer_range.as_ref().is_some_and(|range| {
+                                range.min.scalar == "i32"
+                                    && range.min.value == "0"
+                                    && range.max.scalar == "i32"
+                                    && range.max.value
+                                        == (enumeration.members.len() - 1).to_string()
+                                    && range.mode == "clamp"
+                            });
+                        if !enumeration.is_valid()
+                            || *encoding != ScalarEncoding::I32
+                            || !valid_range
+                        {
+                            return Err(PayloadError::InvalidSchema);
+                        }
+                    }
+                    leaves.push(PayloadLeaf {
+                        path,
+                        encoding: *encoding,
+                        shape,
+                        integer_range: integer_range.as_ref(),
+                        enumeration: enumeration.as_ref(),
+                    });
+                }
                 Self::Tuple { elements } => {
                     if elements.is_empty()
                         || elements.iter().any(|ty| !matches!(ty, Self::Scalar { .. }))

@@ -1959,10 +1959,10 @@ sample:
 }
 
 #[test]
-fn init_buffer_len_is_allowed_semantically() {
-    let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.len()\nsample:\n  out1 = 0.0\n";
+fn init_buffer_samples_is_allowed_semantically() {
+    let src = "buffers:\n  src: buffer<f32>\nouts:\n  out1\ninit:\n  n = src.samples()\nsample:\n  out1 = 0.0\n";
     let program = parse_program(src).expect("parse should succeed");
-    analyze(program).expect("buffer len in init should analyze");
+    analyze(program).expect("buffer samples in init should analyze");
 }
 
 #[test]
@@ -4491,4 +4491,16 @@ sample:
         .defs
         .iter()
         .any(|function| function.name.contains("zero.__onda_mono__g_f32")));
+}
+
+#[test]
+fn samples_metadata_requires_one_buffer_and_no_arguments() {
+    for source in [
+        "buffers:\n  clip: f32[2]\nsample:\n  out1 = clip.samples(1)\n",
+        "buffers:\n  bank: f32 {2}\nsample:\n  out1 = bank.samples()\n",
+        "init:\n  values: f32[4]\nsample:\n  out1 = values.samples()\n",
+    ] {
+        let parsed = parse_program(source).expect("source should parse");
+        assert!(analyze(parsed).is_err(), "invalid samples query should be rejected: {source}");
+    }
 }

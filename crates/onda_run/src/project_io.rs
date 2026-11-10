@@ -188,14 +188,7 @@ pub fn publish_project_plan(destination: &Path, plan: &MaterializationPlan) -> R
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system clock cannot create project staging name: {error}"))?
         .as_nanos();
-    let destination_name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "project destination name must be valid UTF-8".to_owned())?;
-    let staging = parent.join(format!(
-        ".{destination_name}.onda-project-{}-{stamp}",
-        std::process::id()
-    ));
+    let staging = parent.join(format!(".onda-project-{}-{stamp}", std::process::id()));
     fs::create_dir(&staging).map_err(|error| {
         format!(
             "failed to create project staging directory '{}': {error}",
@@ -269,7 +262,9 @@ pub fn project_buffer_declarations(
         .map(|buffer| {
             let element = match buffer.elem_ty {
                 onda_frontend::PrimitiveType::Bool => BufferElement::Bool,
-                onda_frontend::PrimitiveType::I32 => BufferElement::I32,
+                onda_frontend::PrimitiveType::I32 | onda_frontend::PrimitiveType::Enum(_) => {
+                    BufferElement::I32
+                }
                 onda_frontend::PrimitiveType::I64 => BufferElement::I64,
                 onda_frontend::PrimitiveType::F32 => BufferElement::F32,
                 onda_frontend::PrimitiveType::F64 => BufferElement::F64,
@@ -280,14 +275,14 @@ pub fn project_buffer_declarations(
                     ProjectBufferChannels::Static(u32::try_from(*channels).map_err(|_| {
                         format!(
                             "buffer '{}' channel count does not fit the project format",
-                            buffer.name
+                            typed.interface_name(&buffer.name)
                         )
                     })?)
                 }
                 onda_semantics::TypedBufferChannels::Dynamic => ProjectBufferChannels::Dynamic,
             };
             Ok(ProjectBufferDeclaration {
-                name: buffer.name.clone(),
+                name: typed.interface_name(&buffer.name).to_owned(),
                 element,
                 channels,
                 array_len: buffer.array_len,
@@ -361,6 +356,37 @@ mod tests {
                 .expect("target already has project extension"),
             "named.ondaproject"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_supports_long_destination_names() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "onda-long-project-names-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create test directory");
+
+        for (name, existing) in [
+            ("a".repeat(220), false),
+            ("b".repeat(243), true),
+            (format!("{}.ondaproject", "c".repeat(243)), false),
+        ] {
+            let destination = root.join(name);
+            if existing {
+                fs::create_dir(&destination).expect("create empty destination");
+            }
+            create_empty_project(&destination).expect("publish project with long name");
+            let manifest = project_file_name_from_target(&destination).expect("manifest filename");
+            assert!(destination.join(manifest).is_file());
+            assert!(destination.join("code/main.onda").is_file());
+        }
+        assert_eq!(fs::read_dir(&root).expect("read projects").count(), 3);
+        fs::remove_dir_all(root).expect("remove test projects");
     }
 
     #[test]

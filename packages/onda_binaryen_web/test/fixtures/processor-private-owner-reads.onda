@@ -1,0 +1,25 @@
+proc Voice:
+  params:
+    private gain: i32 = 1 => refresh
+    private weights: i32[2] = [2, 3]
+  init:
+    cached: i32 = 0
+  def refresh():
+    cached = gain + weights[0]
+  event set(amount: i32):
+    gain = amount
+  def value() -> i32:
+    return cached + weights[1]
+  sample:
+    out1 = f32(value())
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+  sample:
+    voices[0].set(4)
+    out1 = voices[0]()
+    out2 = voices[1]()
+init:
+  bank = Bank()
+sample:
+  out1, out2 = bank()

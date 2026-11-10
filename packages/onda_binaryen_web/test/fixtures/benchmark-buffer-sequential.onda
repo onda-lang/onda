@@ -5,11 +5,11 @@ init:
   index = 0
 
 block:
-  frames = source.len()
+  samples = source.samples()
 
   sample:
     out1 = source[index]
     index = index + 1
-    if index >= frames:
+    if index >= samples:
       index = 0
 

@@ -65,6 +65,7 @@ impl FunctionLowerer<'_> {
             struct_name,
             length,
             fields: destination_fields,
+            ..
         }) = self.bindings.get(&destination).cloned()
         else {
             unreachable!()
@@ -165,6 +166,9 @@ impl FunctionLowerer<'_> {
         self.prepare_data_array_view(base, block, loc.clone())?;
         let (length, source_fields) = match self.bindings.get(base).cloned() {
             Some(Binding::StructArrayParameter { length, fields, .. }) => (length, fields),
+            Some(Binding::ProcArrayParameter {
+                fixed_len, fields, ..
+            }) => (StructArrayLength::Fixed(fixed_len), fields),
             Some(Binding::StructArrayStorage { len, .. }) => (
                 StructArrayLength::Fixed(len),
                 self.lower_struct_array_storage_fields(base, &struct_name, block, loc.clone())?,
@@ -185,6 +189,7 @@ impl FunctionLowerer<'_> {
         let length = self.struct_array_length_value(length, block, loc.clone());
         let (start, len) =
             self.normalize_slice_selection(length, start, end, block, loc.clone())?;
+        let processor = self.slice_processor_view(base, start, block, loc.clone())?;
         let shapes = self.struct_field_shapes(&struct_name, loc.clone())?;
         let mut fields = Vec::new();
         for (shape, (path, source, element)) in shapes.into_iter().zip(source_fields) {
@@ -241,6 +246,7 @@ impl FunctionLowerer<'_> {
         self.bindings.insert(
             name.to_owned(),
             Binding::StructArrayParameter {
+                processor,
                 struct_name,
                 length: match len {
                     Value::Local(local) => StructArrayLength::Local(local),

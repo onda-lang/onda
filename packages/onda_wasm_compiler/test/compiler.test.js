@@ -107,6 +107,31 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("compiles copied processor environments and wide aggregates without inlining", async () => {
+  const compiler = await createCompiler();
+  try {
+    const width = 1100;
+    const fields = Array.from({ length: width }, (_, index) => `  field${index}: f32 = ${index}.0`).join("\n");
+    const sum = Array.from({ length: width }, (_, index) => `value.field${index}`).join(" + ");
+    const sources = [`struct Wide:\n${fields}\ndef sum(value: Wide) -> f32:\n  return ${sum}\ninit:\n  value = Wide()\nsample:\n  out1 = sum(value)\n`];
+    for (const file of [
+      "processor-owned-element-resources.onda",
+      "processor-view-distinct-local-owners.onda",
+      "processor-view-distinct-local-array-owners.onda",
+    ]) {
+      sources.push(await readFile(new URL(`../../onda_binaryen_web/test/fixtures/${file}`, import.meta.url), "utf8"));
+    }
+    for (const source of sources) {
+      const { artifact } = await compiler.compileSource(source, {
+        sampleRate: 48_000, blockSize: 4, codegen: { optimize: false },
+      });
+      await WebAssembly.compile(artifact.wasm);
+    }
+  } finally {
+    await compiler.dispose();
+  }
+});
+
 test("compiles the demand-driven sine wavetable", async () => {
   const compiler = await createCompiler();
   const { artifact } = await compiler.compileSource(`
@@ -1119,6 +1144,124 @@ sample:
     assert.deepEqual(reimported.project.constants, constants);
     assert.match(reimported.project.sources[reimported.project.entry], /# edited/);
     assert.equal((await compiler.compileProjectImage(exported.bytes)).artifact.metadata.metadata.outputs.length, 2);
+  } finally {
+    await compiler.dispose();
+  }
+});
+
+
+test("compiles nominal enums with dropdown and nested message metadata", async () => {
+  const compiler = await createCompiler();
+  try {
+    const source = await readFile(new URL("../../onda_binaryen_web/test/fixtures/enums.onda", import.meta.url), "utf8");
+    const { artifact } = await compiler.compileSource(source, { blockSize: 4 });
+    assert.equal(WebAssembly.validate(artifact.wasm), true);
+    const { params, events } = artifact.metadata.metadata;
+    assert.equal(params[0].scalar, "i32");
+    assert.deepEqual(params[0].enumeration.members.map((member) => member.label), ["Low Pass", "High Pass", "Band-pass"]);
+    assert.equal(params[1].param_control.step_count, 0);
+    assert.equal(events[0].schema.params[0].ty.fields[0].ty.fields[0].ty.enumeration.name, "Mode");
+    await assert.rejects(compiler.compileSource("enum Mode:\n  A\nins:\n  mode: Mode\nsample:\n  out1 = 0.0\n"), /audio ports cannot use enum types/);
+  } finally {
+    await compiler.dispose();
+  }
+});
+
+test("enum tuple messages clamp ordinals and forward through delegates", async () => {
+  const compiler = await createCompiler();
+  try {
+    const source = await readFile(new URL("../../onda_binaryen_web/test/fixtures/enums-tuples.onda", import.meta.url), "utf8");
+    for (const optimize of [false, true]) {
+      const { artifact } = await compiler.compileSource(source, { blockSize: 4, codegen: { optimize } });
+      const descriptor = artifact.metadata;
+      const elements = descriptor.metadata.events[0].schema.params[0].ty.elements;
+      assert.equal(elements[0].encoding, "i32");
+      assert.equal(elements[0].enumeration.name, "Mode");
+      assert.equal(elements[1].enumeration, undefined);
+      const { instance: { exports } } = await WebAssembly.instantiate(artifact.wasm);
+      let heap = Number(exports.__heap_base.value);
+      const allocate = bytes => {
+        heap = Math.ceil(heap / 16) * 16;
+        const pointer = heap;
+        heap += bytes;
+        return pointer;
+      };
+      const params = allocate(descriptor.runtime.param_size_bytes);
+      const state = allocate(descriptor.runtime.state_size_bytes);
+      const output = allocate(16);
+      const outputTable = allocate(4);
+      const payload = allocate(8);
+      const workspace = allocate(16);
+      const eventInput = allocate(16);
+      const view = new DataView(exports.memory.buffer);
+      view.setUint32(outputTable, output, true);
+      assert.equal(exports.onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+      for (const [ordinal, expected] of [[-2147483648, 7], [2147483647, 9]]) {
+        view.setInt32(payload, ordinal, true);
+        view.setInt32(payload + 4, 7, true);
+        writeEventInput(exports.memory, eventInput, payload, 8, workspace, 16);
+        assert.equal(exports.onda_event_0(eventInput, params, state, 0, 0, 0, 0, 0), 0);
+        assert.equal(exports.onda_process(state, params, 0, outputTable, 0, 4, 3, 0, 0, 0, 0, 0), 0);
+        assert.deepEqual([...new Float32Array(exports.memory.buffer, output, 4)], Array(4).fill(expected));
+      }
+    }
+  } finally {
+    await compiler.dispose();
+  }
+});
+
+test("enum configuration constants use i32 values and retain choice metadata", async () => {
+  const compiler = await createCompiler();
+  try {
+    const source = `enum Mode:
+  LowPass
+  HighPass {label = "High-pass"}
+const Default: Mode = Mode::HighPass
+config const Selected: Mode = Default
+config const Choices: Mode[2] = [Mode::LowPass, Default]
+params:
+  selected = Selected
+  choices: Mode[2] = Choices
+sample:
+  out1 = i32(selected) + i32(choices[0]) + i32(choices[1])
+`;
+    const constants = { Selected: 99, Choices: new Int32Array([-99, 99]) };
+    const descriptors = await compiler.inspectSourceConstants(source, { constants });
+    assert.equal(descriptors[0].element, "i32");
+    assert.equal(descriptors[0].value, 1);
+    assert.equal(descriptors[0].enumeration.members[1].label, "High-pass");
+    assert.deepEqual(descriptors[1].value, new Int32Array([0, 1]));
+    const { artifact } = await compiler.compileSource(source, { constants });
+    assert.equal(WebAssembly.validate(artifact.wasm), true);
+    assert.deepEqual(artifact.metadata.metadata.params[0].default_reprs, ["1"]);
+    assert.deepEqual(artifact.metadata.metadata.params[1].default_reprs, ["0", "1"]);
+  } finally {
+    await compiler.dispose();
+  }
+});
+
+test("Wasm LSP resolves enum aliases, member completions, and constructor signatures", async () => {
+  const compiler = await createCompiler();
+  const uri = "file:///onda-project/enum.onda";
+  try {
+    await compiler.sendLspMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: { processId: null, capabilities: {} } });
+    await compiler.sendLspMessage({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: {
+      uri, languageId: "onda", version: 1,
+      text: "enum Mode:\n  A\n  B\nuse Mode as Choice\nparams:\n  mode = Choice::B\nsample:\n  out1 = i32(Choice(1))\n",
+    } } });
+    const request = async (id, method, line, character) => {
+      const messages = await compiler.sendLspMessage({ jsonrpc: "2.0", id, method: `textDocument/${method}`,
+        params: { textDocument: { uri }, position: { line, character } } });
+      return messages.find((message) => message.id === id).result;
+    };
+    const completion = await request(2, "completion", 5, "  mode = Choice::".length);
+    assert.equal(completion.items.find((item) => item.label === "A").kind, 20);
+    const hover = await request(3, "hover", 5, "  mode = Ch".length);
+    assert.match(hover.contents.value, /enum Mode:/);
+    const definition = await request(4, "definition", 5, "  mode = Choice::".length);
+    assert.equal(definition.range.start.line, 2);
+    const signature = await request(5, "signatureHelp", 7, "  out1 = i32(Choice(".length);
+    assert.match(signature.signatures[0].label, /Mode\(ordinal = 0\)/);
   } finally {
     await compiler.dispose();
   }

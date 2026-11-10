@@ -222,7 +222,7 @@ pub(super) fn record_top_level_proc_array_arg_oversample_factor(
     let Some(slots) = top_level_proc_rewrite.global_proc_array_slots.get(base) else {
         return;
     };
-    for slot in slots {
+    for slot in slots.binding_names() {
         record_top_level_proc_arg_oversample_factor(
             slot,
             sample_oversample_factor,
@@ -232,12 +232,14 @@ pub(super) fn record_top_level_proc_array_arg_oversample_factor(
             errors,
         );
     }
-    let mut slot_factors = slots.iter().filter_map(|slot| out.get(slot).copied());
+    let mut slot_factors = slots
+        .binding_names()
+        .filter_map(|slot| out.get(slot).copied());
     let Some(first) = slot_factors.next() else {
         return;
     };
     if slots
-        .iter()
+        .binding_names()
         .all(|slot| out.get(slot).copied() == Some(first))
     {
         out.insert(base.to_owned(), first);
@@ -400,7 +402,7 @@ pub(super) fn validate_generic_def_type_args_in_expr(
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum RuntimeCallVisit {
+enum RuntimeCallVisit {
     Visiting,
     Complete,
 }
@@ -408,11 +410,19 @@ pub(super) enum RuntimeCallVisit {
 /// Runtime recursion is incompatible with Onda's bounded realtime execution
 /// contract and with fixed per-instance aggregate scratch. Reject direct and
 /// mutual call cycles after overload resolution and specialization, when every
-/// call already names its concrete callee.
-pub(super) fn reject_recursive_runtime_defs(defs: &[TypedFunction], errors: &mut Vec<Diagnostic>) {
-    let def_names = defs
+/// call already names its concrete callee. Retain that traversal's dependency
+/// order for analyses that need each callee's summary before its callers.
+pub(super) fn runtime_def_postorder<'a>(
+    defs: &'a [TypedFunction],
+    errors: &mut Vec<Diagnostic>,
+) -> Vec<&'a TypedFunction> {
+    let defs_by_name = defs
         .iter()
-        .map(|def| def.name.clone())
+        .map(|def| (def.name.as_str(), def))
+        .collect::<HashMap<_, _>>();
+    let def_names = defs_by_name
+        .keys()
+        .map(|name| (*name).to_owned())
         .collect::<HashSet<_>>();
     let mut edges = HashMap::<String, Vec<String>>::with_capacity(defs.len());
     for def in defs {
@@ -433,15 +443,17 @@ pub(super) fn reject_recursive_runtime_defs(defs: &[TypedFunction], errors: &mut
     names.sort();
     let mut visits = HashMap::<String, RuntimeCallVisit>::new();
     let mut path = Vec::<String>::new();
+    let mut postorder = Vec::with_capacity(defs.len());
     for name in names {
         if visits.contains_key(&name) {
             continue;
         }
-        if let Some(cycle) = find_runtime_call_cycle(&name, &edges, &mut visits, &mut path) {
-            let diagnostic = defs
-                .iter()
-                .find(|def| def.name == cycle[0])
-                .and_then(|def| def.body.first())
+        if let Some(cycle) =
+            find_runtime_call_cycle(&name, &edges, &mut visits, &mut path, &mut postorder)
+        {
+            let diagnostic = defs_by_name[cycle[0].as_str()]
+                .body
+                .first()
                 .map(|statement| DiagCtx::new(statement.loc()))
                 .unwrap_or_default();
             push_semantic(
@@ -456,16 +468,21 @@ pub(super) fn reject_recursive_runtime_defs(defs: &[TypedFunction], errors: &mut
                         .join(" -> ")
                 ),
             );
-            return;
+            return Vec::new();
         }
     }
+    postorder
+        .iter()
+        .map(|name| defs_by_name[name.as_str()])
+        .collect()
 }
 
-pub(super) fn find_runtime_call_cycle(
+fn find_runtime_call_cycle(
     name: &str,
     edges: &HashMap<String, Vec<String>>,
     visits: &mut HashMap<String, RuntimeCallVisit>,
     path: &mut Vec<String>,
+    postorder: &mut Vec<String>,
 ) -> Option<Vec<String>> {
     if visits.get(name) == Some(&RuntimeCallVisit::Complete) {
         return None;
@@ -480,12 +497,13 @@ pub(super) fn find_runtime_call_cycle(
     visits.insert(name.to_owned(), RuntimeCallVisit::Visiting);
     path.push(name.to_owned());
     for callee in edges.get(name).into_iter().flatten() {
-        if let Some(cycle) = find_runtime_call_cycle(callee, edges, visits, path) {
+        if let Some(cycle) = find_runtime_call_cycle(callee, edges, visits, path, postorder) {
             return Some(cycle);
         }
     }
     path.pop();
     visits.insert(name.to_owned(), RuntimeCallVisit::Complete);
+    postorder.push(name.to_owned());
     None
 }
 
@@ -493,6 +511,13 @@ pub(super) fn collect_reachable_def_names(
     init: &[Stmt],
     block_exec: &[Stmt],
     sample_and_event_exec: &[Stmt],
+    defs: &[FunctionDef],
+) -> HashSet<String> {
+    collect_reachable_def_names_from_roots(&[init, block_exec, sample_and_event_exec], defs)
+}
+
+pub(super) fn collect_reachable_def_names_from_roots(
+    roots: &[&[Stmt]],
     defs: &[FunctionDef],
 ) -> HashSet<String> {
     let def_map = defs
@@ -503,14 +528,9 @@ pub(super) fn collect_reachable_def_names(
     let mut pending = Vec::<String>::new();
     let mut seen_pending = HashSet::<String>::new();
 
-    seed_called_typed_defs_from_stmts(init, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(block_exec, &def_names, &mut pending, &mut seen_pending);
-    seed_called_typed_defs_from_stmts(
-        sample_and_event_exec,
-        &def_names,
-        &mut pending,
-        &mut seen_pending,
-    );
+    for root in roots {
+        seed_called_typed_defs_from_stmts(root, &def_names, &mut pending, &mut seen_pending);
+    }
 
     let mut reachable = HashSet::<String>::new();
     while let Some(name) = pending.pop() {
@@ -544,50 +564,43 @@ pub(super) fn def_is_neither_phase_generated_root(name: &str) -> bool {
     name.ends_with(PROC_INIT_FN_SUFFIX) || name.contains(PROC_EVENT_FN_PREFIX)
 }
 
-pub(super) fn proc_name_for_lowered_proc_call(name: &str) -> Option<&str> {
-    if let Some(step_proc) = name.strip_suffix(PROC_STEP_FN_SUFFIX) {
-        return Some(step_proc);
-    }
-    let (call_proc, out_idx_raw) = name.rsplit_once(PROC_CALL_OUT_FN_PREFIX)?;
-    out_idx_raw.parse::<usize>().ok()?;
-    Some(call_proc)
-}
-
 pub(super) fn lowered_proc_call_timing(
     name: &str,
-    proc_api: &HashMap<String, ProcApi>,
+    _proc_api: &HashMap<String, ProcApi>,
     generated_proc_call_timing: &HashMap<String, OutputTiming>,
 ) -> Option<OutputTiming> {
-    if let Some(timing) = generated_proc_call_timing.get(name).copied() {
-        return Some(timing);
-    }
-    let proc_name = proc_name_for_lowered_proc_call(name)?;
-    proc_api.get(proc_name).map(|api| api.outputs.timing)
+    let origin = crate::compile_context::lowered_function_origin(name);
+    generated_proc_call_timing.get(origin).copied()
 }
 
 pub(super) fn generated_proc_call_timing_map(
     proc_api: &HashMap<String, ProcApi>,
-    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+    processor_views: &crate::processor_views::ProcessorViewCatalog,
 ) -> HashMap<String, OutputTiming> {
-    let mut out = HashMap::<String, OutputTiming>::new();
-    for (owner_proc, shape) in lowering_shapes {
-        for (nested_var, nested) in &shape.state.nested_procs {
-            let Some(api) = proc_api.get(&nested.proc_name) else {
-                continue;
-            };
-            out.insert(
-                nested_step_fn_name(owner_proc, nested_var),
-                api.outputs.timing,
-            );
-            for out_idx in 0..api.outputs.names.len() {
-                out.insert(
-                    nested_call_out_fn_name(owner_proc, nested_var, out_idx),
-                    api.outputs.timing,
-                );
+    use crate::processor_views::ProcessorOperation;
+    processor_views
+        .operations()
+        .iter()
+        .filter_map(|operation| {
+            if !matches!(
+                operation.kind,
+                ProcessorOperation::Step | ProcessorOperation::CallOutput(_)
+            ) {
+                return None;
             }
-        }
-    }
-    out
+            let proc_name = operation
+                .projection
+                .edges
+                .last()
+                .map_or(operation.projection.owner.as_str(), |edge| {
+                    edge.proc_name.as_str()
+                });
+            Some((
+                operation.name.clone(),
+                proc_api.get(proc_name)?.outputs.timing,
+            ))
+        })
+        .collect()
 }
 
 pub(super) fn collect_proc_call_diags_from_expr(
@@ -747,10 +760,10 @@ pub(super) fn reject_non_sample_proc_operator_calls(
     events: &[TypedEvent],
     defs: &[FunctionDef],
     proc_api: &HashMap<String, ProcApi>,
-    lowering_shapes: &HashMap<String, ProcLoweringShape>,
+    processor_views: &crate::processor_views::ProcessorViewCatalog,
     errors: &mut Vec<Diagnostic>,
 ) {
-    let generated_proc_call_timing = generated_proc_call_timing_map(proc_api, lowering_shapes);
+    let generated_proc_call_timing = generated_proc_call_timing_map(proc_api, processor_views);
     push_proc_call_phase_errors(
         init,
         "init",
@@ -919,14 +932,14 @@ pub(super) fn def_has_concrete_param_contract(
     })
 }
 
-pub(super) fn try_indexed_proc_call_meta_in_def<'a>(
+pub(super) fn try_indexed_proc_call_meta_in_def<'a, 'b>(
     expr: &'a Expr,
-    proc_api: &HashMap<String, ProcApi>,
-) -> Option<(&'a str, &'a [CallArg], &'a str, &'a Expr)> {
+    proc_api: &'b HashMap<String, ProcApi>,
+) -> Option<(&'b str, &'a [CallArg], &'a str, &'a Expr)> {
     let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
-    let proc_name = crate::processor_lowering::proc_name_for_lowered_proc_call(name)?;
+    let proc_name = crate::processor_lowering::proc_name_for_lowered_proc_call(name, proc_api)?;
     let api = proc_api.get(proc_name)?;
     if !api.has_block {
         return None;
@@ -1041,6 +1054,7 @@ pub(super) fn rewrite_stmt_for_def_proc_block_guards(
                             generic_decl_ty: None,
                             is_typed_decl: false,
                             typed_decl_ty_loc: Default::default(),
+                            param_write_lowered: false,
                             expr: Expr::bool(true),
                         },
                     ],
@@ -1243,163 +1257,18 @@ pub(super) fn rewrite_stmt_for_def_proc_block_guards(
     rewritten
 }
 
-pub(super) fn typed_def_owner_proc_param_index_for_symbol(
-    symbol: &str,
-    def: &TypedFunction,
-    proc_api: &HashMap<String, ProcApi>,
-) -> Option<usize> {
-    let root = symbol.split('.').next().unwrap_or(symbol);
-    let param_idx = def.params.iter().position(|param| param == root)?;
-    let TypedFnParam::Struct { struct_name } = def.param_kinds.get(param_idx)? else {
-        return None;
-    };
-    let api = proc_api.get(struct_name)?;
-    if api.has_block {
-        Some(param_idx)
-    } else {
-        None
-    }
-}
-
-pub(super) fn typed_def_owner_proc_param_index_for_expr(
-    expr: &Expr,
-    def: &TypedFunction,
-    proc_api: &HashMap<String, ProcApi>,
-) -> Option<usize> {
-    match expr {
-        Expr::Var { name, .. } => typed_def_owner_proc_param_index_for_symbol(name, def, proc_api),
-        Expr::Index { base, .. } => {
-            typed_def_owner_proc_param_index_for_symbol(base, def, proc_api)
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn collect_typed_def_owner_proc_hook_params_from_expr(
-    expr: &Expr,
-    def: &TypedFunction,
-    def_map: &HashMap<String, &TypedFunction>,
-    known_requirements: &HashMap<String, HashSet<usize>>,
-    proc_api: &HashMap<String, ProcApi>,
-    out: &mut HashSet<usize>,
-) {
-    for expr in expr.walk() {
-        if let Expr::UserCall { name, args, .. } = expr {
-            if let Some((_proc_name, _args, array_base, _index_expr)) =
-                try_indexed_proc_call_meta_in_def(expr, proc_api)
-            {
-                if let Some(param_idx) =
-                    typed_def_owner_proc_param_index_for_symbol(array_base, def, proc_api)
-                {
-                    out.insert(param_idx);
-                }
-            }
-            let Some(callee) = def_map.get(name) else {
-                continue;
-            };
-            let Some(required_params) = known_requirements.get(name) else {
-                continue;
-            };
-            if required_params.is_empty() {
-                continue;
-            }
-            let mut call_errors = Vec::new();
-            let resolved = resolve_call_args(
-                args,
-                &callee.params,
-                &callee.param_defaults,
-                false,
-                false,
-                &format!("call '{}(...)'", callee.name),
-                &mut call_errors,
-            );
-            for required_idx in required_params {
-                let Some(Some(arg_expr)) = resolved.get(*required_idx) else {
-                    continue;
-                };
-                if let Some(param_idx) =
-                    typed_def_owner_proc_param_index_for_expr(arg_expr, def, proc_api)
-                {
-                    out.insert(param_idx);
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn collect_typed_def_owner_proc_hook_params_from_stmts(
-    stmts: &[Stmt],
-    def: &TypedFunction,
-    def_map: &HashMap<String, &TypedFunction>,
-    known_requirements: &HashMap<String, HashSet<usize>>,
-    proc_api: &HashMap<String, ProcApi>,
-    out: &mut HashSet<usize>,
-) {
-    for stmt in stmts {
-        stmt.visit_exprs(|expr| {
-            collect_typed_def_owner_proc_hook_params_from_expr(
-                expr,
-                def,
-                def_map,
-                known_requirements,
-                proc_api,
-                out,
-            );
-        });
-    }
-}
-
-pub(super) fn collect_typed_def_owner_proc_hook_requirements(
-    defs: &[TypedFunction],
-    proc_api: &HashMap<String, ProcApi>,
-) -> HashMap<String, HashSet<usize>> {
-    let def_map = defs
-        .iter()
-        .map(|def| (def.name.clone(), def))
-        .collect::<HashMap<_, _>>();
-    let mut requirements = HashMap::<String, HashSet<usize>>::new();
-
-    loop {
-        let mut changed = false;
-        for def in defs {
-            let mut direct = HashSet::<usize>::new();
-            collect_typed_def_owner_proc_hook_params_from_stmts(
-                &def.body,
-                def,
-                &def_map,
-                &requirements,
-                proc_api,
-                &mut direct,
-            );
-            let entry = requirements.entry(def.name.clone()).or_default();
-            for param_idx in direct {
-                if entry.insert(param_idx) {
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    requirements
-}
-
 pub(super) fn expr_global_proc_instance_name(
     expr: &Expr,
-    global_proc_instances: &HashMap<String, ProcCallInstance>,
+    roots: &HashMap<String, String>,
 ) -> Option<String> {
     match expr {
-        Expr::Var { name, .. } if global_proc_instances.contains_key(name) => Some(name.clone()),
+        Expr::Var { name, .. } if roots.contains_key(name) => Some(name.clone()),
         Expr::Index { base, index, .. } => {
             let Expr::Int { value, .. } = index.as_ref() else {
                 return None;
             };
             let slot_name = format!("{base}[{value}]");
-            global_proc_instances
-                .contains_key(&slot_name)
-                .then_some(slot_name)
+            roots.contains_key(&slot_name).then_some(slot_name)
         }
         _ => None,
     }
@@ -1410,7 +1279,7 @@ pub(super) fn stmt_has_proc_block_hook_for_instance(
     proc_name: &str,
     suffix: &str,
     instance_name: &str,
-    global_proc_instances: &HashMap<String, ProcCallInstance>,
+    roots: &HashMap<String, String>,
 ) -> bool {
     let Stmt::Expr {
         expr: Expr::UserCall { name, args, .. },
@@ -1425,179 +1294,111 @@ pub(super) fn stmt_has_proc_block_hook_for_instance(
     let Some(self_arg) = args.first() else {
         return false;
     };
-    expr_global_proc_instance_name(&self_arg.expr, global_proc_instances).as_deref()
-        == Some(instance_name)
-}
-
-pub(super) fn collect_sample_owner_proc_hook_instances_from_expr(
-    expr: &Expr,
-    def_map: &HashMap<String, &TypedFunction>,
-    requirements: &HashMap<String, HashSet<usize>>,
-    global_proc_instances: &HashMap<String, ProcCallInstance>,
-    out: &mut HashSet<String>,
-) {
-    for expr in expr.walk() {
-        if let Expr::UserCall { name, args, .. } = expr {
-            let Some(callee) = def_map.get(name) else {
-                continue;
-            };
-            let Some(required_params) = requirements.get(name) else {
-                continue;
-            };
-            if required_params.is_empty() {
-                continue;
-            }
-            let mut call_errors = Vec::new();
-            let resolved = resolve_call_args(
-                args,
-                &callee.params,
-                &callee.param_defaults,
-                false,
-                false,
-                &format!("call '{}(...)'", callee.name),
-                &mut call_errors,
-            );
-            for required_idx in required_params {
-                let Some(Some(arg_expr)) = resolved.get(*required_idx) else {
-                    continue;
-                };
-                if let Some(instance_name) =
-                    expr_global_proc_instance_name(arg_expr, global_proc_instances)
-                {
-                    out.insert(instance_name);
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn collect_sample_owner_proc_hook_instances_from_stmts(
-    stmts: &[Stmt],
-    def_map: &HashMap<String, &TypedFunction>,
-    requirements: &HashMap<String, HashSet<usize>>,
-    global_proc_instances: &HashMap<String, ProcCallInstance>,
-    out: &mut HashSet<String>,
-) {
-    for stmt in stmts {
-        stmt.visit_exprs(|expr| {
-            collect_sample_owner_proc_hook_instances_from_expr(
-                expr,
-                def_map,
-                requirements,
-                global_proc_instances,
-                out,
-            );
-        });
-    }
+    expr_global_proc_instance_name(&self_arg.expr, roots).as_deref() == Some(instance_name)
 }
 
 pub(super) fn inject_sample_def_owner_proc_block_hooks(
+    init: &[Stmt],
     sample: &[Stmt],
     block_pre: &mut Vec<Stmt>,
     block_post: &mut Vec<Stmt>,
-    defs: &[TypedFunction],
+    defs_in_postorder: &[&TypedFunction],
     proc_api: &HashMap<String, ProcApi>,
     global_proc_instances: &HashMap<String, ProcCallInstance>,
-    global_proc_array_slots: &HashMap<String, Vec<String>>,
+    global_proc_array_slots: &ProcArrayDeclarations,
+    views: &crate::processor_views::ProcessorViewCatalog,
     errors: &mut Vec<Diagnostic>,
 ) {
-    if defs.is_empty() || global_proc_instances.is_empty() {
+    if defs_in_postorder.is_empty() {
         return;
     }
-    let requirements = collect_typed_def_owner_proc_hook_requirements(defs, proc_api);
-    if requirements.values().all(HashSet::is_empty) {
-        return;
-    }
-    let def_map = defs
-        .iter()
-        .map(|def| (def.name.clone(), def))
-        .collect::<HashMap<_, _>>();
-    let mut instance_names = HashSet::<String>::new();
-    collect_sample_owner_proc_hook_instances_from_stmts(
-        sample,
-        &def_map,
-        &requirements,
+    use crate::processor_views::ProcessorBoundary;
+    let mut roots = super::processor_hook_dependencies::scalar_hook_roots(
+        init,
+        ProcessorBoundary::Init,
         global_proc_instances,
-        &mut instance_names,
+        views,
     );
-    if instance_names.is_empty() {
-        return;
-    }
-
-    let mut ordered_instances = instance_names.into_iter().collect::<Vec<_>>();
-    ordered_instances.sort();
+    let block_roots = super::processor_hook_dependencies::scalar_hook_roots(
+        block_pre,
+        ProcessorBoundary::BlockPre,
+        &HashMap::new(),
+        views,
+    );
+    roots.extend(block_roots.clone());
+    let receivers = super::processor_hook_dependencies::sample_hook_instances(
+        init,
+        block_pre,
+        sample,
+        defs_in_postorder,
+        proc_api,
+        &roots,
+        views,
+    );
     let mut injected_pre = Vec::<Stmt>::new();
+    let mut injected_block_pre = Vec::<Stmt>::new();
     let mut injected_post = Vec::<Stmt>::new();
-    for instance_name in ordered_instances {
-        let Some(instance) = global_proc_instances.get(&instance_name) else {
+    for instance_name in receivers {
+        let Some(proc_name) = roots.get(&instance_name) else {
             continue;
         };
-        let Some(api) = proc_api.get(&instance.proc_name) else {
+        let Some(api) = proc_api.get(proc_name) else {
             continue;
         };
         if !api.has_block {
             continue;
         }
-        let has_existing_pre = block_pre.iter().any(|stmt| {
-            stmt_has_proc_block_hook_for_instance(
-                stmt,
-                &instance.proc_name,
-                PROC_BLOCK_PRE_FN_SUFFIX,
-                &instance_name,
-                global_proc_instances,
-            )
-        });
-        if !has_existing_pre {
-            let mut pre_args = vec![CallArg {
+        for (scheduled, injected, suffix) in [
+            (&*block_pre, &mut injected_pre, PROC_BLOCK_PRE_FN_SUFFIX),
+            (&*block_post, &mut injected_post, PROC_BLOCK_POST_FN_SUFFIX),
+        ] {
+            if scheduled.iter().any(|stmt| {
+                stmt_has_proc_block_hook_for_instance(
+                    stmt,
+                    proc_name,
+                    suffix,
+                    &instance_name,
+                    &roots,
+                )
+            }) {
+                continue;
+            }
+            let mut args = vec![CallArg {
                 name: None,
                 expr: proc_instance_self_expr(&instance_name, global_proc_array_slots),
             }];
-            pre_args.extend(expand_proc_buffer_call_args(
-                instance,
-                api,
-                &instance_name,
-                errors,
-            ));
-            injected_pre.push(Stmt::Expr {
+            if let Some(instance) = global_proc_instances.get(&instance_name) {
+                args.extend(expand_proc_buffer_call_args(
+                    instance,
+                    api,
+                    &instance_name,
+                    errors,
+                ));
+            } else {
+                // Owned copies retain their source resource environment. Resolve
+                // it through the ordinary complete-view operation path.
+                args.extend(api.buffers.iter().enumerate().map(|(index, _)| CallArg {
+                    name: None,
+                    expr: Expr::var(crate::processor_views::bound_resource_member(
+                        &instance_name,
+                        index,
+                    )),
+                }));
+            }
+            let hook = Stmt::Expr {
                 loc: Default::default(),
                 expr: Expr::UserCall {
                     loc: Default::default(),
-                    name: format!("{}{}", instance.proc_name, PROC_BLOCK_PRE_FN_SUFFIX),
+                    name: format!("{proc_name}{suffix}"),
                     type_args: Vec::new(),
-                    args: pre_args,
+                    args,
                 },
-            });
-        }
-
-        let has_existing_post = block_post.iter().any(|stmt| {
-            stmt_has_proc_block_hook_for_instance(
-                stmt,
-                &instance.proc_name,
-                PROC_BLOCK_POST_FN_SUFFIX,
-                &instance_name,
-                global_proc_instances,
-            )
-        });
-        if !has_existing_post {
-            let mut post_args = vec![CallArg {
-                name: None,
-                expr: proc_instance_self_expr(&instance_name, global_proc_array_slots),
-            }];
-            post_args.extend(expand_proc_buffer_call_args(
-                instance,
-                api,
-                &instance_name,
-                errors,
-            ));
-            injected_post.push(Stmt::Expr {
-                loc: Default::default(),
-                expr: Expr::UserCall {
-                    loc: Default::default(),
-                    name: format!("{}{}", instance.proc_name, PROC_BLOCK_POST_FN_SUFFIX),
-                    type_args: Vec::new(),
-                    args: post_args,
-                },
-            });
+            };
+            if suffix == PROC_BLOCK_PRE_FN_SUFFIX && block_roots.contains_key(&instance_name) {
+                injected_block_pre.push(hook);
+            } else {
+                injected.push(hook);
+            }
         }
     }
     if !injected_pre.is_empty() {
@@ -1608,6 +1409,8 @@ pub(super) fn inject_sample_def_owner_proc_block_hooks(
     if !injected_post.is_empty() {
         block_post.extend(injected_post);
     }
+    // Block-owned roots must be initialized before their first hook runs.
+    block_pre.extend(injected_block_pre);
 }
 
 pub(super) fn seed_called_typed_defs_from_stmts(

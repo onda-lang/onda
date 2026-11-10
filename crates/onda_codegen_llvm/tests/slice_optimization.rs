@@ -842,7 +842,11 @@ block:
                 result.unwrap();
                 assert_eq!(output, [60.0; 48]);
             } else {
-                assert!(result.is_err(), "short view reached an unchecked callee");
+                assert_eq!(
+                    result.unwrap(),
+                    onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+                    "short view reached an unchecked callee"
+                );
             }
         }
     }

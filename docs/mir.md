@@ -103,11 +103,16 @@ passes may promote or fold them without changing the semantic contract.
 - functions
 - init and process entry points
 
-MIR schema version 7 carries a recursive message schema alongside flattened event/delegate
+MIR schema version 9 carries a recursive message schema alongside flattened event/delegate
 parameters. One scalar or primitive tensor represents each leaf, independent of array extent.
 Struct slices retain one explicit logical `i32` length followed by read-only leaf slices; fixed
 shapes remain checked contracts. Both backends use the compiler-free ABI payload planner for
-host layout, preparation, and publication. The processor ABI is version 6.
+host layout, preparation, and publication. The processor ABI is version 7.
+
+Enum values lower to ordinary `i32` executable types. Parameters, control outputs, and scalar leaves of recursive
+message schemas retain optional `enumeration` metadata with the qualified type name and ordered
+member names/labels. Validation checks that enum storage, bounds, and members agree. Enum state
+scalars and arrays retain the derived integer invariant so snapshot restoration preserves validity.
 
 Events name their handler function directly. Functions have one of four capability roles: init,
 process, event, or user function. Each function also carries backend-neutral origin and inline
@@ -171,7 +176,9 @@ host interaction use explicit operations:
 
 - loads and stores through typed places
 - input and current-frame audio-output loads, plus audio/control output stores
-- interface-buffer and function-buffer-reference load/store and metadata queries
+- interface-buffer and function-buffer-reference load/store and metadata queries; `buffer_samples`
+  and `buffer_param_samples` report per-channel lengths, and scalar multiplication by the channel
+  count implements source-level buffer `.len()`
 - immutable constant-data loads
 - checked slice construction, indexed load/store, length, fill, and defined overlap handling
 - direct calls with already-bound arguments
@@ -274,9 +281,10 @@ capabilities, canonical checked audio frames, return arity and types, boolean br
 integer indices, writable places, projection validity, resource access modes, intrinsic domains and
 arity, structured loop control, reachable fallthrough from result-bearing functions, structured
 definite assignment, process-frame dominance, finite ordered numeric interface ranges containing
-their defaults, interface-name uniqueness, explicit one-to-one control mirrors, complete checked
+their defaults, name uniqueness within each host interface kind (buffers and buffer arrays
+share one binding namespace), explicit one-to-one control mirrors, complete checked
 slice/window contracts, fixed-array and aggregate signed-i32 size limits, recursive aggregate
-rejection, function parameter/local resource limits, constant-data element-count and
+rejection, function local resource limits, constant-data element-count and
 logical-byte-size limits, and acyclic realtime call graphs.
 
 `ValidatedProgram` retains proof of these backend-neutral invariants. It does not promise that a
@@ -336,14 +344,15 @@ validates the completed pipeline once, and returns `PassStats` with an opaque `O
 Portable MIR retains fused rendering and reduction loops; profitable scheduling is selected
 separately by each backend.
 
-### Ordered loop distribution
+### Backend-selected loop scheduling
 
-The explicit `distribute_loops` MIR pass separates independent rendering from an ordered sum.
+The explicit `schedule_vector_loops` MIR pass peels distinguished first iterations and separates
+independent rendering from an ordered sum.
 LLVM requests this pass at its shared JIT/IR/object emission boundary, enabling vector math without
 changing the portable MIR supplied by the caller. Binaryen keeps the fused schedule because its
 current scalar array-math lowering does not offset the extra traversal and loads. The pass borrows
 unchanged programs; changed programs are revalidated and their effects, ranges and storage origins
-are rebuilt. Applying it to an already distributed program leaves that program unchanged.
+are rebuilt. Both transformations are idempotent.
 
 Distribution requires a nonempty fixed forward loop of at least 32 iterations, expensive
 pointwise math, and a reduction term already stored to an owned array at the current index. The
@@ -351,6 +360,24 @@ second traversal reads that array and adds in the original order. It allocates n
 does not enable floating-point reassociation. Calls, failures, cross-index writes, unresolved
 aliases, and reduction-dependent rendering retain the original schedule. The size threshold avoids
 small loops where the additional traversal outweighs vector math.
+
+Peeling requires a nonempty fixed forward loop of at least 32 iterations with an unchanged,
+unescaped induction variable and no early exits or nested loops in its body. Equality/inequality
+predicates on the initial index are found directly or through value arguments to inlineable
+helpers. Those summaries select candidates; they do not establish memory independence. The
+peeled iteration preserves each original operation, including checked failures and synchronous
+callbacks, followed by the original increment and remaining loop. Within the remainder, the
+counted-loop proof establishes that the induction variable never equals its initial value. Direct
+`==` / `!=` comparisons with that value fold to false / true, including local copies proven equal
+to the current induction variable on every incoming path. Locals exposed through views or references
+anywhere in the function supply no such proof, including aliases created before the loop. Neither do
+overwritten copies, call results, or values carried from a previous iteration. Helper summaries
+never authorize these folds. The peeled iteration keeps its original comparisons; folding changes
+neither effect order nor checked operations.
+
+No exclusivity or reassociation assumptions are added. LLVM determines whether inlining and
+constant propagation expose a vectorizable remainder. `PassStats::peeled_loops` reports the number
+of transformed loops; `folded_rvalues` also counts the proven remainder comparisons.
 
 ### Effects, ranges, and bounds proofs
 
@@ -362,8 +389,8 @@ interface parameters, audio I/O, external buffers, constant data, event payloads
 descriptors, and per-reference reads/writes without encoding a target ABI. Range facts include the
 segmented-process contract, interface declarations, constants, ranged `i32`/`i64` parameters,
 locals and state, and operations that cannot overflow. A ranged storage declaration is represented
-as an optional inclusive `integer_range` invariant while retaining its ordinary scalar physical
-type. Source `[begin, end)` domains lower this invariant to `begin..=end - 1`. State promotion and
+as an optional inclusive `integer_range` invariant while retaining its ordinary physical
+type. On a fixed integer array, the invariant applies to every element. Source `[begin, end)` domains lower this invariant to `begin..=end - 1`. State promotion and
 call lowering preserve those facts. A whole-program fixed point joins every statically resolved
 call site, propagating proven facts through value and read-only-reference parameters and back
 through scalar results, including forwarding chains. Any unknown call site makes the corresponding
@@ -420,9 +447,13 @@ through forwarding and returns. A shared helper can receive several views of the
 retaining a common length. Every consumer checks all alternatives; differing lengths never become
 an exact length. Each object retains at most 16 alternatives to bound analysis storage and
 fixed-point convergence; exceeding that analysis budget discards ranges while retaining identity.
-Nested aggregate projections and unresolved offsets remain conservative.
-LLVM uses identities for scoped alias metadata and converts all possible offsets to a common
-reference alignment using its own physical layout. Affirmative state alias scopes require exclusively
+Nested aggregate projections remain conservative. When exact ranges are unavailable, origins can
+still retain a proven power-of-two divisor of their element offsets. The proof follows immutable
+integer definitions and joins every origin and call site; wrapping arithmetic preserves only
+guaranteed low bits. Clamped windows also include the clamp endpoint in this proof. This fact
+describes alignment only and never proves that two views are disjoint.
+LLVM uses identities for scoped alias metadata and converts exact offsets, or their common divisor,
+to reference alignment using its own physical layout. Affirmative state alias scopes require exclusively
 owned-state origins; a union that also includes non-state storage retains only safe
 `noalias` facts. Native metadata shares domains between proven disjoint groups of accessed
 origins, refining overlapping groups until every disjoint pair is covered. Distinct state
@@ -500,9 +531,24 @@ The lowering owns:
 - immutable primitive constant arrays with typed, bounds-explicit loads
 - symbolic external buffers with clamping/non-clamping reads and writes plus length/channel/sample-rate metadata
 - logical buffer-reference function parameters, including forwarding, metadata, mutation, and slicing
-- fixed processor buffer collections lowered to one value-mode `BufferSpan` containing the five
+- fixed processor buffer collections lowered to one value-mode `BufferSpan` containing the six
   parallel descriptor-table bases; subspans adjust those bases in constant space and
   `BufferParamRef` selection performs constant-time table lookups without copying sample storage
+- heterogeneous interface-buffer selections lowered to a value-mode `BufferMap`: the same six
+  current descriptor-table bases plus an immutable map of symbolic `BufferId`s. Each used window
+  validates its element, channel and access contract independently of unrelated interface entries.
+  Parameter forwarding and subviews borrow the map without gathering descriptors; selecting an
+  entry resolves the current host tables, so rebinding remains visible. Maps and descriptor handles
+  cannot enter persistent state or portable snapshots. Uniform bindings retain ordinary `Buffer`
+  arguments, and contiguous collections retain `BufferSpan` without a map lookup.
+- ephemeral typed buffer and collection values constructed by `MakeBuffer` and joined in local
+  variables. These borrow existing descriptors; they allocate no descriptor tables or sample
+  storage. A finite choice of unrelated parameter buffers or contiguous spans uses balanced
+  branches to select one descriptor. Effect analysis preserves all possible logical origins.
+  Descriptor assignments target unprojected locals; reference parameters permit payload writes
+  according to the buffer's access mode, but cannot replace the caller's descriptor.
+  Initialization aliases reconstruct descriptors from logical bindings after restore rather
+  than saving host pointers.
 - scalar, fixed primitive-array, and dynamic primitive-slice event interfaces with direct handler IDs
 - top-level parameter/input clamp rewrites already produced by semantic analysis
 - BEGIN-gated block-pre, a guarded `0..frames` sample loop with checked `process_frame` audio
@@ -545,6 +591,22 @@ taps, interpolation, and decimation; backends do not infer DSP scheduling from s
 The source DSP body is represented once regardless of the oversampling factor. Sinc stages with
 only one or two iterations retain constant-index small kernels for scalar replacement, while larger
 stage traversals use structured strided loops so high factors do not clone the filter graph.
+Nested processor arrays use the canonical aggregate field tensors, including enclosing array axes.
+One indexed receiver borrows scalar elements and fixed-size tensor windows; homogeneous calls
+share an implementation rather than selecting among one callee per instance. The physical ABI
+has one reference per live field, independent of array capacity. Field-level effects, storage
+identities and parameter pruning therefore use the same MIR analyses as ordinary aggregates.
+Aggregate width and function parameter count have no additional arbitrary cap; checked storage
+sizes, aggregate complexity and function local limits still apply.
+Binaryen legalizes signatures above the engine's positional-parameter limit with a private
+argument frame. Calls preserve component types and reference addresses without requiring
+inlining; the acyclic call graph permits each callee to reuse its frame without allocation.
+Borrowed views carry root storage, captured coordinates, lifecycle identity, bound resources and
+enclosing callback environments through helper calls. Joins retain symbolic root and resource
+selections with initialized tags on every path. Inherited constructor recipes resolve against
+captured enclosing frames at use sites; legalization then emits ordinary references, direct calls
+and explicit control flow. Writable views
+preserve overlapping origins and do not establish exclusivity.
 User functions accept resolved scalar, scalar-tuple, primitive-slice, buffer-reference,
 data-struct, and data-struct-array parameters. Explicit generic scalar contracts are specialized in
 semantics, as are context-independent inferred `f64` calls; an unresolved scalar specialization
@@ -676,13 +738,15 @@ use `packages/onda_webaudio` for AudioWorklet playback.
 
 ## Realtime floating-point environment
 
-The native runtime configures every processing thread through the backend-independent
-`onda_realtime` utility. On x86 this enables denormals-are-zero and flush-to-zero once per thread.
+Hosts own the floating-point policy of each execution thread; native runtime calls never change it
+implicitly. The optional helper `onda_realtime::configure_current_thread_audio_fp_mode` enables
+denormals-are-zero and flush-to-zero on x86, or flush-to-zero on ARM64. Call it on each thread that
+will execute Onda when that policy is desired; repeated calls reapply it.
 Decaying feedback and oversampling filters otherwise enter the subnormal range and can suffer large,
-core-dependent stalls even when their generated LLVM is otherwise optimal. CPAL callbacks, offline
-runtime processing, daemon rendering, and benchmarks now share this policy instead of relying on a
-particular host to remember it. MIR still defines strict-width arithmetic; the realtime execution
-environment deliberately treats inaudible subnormal tails as zero.
+core-dependent stalls even when their generated LLVM is otherwise optimal. Stock native playback,
+offline rendering, daemon rendering, and benchmark hosts explicitly select this policy.
+MIR still defines strict-width arithmetic; those hosts deliberately treat inaudible subnormal tails
+as zero.
 
 Core WebAssembly still has no scalar fused multiply-add instruction. The backend therefore links a
 strict software FMA from its internal pure-Wasm math kernel. It matches one-rounding f32/f64 FMA

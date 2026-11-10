@@ -1,0 +1,36 @@
+proc Voice:
+  buffers:
+    source: f32
+  delegate fired(value: f32)
+  init:
+    bias = 0.0
+  event set_bias(value: f32):
+    bias = source[0] + value
+  sample:
+    value = source[0] + bias
+    out1 = value
+    fired(value)
+proc Bank:
+  buffers:
+    clips: f32 {4}
+  init:
+    voices: Voice[2] = [Voice(source = clips[1]), Voice(source = clips[3])]
+    selector: i32 = 1
+    seen = 0.0
+  when voices[0].fired(value):
+    seen += value
+  when voices[1].fired(value):
+    seen += value * 10.0
+  sample:
+    voices[0].set_bias(1.0)
+    voices[selector].set_bias(2.0)
+    out1 = voices[0]()
+    out2 = voices[selector]()
+    out3 = seen
+    selector = 1 - selector
+buffers:
+  clips: f32 {4}
+init:
+  bank = Bank(clips = clips)
+sample:
+  out1, out2, out3 = bank()

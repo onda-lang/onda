@@ -33,6 +33,43 @@ Each run needs a new or empty output directory. Select one or more builtin names
 (`|` separates substring alternatives), pass repeatable `--source`, or explicitly request `--all`.
 Heavy convolution and FFT cases are included in `--all`; select narrow cases during development.
 
+## GPU UI measurements
+
+The shared GPU screen has measurement harnesses separate from DSP benchmarks:
+
+```sh
+# Check the production renderer and write a representative screenshot.
+cargo run --release -p onda_ui --example benchmark -- target/ui-benchmark.png
+
+# Render each section of the shared fixture and measure warmed frames.
+cargo run --release -p onda_ui --example panels -- target/ui-panels
+
+# Real standalone playback/control transport, without a window.
+cargo build --release -p onda_cli --bin onda
+cargo run --release -p onda_run --example scope_cadence \
+  > target/bench-ui-cadence.jsonl
+
+# Exercise the compact display budget with a minimum fresh-data rate.
+ONDA_SCOPE_INTERVAL_MS=16 ONDA_SCOPE_COLUMNS=348 ONDA_SCOPE_MIN_HZ=45 \
+  cargo run --release -p onda_run --example scope_cadence
+```
+
+The `benchmark` example checks rendered pixels and reports warm median/p95
+CPU-plus-GPU completion for 64 controls and 1,024 stereo samples at 768×840.
+The panel harness uses `ui/gpu/fixtures/panels.json`, writes screenshots, and
+measures scope-only and section-specific updates after warmup. It measures CPU
+submission and GPU completion without window presentation or audio/control IPC.
+Inspect adapter metadata to distinguish hardware from software rendering.
+Build first and collect measurements serially, with other test applications stopped.
+
+The cadence probe starts the real playback child and counts fresh scope responses.
+It requires an audio output device. `ONDA_SCOPE_COLUMNS` selects compact
+packets; unset it for raw floats. `ONDA_SCOPE_INTERVAL_MS` selects the polling
+interval (the probe runs 50 ms and 16 ms cases when unset),
+`ONDA_SCOPE_SECONDS` controls duration, and `ONDA_SCOPE_MIN_HZ` makes
+the probe fail below the required cadence. These results measure transport
+delivery, not display presentation or end-to-end interaction latency.
+
 ## Custom sources and operator experiments
 
 ```sh
@@ -69,6 +106,12 @@ in contiguous arrays, then mix them in a separate ordered loop. They exercise SI
 voices under strict floating-point rules and increase the active data set from 192 bytes to
 48 KiB (two state arrays and one constant table). Each output frame updates every voice.
 The compiler counters include eliminated common expressions and bounds checks.
+
+`proc-bank-16/128/1024` performs the same ordered processor-bank work with nested
+processor state. `proc-helper-callback-16/128/1024` additionally forwards selected
+children through helpers and routes a delegate to the owning bank. Compare their
+frontend allocations, MIR function/tensor counts, compilation time and runtime
+across capacities to detect slot-dependent expansion or lost owner context.
 
 `state-window-array-f32/f64` and `state-window-slice-f32/f64` read and write separate offset regions
 of one state allocation, using fixed references or forwarded slice descriptors. They exercise
@@ -165,8 +208,9 @@ python3 scripts/bench/compare.py target/bench/arithmetic-o0 target/bench/arithme
 `--opt-level 0..3` controls LLVM, `--wasm-opt-level 0..4` controls Binaryen, and `--fast-math`
 explicitly enables relaxed floating-point optimization. Fast math can change results, reduction
 order and exceptional-value behavior. Keep the intended numerical contract explicit when comparing.
-`--fp-reassociate`, `--fp-contract`, and `--fp-no-signed-zeros` independently control native
-arithmetic permissions. General reductions commonly need both reassociation and ignoring signed
+The benchmark harness additionally exposes `--fp-reassociate`, `--fp-contract`, and
+`--fp-no-signed-zeros` to independently investigate native arithmetic permissions. The `onda` CLI
+exposes only `--fast-math`. General reductions commonly need both reassociation and ignoring signed
 zero to vectorize. Contraction permits one fused rounding instead of two. Vector math automatically
 uses embedded SLEEF 3.9.0 on Linux/macOS x64 and ARM64 and Windows x64 MSVC; other targets keep
 scalar math. JIT and AOT code include the helpers without an extra library dependency, including
@@ -341,6 +385,13 @@ improvements, removed experiments, worker identities, paired samples, validation
 steps. The final 12-case native check produces byte-identical objects to the compiler before the
 removed experiments; it establishes preservation of code generation, not an additional speedup.
 Historical compile-scaling, Wasm and FFT results are labeled separately from that cleanup check.
+
+The [2026-11-06 loop-peeling results](results/2026-11-06-loop-peeling.json) record callback-bank
+speedups and the direct array recurrence that remained scalar. The subsequent
+[predicate-folding results](results/2026-11-06-predicate-folding.json) measure the additional
+counted-loop proof that exposes vectorization in that recurrence, including varied-frequency
+arrays, unchanged processor-bank controls, bit-exact comparisons, and worker identities. These
+are sequential optimization baselines; their before/after ratios are not interchangeable.
 
 `metadata.json` records settings, compiler binary hash, harness hashes, CPU information, platform,
 Git revision and whether the working tree is dirty. Wasm runs also record backend source and

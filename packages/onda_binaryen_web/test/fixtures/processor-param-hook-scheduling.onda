@@ -1,0 +1,33 @@
+proc Voice:
+  params:
+    gain: i32 = 1 {0, 4} => update
+  init:
+    divisor: i32 = 1
+    cached: i32 = 0
+    updates: i32 = 0
+  delegate updated(value: i32)
+  def update():
+    cached = gain / divisor
+    updates += 1
+    updated(gain)
+  sample:
+    out1 = f32(cached)
+    out2 = f32(updates)
+proc Bank:
+  init:
+    reported: i32 = 0
+    voices: Voice[2] = Voice(gain = 9)
+  when voices[0].updated(value):
+    reported += 1
+  event restart():
+    voices[0].init(gain = 9)
+  sample:
+    out1, out2 = voices[0](gain = 3)
+    out3, out4 = voices[1]()
+    out5 = f32(reported)
+init:
+  bank = Bank()
+event restart():
+  bank.restart()
+sample:
+  out1, out2, out3, out4, out5 = bank()

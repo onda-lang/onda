@@ -133,10 +133,15 @@ namespace std::fft<N = 256>:
   const Hamming: f64[N] = _hamming_window()
   const Blackman: f64[N] = _blackman_window()
 
-  const _WindowHann = 1
-  const _WindowRectangular = 2
-  const _WindowHamming = 3
-  const _WindowBlackman = 4
+  enum WindowKind:
+    Hann
+    Rectangular
+    Hamming
+    Blackman
+
+  enum StreamingWindowKind:
+    Hann
+    Rectangular
 
   def _min_i(a: i32, b: i32):
     if (a < b):
@@ -659,7 +664,7 @@ namespace std::fft<N = 256>:
 
   struct STFT<T>:
     fft: FFT<T>
-    window_kind = _WindowHann
+    window_kind = WindowKind::Hann
 
     def size(self):
       return N
@@ -668,27 +673,25 @@ namespace std::fft<N = 256>:
       return (N >> 1) + 1
 
     def _window_value(self, i: i32) -> T:
-      if (self.window_kind == _WindowHann):
+      if (self.window_kind == WindowKind::Hann):
         return T(Hann[i])
-      elif (self.window_kind == _WindowRectangular):
+      elif (self.window_kind == WindowKind::Rectangular):
         return T(Rectangular[i])
-      elif (self.window_kind == _WindowHamming):
+      elif (self.window_kind == WindowKind::Hamming):
         return T(Hamming[i])
-      elif (self.window_kind == _WindowBlackman):
-        return T(Blackman[i])
-      return T(Hann[i])
+      return T(Blackman[i])
 
     def set_hann(self):
-      self.window_kind = _WindowHann
+      self.window_kind = WindowKind::Hann
 
     def set_rectangular(self):
-      self.window_kind = _WindowRectangular
+      self.window_kind = WindowKind::Rectangular
 
     def set_hamming(self):
-      self.window_kind = _WindowHamming
+      self.window_kind = WindowKind::Hamming
 
     def set_blackman(self):
-      self.window_kind = _WindowBlackman
+      self.window_kind = WindowKind::Blackman
 
     def window_value(self, i: i32):
       return self._window_value(i)
@@ -696,21 +699,18 @@ namespace std::fft<N = 256>:
     def store_window(self, output: T[]):
       count = _min_i(output.len(), N)
       kind = self.window_kind
-      if (kind == _WindowHann):
+      if (kind == WindowKind::Hann):
         for i in 0..count:
           output[i] = T(Hann[i])
-      elif (kind == _WindowRectangular):
+      elif (kind == WindowKind::Rectangular):
         for i in 0..count:
           output[i] = T(Rectangular[i])
-      elif (kind == _WindowHamming):
+      elif (kind == WindowKind::Hamming):
         for i in 0..count:
           output[i] = T(Hamming[i])
-      elif (kind == _WindowBlackman):
-        for i in 0..count:
-          output[i] = T(Blackman[i])
       else:
         for i in 0..count:
-          output[i] = T(Hann[i])
+          output[i] = T(Blackman[i])
 
     def clear(self):
       self.fft.clear()
@@ -759,11 +759,11 @@ namespace std::fft<N = 256>:
 
     def forward_real(self, input: T[]):
       kind = self.window_kind
-      if kind == _WindowRectangular:
+      if kind == WindowKind::Rectangular:
         _load_real_pairs(self.fft, input)
-      elif kind == _WindowHamming:
+      elif kind == WindowKind::Hamming:
         self._load_windowed_pairs(input, Hamming)
-      elif kind == _WindowBlackman:
+      elif kind == WindowKind::Blackman:
         self._load_windowed_pairs(input, Blackman)
       else:
         self._load_windowed_pairs(input, Hann)
@@ -789,7 +789,7 @@ namespace std::fft<N = 256>:
   struct RealFFT<T>:
     fft: FFT<T>
     input: T[N]
-    window_kind = _WindowHann
+    window_kind = StreamingWindowKind::Hann
     write = 0 {N, wrap}
     filled = 0
     since_hop = 0
@@ -805,15 +805,15 @@ namespace std::fft<N = 256>:
       return N >> 1
 
     def _window_value(self, i: i32) -> T:
-      if (self.window_kind == _WindowHann):
+      if (self.window_kind == StreamingWindowKind::Hann):
         return T(Hann[i])
       return T(Rectangular[i])
 
     def set_rectangular(self):
-      self.window_kind = _WindowRectangular
+      self.window_kind = StreamingWindowKind::Rectangular
 
     def set_hann(self):
-      self.window_kind = _WindowHann
+      self.window_kind = StreamingWindowKind::Hann
 
     def clear(self):
       self.fft.clear()
@@ -838,7 +838,7 @@ namespace std::fft<N = 256>:
         self.since_hop = 0
         kind = self.window_kind
         half = N >> 1
-        if kind == _WindowHann:
+        if kind == StreamingWindowKind::Hann:
           for i in 0..half:
             even = i << 1
             odd = even + 1
@@ -904,7 +904,7 @@ namespace std::fft<N = 256>:
     fft: FFT<T>
     output: T[N]
     norm: T[N]
-    window_kind = _WindowHann
+    window_kind = StreamingWindowKind::Hann
     frame = 0 {N, wrap}
     pending = 0
     overlap_frames = 0
@@ -916,15 +916,15 @@ namespace std::fft<N = 256>:
       return N >> 1
 
     def _window_value(self, i: i32) -> T:
-      if (self.window_kind == _WindowHann):
+      if (self.window_kind == StreamingWindowKind::Hann):
         return T(Hann[i])
       return T(Rectangular[i])
 
     def set_hann(self):
-      self.window_kind = _WindowHann
+      self.window_kind = StreamingWindowKind::Hann
 
     def set_rectangular(self):
-      self.window_kind = _WindowRectangular
+      self.window_kind = StreamingWindowKind::Rectangular
 
     def clear(self):
       self.fft.clear()
@@ -968,7 +968,7 @@ namespace std::fft<N = 256>:
     def _accumulate_real_ifft_frame(self):
       half = N >> 1
       kind = self.window_kind
-      if kind == _WindowHann:
+      if kind == StreamingWindowKind::Hann:
         for i in 0..half:
           even = i << 1
           odd = even + 1
@@ -992,7 +992,7 @@ namespace std::fft<N = 256>:
           self.output[odd_idx] = self.output[odd_idx] + self.fft.imag(i) * odd_w
           self.norm[even_idx] = self.norm[even_idx] + even_w * even_w
           self.norm[odd_idx] = self.norm[odd_idx] + odd_w * odd_w
-      if kind == _WindowHann && self.overlap_frames < 2:
+      if kind == StreamingWindowKind::Hann && self.overlap_frames < 2:
         self.overlap_frames += 1
       else:
         self.overlap_frames = 2

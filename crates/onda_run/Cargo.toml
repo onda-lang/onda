@@ -6,6 +6,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+onda_processor_abi = { path = "../onda_processor_abi" }
+onda_scope = { path = "../onda_scope" }
+base64 = "0.22"
 libc = "0.2"
 midir = "0.11"
 notify = { version = "7", default-features = false, features = ["macos_kqueue"] }

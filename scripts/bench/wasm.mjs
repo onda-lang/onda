@@ -1,7 +1,7 @@
 // One isolated Node/V8 worker; scripts/bench/run.py supplies its memory/time cgroup.
 import { readFileSync, writeFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { compileTrustedMir, createDefaultImports } from "../../packages/onda_binaryen_web/src/index.js";
+import { compileTrustedMir } from "../../packages/onda_binaryen_web/src/index.js";
 import { scalarSize, writeParameterDefaults } from "../../packages/onda_binaryen_web/scripts/wasm-memory.mjs";
 
 const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -23,7 +23,7 @@ if (config.mode === "inspect") {
   process.exit(0);
 }
 const instantiateStarted = performance.now();
-const { instance } = await WebAssembly.instantiate(artifact.wasm, createDefaultImports());
+const { instance } = await WebAssembly.instantiate(artifact.wasm, {});
 result.instantiate_ms = performance.now() - instantiateStarted;
 const { memory, __heap_base, onda_processor_init: initialize, onda_process: execute } = instance.exports;
 const meta = artifact.metadata;

@@ -54,7 +54,7 @@ init:
   voices: Chime[VoiceCount] = Chime()
   rng = std::random::Rng()
   air = std::noise::Pink(amp = 1.0)
-  air_hp = std::filter::OnePole(cutoff = 420.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+  air_hp = std::filter::OnePole(cutoff = 420.0, mode = std::filter::OnePoleMode::HighPass)
   air_lp = std::filter::OnePole(cutoff = 4400.0)
   space_l = std::delay::Delay(delay_s = 0.37, feedback = 0.46, mix = 1.0)
   space_r = std::delay::Delay(delay_s = 0.53, feedback = 0.42, mix = 1.0)

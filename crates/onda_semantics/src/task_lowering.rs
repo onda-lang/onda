@@ -542,6 +542,7 @@ pub(crate) fn validate_task_source_model(program: &Program, errors: &mut Vec<Dia
             | Block::Assert(_)
             | Block::Namespace(_)
             | Block::NamespaceAlias(_)
+            | Block::Enum(_)
             | Block::Use(_)
             | Block::Proc(_)
             | Block::Graph(_) => {}
@@ -739,6 +740,7 @@ fn assign_dynamic_index(name: impl Into<String>, index: impl Into<String>, expr:
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -924,7 +926,9 @@ fn record_task_owner_decl_type(types: &mut TaskOwnerTypes, name: &str, ty: Optio
             }
         }
         Some(DeclType::Tuple(elements)) => {
-            types.tuples.insert(name.to_owned(), elements.clone());
+            if let Some(elements) = ScalarTypeRef::primitives(elements) {
+                types.tuples.insert(name.to_owned(), elements);
+            }
         }
         None => {
             types.scalars.insert(name.to_owned(), PrimitiveType::F32);
@@ -1195,6 +1199,7 @@ fn analyze_task_owner_init(
         &mut scratch_errors,
     );
     let init_ctx = InitAnalysisCtx {
+        storage_struct_defs: struct_defs,
         context_label: &owner.name,
         common: ScopeAnalysisCtx {
             policy: ScopePolicy::Init,
@@ -1480,6 +1485,10 @@ fn register_task_owner_processor_call_surfaces(
         }
     }
     for (instance, nested) in &types.nested_proc_instances {
+        types
+            .struct_instances
+            .entry(instance.clone())
+            .or_insert_with(|| nested.proc_name.clone());
         let Some(surface) = proc_registry.surfaces.get(&nested.proc_name) else {
             continue;
         };
@@ -3673,6 +3682,12 @@ fn rewrite_task_overloads(
     }
 }
 
+#[derive(Default)]
+pub(crate) struct LoweredTasks {
+    pub runtime_defs: HashSet<String>,
+    pub lexical_resources: HashMap<String, Vec<crate::processor_views::ProcessorLexicalResource>>,
+}
+
 pub(crate) fn lower_tasks(
     program: &mut Program,
     options: AnalysisOptions,
@@ -3680,14 +3695,14 @@ pub(crate) fn lower_tasks(
     const_scalars: &HashMap<String, PrimitiveType>,
     const_scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
     errors: &mut Vec<Diagnostic>,
-) -> HashSet<String> {
+) -> LoweredTasks {
     let has_source_tasks = program.blocks.iter().any(|block| match block {
         Block::Tasks(tasks) => !tasks.tasks.is_empty(),
         Block::Proc(proc) => !proc.tasks.is_empty(),
         _ => false,
     });
     if !has_source_tasks {
-        return HashSet::new();
+        return LoweredTasks::default();
     }
 
     let raw_struct_defs = program
@@ -3698,11 +3713,35 @@ pub(crate) fn lower_tasks(
             _ => None,
         })
         .collect::<HashMap<_, _>>();
-    let struct_defs = coerce_struct_defs_for_inference(&raw_struct_defs, options);
+    let mut struct_defs = coerce_struct_defs_for_inference(&raw_struct_defs, options);
     let mut constants = crate::def_semantics::CallTypeEnv::default();
     constants.bind_constants(const_scalars, const_arrays, const_scope, options);
     let call_semantics = task_call_semantics(program, &struct_defs, &constants);
     let proc_registry = task_proc_registry(program, options, const_arrays);
+    let procs = program
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::Proc(proc) => Some((proc.name.clone(), proc.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let constructors = raw_struct_defs
+        .keys()
+        .chain(procs.keys())
+        .cloned()
+        .collect();
+    struct_defs.extend(crate::processor_lowering::processor_source_types(
+        &procs,
+        &raw_struct_defs,
+        &constructors,
+        &call_semantics.signatures,
+        &call_semantics.return_types,
+        options,
+        const_arrays,
+        const_scalars,
+        const_scope,
+    ));
 
     let top_level_tasks = take_top_level_tasks(program);
     let runtime_def_names = lower_top_level_tasks(
@@ -3718,6 +3757,7 @@ pub(crate) fn lower_tasks(
         errors,
     );
 
+    let mut lexical_resources = HashMap::new();
     let mut has_tasks = !top_level_tasks.is_empty();
     for proc in program.blocks.iter_mut().filter_map(|block| match block {
         Block::Proc(proc) => Some(proc),
@@ -3808,14 +3848,32 @@ pub(crate) fn lower_tasks(
             init_prefix.extend(prepared.init_stmts);
             pinned_task_fields.extend(prepared.pinned_fields);
             let for_frame_bindings = prepared.for_frame_bindings.clone();
-            generated_defs.push(compile_task_resume(
+            let resume = compile_task_resume(
                 &prepared.name,
                 &prepared.body,
                 prepared.resume_local_initializers,
                 buffer_params.clone(),
                 &for_frame_bindings,
                 &prepared.views,
-            ));
+            );
+            lexical_resources.insert(
+                crate::processor_lowering::proc_local_bind_hidden_def_name(
+                    &proc.name,
+                    &resume.name,
+                ),
+                buffer_params
+                    .iter()
+                    .enumerate()
+                    .map(|(resource_index, parameter)| {
+                        crate::processor_views::ProcessorLexicalResource {
+                            owner_struct: proc.name.clone(),
+                            resource_index,
+                            parameter: parameter.name.clone(),
+                        }
+                    })
+                    .collect(),
+            );
+            generated_defs.push(resume);
             generated_defs.push(FunctionDef {
                 loc: Default::default(),
                 is_const: false,
@@ -3935,9 +3993,11 @@ pub(crate) fn lower_tasks(
             body: Vec::new(),
         }));
     }
-    runtime_def_names
+    LoweredTasks {
+        runtime_defs: runtime_def_names,
+        lexical_resources,
+    }
 }
-
 #[cfg(test)]
 #[path = "task_lowering_tests/mod.rs"]
 mod tests;

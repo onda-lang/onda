@@ -1,0 +1,34 @@
+proc Voice:
+  buffers:
+    clip: f32
+  sample:
+    out1 = clip[0]
+def identity(index):
+  return index
+def choose(index: i32) -> i32:
+  return index
+def choose(index: f32) -> i32:
+  return 0
+def step(voice) -> f32:
+  return voice()
+proc Bank:
+  buffers:
+    clips: f32 {2}
+  init:
+    index: i32 = 1
+    voice = Voice(clip = clips[choose(identity(index))])
+  sample:
+    out1 = voice()
+buffers:
+  clips: f32 {2}
+init:
+  index: i32 = 1
+  voices: Voice[2] = Voice(clip = clips[choose(identity(index))])
+  bank = Bank(clips = clips)
+sample:
+  clips[0][0] = 2.0
+  clips[1][0] = 7.0
+  out1 = voices[0]()
+  out2 = step(voices[1])
+  out3 = step(bank.voice)
+  out4 = bank()

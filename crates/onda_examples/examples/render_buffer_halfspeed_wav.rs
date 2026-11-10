@@ -7,10 +7,7 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
-use onda_runtime::{
-    bind_buffer, bind_output, create_instance, init_checked, process_checked, InitMode,
-    InstanceConfig,
-};
+use onda_runtime::{bind_buffer, bind_output, create_instance, init_checked, InitMode};
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const DEFAULT_INPUT: &str = "target/garden.wav";
@@ -19,6 +16,7 @@ const BLOCK_SAMPLES: usize = 512;
 const PLAYBACK_RATE: f32 = 0.5;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    onda_realtime::configure_current_thread_audio_fp_mode();
     let input_path = env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -67,16 +65,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     )
     .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;
 
-    let mut instance = create_instance(
-        jit,
-        InstanceConfig {
-            sample_rate: sample_rate_hz as f32,
-            frames_per_block: BLOCK_SAMPLES,
-            in_channels: 0,
-            out_channels,
-        },
-    )
-    .map_err(|d| format!("instance creation failed: {d:?}"))?;
+    let mut instance =
+        create_instance(jit, None).map_err(|d| format!("instance creation failed: {d:?}"))?;
 
     unsafe {
         bind_buffer(
@@ -98,8 +88,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         unsafe { bind_output(&mut instance, idx, out_buf.as_mut_ptr(), out_buf.len()) }
             .map_err(|d| format!("bind output[{idx}] failed: {d:?}"))?;
     }
-    init_checked(&mut instance, InitMode::Full)
-        .map_err(|d| format!("instance initialization failed: {d:?}"))?;
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .map_err(onda_frontend::Diagnostic::from)
+    .and_then(onda_codegen_llvm::check_execution_status)
+    .map_err(|d| format!("instance initialization failed: {d:?}"))?;
 
     let render_frames = ((input_frames as f32) / PLAYBACK_RATE).ceil() as usize;
     let full_blocks = render_frames / BLOCK_SAMPLES;
@@ -107,12 +103,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut rendered = Vec::<f32>::with_capacity(render_frames * out_channels);
 
     for _ in 0..full_blocks {
-        process_checked(
-            &mut instance,
-            BLOCK_SAMPLES,
-            onda_runtime::ExecutionOutput::none(),
-        )
-        .map_err(|d| format!("processing failed: {d:?}"))?;
+        onda_runtime::process_checked(&mut instance, onda_runtime::ExecutionOutput::none())
+            .map_err(onda_frontend::Diagnostic::from)
+            .and_then(onda_codegen_llvm::check_execution_status)
+            .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
             BLOCK_SAMPLES,
@@ -121,12 +115,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
     if tail_frames > 0 {
-        process_checked(
-            &mut instance,
-            BLOCK_SAMPLES,
-            onda_runtime::ExecutionOutput::none(),
-        )
-        .map_err(|d| format!("processing failed: {d:?}"))?;
+        onda_runtime::process_checked(&mut instance, onda_runtime::ExecutionOutput::none())
+            .map_err(onda_frontend::Diagnostic::from)
+            .and_then(onda_codegen_llvm::check_execution_status)
+            .map_err(|d| format!("processing failed: {d:?}"))?;
         append_interleaved_block_from_bound_outputs(
             &bound_out,
             tail_frames,

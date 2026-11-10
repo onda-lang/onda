@@ -3,6 +3,15 @@ import std/filter
 import std/osc
 import std/pitch
 
+enum OutputSignal:
+  TriangleA
+  PulseA
+  TriangleB
+  PulseB
+  Comparator
+  Rungler
+  Filtered
+
 proc RunglerCore:
   params:
     frequency_a = 70.0
@@ -79,9 +88,9 @@ proc Benjolin:
     feedback_loop = 0.82
     filter_frequency = 90.0
     resonance = 3.7
-    filter_mode = 0
-    output_signal_l = 6
-    output_signal_r = 6
+    filter_mode = std::filter::SvfMode::LowPass
+    output_signal_l = OutputSignal::Filtered
+    output_signal_r = OutputSignal::Filtered
 
   init:
     core = RunglerCore()
@@ -110,8 +119,8 @@ proc Benjolin:
       mixed_b,
       filtered
     ]
-    out1 = signals[output_signal_l]
-    out2 = signals[output_signal_r]
+    out1 = signals[i32(output_signal_l)]
+    out2 = signals[i32(output_signal_r)]
 
 params:
   frequency_a = 70.0 {20.0, 14000.0, scale = log, unit = "Hz"}
@@ -123,9 +132,9 @@ params:
   feedback_loop = 0.82 {0.0, 0.95}
   filter_frequency = 90.0 {20.0, 20000.0, scale = log, unit = "Hz"}
   resonance = 3.7 {0.5, 8.0}
-  filter_mode = 0 {0, 5}
-  output_signal_l = 6 {0, 6}
-  output_signal_r = 6 {0, 6}
+  filter_mode = std::filter::SvfMode::LowPass
+  output_signal_l = OutputSignal::Filtered
+  output_signal_r = OutputSignal::Filtered
   space = 0.24 {0.0, 0.7}
   level = 1.0 {0.0, 1.0}
 

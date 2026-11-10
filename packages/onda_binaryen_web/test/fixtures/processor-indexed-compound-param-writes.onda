@@ -1,0 +1,37 @@
+proc Voice:
+  params:
+    gain: i64 = 9007199254740993 => update
+  init:
+    updates: i32 = 0
+  def update():
+    updates += 1
+  sample:
+    out1 = f32(gain - 9007199254740993)
+    out2 = f32(updates)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    selections: i32 = 0
+    order: i32 = 0
+  def current_gain(index: i32):
+    return voices[index].gain
+  def choose() -> i32:
+    selections += 1
+    order = order * 10 + 2
+    return selections - 1
+  def value() -> i64:
+    order = order * 10 + 1
+    return 1
+  sample:
+    selections = 0
+    order = 0
+    voices[choose()].gain += value()
+    _, out2 = voices[0]()
+    out1 = f32(current_gain(0) - 9007199254740993)
+    out3 = f32(selections)
+    out4 = f32(order)
+    out5 = f32(current_gain(1) - 9007199254740993)
+init:
+  bank = Bank()
+sample:
+  out1, out2, out3, out4, out5 = bank()

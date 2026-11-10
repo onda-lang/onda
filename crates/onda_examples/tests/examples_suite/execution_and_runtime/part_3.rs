@@ -29,7 +29,7 @@ fn proc_can_bind_and_read_top_level_buffer() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -904,7 +904,7 @@ fn proc_instance_array_indexed_call_dynamic_index_selects_slot_buffer_binding() 
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -1052,7 +1052,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_rebound_buffer_on_process
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked with old buf2");
 
     let out_old = decode_planar_f32(&out_bytes);
@@ -1074,7 +1074,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_rebound_buffer_on_process
     )
     .expect("bind buf2 new");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked with new buf2");
 
     let out_new = decode_planar_f32(&out_bytes);
@@ -1215,7 +1215,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked with old buf2");
 
     let out_seed = decode_planar_f32(&out_bytes);
@@ -1237,9 +1237,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
     )
     .expect("bind buf2 new");
 
-    validate_buffers(&mut instance).expect("validate buffers after rebind");
 
-    validate_outputs(&mut instance).expect("validate outputs");
 
     // MIR buffer arguments are transient symbolic resources. Once validation publishes the
     // rebound host table, unchecked processing observes that current table rather than a
@@ -1255,7 +1253,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
         assert_near(sample, 0.5, 1e-6);
     }
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked uses current binding");
 
     let out_checked = decode_planar_f32(&out_bytes);
@@ -1266,7 +1264,7 @@ fn proc_instance_array_indexed_call_dynamic_index_uses_validated_rebound_buffer_
 }
 
 #[test]
-fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
+fn process_readiness_uses_current_proc_array_buffer_binding() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) = compile_instance(
@@ -1307,7 +1305,7 @@ fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    prepare_unchecked_process(&mut instance).expect("prepare unchecked with old buf2");
+    prepare_process(&instance).expect("prepare unchecked with old buf2");
     unsafe {
         process_unchecked_segment(
             &mut instance,
@@ -1335,7 +1333,7 @@ fn prepare_unchecked_process_uses_current_proc_array_buffer_binding() {
     )
     .expect("bind buf2 new");
 
-    prepare_unchecked_process(&mut instance).expect("prepare unchecked after rebind");
+    prepare_process(&instance).expect("prepare unchecked after rebind");
     unsafe {
         process_unchecked_segment(
             &mut instance,
@@ -1681,7 +1679,7 @@ fn proc_deep_nested_buffer_binding_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);

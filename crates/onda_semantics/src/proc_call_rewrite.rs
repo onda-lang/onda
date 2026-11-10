@@ -5,12 +5,19 @@ use crate::def_semantics::call_types::{
 };
 use crate::internal_names::METHOD_RECEIVER_ARG;
 use crate::proc_call_support::rewrite_proc_alias_call_sites_in_expr;
+use crate::proc_state_rewrite::{ProcArrayDeclaration, ProcArrayDeclarations};
 use crate::processor_lowering::{
     proc_local_bind_hidden_def_name, proc_local_nested_bind_hidden_def_name,
 };
 use onda_frontend::Span;
 
 type ProcArrayAliases = HashMap<String, ProcArrayAliasInfo>;
+
+mod projections;
+pub(crate) use projections::{
+    expand_processor_projection_statement, proc_param_setter_def, projection_temp_counter,
+    rewrite_processor_projection_calls, rewrite_processor_projection_statement,
+};
 
 mod call_arguments;
 pub(crate) use call_arguments::lower_named_proc_param_calls_in_stmts;
@@ -119,6 +126,7 @@ pub(super) fn build_proc_read_helper(
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: Expr::Cast {
             loc: Default::default(),
             to: PrimitiveType::I32,
@@ -143,6 +151,7 @@ pub(super) fn build_proc_read_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int(0),
             }],
             else_branch: Vec::new(),
@@ -163,6 +172,7 @@ pub(super) fn build_proc_read_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int((len.saturating_sub(1)) as i64),
             }],
             else_branch: Vec::new(),
@@ -267,6 +277,7 @@ pub(super) fn build_proc_write_helper(
         generic_decl_ty: None,
         is_typed_decl: true,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr: Expr::Cast {
             loc: Default::default(),
             to: PrimitiveType::I32,
@@ -291,6 +302,7 @@ pub(super) fn build_proc_write_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int(0),
             }],
             else_branch: Vec::new(),
@@ -311,6 +323,7 @@ pub(super) fn build_proc_write_helper(
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Default::default(),
+                param_write_lowered: false,
                 expr: Expr::int((len.saturating_sub(1)) as i64),
             }],
             else_branch: Vec::new(),
@@ -348,6 +361,7 @@ pub(super) fn build_proc_write_helper(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: Expr::var("value"),
                 }],
                 else_branch: unmatched,
@@ -372,6 +386,7 @@ pub(super) fn build_proc_write_helper(
                     generic_decl_ty: None,
                     is_typed_decl: false,
                     typed_decl_ty_loc: Default::default(),
+                    param_write_lowered: false,
                     expr: Expr::var("value"),
                 }],
                 else_branch: Vec::new(),
@@ -405,11 +420,10 @@ fn named_call_arg_expr<'a>(args: &'a [CallArg], arg_name: &str) -> Option<&'a Ex
 }
 
 pub(super) enum ProcIndexResolution {
-    Slot(String),
     Dynamic {
         array_base: String,
         index_expr: Expr,
-        slots: Vec<String>,
+        slots: ProcArrayDeclaration,
         access: IndexAccess,
     },
 }
@@ -457,7 +471,7 @@ pub(super) fn take_proc_index_base_and_expr_mut(
 
 pub(super) fn resolve_proc_index_target_mut(
     args: &mut Vec<CallArg>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcIndexResolution> {
@@ -471,17 +485,8 @@ pub(super) fn resolve_proc_index_target_mut(
         );
         return None;
     };
-    if let Some(raw_idx) = try_constant_index_i64(&index_expr) {
-        let slot_idx = resolve_proc_constant_slot_index(raw_idx, slots.len(), context, errors)?;
-        let Some(slot_name) = slots.get(slot_idx) else {
-            push_semantic(
-                DiagCtx::default(),
-                errors,
-                format!("{context}: resolved processor array slot index is out of range"),
-            );
-            return None;
-        };
-        return Some(ProcIndexResolution::Slot(slot_name.clone()));
+    if let (Some(raw_idx), Some(len)) = (try_constant_index_i64(&index_expr), slots.known_len()) {
+        resolve_proc_constant_slot_index(raw_idx, len, context, errors)?;
     }
     Some(ProcIndexResolution::Dynamic {
         array_base,
@@ -504,13 +509,13 @@ pub(super) fn proc_index_base_name(args: &[CallArg]) -> Option<&str> {
 type ProcArrayDispatchContext = (String, ProcApi, Vec<(String, ProcCallInstance)>);
 
 pub(super) fn resolve_proc_array_dispatch_context(
-    slots: &[String],
+    slots: &ProcArrayDeclaration,
     proc_vars: &HashMap<String, ProcCallInstance>,
     proc_api: &HashMap<String, ProcApi>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcArrayDispatchContext> {
-    let Some(first_slot) = slots.first() else {
+    let Some(first_slot) = slots.first_binding() else {
         push_semantic(
             DiagCtx::default(),
             errors,
@@ -538,8 +543,9 @@ pub(super) fn resolve_proc_array_dispatch_context(
         );
         return None;
     };
-    let mut instances = Vec::<(String, ProcCallInstance)>::with_capacity(slots.len());
-    for slot in slots {
+    let mut instances =
+        Vec::<(String, ProcCallInstance)>::with_capacity(slots.binding_names().len());
+    for slot in slots.binding_names() {
         let Some(instance) = proc_vars.get(slot) else {
             push_semantic(
                 DiagCtx::default(),
@@ -569,19 +575,19 @@ pub(super) fn resolve_proc_array_dispatch_context(
 
 pub(super) fn find_proc_array_slot(
     instance_name: &str,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<(String, usize)> {
     for (base, slots) in proc_array_slots {
-        if let Some(idx) = slots.iter().position(|slot| slot == instance_name) {
+        if let Some(idx) = slots.binding_names().position(|slot| slot == instance_name) {
             return Some((base.clone(), idx));
         }
     }
     None
 }
 
-fn resolve_proc_array_base_key(
+pub(super) fn resolve_proc_array_base_key(
     base: &str,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<String> {
     if proc_array_slots.contains_key(base) {
         return Some(base.to_owned());
@@ -654,7 +660,7 @@ pub(crate) fn canonicalize_indexed_proc_receiver_call(
 
 pub(super) fn can_resolve_proc_index_base(
     args: &[CallArg],
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> bool {
     let base_expr = named_call_arg_expr(args, PROC_INDEX_BASE_ARG).or_else(|| {
         args.first()
@@ -669,7 +675,7 @@ pub(super) fn can_resolve_proc_index_base(
 
 pub(super) fn proc_instance_self_expr(
     instance_name: &str,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Expr {
     if let Some((base, idx)) = find_proc_array_slot(instance_name, proc_array_slots) {
         Expr::Index {
@@ -682,9 +688,25 @@ pub(super) fn proc_instance_self_expr(
     }
 }
 
+pub(super) fn proc_instance_field_expr(
+    instance_name: &str,
+    field_name: &str,
+    proc_array_slots: &ProcArrayDeclarations,
+) -> Expr {
+    if let Some((base, index)) = find_proc_array_slot(instance_name, proc_array_slots) {
+        Expr::Index {
+            loc: Default::default(),
+            base: format!("{base}.{field_name}"),
+            index: Box::new(Expr::int(index as i64)),
+        }
+    } else {
+        Expr::var(format!("{instance_name}.{field_name}"))
+    }
+}
+
 fn extract_proc_index_slot(
     args: &[CallArg],
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<String> {
     let (base_expr, index_expr) = if let (Some(base), Some(index)) = (
         named_call_arg_expr(args, PROC_INDEX_BASE_ARG),
@@ -711,12 +733,12 @@ fn extract_proc_index_slot(
     let slots = proc_array_slots.get(array_base)?;
     let raw_idx = try_constant_index_i64(index_expr)?;
     let slot_idx = usize::try_from(raw_idx).ok()?;
-    slots.get(slot_idx).cloned()
+    slots.binding(slot_idx).cloned()
 }
 
 fn collect_proc_array_call_targets(
     args: &[CallArg],
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     out: &mut HashSet<String>,
 ) {
     if let Some(slot) = extract_proc_index_slot(args, proc_array_slots) {
@@ -736,7 +758,7 @@ fn collect_proc_array_call_targets(
         return;
     };
     if let Some(slots) = proc_array_slots.get(&array_base) {
-        out.extend(slots.iter().cloned());
+        out.extend(slots.binding_names().cloned());
     }
 }
 
@@ -752,7 +774,7 @@ pub(super) fn expand_expr_to_slots(
     expand_array_expr_to_slots(expr, slot_count, context, errors)
 }
 
-fn expand_array_expr_to_slots(
+pub(super) fn expand_array_expr_to_slots(
     expr: &Expr,
     slot_count: usize,
     context: &str,
@@ -1050,7 +1072,7 @@ pub(super) fn dynamic_proc_array_buffer_call_args(
             name: None,
             expr: Expr::UserCall {
                 loc: Default::default(),
-                name: PROC_INDEX_BUFFER_SELECT_SENTINEL.to_owned(),
+                name: PROCESSOR_RESOURCE_SELECT.to_owned(),
                 type_args: Vec::new(),
                 args: selector_args,
             },
@@ -1114,6 +1136,7 @@ fn assign_temp_stmt(name: String, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -1159,12 +1182,12 @@ struct ProcOutputTupleCall {
 fn resolve_proc_output_tuple_call(
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &ProcArrayAliases,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcOutputTupleCall> {
-    rewrite_proc_alias_call_sites_in_expr(expr, aliases);
+    rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
     let Expr::UserCall { name, args, .. } = expr else {
         return None;
     };
@@ -1181,14 +1204,6 @@ fn resolve_proc_output_tuple_call(
             errors,
         )?;
         return match resolution {
-            ProcIndexResolution::Slot(slot) => {
-                let instance = proc_vars.get(&slot)?;
-                let api = proc_api.get(&instance.proc_name)?;
-                Some(ProcOutputTupleCall {
-                    outputs: api.outputs.names.clone(),
-                    source: ProcOutputTupleSource::Direct(slot),
-                })
-            }
             ProcIndexResolution::Dynamic {
                 array_base,
                 index_expr,
@@ -1231,6 +1246,7 @@ fn proc_output_assignment(loc: Span, target_loc: Span, target: String, expr: Exp
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -1239,7 +1255,7 @@ fn proc_output_assignment(loc: Span, target_loc: Span, target: String, expr: Exp
 fn expand_proc_output_tuple_assignments_with_aliases(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut ProcArrayAliases,
     temp_counter: &mut usize,
@@ -1415,10 +1431,11 @@ fn expand_proc_output_tuple_assignments_with_aliases(
 pub(crate) fn expand_proc_output_tuple_assignments(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    crate::proc_call_support::capture_proc_alias_selectors(stmts, proc_array_slots);
     let mut aliases = ProcArrayAliases::new();
     let mut temp_counter = 0;
     expand_proc_output_tuple_assignments_with_aliases(
@@ -1603,7 +1620,7 @@ pub(super) fn normalize_proc_output_aliases_in_assign_target(
 
 fn normalize_proc_array_slot_assign_target(
     target: &mut AssignTarget,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) {
     let AssignTarget::Var(name) = target else {
         return;
@@ -1623,7 +1640,7 @@ fn normalize_proc_array_slot_assign_target(
 fn lower_proc_indexed_member_target(
     target: &mut AssignTarget,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
 ) {
     let AssignTarget::IndexedMember {
@@ -1655,7 +1672,7 @@ fn split_receiver_field(name: &str) -> Option<(&str, &str)> {
 fn proc_api_for_receiver<'a>(
     receiver: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcApi)> {
     if let Some(instance) = proc_vars.get(receiver) {
@@ -1671,7 +1688,7 @@ fn proc_api_for_receiver<'a>(
 
     let array_base = resolve_proc_array_base_key(receiver, proc_array_slots)?;
     let slots = proc_array_slots.get(&array_base)?;
-    let first_slot = slots.first()?;
+    let first_slot = slots.first_binding()?;
     let instance = proc_vars.get(first_slot)?;
     let api = proc_api.get(&instance.proc_name)?;
     Some((instance.proc_name.as_str(), api))
@@ -1681,7 +1698,7 @@ fn proc_param_slot_for_receiver<'a>(
     receiver: &str,
     field: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcParamSlotSpec)> {
     let (proc_name, api) = proc_api_for_receiver(receiver, proc_vars, proc_array_slots, proc_api)?;
@@ -1693,7 +1710,7 @@ fn proc_private_param_field_for_receiver<'a>(
     receiver: &str,
     field: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcApi)> {
     let (proc_name, api) = proc_api_for_receiver(receiver, proc_vars, proc_array_slots, proc_api)?;
@@ -1712,10 +1729,7 @@ fn proc_array_receiver_expr_base(receiver: &str, array_base: String) -> String {
     }
 }
 
-fn bound_proc_receiver_expr(
-    receiver: &str,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-) -> Expr {
+fn bound_proc_receiver_expr(receiver: &str, proc_array_slots: &ProcArrayDeclarations) -> Expr {
     let raw_receiver = receiver.strip_prefix("self.").unwrap_or(receiver);
     if let Some((array_base, slot_idx)) = find_proc_array_slot(raw_receiver, proc_array_slots) {
         return Expr::Index {
@@ -1730,7 +1744,7 @@ fn bound_proc_receiver_expr(
 fn bound_proc_indexed_receiver_expr(
     receiver: &str,
     index: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Expr {
     let receiver_base = resolve_proc_array_base_key(receiver, proc_array_slots)
         .unwrap_or_else(|| receiver.to_owned());
@@ -1763,66 +1777,29 @@ fn nested_bind_hook_call_stmt(owner_proc: &str, nested_path: &str, hook: &str) -
     )
 }
 
-fn nested_bind_hook_index_cond(index: &Expr, op: CmpOp, value: i64) -> Expr {
-    Expr::Compare {
-        loc: Default::default(),
-        op,
-        lhs: Box::new(Expr::Cast {
-            loc: Default::default(),
-            to: PrimitiveType::I32,
-            expr: Box::new(index.clone()),
-        }),
-        rhs: Box::new(Expr::int(value)),
-    }
-}
-
-fn nested_proc_array_bind_hook_dispatch_stmts(
+fn nested_proc_array_bind_hook_stmts(
     owner_proc: &str,
-    slots: &[String],
+    slots: &ProcArrayDeclaration,
     index: &Expr,
     hook: &str,
 ) -> Vec<Stmt> {
-    let Some((first, rest)) = slots.split_first() else {
+    let Some(first) = slots.first_binding() else {
         return Vec::new();
     };
-    if rest.is_empty() {
-        return vec![nested_bind_hook_call_stmt(owner_proc, first, hook)];
-    }
-
-    let last_idx = slots.len() - 1;
-    let mut else_branch = Vec::<Stmt>::new();
-    for idx in (1..last_idx).rev() {
-        else_branch = vec![Stmt::If {
-            loc: Default::default(),
-            cond: nested_bind_hook_index_cond(index, CmpOp::Eq, idx as i64),
-            then_branch: vec![nested_bind_hook_call_stmt(owner_proc, &slots[idx], hook)],
-            else_branch,
-        }];
-    }
-    else_branch = vec![Stmt::If {
-        loc: Default::default(),
-        cond: nested_bind_hook_index_cond(index, CmpOp::Ge, last_idx as i64),
-        then_branch: vec![nested_bind_hook_call_stmt(
-            owner_proc,
-            &slots[last_idx],
-            hook,
-        )],
-        else_branch,
-    }];
-
-    vec![Stmt::If {
-        loc: Default::default(),
-        cond: nested_bind_hook_index_cond(index, CmpOp::Le, 0),
-        then_branch: vec![nested_bind_hook_call_stmt(owner_proc, first, hook)],
-        else_branch,
-    }]
+    vec![crate::processor_lowering::nested_array_bind_hook_call(
+        owner_proc,
+        first,
+        slots.len(),
+        index,
+        hook,
+    )]
 }
 
 fn nested_bound_proc_param_hook_stmts(
     owner_proc: Option<&str>,
     receiver: &str,
     index: Option<&Expr>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     hook: &str,
 ) -> Option<Vec<Stmt>> {
     let owner_proc = owner_proc?;
@@ -1837,15 +1814,7 @@ fn nested_bound_proc_param_hook_stmts(
             if slots.is_empty() {
                 return None;
             }
-            if let Some(raw_idx) = try_constant_index_i64(index) {
-                let clamped = raw_idx.clamp(0, slots.len().saturating_sub(1) as i64) as usize;
-                return Some(vec![nested_bind_hook_call_stmt(
-                    owner_proc,
-                    &slots[clamped],
-                    hook,
-                )]);
-            }
-            return Some(nested_proc_array_bind_hook_dispatch_stmts(
+            return Some(nested_proc_array_bind_hook_stmts(
                 owner_proc, slots, index, hook,
             ));
         }
@@ -1883,7 +1852,7 @@ fn flattened_nested_proc_field<'a>(
 fn proc_api_for_nested_path<'a>(
     nested_path: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcApi)> {
     if let Some(instance) = proc_vars.get(nested_path) {
@@ -1892,7 +1861,7 @@ fn proc_api_for_nested_path<'a>(
     }
     let array_base = resolve_proc_array_base_key(nested_path, proc_array_slots)?;
     let slots = proc_array_slots.get(&array_base)?;
-    let first_slot = slots.first()?;
+    let first_slot = slots.first_binding()?;
     let instance = proc_vars.get(first_slot)?;
     let api = proc_api.get(&instance.proc_name)?;
     Some((instance.proc_name.as_str(), api))
@@ -1902,7 +1871,7 @@ fn proc_param_slot_for_nested_path<'a>(
     nested_path: &str,
     field: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcParamSlotSpec)> {
     let (proc_name, api) =
@@ -1915,7 +1884,7 @@ fn proc_private_param_field_for_nested_path<'a>(
     nested_path: &str,
     field: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcApi)> {
     let (proc_name, api) =
@@ -1933,7 +1902,7 @@ fn bound_proc_param_hook_stmts_for_flattened_nested_target(
     field: &str,
     index: Option<&Expr>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
 ) -> Vec<Stmt> {
     let Some(owner_proc) = owner_proc else {
@@ -1955,15 +1924,7 @@ fn bound_proc_param_hook_stmts_for_flattened_nested_target(
             if slots.is_empty() {
                 return Vec::new();
             }
-            if let Some(raw_idx) = try_constant_index_i64(index) {
-                let clamped = raw_idx.clamp(0, slots.len().saturating_sub(1) as i64) as usize;
-                return vec![nested_bind_hook_call_stmt(
-                    owner_proc,
-                    &slots[clamped],
-                    hook,
-                )];
-            }
-            return nested_proc_array_bind_hook_dispatch_stmts(owner_proc, slots, index, hook);
+            return nested_proc_array_bind_hook_stmts(owner_proc, slots, index, hook);
         }
     }
     vec![nested_bind_hook_call_stmt(owner_proc, nested_path, hook)]
@@ -1973,7 +1934,7 @@ fn maybe_clamp_flattened_nested_proc_param_assignment_expr(
     target: &AssignTarget,
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
 ) {
     let indexed_member_path;
@@ -2005,7 +1966,7 @@ fn maybe_clamp_flattened_nested_proc_param_assignment_expr(
 fn dynamic_params_assignment_target<'a>(
     target: &AssignTarget,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, &'a ProcApi, String)> {
     let base = match target {
@@ -2033,7 +1994,7 @@ fn dynamic_params_assignment_target<'a>(
 fn private_proc_param_assignment_target<'a>(
     target: &AssignTarget,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<(&'a str, String, String)> {
     let (base, field) = match target {
@@ -2080,7 +2041,7 @@ fn reject_private_proc_param_assignment(
     target: &AssignTarget,
     target_loc: Span,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     authorized_receiver: Option<&str>,
     errors: &mut Vec<Diagnostic>,
@@ -2117,7 +2078,7 @@ enum PrivateParamReadAccess<'a> {
 fn private_proc_param_read_access<'a>(
     path: &str,
     proc_vars: &'a HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &'a HashMap<String, ProcApi>,
 ) -> Option<PrivateParamReadAccess<'a>> {
     if let Some((nested_path, field)) = flattened_nested_proc_field(path, proc_vars) {
@@ -2163,7 +2124,7 @@ fn reject_private_proc_param_read_path(
     path: &str,
     loc: Span,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> bool {
@@ -2198,7 +2159,7 @@ fn reject_bound_proc_dynamic_params_assignment(
     target: &AssignTarget,
     target_loc: Span,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -2207,6 +2168,7 @@ fn reject_bound_proc_dynamic_params_assignment(
     else {
         return;
     };
+    let display = display.strip_prefix("self.").unwrap_or(&display);
     if proc_has_private_params(api) {
         push_semantic(
             DiagCtx::new(target_loc),
@@ -2233,7 +2195,7 @@ fn bound_proc_param_hook_stmts_for_target(
     owner_proc: Option<&str>,
     target: &AssignTarget,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
 ) -> Vec<Stmt> {
     match target {
@@ -2411,15 +2373,39 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
     stmts: &mut Vec<Stmt>,
     owner_proc: Option<&str>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     authorized_private_receiver: Option<&str>,
     errors: &mut Vec<Diagnostic>,
-    skip_top_level_indices: Option<&HashSet<usize>>,
     temp_counter: &mut usize,
 ) {
     let mut rewritten = Vec::<Stmt>::with_capacity(stmts.len());
-    for (idx, mut stmt) in std::mem::take(stmts).into_iter().enumerate() {
+    for mut stmt in std::mem::take(stmts) {
+        // Constructor stores defer hooks until init completes; other lowered
+        // stores already have their hook calls. Preserve that scheduling.
+        if matches!(
+            stmt,
+            Stmt::Assign {
+                param_write_lowered: true,
+                ..
+            }
+        ) {
+            rewritten.push(stmt);
+            continue;
+        }
+        // Indexed members become complete element views during assignment-place
+        // normalization. Apply parameter semantics in the lexical projection pass
+        // after that selection, so the store and hook share one receiver.
+        if matches!(
+            stmt,
+            Stmt::Assign {
+                target: AssignTarget::IndexedMember { .. },
+                ..
+            }
+        ) {
+            rewritten.push(stmt);
+            continue;
+        }
         match &mut stmt {
             Stmt::If {
                 then_branch,
@@ -2434,7 +2420,6 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_api,
                     authorized_private_receiver,
                     errors,
-                    None,
                     temp_counter,
                 );
                 inject_bound_proc_param_hooks_in_stmts_inner(
@@ -2445,7 +2430,6 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_api,
                     authorized_private_receiver,
                     errors,
-                    None,
                     temp_counter,
                 );
             }
@@ -2458,7 +2442,6 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                     proc_api,
                     authorized_private_receiver,
                     errors,
-                    None,
                     temp_counter,
                 );
             }
@@ -2469,32 +2452,27 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => {}
         }
-        let skip_hook = skip_top_level_indices
-            .map(|indices| indices.contains(&idx))
-            .unwrap_or(false);
         if let Stmt::Assign {
             target, target_loc, ..
         } = &stmt
         {
-            if !skip_hook {
-                reject_private_proc_param_assignment(
-                    target,
-                    target_loc.clone(),
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    authorized_private_receiver,
-                    errors,
-                );
-                reject_bound_proc_dynamic_params_assignment(
-                    target,
-                    target_loc.clone(),
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    errors,
-                );
-            }
+            reject_private_proc_param_assignment(
+                target,
+                target_loc.clone(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                authorized_private_receiver,
+                errors,
+            );
+            reject_bound_proc_dynamic_params_assignment(
+                target,
+                target_loc.clone(),
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                errors,
+            );
         }
         if let Stmt::Assign { target, expr, .. } = &mut stmt {
             maybe_clamp_proc_param_assignment_expr(
@@ -2512,18 +2490,14 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                 proc_api,
             );
         }
-        let mut hook_stmts = if !skip_hook {
-            if let Stmt::Assign { target, .. } = &stmt {
-                bound_proc_param_hook_stmts_for_target(
-                    owner_proc,
-                    target,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                )
-            } else {
-                Vec::new()
-            }
+        let mut hook_stmts = if let Stmt::Assign { target, .. } = &stmt {
+            bound_proc_param_hook_stmts_for_target(
+                owner_proc,
+                target,
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+            )
         } else {
             Vec::new()
         };
@@ -2541,6 +2515,13 @@ fn inject_bound_proc_param_hooks_in_stmts_inner(
                 }
                 rewritten.extend(prelude);
             }
+            if let Stmt::Assign {
+                param_write_lowered,
+                ..
+            } = &mut stmt
+            {
+                *param_write_lowered = true;
+            }
         }
         rewritten.push(stmt);
         rewritten.extend(hook_stmts);
@@ -2552,7 +2533,7 @@ pub(super) fn inject_bound_proc_param_hooks_in_stmts(
     owner_proc: Option<&str>,
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -2565,30 +2546,6 @@ pub(super) fn inject_bound_proc_param_hooks_in_stmts(
         proc_api,
         None,
         errors,
-        None,
-        &mut temp_counter,
-    );
-}
-
-pub(super) fn inject_bound_proc_param_hooks_in_stmts_skipping_top_level(
-    owner_proc: Option<&str>,
-    stmts: &mut Vec<Stmt>,
-    proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-    proc_api: &HashMap<String, ProcApi>,
-    errors: &mut Vec<Diagnostic>,
-    skip_top_level_indices: &HashSet<usize>,
-) {
-    let mut temp_counter = 0usize;
-    inject_bound_proc_param_hooks_in_stmts_inner(
-        stmts,
-        owner_proc,
-        proc_vars,
-        proc_array_slots,
-        proc_api,
-        None,
-        errors,
-        Some(skip_top_level_indices),
         &mut temp_counter,
     );
 }
@@ -2598,7 +2555,7 @@ pub(super) fn inject_bound_proc_param_hooks_in_nested_event_stmts(
     nested_receiver: &str,
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -2611,7 +2568,6 @@ pub(super) fn inject_bound_proc_param_hooks_in_nested_event_stmts(
         proc_api,
         Some(nested_receiver),
         errors,
-        None,
         &mut temp_counter,
     );
 }
@@ -2678,7 +2634,7 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     target: &AssignTarget,
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
 ) {
     let Some((base, field)) = (match target {
@@ -2704,10 +2660,44 @@ pub(super) fn maybe_clamp_proc_param_assignment_expr(
     }
 }
 
+/// Aliases retain the complete declared scalar projection surface. Resource
+/// recipes stay rooted in that alias so MIR can resolve its captured selection.
+fn bind_proc_instance_alias(
+    name: &str,
+    source: &str,
+    instances: &mut HashMap<String, ProcCallInstance>,
+) {
+    let mut aliases = instances
+        .iter()
+        .filter(|(path, _)| crate::path_is_within_root(path, source))
+        .map(|(path, instance)| (format!("{name}{}", &path[source.len()..]), instance.clone()))
+        .collect::<Vec<_>>();
+    for (_, instance) in &mut aliases {
+        for expression in instance
+            .buffer_args
+            .iter_mut()
+            .chain(&mut instance.delegate_context_args)
+        {
+            expression.visit_mut(|node| {
+                if let Expr::Var { name: path, .. }
+                | Expr::Index { base: path, .. }
+                | Expr::Slice { base: path, .. } = node
+                {
+                    if crate::path_is_within_root(path, source) {
+                        *path = format!("{name}{}", &path[source.len()..]);
+                    }
+                }
+                true
+            });
+        }
+    }
+    instances.extend(aliases);
+}
+
 fn rewrite_proc_calls_in_stmt_with_aliases(
     stmt: &mut Stmt,
-    proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_vars: &mut HashMap<String, ProcCallInstance>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut ProcArrayAliases,
     errors: &mut Vec<Diagnostic>,
@@ -2716,14 +2706,23 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
         Stmt::Assign { target, expr, .. } => {
             if let AssignTarget::Var(name) = target {
                 if let Some(alias) = proc_array_alias_from_index_expr(expr, proc_array_slots) {
+                    if let Some(source) = proc_array_slots
+                        .get(&alias.array_base)
+                        .and_then(|slots| slots.first_binding())
+                    {
+                        bind_proc_instance_alias(name, source, proc_vars);
+                    }
                     aliases.insert(name.clone(), alias);
                 } else {
+                    if let Expr::Var { name: source, .. } = expr {
+                        bind_proc_instance_alias(name, source, proc_vars);
+                    }
                     aliases.remove(name);
                 }
             }
             rewrite_proc_alias_assign_target(target, aliases);
             normalize_proc_array_slot_assign_target(target, proc_array_slots);
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
+            rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
             normalize_proc_output_aliases_in_assign_target(target, proc_vars, proc_api);
             lower_proc_indexed_member_target(target, proc_vars, proc_array_slots, proc_api);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors);
@@ -2736,7 +2735,7 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             );
         }
         Stmt::Expr { expr, .. } => {
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
+            rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
             let mut handled_proc_stmt_call = false;
             if let Expr::UserCall { name, args, .. } = expr {
                 canonicalize_indexed_proc_receiver_call(name, args, |base| {
@@ -2764,9 +2763,6 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                         return;
                     };
                     match index_target {
-                        ProcIndexResolution::Slot(resolved_slot) => {
-                            *name = resolved_slot;
-                        }
                         ProcIndexResolution::Dynamic {
                             array_base,
                             index_expr,
@@ -2827,7 +2823,8 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                 }
                 if !handled_proc_stmt_call {
                     if let Some((base_raw, event_name)) = split_dot_path(name) {
-                        let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
+                        let mut dynamic_index =
+                            None::<(String, Expr, ProcArrayDeclaration, IndexAccess)>;
                         let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                             if !can_resolve_proc_index_base(args, proc_array_slots) {
                                 return;
@@ -2841,7 +2838,6 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                                 return;
                             };
                             match index_target {
-                                ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
                                 ProcIndexResolution::Dynamic {
                                     array_base,
                                     index_expr,
@@ -2967,12 +2963,12 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             }
         }
         Stmt::Return { expr, .. } => {
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
+            rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
             rewrite_proc_calls_in_expr(expr, proc_vars, proc_array_slots, proc_api, errors)
         }
         Stmt::Print { values, .. } => {
             for value in values {
-                rewrite_proc_alias_calls_in_expr(value, aliases);
+                rewrite_proc_alias_call_sites_in_expr(value, aliases, proc_vars, proc_array_slots);
                 rewrite_proc_calls_in_expr(value, proc_vars, proc_array_slots, proc_api, errors);
             }
         }
@@ -2982,13 +2978,14 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             else_branch,
             ..
         } => {
-            rewrite_proc_alias_calls_in_expr(cond, aliases);
+            rewrite_proc_alias_call_sites_in_expr(cond, aliases, proc_vars, proc_array_slots);
             rewrite_proc_calls_in_expr(cond, proc_vars, proc_array_slots, proc_api, errors);
             let mut then_aliases = aliases.clone();
+            let mut then_vars = proc_vars.clone();
             for s in then_branch {
                 rewrite_proc_calls_in_stmt_with_aliases(
                     s,
-                    proc_vars,
+                    &mut then_vars,
                     proc_array_slots,
                     proc_api,
                     &mut then_aliases,
@@ -2996,15 +2993,24 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                 );
             }
             let mut else_aliases = aliases.clone();
+            let mut else_vars = proc_vars.clone();
             for s in else_branch {
                 rewrite_proc_calls_in_stmt_with_aliases(
                     s,
-                    proc_vars,
+                    &mut else_vars,
                     proc_array_slots,
                     proc_api,
                     &mut else_aliases,
                     errors,
                 );
+            }
+            for (name, instance) in then_vars {
+                if else_vars
+                    .get(&name)
+                    .is_some_and(|other| other.proc_name == instance.proc_name)
+                {
+                    proc_vars.insert(name.clone(), instance);
+                }
             }
         }
         Stmt::For {
@@ -3014,12 +3020,17 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             body,
             ..
         } => {
-            rewrite_proc_alias_calls_in_expr(start, aliases);
-            rewrite_proc_alias_calls_in_expr(end, aliases);
+            rewrite_proc_alias_call_sites_in_expr(start, aliases, proc_vars, proc_array_slots);
+            rewrite_proc_alias_call_sites_in_expr(end, aliases, proc_vars, proc_array_slots);
             rewrite_proc_calls_in_expr(start, proc_vars, proc_array_slots, proc_api, errors);
             rewrite_proc_calls_in_expr(end, proc_vars, proc_array_slots, proc_api, errors);
             if let Some(step_expr) = step {
-                rewrite_proc_alias_calls_in_expr(step_expr, aliases);
+                rewrite_proc_alias_call_sites_in_expr(
+                    step_expr,
+                    aliases,
+                    proc_vars,
+                    proc_array_slots,
+                );
                 rewrite_proc_calls_in_expr(
                     step_expr,
                     proc_vars,
@@ -3029,10 +3040,11 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
                 );
             }
             let mut body_aliases = aliases.clone();
+            let mut body_vars = proc_vars.clone();
             for s in body {
                 rewrite_proc_calls_in_stmt_with_aliases(
                     s,
-                    proc_vars,
+                    &mut body_vars,
                     proc_array_slots,
                     proc_api,
                     &mut body_aliases,
@@ -3041,13 +3053,14 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
             }
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_proc_alias_calls_in_expr(cond, aliases);
+            rewrite_proc_alias_call_sites_in_expr(cond, aliases, proc_vars, proc_array_slots);
             rewrite_proc_calls_in_expr(cond, proc_vars, proc_array_slots, proc_api, errors);
             let mut body_aliases = aliases.clone();
+            let mut body_vars = proc_vars.clone();
             for s in body {
                 rewrite_proc_calls_in_stmt_with_aliases(
                     s,
-                    proc_vars,
+                    &mut body_vars,
                     proc_array_slots,
                     proc_api,
                     &mut body_aliases,
@@ -3062,14 +3075,15 @@ fn rewrite_proc_calls_in_stmt_with_aliases(
 pub(super) fn rewrite_proc_calls_in_stmt(
     stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut aliases = ProcArrayAliases::new();
+    let mut proc_vars = proc_vars.clone();
     rewrite_proc_calls_in_stmt_with_aliases(
         stmt,
-        proc_vars,
+        &mut proc_vars,
         proc_array_slots,
         proc_api,
         &mut aliases,
@@ -3080,15 +3094,23 @@ pub(super) fn rewrite_proc_calls_in_stmt(
 pub(super) fn rewrite_proc_calls_in_stmts(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
-    rewrite_proc_calls_in_stmts_without_hooks(stmts, proc_vars, proc_array_slots, proc_api, errors);
+    let proc_vars = rewrite_proc_calls_in_stmts_without_hooks(
+        stmts,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        constants,
+        errors,
+    );
     inject_bound_proc_param_hooks_in_stmts(
         None,
         stmts,
-        proc_vars,
+        &proc_vars,
         proc_array_slots,
         proc_api,
         errors,
@@ -3258,29 +3280,39 @@ pub(super) fn rewrite_proc_array_param_field_reads(
 pub(super) fn rewrite_proc_calls_in_stmts_without_hooks(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
-) {
+) -> HashMap<String, ProcCallInstance> {
     expand_proc_output_tuple_assignments(stmts, proc_vars, proc_array_slots, proc_api, errors);
-    lower_named_proc_param_calls_in_stmts(stmts, proc_vars, proc_array_slots, proc_api, errors);
+    lower_named_proc_param_calls_in_stmts(
+        stmts,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        constants,
+        errors,
+    );
     let mut aliases = ProcArrayAliases::new();
+    let mut proc_vars = proc_vars.clone();
     for stmt in &mut *stmts {
         rewrite_proc_calls_in_stmt_with_aliases(
             stmt,
-            proc_vars,
+            &mut proc_vars,
             proc_array_slots,
             proc_api,
             &mut aliases,
             errors,
         );
     }
+    proc_vars
 }
 
 pub(super) fn collect_called_proc_instances_in_expr(
     expr: &Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     out: &mut HashSet<String>,
 ) {
     match expr {
@@ -3350,14 +3382,19 @@ pub(super) fn collect_called_proc_instances_in_expr(
 fn collect_called_proc_instances_in_stmt(
     stmt: &Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     aliases: &mut ProcArrayAliases,
     out: &mut HashSet<String>,
 ) {
     match stmt {
         Stmt::Assign { target, expr, .. } => {
             let mut expr_for_collect = expr.clone();
-            rewrite_proc_alias_call_sites_in_expr(&mut expr_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(
+                &mut expr_for_collect,
+                aliases,
+                proc_vars,
+                proc_array_slots,
+            );
             collect_called_proc_instances_in_expr(
                 &expr_for_collect,
                 proc_vars,
@@ -3374,7 +3411,12 @@ fn collect_called_proc_instances_in_stmt(
         }
         Stmt::Return { expr, .. } | Stmt::Expr { expr, .. } => {
             let mut expr_for_collect = expr.clone();
-            rewrite_proc_alias_call_sites_in_expr(&mut expr_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(
+                &mut expr_for_collect,
+                aliases,
+                proc_vars,
+                proc_array_slots,
+            );
             collect_called_proc_instances_in_expr(
                 &expr_for_collect,
                 proc_vars,
@@ -3385,7 +3427,12 @@ fn collect_called_proc_instances_in_stmt(
         Stmt::Print { values, .. } => {
             for value in values {
                 let mut value_for_collect = value.clone();
-                rewrite_proc_alias_call_sites_in_expr(&mut value_for_collect, aliases);
+                rewrite_proc_alias_call_sites_in_expr(
+                    &mut value_for_collect,
+                    aliases,
+                    proc_vars,
+                    proc_array_slots,
+                );
                 collect_called_proc_instances_in_expr(
                     &value_for_collect,
                     proc_vars,
@@ -3401,7 +3448,12 @@ fn collect_called_proc_instances_in_stmt(
             ..
         } => {
             let mut cond_for_collect = cond.clone();
-            rewrite_proc_alias_call_sites_in_expr(&mut cond_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(
+                &mut cond_for_collect,
+                aliases,
+                proc_vars,
+                proc_array_slots,
+            );
             collect_called_proc_instances_in_expr(
                 &cond_for_collect,
                 proc_vars,
@@ -3437,7 +3489,12 @@ fn collect_called_proc_instances_in_stmt(
             ..
         } => {
             let mut start_for_collect = start.clone();
-            rewrite_proc_alias_call_sites_in_expr(&mut start_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(
+                &mut start_for_collect,
+                aliases,
+                proc_vars,
+                proc_array_slots,
+            );
             collect_called_proc_instances_in_expr(
                 &start_for_collect,
                 proc_vars,
@@ -3445,7 +3502,12 @@ fn collect_called_proc_instances_in_stmt(
                 out,
             );
             let mut end_for_collect = end.clone();
-            rewrite_proc_alias_call_sites_in_expr(&mut end_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(
+                &mut end_for_collect,
+                aliases,
+                proc_vars,
+                proc_array_slots,
+            );
             collect_called_proc_instances_in_expr(
                 &end_for_collect,
                 proc_vars,
@@ -3454,7 +3516,12 @@ fn collect_called_proc_instances_in_stmt(
             );
             if let Some(step_expr) = step {
                 let mut step_for_collect = step_expr.clone();
-                rewrite_proc_alias_call_sites_in_expr(&mut step_for_collect, aliases);
+                rewrite_proc_alias_call_sites_in_expr(
+                    &mut step_for_collect,
+                    aliases,
+                    proc_vars,
+                    proc_array_slots,
+                );
                 collect_called_proc_instances_in_expr(
                     &step_for_collect,
                     proc_vars,
@@ -3475,7 +3542,12 @@ fn collect_called_proc_instances_in_stmt(
         }
         Stmt::While { cond, body, .. } => {
             let mut cond_for_collect = cond.clone();
-            rewrite_proc_alias_call_sites_in_expr(&mut cond_for_collect, aliases);
+            rewrite_proc_alias_call_sites_in_expr(
+                &mut cond_for_collect,
+                aliases,
+                proc_vars,
+                proc_array_slots,
+            );
             collect_called_proc_instances_in_expr(
                 &cond_for_collect,
                 proc_vars,
@@ -3500,7 +3572,7 @@ fn collect_called_proc_instances_in_stmt(
 pub(super) fn collect_called_proc_instances_in_stmts(
     stmts: &[Stmt],
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> HashSet<String> {
     let mut out = HashSet::<String>::new();
     let mut aliases = ProcArrayAliases::new();

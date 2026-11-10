@@ -127,9 +127,13 @@ fn events_and_process_segments_share_one_published_value() {
     run.set_param_f64("gain", 0.0).unwrap();
     run.process_segment_in_batch(24, 24, onda_runtime::PROCESSOR_END_BLOCK, 0)
         .unwrap();
-    assert!(run.output_buffers[0]
+    let mut rendered = [0.0; 144];
+    run.interleave_outputs(&mut rendered);
+    assert!(rendered
+        .as_chunks::<3>()
+        .0
         .iter()
-        .all(|value| (*value - 2.0 / 3.0).abs() < 1e-6));
+        .all(|frame| (frame[0] - 2.0 / 3.0).abs() < 1e-6));
     assert!((run.render_block().unwrap()[0][0] - 4.0 / 9.0).abs() < 1e-6);
 }
 

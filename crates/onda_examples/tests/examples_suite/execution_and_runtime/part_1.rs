@@ -25,7 +25,7 @@ sample:
 
     let mut output = [0.0_f32];
     process_interleaved(&mut instance, &[], &mut output, 1).expect("process unbound bank");
-    assert_near(output[0], 7.0, 1e-6);
+    assert_near(output[0], 8.0, 1e-6);
 }
 
 #[test]
@@ -695,8 +695,8 @@ import std/filter
 outs 2
 
 init {
-  lp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::mode::ONE_POLE_LOWPASS)
-  hp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+  lp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::OnePoleMode::LowPass)
+  hp = std::filter::OnePole(cutoff = 400.0, mode = std::filter::OnePoleMode::HighPass)
 }
 
 sample {
@@ -779,9 +779,9 @@ outs 3
 
 init {
   src = std::osc::Saw(freq = 220.0, amp = 0.25)
-  notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_NOTCH)
-  peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_PEAK)
-  allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::mode::SVF_ALLPASS)
+  notch = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::SvfMode::Notch)
+  peak = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::SvfMode::Peak)
+  allpass = std::filter::Svf(cutoff = 1200.0, q = 0.8, mode = std::filter::SvfMode::AllPass)
 }
 
 sample {
@@ -2487,7 +2487,7 @@ fn bound_io_writes_directly_for_f32_arrays() {
 
     bind_output(&mut instance, 0, bound_out.as_mut_ptr(), bound_out.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let copied_bound = decode_planar_f32(&bound_out);
@@ -2523,7 +2523,7 @@ fn bound_io_writes_directly_for_f64_declared_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
@@ -2601,7 +2601,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
@@ -2620,7 +2620,7 @@ sample {
     set_param_by_index(&mut instance, 1, &9007199254740995_i64.to_ne_bytes())
         .expect("set i64 param");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
@@ -2716,7 +2716,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
@@ -2824,7 +2824,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
@@ -2938,7 +2938,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
@@ -3078,7 +3078,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
@@ -3238,7 +3238,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
@@ -3388,7 +3388,7 @@ sample {
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
@@ -3446,7 +3446,7 @@ fn buffer_mono_read_uses_clamped_index_path() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3601,7 +3601,7 @@ fn indexed_access_supports_mono_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3615,7 +3615,7 @@ fn indexed_access_supports_mono_buffers() {
 
 #[test]
 
-fn validate_bindings_and_process_unchecked_work() {
+fn process_readiness_and_unchecked_execution_work() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -3642,7 +3642,7 @@ fn validate_bindings_and_process_unchecked_work() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    validate_bindings(&mut instance).expect("validate bindings should succeed");
+    prepare_process(&instance).expect("validate bindings should succeed");
 
     unsafe {
         process_unchecked(&mut instance, onda_runtime::ExecutionOutput::none())
@@ -3660,7 +3660,7 @@ fn validate_bindings_and_process_unchecked_work() {
 
 #[test]
 
-fn validate_bindings_rejects_missing_required_bindings() {
+fn process_readiness_rejects_missing_required_bindings() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -3683,11 +3683,11 @@ fn validate_bindings_rejects_missing_required_bindings() {
     )
     .expect("bind buffer");
 
-    let result = validate_bindings(&mut instance);
+    let result = prepare_process(&instance);
 
     assert!(
         result.is_err(),
-        "validate_bindings should reject missing required output binding"
+        "process readiness should reject missing required output binding"
     );
 }
 
@@ -3720,9 +3720,7 @@ fn validate_domains_allow_partial_revalidation() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    validate_buffers(&mut instance).expect("validate buffers should succeed");
 
-    validate_outputs(&mut instance).expect("validate outputs should succeed");
 
     unsafe {
         process_unchecked(&mut instance, onda_runtime::ExecutionOutput::none())
@@ -3750,7 +3748,6 @@ fn validate_domains_allow_partial_revalidation() {
     )
     .expect("bind buffer B");
 
-    validate_buffers(&mut instance).expect("validate buffers after rebind should succeed");
 
     unsafe {
         process_unchecked(&mut instance, onda_runtime::ExecutionOutput::none())
@@ -3800,7 +3797,7 @@ fn buffer_stereo_two_dim_read_and_clamp_work() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3846,7 +3843,7 @@ fn buffer_stereo_two_dim_write_works() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3892,7 +3889,7 @@ fn indexed_access_supports_multichannel_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3951,7 +3948,7 @@ fn buffer_static_chans_returns_declared_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3995,7 +3992,7 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -4007,7 +4004,7 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 
 #[test]
 
-fn buffer_dynamic_len_returns_runtime_frame_count() {
+fn buffer_dynamic_len_returns_total_element_count() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -4038,13 +4035,13 @@ fn buffer_dynamic_len_returns_runtime_frame_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
     for sample in out {
-        assert_near(sample, 3.0, 1e-6);
+        assert_near(sample, 6.0, 1e-6);
     }
 }
 
@@ -4077,7 +4074,7 @@ fn def_can_take_mono_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -4091,7 +4088,7 @@ fn def_can_take_mono_buffer_typed_param() {
 
 #[test]
 
-fn def_dynamic_buffer_len_returns_runtime_frame_count() {
+fn def_dynamic_buffer_len_returns_total_element_count() {
     let frames = 4;
 
     let (mut instance, in_channels, out_channels) =
@@ -4123,7 +4120,7 @@ fn def_dynamic_buffer_len_returns_runtime_frame_count() {
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
     for sample in output {
-        assert_near(sample, 3.0, 1e-6);
+        assert_near(sample, 6.0, 1e-6);
     }
 }
 
@@ -4161,7 +4158,7 @@ fn def_can_take_stereo_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);

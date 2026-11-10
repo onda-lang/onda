@@ -121,7 +121,9 @@ fn collect_place_parameters(place: &Place, used: &mut [bool]) {
 }
 
 fn collect_buffer_parameter(reference: BufferParamRef, used: &mut [bool]) {
-    mark_parameter(reference.first(), used);
+    if let Some(parameter) = reference.parameter() {
+        mark_parameter(parameter, used);
+    }
 }
 
 fn collect_span_parameter(reference: BufferSpanRef, used: &mut [bool]) {
@@ -142,9 +144,10 @@ fn collect_slice_source_parameters(source: &SliceSource, used: &mut [bool]) {
 
 fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
     match value {
+        Rvalue::MakeBuffer { source, .. } => collect_call_argument_parameters(source, used),
         Rvalue::Load(place) => collect_place_parameters(place, used),
         Rvalue::BufferParamLoad { parameter, .. }
-        | Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => collect_buffer_parameter(*parameter, used),
@@ -161,7 +164,7 @@ fn collect_rvalue_parameters(value: &Rvalue, used: &mut [bool]) {
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::BufferLoad { .. }
-        | Rvalue::BufferLen(_)
+        | Rvalue::BufferSamples(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
         | Rvalue::BufferIsBound(_)
@@ -237,6 +240,7 @@ fn rewrite_place_parameter(place: &mut Place, mapping: &[Option<ParameterId>]) {
 
 fn rewrite_buffer_parameter(reference: &mut BufferParamRef, mapping: &[Option<ParameterId>]) {
     match reference {
+        BufferParamRef::Local(_) | BufferParamRef::LocalElement { .. } => {}
         BufferParamRef::Direct(parameter)
         | BufferParamRef::ArrayElement {
             span: parameter, ..
@@ -264,9 +268,10 @@ fn rewrite_slice_source_parameters(source: &mut SliceSource, mapping: &[Option<P
 
 fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]) {
     match value {
+        Rvalue::MakeBuffer { source, .. } => rewrite_call_argument_parameters(source, mapping),
         Rvalue::Load(place) => rewrite_place_parameter(place, mapping),
         Rvalue::BufferParamLoad { parameter, .. }
-        | Rvalue::BufferParamLen(parameter)
+        | Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => rewrite_buffer_parameter(parameter, mapping),
@@ -283,7 +288,7 @@ fn rewrite_rvalue_parameters(value: &mut Rvalue, mapping: &[Option<ParameterId>]
         | Rvalue::InputLoad { .. }
         | Rvalue::OutputLoad { .. }
         | Rvalue::BufferLoad { .. }
-        | Rvalue::BufferLen(_)
+        | Rvalue::BufferSamples(_)
         | Rvalue::BufferChannels(_)
         | Rvalue::BufferSampleRate(_)
         | Rvalue::BufferIsBound(_)

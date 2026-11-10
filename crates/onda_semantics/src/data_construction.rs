@@ -39,7 +39,9 @@ pub(crate) fn scalar_default(value: TypedConstValue) -> PayloadDefault {
     PayloadDefault::Scalar(match value {
         TypedConstValue::F32(value) => value.to_string(),
         TypedConstValue::F64(value) => value.to_string(),
-        TypedConstValue::I32(value) => value.to_string(),
+        TypedConstValue::I32(value) | TypedConstValue::Enum { ordinal: value, .. } => {
+            value.to_string()
+        }
         TypedConstValue::I64(value) => value.to_string(),
         TypedConstValue::Bool(value) => value.to_string(),
     })
@@ -90,6 +92,7 @@ impl<'a> DefaultEvaluator<'a> {
             match ty {
                 PrimitiveType::F32 => TypedConstValue::F32(0.0),
                 PrimitiveType::F64 => TypedConstValue::F64(0.0),
+                PrimitiveType::Enum(ty) => TypedConstValue::Enum { ty, ordinal: 0 },
                 PrimitiveType::I32 => TypedConstValue::I32(0),
                 PrimitiveType::I64 => TypedConstValue::I64(0),
                 PrimitiveType::Bool => TypedConstValue::Bool(false),

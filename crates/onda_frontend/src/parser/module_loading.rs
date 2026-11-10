@@ -422,6 +422,7 @@ fn block_decl_name(block: &Block) -> Option<&str> {
         Block::NamespaceAlias(alias) => Some(alias.name.as_str()),
         Block::Use(_) => None,
         Block::Struct(s) => Some(s.name.as_str()),
+        Block::Enum(s) => Some(s.name.as_str()),
         Block::Def(d) => Some(d.name.as_str()),
         Block::Proc(p) => Some(p.name.as_str()),
         _ => None,
@@ -706,6 +707,24 @@ pub fn inject_auto_std_prelude(program: &mut Program) -> Result<(), Vec<Diagnost
         let imported = load_builtin_module_blocks(module, true, &mut state, &[])?;
         merge_blocks_preferring_existing(&mut program.blocks, imported);
     }
+    fn namespace_uses_smoothing(namespace: &crate::NamespaceDecl) -> bool {
+        namespace.items.iter().any(|item| match item {
+            crate::NamespaceItem::Proc(proc) => {
+                proc.ins.iter().any(|port| port.smoothing.is_some())
+            }
+            crate::NamespaceItem::Namespace(namespace) => namespace_uses_smoothing(namespace),
+            _ => false,
+        })
+    }
+    if program.blocks.iter().any(|block| match block {
+        Block::Ins(ports) => ports.iter().any(|port| port.smoothing.is_some()),
+        Block::Proc(proc) => proc.ins.iter().any(|port| port.smoothing.is_some()),
+        Block::Namespace(namespace) => namespace_uses_smoothing(namespace),
+        _ => false,
+    }) {
+        let imported = load_builtin_module_blocks("std/smoothing", true, &mut state, &[])?;
+        merge_blocks_preferring_existing(&mut program.blocks, imported);
+    }
     Ok(())
 }
 
@@ -734,7 +753,7 @@ fn parse_program_preprocessed(
 
         let mut blocks = Vec::new();
         for pair in program_pair.into_inner() {
-            parse_program_item(pair, false, allow_main_entry, &mut blocks, state)?;
+            parse_program_item(pair, allow_main_entry, &mut blocks, state)?;
         }
 
         Ok(Program { blocks })
@@ -743,45 +762,11 @@ fn parse_program_preprocessed(
 
 fn parse_program_item(
     pair: Pair<'_, Rule>,
-    inside_main: bool,
     allow_main_entry: bool,
     blocks: &mut Vec<Block>,
     state: &mut LoadState,
 ) -> Result<(), Vec<Diagnostic>> {
     let rule = pair.as_rule();
-    if rule == Rule::main_block {
-        let loc = stmt_loc_from_pair(&pair);
-        if !allow_main_entry {
-            return Err(vec![Diagnostic::semantic_span(
-                "top-level proc Main is only allowed in an entry or included file",
-                loc.as_ref(),
-            )]);
-        }
-        if state.has_main_entry {
-            return Err(vec![Diagnostic::semantic_span(
-                "duplicate top-level proc Main",
-                loc.as_ref(),
-            )]);
-        }
-        if state.has_unwrapped_entry {
-            return Err(vec![Diagnostic::semantic_span(
-                "top-level proc Main cannot be mixed with unwrapped top-level processor sections",
-                loc.as_ref(),
-            )]);
-        }
-        state.has_main_entry = true;
-        for item in pair.into_inner() {
-            if item.as_rule() == Rule::generic_param_list {
-                return Err(vec![Diagnostic::semantic_span(
-                    "top-level proc Main cannot be generic",
-                    stmt_loc_from_pair(&item).as_ref(),
-                )]);
-            }
-            parse_program_item(item, true, allow_main_entry, blocks, state)?;
-        }
-        return Ok(());
-    }
-
     let is_entry_section = matches!(
         rule,
         Rule::ins_block
@@ -802,7 +787,7 @@ fn parse_program_item(
             | Rule::sample_block
             | Rule::graph_block
     );
-    if is_entry_section && !inside_main {
+    if is_entry_section {
         if state.has_main_entry {
             return Err(vec![Diagnostic::semantic_span(
                 "top-level proc Main cannot be mixed with unwrapped top-level processor sections",
@@ -844,14 +829,29 @@ fn parse_program_item(
         Rule::assert_block => blocks.push(Block::Assert(parse_assert_decl(pair)?)),
         Rule::proc_block => {
             let proc_def = parse_proc_block(pair)?;
-            if inside_main && proc_def.name == "Main" {
-                return Err(vec![Diagnostic::semantic_span(
-                    "duplicate top-level proc Main",
-                    proc_def.loc.as_ref(),
-                )]);
+            if proc_def.name == "Main" {
+                let message = if !allow_main_entry {
+                    Some("top-level proc Main is only allowed in an entry or included file")
+                } else if state.has_main_entry {
+                    Some("duplicate top-level proc Main")
+                } else if state.has_unwrapped_entry {
+                    Some("top-level proc Main cannot be mixed with unwrapped top-level processor sections")
+                } else if !proc_def.type_params.is_empty() {
+                    Some("top-level proc Main cannot be generic")
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    return Err(vec![Diagnostic::semantic_span(
+                        message,
+                        proc_def.loc.as_ref(),
+                    )]);
+                }
+                state.has_main_entry = true;
             }
             blocks.push(Block::Proc(proc_def));
         }
+        Rule::enum_block => blocks.push(Block::Enum(parse_enum_block(pair)?)),
         Rule::struct_block => blocks.push(Block::Struct(parse_struct_block(pair)?)),
         Rule::def_block => blocks.push(Block::Def(parse_def_block(pair)?)),
         Rule::namespace_block => blocks.push(Block::Namespace(parse_namespace_decl_ast(pair)?)),
@@ -1135,6 +1135,7 @@ fn validate_imported_blocks(blocks: &[Block], canonical: &Path) -> Result<(), Ve
         if !matches!(
             block,
             Block::Const(_)
+                | Block::Enum(_)
                 | Block::Struct(_)
                 | Block::Def(_)
                 | Block::Proc(_)
@@ -1816,6 +1817,7 @@ fn load_builtin_module_blocks(
                 if !matches!(
                     block,
                     Block::Const(_)
+                        | Block::Enum(_)
                         | Block::Struct(_)
                         | Block::Def(_)
                         | Block::Proc(_)

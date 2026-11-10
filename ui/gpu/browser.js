@@ -1,0 +1,177 @@
+// Browser-only boundaries: trusted gestures, file objects, and parent envelopes.
+export function browserBridge(canvas, { message, target, onInput }) {
+  if (
+    window.parent === window ||
+    typeof acquireVsCodeApi === "function"
+  )
+    return null;
+  const origin = window.location.origin;
+  const touches = new Map();
+  window.addEventListener("blur", () => touches.clear());
+  let pointerStop = false;
+  let cancelFileSelection;
+  const post = (value) =>
+    window.parent.postMessage(
+      { __ondaRunUi: true, message: value },
+      origin,
+    );
+
+  window.addEventListener("message", (event) => {
+    if (
+      event.source === window.parent &&
+      event.origin === origin &&
+      event.data?.__ondaRunHost
+    ) {
+      message(event.data.message);
+    }
+  });
+
+  const drag = (event) => {
+    const transfer = event.dataTransfer;
+    if (!transfer?.types.includes("Files")) return;
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const position = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+    const files = [...transfer.items].filter(item => item.kind === "file");
+    const accepted = files.length === 1 &&
+      (!transfer.files.length || /\.(wav|ondabuffer)$/i.test(transfer.files[0].name));
+    const name = accepted ? target(position.x, position.y) : null;
+    transfer.dropEffect = name ? "copy" : "none";
+    message({
+      type: "bufferFileDrag",
+      phase:
+        !name || event.type === "drop" ? "leave" : "over",
+      position,
+    });
+    if (event.type === "drop" && name && transfer.files.length === 1) {
+      post({ type: "bindBufferFile", name, file: transfer.files[0] });
+    }
+  };
+  for (const type of ["dragenter", "dragover", "drop"])
+    canvas.addEventListener(type, drag);
+  for (const type of ["dragleave", "dragend"])
+    canvas.addEventListener(type, () => message({ type: "bufferFileDrag", phase: "leave" }));
+
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (
+        event.altKey ||
+        event.isComposing ||
+        (!event.ctrlKey && !event.metaKey)
+      )
+        return;
+      const start = event.key === "Enter" || event.key.toLowerCase() === "s";
+      const stop = event.key === "." || event.code === "Period";
+      if (!start && !stop) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      if (onInput) onInput({ type: "key", key: stop ? "Stop" : "Play" });
+      else post({ type: start ? "start" : "stop" });
+      gesture(event, stop);
+    },
+    { capture: true },
+  );
+
+  return {
+    send(value) {
+      if (value.type === "chooseBufferFile") chooseFile(value.name);
+      else if (value.type === "scrollParent") scrollParents(canvas, value.deltaY);
+      else {
+        if (value.type === "clearBuffer") cancelFileSelection?.();
+        post(value);
+      }
+    },
+    cancelFileSelection: () => cancelFileSelection?.(),
+    gesture,
+    touchDelta(event) {
+      const previous = touches.get(event.pointerId);
+      if (event.type !== "pointerdown" && event.type !== "pointermove") {
+        touches.delete(event.pointerId);
+        return;
+      }
+      touches.set(event.pointerId, event.screenY);
+      if (previous === undefined || event.type === "pointerdown") return 0;
+      // Local coordinates change when an ancestor scrolls under the finger.
+      let scale = elementScale(canvas);
+      for (let frame = window.frameElement; frame; frame = frame.ownerDocument.defaultView.frameElement)
+        scale *= elementScale(frame);
+      return (previous - event.screenY) / scale;
+    },
+  };
+
+  function gesture(event, stop = false) {
+    if (event.type === "pointerdown") pointerStop = stop;
+    if (event.type === "pointerup") {
+      stop ||= pointerStop;
+      pointerStop = false;
+    }
+    document.dispatchEvent(
+      new CustomEvent("ondaRunGesture", { detail: { event, stop } }),
+    );
+  }
+  function chooseFile(name) {
+    cancelFileSelection?.();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept =
+      ".wav,.ondabuffer,audio/wav,audio/x-wav,application/vnd.onda.buffer";
+    input.hidden = true;
+    const cleanup = () => {
+      window.removeEventListener("focus", cancel);
+      input.remove();
+      if (cancelFileSelection === cleanup) cancelFileSelection = undefined;
+    };
+    cancelFileSelection = cleanup;
+    const cancel = () =>
+      setTimeout(() => {
+        if (!input.files?.length) cleanup();
+      }, 0);
+    input.addEventListener(
+      "change",
+      () => {
+        if (cancelFileSelection === cleanup && input.files?.[0])
+          post({ type: "bindBufferFile", name, file: input.files[0] });
+        cleanup();
+      },
+      { once: true },
+    );
+    input.addEventListener("cancel", cleanup, { once: true });
+    window.addEventListener("focus", cancel, { once: true });
+    document.body.append(input);
+    input.click();
+  }
+}
+
+function elementScale(element) {
+  return element.offsetHeight ? element.getBoundingClientRect().height / element.offsetHeight : 1;
+}
+
+// Follow the DOM scroll chain, including same-origin iframe boundaries. A pan
+// may use the end of one scroller and continue into the next in the same move.
+function scrollParents(element, delta) {
+  if (!Number.isFinite(delta)) return;
+  for (element = element.parentElement; element && delta; element = element.parentElement) {
+    const document = element.ownerDocument;
+    const style = document.defaultView.getComputedStyle(element);
+    const scrollable = /^(auto|scroll)$/.test(style.overflowY)
+      || (element === document.scrollingElement && style.overflowY === "visible");
+    if (scrollable && element.scrollHeight > element.clientHeight) {
+      const scale = elementScale(element);
+      const previous = element.scrollTop;
+      element.scrollBy({ top: delta / scale, behavior: "instant" });
+      delta -= (element.scrollTop - previous) * scale;
+    }
+    if (scrollable && style.overscrollBehaviorY !== "auto") return;
+    if (!element.parentElement) {
+      const frame = document.defaultView.frameElement;
+      if (frame) {
+        delta *= elementScale(frame);
+        element = frame;
+      }
+    }
+  }
+}

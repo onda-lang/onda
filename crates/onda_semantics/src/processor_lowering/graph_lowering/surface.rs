@@ -228,6 +228,7 @@ fn graph_port_decls_with_numbered_aliases(
             }
         } else {
             ports.push(PortDecl {
+                smoothing: None,
                 loc: Default::default(),
                 name: alias,
                 output_timing: None,

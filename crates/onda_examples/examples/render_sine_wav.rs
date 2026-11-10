@@ -7,7 +7,7 @@ use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{parse_program, Diagnostic};
-use onda_runtime::{bind_output, create_instance_initialized, process_checked, InstanceConfig};
+use onda_runtime::bind_output;
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
 
 const SAMPLE_RATE: u32 = 48_000;
@@ -31,6 +31,7 @@ sample {
 "#;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    onda_realtime::configure_current_thread_audio_fp_mode();
     let output_path = env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -45,7 +46,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )
     .map_err(|d| format_diagnostics("semantic analysis failed", &d))?;
-    let in_channels = typed.ins.len();
     let out_channels = typed.outs.len();
     if out_channels != 1 {
         return Err(format!(
@@ -66,16 +66,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     )
     .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;
 
-    let mut instance = create_instance_initialized(
-        jit,
-        InstanceConfig {
-            sample_rate: SAMPLE_RATE as f32,
-            frames_per_block: BLOCK_SAMPLES,
-            in_channels,
-            out_channels,
-        },
-    )
-    .map_err(|d| format!("instance creation failed: {d:?}"))?;
+    let mut instance = onda_runtime::create_instance(jit, None)
+        .map_err(|error| format!("instance creation failed: {error:?}"))?;
+    onda_codegen_llvm::check_execution_status(onda_runtime::init_checked(
+        &mut instance,
+        onda_runtime::InitMode::Full,
+        onda_runtime::ExecutionOutput::none(),
+    )?)
+    .map_err(|error| format!("initialization failed: {error:?}"))?;
 
     let total_frames = SAMPLE_RATE as usize * DURATION_SECONDS as usize;
     if !total_frames.is_multiple_of(BLOCK_SAMPLES) {
@@ -92,12 +90,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|d| format!("bind output failed: {d:?}"))?;
 
     for _ in 0..blocks {
-        process_checked(
-            &mut instance,
-            BLOCK_SAMPLES,
-            onda_runtime::ExecutionOutput::none(),
-        )
-        .map_err(|d| format!("processing failed: {d:?}"))?;
+        onda_runtime::process_checked(&mut instance, onda_runtime::ExecutionOutput::none())
+            .map_err(onda_frontend::Diagnostic::from)
+            .and_then(onda_codegen_llvm::check_execution_status)
+            .map_err(|d| format!("processing failed: {d:?}"))?;
         let out_f32 =
             unsafe { std::slice::from_raw_parts(out_bound.as_ptr().cast::<f32>(), BLOCK_SAMPLES) };
         rendered.extend_from_slice(out_f32);

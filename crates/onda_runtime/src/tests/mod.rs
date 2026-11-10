@@ -20,18 +20,22 @@ fn compile_test_program(source: &str, block_size: usize) -> JitProgram {
     jit_program_from_optimized_mir(mir).expect("test MIR should compile")
 }
 
-fn compile_test_instance(source: &str, block_size: usize, out_channels: usize) -> Instance {
+fn initialize_test_instance(
+    program: JitProgram,
+    allocator: Option<RuntimeAllocator>,
+) -> Result<Instance, Diagnostic> {
+    let mut instance = create_instance(program, allocator)?;
+    onda_codegen_llvm::check_execution_status(init_checked(
+        &mut instance,
+        InitMode::Full,
+        ExecutionOutput::none(),
+    )?)?;
+    Ok(instance)
+}
+
+fn compile_test_instance(source: &str, block_size: usize, _out_channels: usize) -> Instance {
     let program = compile_test_program(source, block_size);
-    create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: block_size,
-            in_channels: 0,
-            out_channels,
-        },
-    )
-    .expect("test instance should initialize")
+    initialize_test_instance(program, None).expect("test instance should initialize")
 }
 
 #[test]
@@ -85,7 +89,7 @@ fn event_status_preserves_state_only_for_success_and_input_rejection() {
 }
 
 #[test]
-fn initialized_constructor_clears_prints_when_initialization_fails() {
+fn explicit_initialization_preserves_prints_on_generated_failure() {
     let program = compile_test_program(
         r#"
 params:
@@ -100,29 +104,24 @@ sample:
     );
     let mut storage = [0_u8; 64];
     let mut prints = PrintBatch::from_storage(&mut storage);
-    let error = create_instance_initialized_with_output(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: 1,
-            in_channels: 0,
-            out_channels: 1,
-        },
+    let mut instance = create_instance(program, None).unwrap();
+    let status = init_checked(
+        &mut instance,
+        InitMode::Full,
         ExecutionOutput {
             delegate_batch: None,
             print_batch: Some(&mut prints),
         },
     )
-    .expect_err("division by zero should fail initialization");
-
-    assert!(error.message.contains("runtime safety check"));
+    .unwrap();
+    assert_eq!(status, PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
     assert_eq!(
         (
             prints.used_bytes,
             prints.record_count,
             prints.overflow_count
         ),
-        (0, 0, 0)
+        (16, 1, 0)
     );
 }
 
@@ -203,9 +202,11 @@ sample:
     }
     let mut storage = [0_u8; 256];
     let mut batch = PrintBatch::from_storage(&mut storage);
-    process_checked(
+    crate::process_checked_segment(
         &mut instance,
+        0,
         1,
+        crate::PROCESSOR_FULL_BLOCK,
         ExecutionOutput {
             delegate_batch: None,
             print_batch: Some(&mut batch),
@@ -254,8 +255,14 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, 1, ExecutionOutput::none())
-        .expect("process without print storage should succeed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("process without print storage should succeed");
     assert_eq!(output, [2.0]);
 }
 
@@ -287,8 +294,6 @@ fn delegate_batch_iterates_complete_native_records_without_allocation() {
     assert_eq!(occurrences[1].delegate_index, 5);
     assert_eq!(occurrences[1].sequence, 9);
     assert_eq!(occurrences[1].payload, [1]);
-    assert_eq!(batch.occurrence(1), Ok(Some(occurrences[1])));
-    assert_eq!(batch.occurrence(2), Ok(None));
     assert_eq!(batch.capacity_bytes(), 29);
     assert_eq!(batch.overflow_count, 3);
 }
@@ -304,19 +309,19 @@ fn runtime_batch_access_distinguishes_absence_from_malformed_storage() {
         Some(Err(BatchDecodeError::MalformedRecord { record_index: 0 }))
     );
     assert_eq!(
-        delegates.occurrence(1),
+        delegates.occurrences().collect::<Result<Vec<_>, _>>(),
         Err(BatchDecodeError::MalformedRecord { record_index: 0 })
     );
 
     delegates.record_count = 0;
     assert_eq!(
-        delegates.occurrence(0),
+        delegates.occurrences().collect::<Result<Vec<_>, _>>(),
         Err(BatchDecodeError::InvalidEnvelope)
     );
     delegates.record_count = 1;
     delegates.used_bytes = 17;
     assert_eq!(
-        delegates.occurrence(0),
+        delegates.occurrences().collect::<Result<Vec<_>, _>>(),
         Err(BatchDecodeError::InvalidEnvelope)
     );
 
@@ -325,7 +330,10 @@ fn runtime_batch_access_distinguishes_absence_from_malformed_storage() {
     let mut trailing = DelegateBatch::from_storage(&mut trailing_storage);
     trailing.used_bytes = 13;
     trailing.record_count = 1;
-    assert_eq!(trailing.occurrence(0), Err(BatchDecodeError::TrailingBytes));
+    assert_eq!(
+        trailing.occurrences().collect::<Result<Vec<_>, _>>(),
+        Err(BatchDecodeError::TrailingBytes)
+    );
 
     let mut print_storage = [0_u8; 16];
     let mut prints = PrintBatch::from_storage(&mut print_storage);
@@ -336,7 +344,7 @@ fn runtime_batch_access_distinguishes_absence_from_malformed_storage() {
         Some(Err(BatchDecodeError::MalformedRecord { record_index: 0 }))
     );
     assert_eq!(
-        prints.occurrence(1),
+        prints.occurrences().collect::<Result<Vec<_>, _>>(),
         Err(BatchDecodeError::MalformedRecord { record_index: 0 })
     );
 }
@@ -381,16 +389,7 @@ fn bufferless_instances_have_no_fallback_storage() {
     .expect("source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
     let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-    let instance = create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: 64,
-            in_channels: 0,
-            out_channels: 1,
-        },
-    )
-    .expect("instance should initialize");
+    let instance = initialize_test_instance(program, None).expect("instance should initialize");
 
     assert!(instance.buffer_ptrs.is_empty());
 }
@@ -410,16 +409,7 @@ fn creation_defers_full_init_until_after_initial_parameter_configuration() {
     .expect("source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("source should lower");
     let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-    let mut instance = create_instance(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: 1,
-            in_channels: 0,
-            out_channels: 1,
-        },
-    )
-    .expect("instance allocation should succeed");
+    let mut instance = create_instance(program, None).expect("instance allocation should succeed");
     let mut output = [0.0_f32; 1];
     unsafe {
         bind_output(
@@ -432,14 +422,37 @@ fn creation_defers_full_init_until_after_initial_parameter_configuration() {
     }
 
     assert!(!instance.is_initialized());
-    assert!(process_checked(&mut instance, 1, ExecutionOutput::none()).is_err());
-    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none()
+    )
+    .is_err());
+    assert!(init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none()
+    )
+    .is_err());
     set_param_by_index(&mut instance, 0, &0.75_f32.to_ne_bytes())
         .expect("initial parameter should update");
-    init_checked(&mut instance, InitMode::Full).expect("full init should succeed");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should succeed");
     assert!(instance.is_initialized());
-    process_checked(&mut instance, 1, ExecutionOutput::none())
-        .expect("initialized instance should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initialized instance should process");
     assert_eq!(output, [0.75]);
 }
 
@@ -510,8 +523,14 @@ sample:
         }
 
         for expected in [0.0, 0.25, 0.5] {
-            process_checked(&mut instance, 1, ExecutionOutput::none())
-                .expect("task block should process");
+            crate::process_checked_segment(
+                &mut instance,
+                0,
+                1,
+                crate::PROCESSOR_FULL_BLOCK,
+                ExecutionOutput::none(),
+            )
+            .expect("task block should process");
             assert_eq!(output[0], expected);
         }
     }
@@ -555,7 +574,14 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, 1, ExecutionOutput::none()).expect("task block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task block should process");
     assert_eq!(output[0], 0.1);
 }
 
@@ -603,7 +629,14 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, 1, ExecutionOutput::none()).expect("program should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("program should process");
     assert_eq!(output, [123.0]);
 }
 
@@ -622,8 +655,14 @@ fn top_level_task_declarations_do_not_close_a_standalone_sample_gate() {
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, 4, ExecutionOutput::none())
-        .expect("standalone sample should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("standalone sample should process");
     assert_eq!(output, [1.0; 4]);
 }
 
@@ -643,16 +682,7 @@ fn state_init_and_restore_preserve_validated_buffer_tables() {
     .expect("source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
     let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-    let mut instance = create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: 64,
-            in_channels: 0,
-            out_channels: 0,
-        },
-    )
-    .expect("instance should initialize");
+    let mut instance = initialize_test_instance(program, None).expect("instance should initialize");
     let mut samples = [1.0_f32, 2.0];
     unsafe {
         bind_buffer(
@@ -666,20 +696,22 @@ fn state_init_and_restore_preserve_validated_buffer_tables() {
         )
         .expect("buffer should bind");
     }
-    validate_buffers(&mut instance).expect("buffer should validate");
     let bound_ptr = instance.buffer_ptrs[0];
     let snapshot = instance
         .snapshot_state_bytes()
         .expect("initialized state should snapshot");
 
-    init_checked(&mut instance, InitMode::PreservePinned).expect("init should succeed");
-    assert!(instance.buffers_validated);
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("init should succeed");
     assert_eq!(instance.buffer_ptrs[0], bound_ptr);
 
     instance
         .restore_state_bytes(&snapshot)
         .expect("state should restore");
-    assert!(instance.buffers_validated);
     assert_eq!(instance.buffer_ptrs[0], bound_ptr);
 }
 
@@ -731,14 +763,9 @@ sample:
     .expect("source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("source should lower");
     let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-    let config = InstanceConfig {
-        sample_rate: 48_000.0,
-        frames_per_block: 1,
-        in_channels: 0,
-        out_channels: 1,
-    };
+    let config = None;
 
-    let mut neutral = create_instance_initialized(program.clone(), config)
+    let mut neutral = initialize_test_instance(program.clone(), None)
         .expect("neutral instance should initialize");
     let mut neutral_output = [0.0_f32; 1];
     unsafe {
@@ -750,8 +777,14 @@ sample:
         )
         .expect("neutral output should bind");
     }
-    process_checked(&mut neutral, 1, ExecutionOutput::none())
-        .expect("neutral instance should process");
+    crate::process_checked_segment(
+        &mut neutral,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("neutral instance should process");
     assert_eq!(neutral_output, [1.0]);
 
     let mut bound = create_instance(program, config).expect("instance should allocate");
@@ -776,8 +809,16 @@ sample:
         )
         .expect("bound output should bind");
     }
-    init_checked(&mut bound, InitMode::Full).expect("bound instance should initialize");
-    process_checked(&mut bound, 1, ExecutionOutput::none()).expect("bound instance should process");
+    init_checked(&mut bound, InitMode::Full, crate::ExecutionOutput::none())
+        .expect("bound instance should initialize");
+    crate::process_checked_segment(
+        &mut bound,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("bound instance should process");
     assert_eq!(bound_output, [121.0]);
 
     let mut replacement = [7.0_f32, 11.0];
@@ -793,21 +834,39 @@ sample:
         )
         .expect("replacement buffer should bind");
     }
-    process_checked(&mut bound, 1, ExecutionOutput::none())
-        .expect("replacement binding should be visible without reinitialization");
+    crate::process_checked_segment(
+        &mut bound,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("replacement binding should be visible without reinitialization");
     assert_eq!(bound_output, [126.0]);
 
     let refresh = bound.event_index("refresh").expect("refresh event");
     trigger_event_by_index_checked(&mut bound, refresh, &[], ExecutionOutput::none())
         .expect("proc init event should run against the current binding");
-    process_checked(&mut bound, 1, ExecutionOutput::none())
-        .expect("reinitialized proc should process");
+    crate::process_checked_segment(
+        &mut bound,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reinitialized proc should process");
     assert_eq!(bound_output, [131.0]);
 
-    init_checked(&mut bound, InitMode::Full)
+    init_checked(&mut bound, InitMode::Full, crate::ExecutionOutput::none())
         .expect("top-level init should run against the replacement binding");
-    process_checked(&mut bound, 1, ExecutionOutput::none())
-        .expect("fully reinitialized instance should process");
+    crate::process_checked_segment(
+        &mut bound,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("fully reinitialized instance should process");
     assert_eq!(bound_output, [137.0]);
 }
 
@@ -859,8 +918,14 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, 1, ExecutionOutput::none())
-        .expect("unbound buffers should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("unbound buffers should process");
     assert_eq!(output, [0.0]);
 
     let mut direct = [1.0_f32];
@@ -887,8 +952,14 @@ sample:
         )
         .expect("second collection entry should bind");
     }
-    process_checked(&mut instance, 1, ExecutionOutput::none())
-        .expect("partially bound buffers should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("partially bound buffers should process");
     assert_eq!(output, [25.0]);
 
     let mut first = [3.0_f32];
@@ -914,8 +985,14 @@ sample:
         )
         .expect("first collection entry should bind");
     }
-    process_checked(&mut instance, 1, ExecutionOutput::none())
-        .expect("rebound buffers should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        1,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("rebound buffers should process");
     assert_eq!(output, [36.0]);
 }
 
@@ -961,16 +1038,8 @@ sample:
     .expect("task source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("task source should lower");
     let program = jit_program_from_optimized_mir(mir).expect("task MIR should compile");
-    let mut instance = create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: BLOCK_SIZE,
-            in_channels: 0,
-            out_channels: 1,
-        },
-    )
-    .expect("task instance should initialize");
+    let mut instance =
+        initialize_test_instance(program, None).expect("task instance should initialize");
     let mut output = [99.0_f32; BLOCK_SIZE];
     unsafe {
         bind_output(
@@ -982,34 +1051,80 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("first task block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("first task block should process");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("completion block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("completion block should process");
     assert_eq!(output, [2.0; BLOCK_SIZE]);
 
     let reload = instance.event_index("reload").expect("reload event");
     trigger_event_by_index_checked(&mut instance, reload, &[], ExecutionOutput::none())
         .expect("task reset event should run");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted task block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted task block should process");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted task should complete");
     assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should succeed");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default init block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("default init block should process");
     assert_eq!(output, [4.0; BLOCK_SIZE]);
 
-    init_checked(&mut instance, InitMode::Full).expect("full init should succeed");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should succeed");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("full init block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("full init block should process");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
 }
 
@@ -1057,11 +1172,23 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("yielding task should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("yielding task should process");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("completing task should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("completing task should process");
     assert_eq!(output, [5.0]);
 }
 
@@ -1113,14 +1240,32 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("yielding task should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("yielding task should process");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("completing task should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("completing task should process");
     assert_eq!(output, [3.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("completed task should fall through");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("completed task should fall through");
     assert_eq!(output, [3.0]);
 }
 
@@ -1158,55 +1303,132 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("yielding task should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("yielding task should process");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("completing task should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("completing task should process");
     assert_eq!(output, [2.0]);
 
     let retry = instance.event_index("retry").expect("retry event");
     trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none())
         .expect("task reset should run");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("reset task should yield again");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reset task should yield again");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("reset task should complete again");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reset task should complete again");
     assert_eq!(output, [4.0]);
 
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("default init should preserve the completed task");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should preserve the completed task");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default init should preserve the completed task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("default init should preserve the completed task");
     assert_eq!(output, [4.0]);
 
-    init_checked(&mut instance, InitMode::Full).expect("full init should restart the task");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should restart the task");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("full init should restart the task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("full init should restart the task");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted task should complete from a cleared state");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted task should complete from a cleared state");
     assert_eq!(output, [2.0]);
 
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("default init should preserve pinned task state");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should preserve pinned task state");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default init should preserve the completed task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("default init should preserve the completed task");
     assert_eq!(output, [2.0]);
 
-    init_checked(&mut instance, InitMode::Full)
-        .expect("full init should restart after default init");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should restart after default init");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("full init should restart after default init");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("full init should restart after default init");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("fully initialized task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("fully initialized task should complete");
     assert_eq!(output, [2.0]);
 }
 
@@ -1247,17 +1469,41 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial task should yield");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial task should complete before its sample reset");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial task should complete before its sample reset");
     assert_eq!(output, [2.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("sample reset should restart the task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("sample reset should restart the task");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted task should complete");
     assert_eq!(output, [4.0]);
 }
 
@@ -1306,17 +1552,41 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial proc task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial proc task should yield");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial proc task should complete before its block-post reset");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial proc task should complete before its block-post reset");
     assert_eq!(output, [2.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("block-post reset should restart the proc task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("block-post reset should restart the proc task");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted proc task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted proc task should complete");
     assert_eq!(output, [4.0]);
 }
 
@@ -1352,21 +1622,45 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial task should yield");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial task should complete");
     assert_eq!(output, [8.0]);
 
     let retry = instance.event_index("retry").expect("retry event");
     trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none())
         .expect("task reset should run");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted task should yield");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restarted task should complete");
     assert_eq!(output, [8.0]);
 }
 
@@ -1403,19 +1697,48 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [2.0]);
 
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("default init should execute explicit task reset");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should execute explicit task reset");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("explicitly reset task should yield again");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("explicitly reset task should yield again");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("explicitly reset task should complete again");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("explicitly reset task should complete again");
     assert_eq!(output, [4.0]);
 }
 
@@ -1454,17 +1777,36 @@ block:
         f32::from_le_bytes(bytes)
     };
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(read_ready(&instance), 0.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(read_ready(&instance), 2.0);
 
     let retry = instance.event_index("retry").expect("retry event");
     trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none())
         .expect("task reset should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("reset task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reset task should yield");
     assert_eq!(read_ready(&instance), 0.0);
 }
 
@@ -1506,11 +1848,23 @@ block:
         f32::from_le_bytes(bytes)
     };
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("proc task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("proc task should yield");
     assert_eq!(read_ready(&instance), 0.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("proc task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("proc task should complete");
     assert_eq!(read_ready(&instance), 1.0);
 }
 
@@ -1573,13 +1927,25 @@ sample:
         .expect("nested output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both tasks should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("both tasks should yield");
     assert_eq!(direct, [0.0]);
     assert_eq!(nested, [0.0]);
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both tasks should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("both tasks should complete");
     assert_eq!(direct, [1.0]);
     assert_eq!(nested, [1.0]);
 }
@@ -1620,11 +1986,23 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should yield inside nested loops");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield inside nested loops");
     assert_eq!(output, [0.0]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete on the next block");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete on the next block");
     assert_eq!(output, [1.0]);
 }
 
@@ -1668,28 +2046,71 @@ sample {
         .expect("ordinary output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial state should process");
     assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
 
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("ordinary live init should succeed");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("reinitialized state should process");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("ordinary live init should succeed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reinitialized state should process");
     assert_eq!((pinned[0], ordinary[0]), (14.0, 21.0));
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("state should advance");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("state should advance");
     assert_eq!((pinned[0], ordinary[0]), (15.0, 22.0));
 
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("second default init should succeed");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("second init state should process");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("second default init should succeed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("second init state should process");
     assert_eq!((pinned[0], ordinary[0]), (17.0, 21.0));
 
-    init_checked(&mut instance, InitMode::Full).expect("full live init should succeed");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("fully initialized state should process");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full live init should succeed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("fully initialized state should process");
     assert_eq!((pinned[0], ordinary[0]), (12.0, 21.0));
 }
 
@@ -1732,9 +2153,20 @@ sample { out1 = amp + pinned }
         ExecutionOutput::none(),
     )
     .expect("event should run");
-    init_checked(&mut instance, InitMode::PreservePinned).expect("live init should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("state should process");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("live init should run");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("state should process");
     assert_eq!(output, [1.5]);
 }
 
@@ -1774,25 +2206,59 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("initial state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("initial state should process");
     assert_eq!(output, [4.0]);
 
     let mutate = instance.event_index("mutate").expect("mutate event");
     trigger_event_by_index_checked(&mut instance, mutate, &[], ExecutionOutput::none())
         .expect("mutation should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("mutated state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("mutated state should process");
     assert_eq!(output, [100.0]);
 
-    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default init should process");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should succeed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("default init should process");
     assert_eq!(output, [61.0]);
 
-    init_checked(&mut instance, InitMode::Full).expect("full init should succeed");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("full init should process");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should succeed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("full init should process");
     assert_eq!(output, [4.0]);
 }
 
@@ -1844,11 +2310,24 @@ sample:
         .expect("divisor parameter should update");
 
     assert!(
-        init_checked(&mut instance, InitMode::PreservePinned).is_err(),
+        init_checked(
+            &mut instance,
+            InitMode::PreservePinned,
+            crate::ExecutionOutput::none()
+        )
+        .unwrap()
+            == PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
         "division by zero should fail"
     );
     assert!(!instance.is_initialized());
-    assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
+    assert!(crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none()
+    )
+    .is_err());
     assert!(trigger_event_by_index_checked(
         &mut instance,
         event,
@@ -1861,25 +2340,55 @@ sample:
     set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
         .expect("divisor parameter should recover");
     assert!(
-        init_checked(&mut instance, InitMode::PreservePinned).is_err(),
+        init_checked(
+            &mut instance,
+            InitMode::PreservePinned,
+            crate::ExecutionOutput::none()
+        )
+        .is_err(),
         "preserve-pinned init cannot recover indeterminate pinned state"
     );
     instance
         .restore_state_bytes(&snapshot)
         .expect("a valid snapshot should recover invalid state");
     assert!(instance.is_initialized());
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restored state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restored state should process");
     assert_eq!(output, [50.0]);
 
     set_param_by_index(&mut instance, 0, &0_i32.to_ne_bytes())
         .expect("divisor parameter should update");
-    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(
+        init_checked(
+            &mut instance,
+            InitMode::PreservePinned,
+            crate::ExecutionOutput::none()
+        )
+        .unwrap()
+            == PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+    );
     set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
         .expect("divisor parameter should recover");
-    init_checked(&mut instance, InitMode::Full).expect("full init should recover invalid state");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("reinitialized state should process");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should recover invalid state");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reinitialized state should process");
     assert_eq!(output, [11.0]);
 }
 
@@ -1899,13 +2408,16 @@ sample:
     );
     let event = instance.event_index("divide").expect("divide event");
 
-    assert!(trigger_event_by_index_checked(
-        &mut instance,
-        event,
-        &0_i32.to_ne_bytes(),
-        ExecutionOutput::none()
-    )
-    .is_err());
+    assert!(
+        trigger_event_by_index_checked(
+            &mut instance,
+            event,
+            &0_i32.to_ne_bytes(),
+            ExecutionOutput::none()
+        )
+        .unwrap()
+            == PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+    );
     assert!(!instance.is_initialized());
     assert!(trigger_event_by_index_checked(
         &mut instance,
@@ -1914,9 +2426,19 @@ sample:
         ExecutionOutput::none()
     )
     .is_err());
-    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none()
+    )
+    .is_err());
 
-    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should recover the instance");
     trigger_event_by_index_checked(
         &mut instance,
         event,
@@ -1941,7 +2463,6 @@ sample:
         1,
     );
     let event = instance.event_index("divide").expect("divide event");
-    validate_buffers(&mut instance).expect("buffer descriptors should validate");
 
     let status = unsafe {
         trigger_event_by_index_unchecked(
@@ -1964,10 +2485,19 @@ sample:
         ExecutionOutput::none()
     )
     .is_err());
-    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none()
+    )
+    .is_err());
 
-    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
-    validate_buffers(&mut instance).expect("buffer descriptors should revalidate");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should recover the instance");
     let status = unsafe {
         trigger_event_by_index_unchecked(
             &mut instance,
@@ -2004,7 +2534,7 @@ sample:
         )
         .expect("output should bind");
     }
-    prepare_unchecked_process(&mut instance).expect("bindings should validate");
+    prepare_process(&instance).expect("bindings should validate");
 
     let status = unsafe { process_unchecked(&mut instance, ExecutionOutput::none()) }
         .expect("unchecked processing should return the generated status");
@@ -2013,13 +2543,30 @@ sample:
         onda_codegen_llvm::PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
     );
     assert!(!instance.is_initialized());
-    assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
-    assert!(init_checked(&mut instance, InitMode::PreservePinned).is_err());
+    assert!(crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none()
+    )
+    .is_err());
+    assert!(init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none()
+    )
+    .is_err());
 
     set_param_by_index(&mut instance, 0, &1_i32.to_ne_bytes())
         .expect("divisor parameter should update");
-    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
-    prepare_unchecked_process(&mut instance).expect("bindings should revalidate");
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should recover the instance");
+    prepare_process(&instance).expect("bindings should revalidate");
     let status = unsafe { process_unchecked(&mut instance, ExecutionOutput::none()) }
         .expect("processing should run after recovery");
     assert_eq!(status, onda_codegen_llvm::PROCESSOR_EXECUTION_OK);
@@ -2060,16 +2607,8 @@ sample:
     .expect("loop task source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("loop task should lower");
     let program = jit_program_from_optimized_mir(mir).expect("loop task MIR should compile");
-    let mut instance = create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: BLOCK_SIZE,
-            in_channels: 0,
-            out_channels: 1,
-        },
-    )
-    .expect("loop task instance should initialize");
+    let mut instance =
+        initialize_test_instance(program, None).expect("loop task instance should initialize");
     let mut output = [99.0_f32; BLOCK_SIZE];
     unsafe {
         bind_output(
@@ -2081,13 +2620,25 @@ sample:
         .expect("output should bind");
     }
     for _ in 0..3 {
-        process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-            .expect("yielding block should process");
+        crate::process_checked_segment(
+            &mut instance,
+            0,
+            BLOCK_SIZE,
+            crate::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .expect("yielding block should process");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
         output.fill(99.0);
     }
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("completion block should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("completion block should process");
     assert_eq!(output, [3.0; BLOCK_SIZE]);
 }
 
@@ -2121,14 +2672,32 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("first loop iteration should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("first loop iteration should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("second loop iteration should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("second loop iteration should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task loop should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task loop should complete");
     assert_eq!(output, [1.0; BLOCK_SIZE]);
 }
 
@@ -2164,8 +2733,14 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("i64 loop should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("i64 loop should process");
     assert_eq!(output, [1.0; BLOCK_SIZE]);
 }
 
@@ -2194,8 +2769,14 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("maximum-bound loop should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("maximum-bound loop should process");
     assert_eq!(output, [2.0; BLOCK_SIZE]);
 }
 
@@ -2232,14 +2813,32 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("maximum iteration should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("maximum iteration should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("minimum iteration should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("minimum iteration should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("extrema-bound task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("extrema-bound task should complete");
     assert_eq!(output, [3.0; BLOCK_SIZE]);
 }
 
@@ -2278,14 +2877,32 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("first i64 iteration should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("first i64 iteration should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("second i64 iteration should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("second i64 iteration should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("i64 task loop should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("i64 task loop should complete");
     assert_eq!(output, [1.0; BLOCK_SIZE]);
 }
 
@@ -2319,11 +2936,23 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("tuple task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("tuple task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("tuple task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("tuple task should complete");
     assert_eq!(output, [8.0; BLOCK_SIZE]);
 }
 
@@ -2390,16 +3019,8 @@ sample:
     .expect("proc init task source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("proc init task should lower");
     let program = jit_program_from_optimized_mir(mir).expect("task MIR should compile");
-    let mut instance = create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: BLOCK_SIZE,
-            in_channels: 0,
-            out_channels: 2,
-        },
-    )
-    .expect("task instance should initialize");
+    let mut instance =
+        initialize_test_instance(program, None).expect("task instance should initialize");
     let mut output1 = [99.0_f32; BLOCK_SIZE];
     let mut output2 = [99.0_f32; BLOCK_SIZE];
     unsafe {
@@ -2419,8 +3040,14 @@ sample:
         .expect("second output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both tasks should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("both tasks should yield");
     assert_eq!(output1, [0.0; BLOCK_SIZE]);
     assert_eq!(output2, [0.0; BLOCK_SIZE]);
 
@@ -2429,22 +3056,46 @@ sample:
         .expect("default init event");
     trigger_event_by_index_checked(&mut instance, default_init, &[], ExecutionOutput::none())
         .expect("default proc init should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("tasks should resume after init");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("tasks should resume after init");
     assert_eq!(output1, [231.0; BLOCK_SIZE]);
     assert_eq!(output2, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("reset task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("reset task should complete");
     assert_eq!(output2, [233.0; BLOCK_SIZE]);
 
     let full_init = instance.event_index("full_init").expect("full init event");
     trigger_event_by_index_checked(&mut instance, full_init, &[], ExecutionOutput::none())
         .expect("forced proc init should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("fully reset task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("fully reset task should yield");
     assert_eq!(output1, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("fully reset task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("fully reset task should complete");
     assert_eq!(output1, [232.0; BLOCK_SIZE]);
 }
 
@@ -2521,15 +3172,27 @@ sample:
 
     trigger_event_by_index_checked(&mut instance, dirty, &[], ExecutionOutput::none())
         .expect("arrays should become dirty");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("dirty state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("dirty state should process");
     assert_eq!(direct_output, [97.0; BLOCK_SIZE]);
     assert_eq!(nested_output, [97.0; BLOCK_SIZE]);
 
     trigger_event_by_index_checked(&mut instance, default_init, &[], ExecutionOutput::none())
         .expect("default proc init should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("default state should process");
     assert_eq!(direct_output, [90.0; BLOCK_SIZE]);
     assert_eq!(nested_output, [90.0; BLOCK_SIZE]);
 
@@ -2537,8 +3200,14 @@ sample:
         .expect("arrays should become dirty");
     trigger_event_by_index_checked(&mut instance, full_init, &[], ExecutionOutput::none())
         .expect("full proc init should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("fully reset state should process");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("fully reset state should process");
     assert_eq!(direct_output, [0.0; BLOCK_SIZE]);
     assert_eq!(nested_output, [0.0; BLOCK_SIZE]);
 }
@@ -2597,7 +3266,12 @@ sample:
     process_checked_segment(&mut instance, 0, 2, 0, ExecutionOutput::none())
         .expect("first audio segment should observe the yielded task");
     assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
-    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should succeed");
     process_checked_segment(
         &mut instance,
         2,
@@ -2612,16 +3286,28 @@ sample:
         .snapshot_state_bytes()
         .expect("initialized state should snapshot");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("next block should complete the task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("next block should complete the task");
     assert_eq!(output, [11.0; BLOCK_SIZE]);
 
     instance
         .restore_state_bytes(&suspended)
         .expect("suspended task snapshot should restore");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restored task should resume after its yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("restored task should resume after its yield");
     assert_eq!(output, [11.0; BLOCK_SIZE]);
 }
 
@@ -2667,7 +3353,12 @@ block:
         .expect("first audio segment should observe the yielded task");
     assert_eq!(output, [0.0, 0.0, 99.0, 99.0]);
 
-    init_checked(&mut instance, InitMode::PreservePinned).expect("default init should succeed");
+    init_checked(
+        &mut instance,
+        InitMode::PreservePinned,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("default init should succeed");
     process_checked_segment(
         &mut instance,
         2,
@@ -2678,8 +3369,14 @@ block:
     .expect("default init must not reopen the top-level task gate");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("next block should complete the task");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("next block should complete the task");
     assert_eq!(output, [11.0; BLOCK_SIZE]);
 }
 
@@ -2727,26 +3424,50 @@ sample:
         .event_index("set_enabled")
         .expect("set_enabled event");
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("disabled task should be bypassed");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("disabled task should be bypassed");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
     trigger_event_by_index_checked(&mut instance, set_enabled, &[1], ExecutionOutput::none())
         .expect("enable event should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("enabled task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("enabled task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
 
     trigger_event_by_index_checked(&mut instance, set_enabled, &[0], ExecutionOutput::none())
         .expect("disable event should run");
     output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("suspended task should not gate a bypassed block");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("suspended task should not gate a bypassed block");
     assert_eq!(output, [1.0; BLOCK_SIZE]);
 
     trigger_event_by_index_checked(&mut instance, set_enabled, &[1], ExecutionOutput::none())
         .expect("re-enable event should run");
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should resume and complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should resume and complete");
     assert_eq!(output, [11.0; BLOCK_SIZE]);
 }
 
@@ -2789,15 +3510,27 @@ sample:
     }
 
     for expected_yields in 1..=4 {
-        process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-            .expect("task iteration should yield");
+        crate::process_checked_segment(
+            &mut instance,
+            0,
+            BLOCK_SIZE,
+            crate::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .expect("task iteration should yield");
         assert_eq!(
             output, [0.0; BLOCK_SIZE],
             "iteration {expected_yields} must remain behind the await barrier"
         );
     }
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete after the loop");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete after the loop");
     assert_eq!(output, [26.0; BLOCK_SIZE]);
 }
 
@@ -2835,13 +3568,25 @@ sample:
     }
 
     for _ in 0..2 {
-        process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-            .expect("loop task should yield");
+        crate::process_checked_segment(
+            &mut instance,
+            0,
+            BLOCK_SIZE,
+            crate::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .expect("loop task should yield");
         assert_eq!(output, [0.0; BLOCK_SIZE]);
         output.fill(99.0);
     }
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("loop task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("loop task should complete");
     assert_eq!(output, [99.0; BLOCK_SIZE]);
 }
 
@@ -2876,10 +3621,23 @@ block:
         .expect("array output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE * 2]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
 }
 
@@ -2917,10 +3675,23 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [1.6; BLOCK_SIZE]);
 }
 
@@ -2983,8 +3754,14 @@ sample:
             .expect("output should bind");
         }
 
-        process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-            .expect("task should complete");
+        crate::process_checked_segment(
+            &mut instance,
+            0,
+            BLOCK_SIZE,
+            crate::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none(),
+        )
+        .expect("task should complete");
         assert_eq!(output, [6.0; BLOCK_SIZE]);
     }
 }
@@ -3028,14 +3805,32 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("first task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("first task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("second task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("second task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both tasks should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("both tasks should complete");
     assert_eq!(output, [7.0; BLOCK_SIZE]);
 }
 
@@ -3080,10 +3875,23 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [53.0; BLOCK_SIZE]);
 }
 
@@ -3122,10 +3930,23 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [5.0; BLOCK_SIZE]);
 }
 
@@ -3163,10 +3984,23 @@ block:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [4.0; BLOCK_SIZE]);
 }
 
@@ -3208,18 +4042,30 @@ sample:
         .expect("output should bind");
     }
 
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).expect("task should yield");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should yield");
     assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("task should complete");
+    crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .expect("task should complete");
     assert_eq!(output, [2.0; BLOCK_SIZE]);
 }
 
 #[test]
 fn tasks_in_runtime_indexed_proc_arrays_activate_lazily_per_slot() {
     const BLOCK_SIZE: usize = 4;
-    let mut instance = compile_test_instance(
-        r#"
+    let child = r#"
 proc Child:
   init:
     pin progress: i32 = 0
@@ -3231,49 +4077,75 @@ proc Child:
     await load()
     sample:
       out1 = f32(progress)
-proc Parent:
-  init:
-    children: Child[2] = Child()
-  sample:
-    out1 = children[0]() + children[1]()
-init:
-  parent = Parent()
-sample:
-  out1 = parent()
-"#,
-        BLOCK_SIZE,
-        1,
-    );
-    let mut output = [99.0_f32; BLOCK_SIZE];
-    unsafe {
-        bind_output(
-            &mut instance,
-            0,
-            output.as_mut_ptr().cast(),
-            std::mem::size_of_val(&output),
-        )
-        .expect("output should bind");
+"#;
+    for nested in [false, true] {
+        for selector in ["1", "index"] {
+            let owner = if nested {
+                format!(
+                    "proc Parent:\n  init:\n    children: Child[2] = Child()\n  sample:\n    index: i32 = 1\n    out1 = children[0]() + children[{selector}]()\ninit:\n  parent = Parent()\nsample:\n  out1 = parent()\n"
+                )
+            } else {
+                format!(
+                    "init:\n  children: Child[2] = Child()\nsample:\n  index: i32 = 1\n  out1 = children[0]() + children[{selector}]()\n"
+                )
+            };
+            let source = format!("{child}\n{owner}");
+            let mut instance = compile_test_instance(&source, BLOCK_SIZE, 1);
+            let mut output = [99.0_f32; BLOCK_SIZE];
+            unsafe {
+                bind_output(
+                    &mut instance,
+                    0,
+                    output.as_mut_ptr().cast(),
+                    std::mem::size_of_val(&output),
+                )
+                .expect("output should bind");
+            }
+
+            assert_eq!(
+                process_checked(&mut instance, ExecutionOutput::none())
+                    .expect("both child tasks should yield"),
+                PROCESSOR_EXECUTION_OK
+            );
+            assert_eq!(output, [0.0; BLOCK_SIZE]);
+            assert_eq!(
+                process_checked(&mut instance, ExecutionOutput::none())
+                    .expect("both child tasks should complete"),
+                PROCESSOR_EXECUTION_OK
+            );
+            assert_eq!(output, [22.0; BLOCK_SIZE]);
+
+            assert_eq!(
+                init_checked(
+                    &mut instance,
+                    InitMode::PreservePinned,
+                    ExecutionOutput::none()
+                )
+                .expect("default init should preserve nested task state"),
+                PROCESSOR_EXECUTION_OK
+            );
+            output.fill(99.0);
+            assert_eq!(
+                process_checked(&mut instance, ExecutionOutput::none())
+                    .expect("default init should preserve completed child tasks"),
+                PROCESSOR_EXECUTION_OK
+            );
+            assert_eq!(output, [22.0; BLOCK_SIZE]);
+
+            assert_eq!(
+                init_checked(&mut instance, InitMode::Full, ExecutionOutput::none())
+                    .expect("full init should restart nested tasks"),
+                PROCESSOR_EXECUTION_OK
+            );
+            output.fill(99.0);
+            assert_eq!(
+                process_checked(&mut instance, ExecutionOutput::none())
+                    .expect("restarted child tasks should yield"),
+                PROCESSOR_EXECUTION_OK
+            );
+            assert_eq!(output, [0.0; BLOCK_SIZE]);
+        }
     }
-
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both child tasks should yield");
-    assert_eq!(output, [0.0; BLOCK_SIZE]);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("both child tasks should complete");
-    assert_eq!(output, [22.0; BLOCK_SIZE]);
-
-    init_checked(&mut instance, InitMode::PreservePinned)
-        .expect("default init should preserve nested task state");
-    output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("default init should preserve completed child tasks");
-    assert_eq!(output, [22.0; BLOCK_SIZE]);
-
-    init_checked(&mut instance, InitMode::Full).expect("full init should restart nested tasks");
-    output.fill(99.0);
-    process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none())
-        .expect("restarted child tasks should yield");
-    assert_eq!(output, [0.0; BLOCK_SIZE]);
 }
 
 #[test]
@@ -3312,16 +4184,8 @@ sample:
     .expect("failing task source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("failing task should lower");
     let program = jit_program_from_optimized_mir(mir).expect("failing task MIR should compile");
-    let mut instance = create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: BLOCK_SIZE,
-            in_channels: 0,
-            out_channels: 1,
-        },
-    )
-    .expect("failing task instance should initialize");
+    let mut instance =
+        initialize_test_instance(program, None).expect("failing task instance should initialize");
     let mut output = [99.0_f32; BLOCK_SIZE];
     unsafe {
         bind_output(
@@ -3332,9 +4196,26 @@ sample:
         )
         .expect("output should bind");
     }
-    assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
+    assert!(
+        crate::process_checked_segment(
+            &mut instance,
+            0,
+            BLOCK_SIZE,
+            crate::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none()
+        )
+        .unwrap()
+            == PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+    );
     output.fill(99.0);
-    assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
+    assert!(crate::process_checked_segment(
+        &mut instance,
+        0,
+        BLOCK_SIZE,
+        crate::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none()
+    )
+    .is_err());
     assert_eq!(output, [99.0; BLOCK_SIZE]);
 
     let retry = instance.event_index("retry").expect("retry event");
@@ -3342,8 +4223,23 @@ sample:
         trigger_event_by_index_checked(&mut instance, retry, &[], ExecutionOutput::none()).is_err()
     );
 
-    init_checked(&mut instance, InitMode::Full).expect("full init should recover the instance");
-    assert!(process_checked(&mut instance, BLOCK_SIZE, ExecutionOutput::none()).is_err());
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        crate::ExecutionOutput::none(),
+    )
+    .expect("full init should recover the instance");
+    assert!(
+        crate::process_checked_segment(
+            &mut instance,
+            0,
+            BLOCK_SIZE,
+            crate::PROCESSOR_FULL_BLOCK,
+            ExecutionOutput::none()
+        )
+        .unwrap()
+            == PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE
+    );
 }
 
 #[test]
@@ -3362,16 +4258,9 @@ fn cloned_programs_process_concurrently_after_the_original_owner_is_dropped() {
     .expect("source should analyze");
     let mir = lower_program_to_optimized_mir(&typed).expect("typed program should lower to MIR");
     let program = jit_program_from_optimized_mir(mir).expect("MIR should compile");
-    let config = InstanceConfig {
-        sample_rate: 48_000.0,
-        frames_per_block: BLOCK_SIZE,
-        in_channels: 0,
-        out_channels: 1,
-    };
     let instances = (0..INSTANCE_COUNT)
         .map(|_| {
-            create_instance_initialized(program.clone(), config)
-                .expect("instance should initialize")
+            initialize_test_instance(program.clone(), None).expect("instance should initialize")
         })
         .collect::<Vec<_>>();
 
@@ -3391,8 +4280,7 @@ fn cloned_programs_process_concurrently_after_the_original_owner_is_dropped() {
                     )
                     .expect("output should bind");
                 }
-                prepare_unchecked_process(&mut instance)
-                    .expect("unchecked processing should prepare");
+                prepare_process(&instance).expect("unchecked processing should prepare");
                 for _ in 0..32 {
                     unsafe {
                         process_unchecked(&mut instance, ExecutionOutput::none())
@@ -3411,43 +4299,7 @@ fn cloned_programs_process_concurrently_after_the_original_owner_is_dropped() {
 }
 
 #[test]
-fn checked_bindings_reject_misaligned_primitive_addresses() {
-    let storage = [0_u64; 2];
-    let aligned = storage.as_ptr().cast::<u8>();
-    let misaligned = unsafe { aligned.add(1) };
-
-    for ty in [
-        PrimitiveType::F32,
-        PrimitiveType::F64,
-        PrimitiveType::I32,
-        PrimitiveType::I64,
-    ] {
-        validate_pointer_alignment(aligned, ty, "test", "value")
-            .expect("u64 storage should satisfy primitive alignment");
-        let error = validate_pointer_alignment(misaligned, ty, "test", "value")
-            .expect_err("offset byte pointer must be rejected");
-        assert!(error.message.contains("alignment"));
-    }
-    validate_pointer_alignment(misaligned, PrimitiveType::Bool, "test", "value")
-        .expect("byte elements have alignment one");
-}
-
-#[test]
-fn checked_buffer_bindings_reject_wrapping_element_counts() {
-    let error = validate_buffer_byte_extent(i32::MAX, 2, PrimitiveType::F32, "huge")
-        .expect_err("buffer byte extent must fit the generated i32 ABI");
-    assert!(error.message.contains("exceeds i32 runtime limit"));
-    let f64_error = validate_buffer_byte_extent(i32::MAX / 8 + 1, 1, PrimitiveType::F64, "wide")
-        .expect_err("f64 byte extent must fit i32 even when element count does");
-    assert!(f64_error.message.contains("byte extent"));
-    assert_eq!(
-        validate_buffer_byte_extent(1024, 2, PrimitiveType::F32, "ok").unwrap(),
-        8192
-    );
-}
-
-#[test]
-fn checked_event_views_offer_diagnostic_and_status_forms() {
+fn checked_event_views_return_input_rejection_status() {
     let mut instance = compile_test_instance(
         r#"
 init:
@@ -3483,8 +4335,8 @@ sample:
             ExecutionOutput::none(),
         )
     }
-    .unwrap_err();
-    assert!(error.message.contains("tensor views"));
+    .unwrap();
+    assert_eq!(error, PROCESSOR_EXECUTION_INPUT_REJECTED);
     assert!(instance.is_initialized());
 }
 
@@ -3511,7 +4363,7 @@ sample:
         batch.overflow_count = 5;
     };
     seed_output(&mut print_batch);
-    let status = trigger_event_by_index_checked_with_status(
+    let status = trigger_event_by_index_checked(
         &mut instance,
         event,
         &[0; 3],
@@ -3543,8 +4395,8 @@ sample:
             print_batch: Some(&mut print_batch),
         },
     )
-    .unwrap_err();
-    assert!(error.message.contains("payload"));
+    .unwrap();
+    assert_eq!(error, PROCESSOR_EXECUTION_INPUT_REJECTED);
     assert_eq!(
         (
             print_batch.used_bytes,
@@ -3557,16 +4409,14 @@ sample:
     let count = instance.event_workspace_capacity() / 4 + 1;
     let mut payload = vec![0; 4 + count * 4];
     payload[..4].copy_from_slice(&(count as i32).to_le_bytes());
-    assert!(trigger_event_by_index_checked(
-        &mut instance,
-        event,
-        &payload,
-        ExecutionOutput::none()
-    )
-    .is_err());
+    assert!(
+        trigger_event_by_index_checked(&mut instance, event, &payload, ExecutionOutput::none())
+            .unwrap()
+            == PROCESSOR_EXECUTION_INPUT_REJECTED
+    );
     assert!(instance.is_initialized());
     seed_output(&mut print_batch);
-    let status = trigger_event_by_index_checked_with_status(
+    let status = trigger_event_by_index_checked(
         &mut instance,
         event,
         &payload,

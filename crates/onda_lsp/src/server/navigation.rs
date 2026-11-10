@@ -203,6 +203,17 @@ pub(super) fn signature_help_for_document_with_parsed(
         return Some(help);
     }
     let definition = index.resolve_callee(&callee, position.line, position.character)?;
+    if definition.kind == DefinitionKind::Enum {
+        return Some(json!({
+            "signatures": [{
+                "label": format!("{}(ordinal = 0) -> {}", definition.name, definition.name),
+                "documentation": "Accepts an i32 or i64 ordinal and clamps it to the enum's member range. With no argument, selects the first member.",
+                "parameters": [{"label": "ordinal"}],
+            }],
+            "activeSignature": 0,
+            "activeParameter": 0,
+        }));
+    }
     let overloads = index
         .definitions
         .iter()
@@ -448,6 +459,7 @@ impl DefinitionInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DefinitionKind {
+    Enum,
     Const,
     Def,
     Proc,
@@ -480,9 +492,10 @@ fn semantic_symbol_kind(kind: DefinitionKind) -> SemanticSymbolKind {
         DefinitionKind::Def | DefinitionKind::Method | DefinitionKind::Task => {
             SemanticSymbolKind::Function
         }
-        DefinitionKind::Proc | DefinitionKind::Struct | DefinitionKind::TypeParam => {
-            SemanticSymbolKind::Type
-        }
+        DefinitionKind::Proc
+        | DefinitionKind::Enum
+        | DefinitionKind::Struct
+        | DefinitionKind::TypeParam => SemanticSymbolKind::Type,
         DefinitionKind::Namespace | DefinitionKind::NamespaceAlias => SemanticSymbolKind::Namespace,
         DefinitionKind::Field | DefinitionKind::State => SemanticSymbolKind::State,
         DefinitionKind::Event => SemanticSymbolKind::Event,
@@ -597,6 +610,9 @@ impl NavigationIndex {
             Block::Proc(proc_def) => {
                 self.add_proc_definition(namespace, proc_def);
             }
+            Block::Enum(def) => {
+                self.add_enum_definition(namespace, def);
+            }
             Block::Struct(struct_def) => {
                 self.add_struct_definition(namespace, struct_def);
             }
@@ -640,6 +656,9 @@ impl NavigationIndex {
                 NamespaceItem::Proc(proc_def) => {
                     self.add_proc_definition(&full_name, proc_def);
                 }
+                NamespaceItem::Enum(def) => {
+                    self.add_enum_definition(&full_name, def);
+                }
                 NamespaceItem::Struct(struct_def) => {
                     self.add_struct_definition(&full_name, struct_def);
                 }
@@ -680,6 +699,32 @@ impl NavigationIndex {
             public: use_decl.public,
             file_key: file_key_for_span(use_decl.loc.clone()),
         });
+    }
+
+    fn add_enum_definition(&mut self, namespace: &str, def: &onda_frontend::EnumDef) {
+        let full_name = namespace_join(namespace, &def.name);
+        let mut detail = String::new();
+        crate::formatting::format_enum(def, 0, &mut detail);
+        self.add_definition(DefinitionInfo {
+            name: def.name.clone(),
+            full_name: full_name.clone(),
+            kind: DefinitionKind::Enum,
+            detail: detail.trim_end().to_owned(),
+            span: def.loc.clone(),
+            file_key: file_key_for_span(def.loc.clone()),
+            private: false,
+        });
+        for (ordinal, member) in def.members.iter().enumerate() {
+            self.add_definition(DefinitionInfo {
+                name: member.name.clone(),
+                full_name: namespace_join(&full_name, &member.name),
+                kind: DefinitionKind::Const,
+                detail: format!("{}::{} = {ordinal}", def.name, member.name),
+                span: member.loc.clone(),
+                file_key: file_key_for_span(member.loc.clone()),
+                private: false,
+            });
+        }
     }
 
     fn add_const_definition(&mut self, namespace: &str, decl: &ConstDecl) -> usize {
@@ -1169,6 +1214,7 @@ impl NavigationIndex {
                 DefinitionKind::Const
                     | DefinitionKind::Def
                     | DefinitionKind::Proc
+                    | DefinitionKind::Enum
                     | DefinitionKind::Struct
                     | DefinitionKind::Namespace
                     | DefinitionKind::NamespaceAlias
@@ -1236,6 +1282,9 @@ impl NavigationIndex {
                 continue;
             }
             match block {
+                Block::Enum(def) => {
+                    self.collect_enum_scope(None, "", def);
+                }
                 Block::Def(def) => {
                     self.collect_function_scope(None, "", def, "def");
                 }
@@ -1555,6 +1604,25 @@ impl NavigationIndex {
         Some(owner_idx)
     }
 
+    fn collect_enum_scope(
+        &mut self,
+        parent: Option<usize>,
+        namespace: &str,
+        def: &onda_frontend::EnumDef,
+    ) -> Option<usize> {
+        let owner = namespace_join(namespace, &def.name);
+        let definitions = def
+            .members
+            .iter()
+            .filter_map(|member| {
+                self.by_full_name
+                    .get(&namespace_join(&owner, &member.name))
+                    .map(|index| (member.name.clone(), *index))
+            })
+            .collect();
+        self.push_scope(parent, &owner, def.loc.clone(), definitions, HashMap::new())
+    }
+
     fn collect_namespace_scope(
         &mut self,
         parent_idx: Option<usize>,
@@ -1569,6 +1637,14 @@ impl NavigationIndex {
         }
         for item in &ns.items {
             match item {
+                NamespaceItem::Enum(def) => {
+                    if let Some(index) = self
+                        .by_full_name
+                        .get(&namespace_join(&full_name, &def.name))
+                    {
+                        definitions.insert(def.name.clone(), *index);
+                    }
+                }
                 NamespaceItem::Const(decl) => {
                     if let Some(idx) = self
                         .by_full_name
@@ -1635,6 +1711,9 @@ impl NavigationIndex {
         )?;
         for item in &ns.items {
             match item {
+                NamespaceItem::Enum(def) => {
+                    self.collect_enum_scope(Some(ns_idx), &full_name, def);
+                }
                 NamespaceItem::Def(def) => {
                     self.collect_function_scope(Some(ns_idx), &full_name, def, "def");
                 }
@@ -2256,11 +2335,7 @@ impl NavigationIndex {
         }
         if let Some(path) = qualified_path_at_token(source, token) {
             if token_is_followed_by_namespace_separator(source, token) {
-                return self.resolve_namespace_qualified_at(
-                    &path,
-                    token.line,
-                    token.start_character,
-                );
+                return self.resolve_path_qualifier_at(&path, token.line, token.start_character);
             }
             if let Some(definition) =
                 self.resolve_qualified_at(&path, token.line, token.start_character)
@@ -2453,6 +2528,7 @@ impl NavigationIndex {
                         DefinitionKind::Const
                             | DefinitionKind::Def
                             | DefinitionKind::Proc
+                            | DefinitionKind::Enum
                             | DefinitionKind::Struct
                             | DefinitionKind::Namespace
                             | DefinitionKind::NamespaceAlias
@@ -2547,7 +2623,7 @@ impl NavigationIndex {
         self.resolve_qualified_in_namespace(path, namespace)
     }
 
-    fn resolve_namespace_qualified_at(
+    fn resolve_path_qualifier_at(
         &self,
         path: &str,
         line: u32,
@@ -2557,8 +2633,16 @@ impl NavigationIndex {
         self.qualified_path_candidates(path, namespace)
             .into_iter()
             .find_map(|candidate| {
-                self.namespace_definition_index(&candidate)
+                self.definition_index_for_qualified_name(&candidate)
                     .and_then(|idx| self.definitions.get(idx))
+                    .filter(|definition| {
+                        matches!(
+                            definition.kind,
+                            DefinitionKind::Enum
+                                | DefinitionKind::Namespace
+                                | DefinitionKind::NamespaceAlias
+                        )
+                    })
             })
     }
 
@@ -2921,6 +3005,7 @@ fn document_symbol_for_block(block: &Block, source: &str) -> Option<Value> {
             source,
         )),
         Block::Proc(proc_def) => Some(document_symbol_for_proc(proc_def, source)),
+        Block::Enum(def) => Some(document_symbol_for_enum(def, source)),
         Block::Struct(struct_def) => Some(document_symbol_for_struct(struct_def, source)),
         Block::Namespace(ns) => Some(document_symbol_for_namespace(ns, source)),
         Block::NamespaceAlias(alias) => Some(document_symbol(
@@ -3022,6 +3107,7 @@ fn document_symbol_for_namespace(ns: &NamespaceDecl, source: &str) -> Value {
                 source,
             )),
             NamespaceItem::Proc(proc_def) => Some(document_symbol_for_proc(proc_def, source)),
+            NamespaceItem::Enum(def) => Some(document_symbol_for_enum(def, source)),
             NamespaceItem::Struct(struct_def) => {
                 Some(document_symbol_for_struct(struct_def, source))
             }
@@ -4547,6 +4633,7 @@ fn span_for_namespace_scope(ns: &NamespaceDecl) -> Span {
     for item in &ns.items {
         let item_span = match item {
             NamespaceItem::Assert(decl) => decl.loc.clone(),
+            NamespaceItem::Enum(def) => def.loc.clone(),
             NamespaceItem::Const(decl) => decl.loc.clone(),
             NamespaceItem::Struct(decl) => span_for_struct_scope(decl),
             NamespaceItem::Def(decl) => span_for_function_scope(decl),
@@ -4677,3 +4764,16 @@ fn normalize_file_key(path: &str) -> String {
 #[cfg(test)]
 #[path = "navigation_tests/mod.rs"]
 mod tests;
+
+fn document_symbol_for_enum(def: &onda_frontend::EnumDef, source: &str) -> Value {
+    document_symbol(
+        &def.name,
+        10,
+        def.loc.clone(),
+        source,
+        def.members
+            .iter()
+            .map(|member| document_symbol(&member.name, 22, member.loc.clone(), source, vec![]))
+            .collect(),
+    )
+}

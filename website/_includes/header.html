@@ -1,24 +1,24 @@
 <header class="site-header">
-  <a class="brand" href="{{ '/' | relative_url }}" aria-label="Onda home">
+  <a class="brand" href="{{ '/' | relative_url }}">
     <img class="theme-logo theme-logo-light" src="{{ '/assets/svg/onda-logo-circle.svg' | relative_url }}" alt="" width="30" height="30">
     <img class="theme-logo theme-logo-dark" src="{{ '/assets/svg/onda-logo-dark-circle.svg' | relative_url }}" alt="" width="30" height="30">
     <span>Onda</span>
   </a>
-  <nav class="main-nav" id="main-nav" aria-label="Main navigation">
-    <a href="{{ '/playground/' | relative_url }}"{% if page.section == 'playground' %} aria-current="page"{% endif %}>Playground</a>
-    <a href="{{ '/docs/' | relative_url }}"{% if page.section == 'learn' %} aria-current="page"{% endif %}>Docs</a>
-    <a href="{{ '/docs/language/' | relative_url }}"{% if page.url == '/docs/language/' %} aria-current="page"{% endif %}>Language</a>
-    <a href="{{ '/docs/stdlib/' | relative_url }}"{% if page.url == '/docs/stdlib/' %} aria-current="page"{% endif %}>Stdlib</a>
-    <a href="{{ '/docs/examples/' | relative_url }}"{% if page.section == 'examples' %} aria-current="page"{% endif %}>Examples</a>
+  <nav class="main-nav" id="main-nav">
+    <a href="{{ '/playground/' | relative_url }}"{% if page.section == 'playground' %} data-current="page"{% endif %}>Playground</a>
+    <a href="{{ '/docs/' | relative_url }}"{% if page.section == 'learn' %} data-current="page"{% endif %}>Docs</a>
+    <a href="{{ '/docs/language/' | relative_url }}"{% if page.url == '/docs/language/' %} data-current="page"{% endif %}>Language</a>
+    <a href="{{ '/docs/stdlib/' | relative_url }}"{% if page.url == '/docs/stdlib/' %} data-current="page"{% endif %}>Stdlib</a>
+    <a href="{{ '/docs/examples/' | relative_url }}"{% if page.section == 'examples' %} data-current="page"{% endif %}>Examples</a>
     <a href="https://github.com/onda-lang/onda/releases/latest">Releases</a>
-    <a class="github-link" href="https://github.com/onda-lang/onda">GitHub <span aria-hidden="true">↗</span></a>
+    <a class="github-link" href="https://github.com/onda-lang/onda">GitHub <span>↗</span></a>
   </nav>
   <div class="header-actions">
-    <button class="icon-button theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">
-      <span class="theme-icon" aria-hidden="true">◐</span>
+    <button class="icon-button theme-toggle" type="button" title="Toggle color theme">
+      <span class="theme-icon">◐</span>
     </button>
-    <button class="icon-button menu-toggle" type="button" aria-expanded="false" aria-controls="main-nav" aria-label="Open navigation">
-      <span aria-hidden="true">☰</span>
+    <button class="icon-button menu-toggle" type="button">
+      <span>☰</span>
     </button>
   </div>
 </header>

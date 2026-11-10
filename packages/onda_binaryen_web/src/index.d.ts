@@ -43,4 +43,3 @@ export function compileTrustedMir(
   mir: string | ArrayBuffer | ArrayBufferView | object,
   options?: OndaBinaryenOptions,
 ): OndaProcessorArtifact;
-export function createDefaultImports(): Record<string, never>;

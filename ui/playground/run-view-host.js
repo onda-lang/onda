@@ -2,6 +2,7 @@
 import { flattenedAudioChannelCount } from "@onda-lang/webaudio";
 import { canonicalF32Number } from "@onda-lang/processor-abi";
 import { partitionHostEvents } from "./midi.js";
+import { wireJson } from "../gpu/protocol.js";
 import { bindAudioActivation } from "./audio-activation.js";
 
 export class BrowserRunViewHost {
@@ -10,12 +11,18 @@ export class BrowserRunViewHost {
     this.targetOrigin = new URL(iframe.src, window.location.href).origin;
     this.handlers = handlers;
     this.ready = false;
+    this.viewFailed = false;
     this.pendingViewReset = true;
     this.viewResetId = 0;
-    this.iframe.style.opacity = "0";
+    this.viewState = this.readViewState();
+    this.logFrame = 0;
+    this.sourceFiles = [];
+    this.setLoading(true);
     this.state = {
       running: false,
       connected: false,
+      schemaReady: false,
+      engineGeneration: "0",
       path: "",
       status: "Stopped",
       error: "",
@@ -24,7 +31,6 @@ export class BrowserRunViewHost {
       buffers: [],
       events: [],
       midi: { available: false, noteOn: false, noteOff: false },
-      midiKeyboardInteractive: true,
       params: [],
       inputDevices: [],
       outputDevices: [],
@@ -35,7 +41,17 @@ export class BrowserRunViewHost {
       supportsSourceSelection: false,
       supportsTransport: true,
       supportsDeviceSelection: false,
-      supportsRunSettings: false,
+      supportsMidiInputSelection: true,
+      supportsViewState: true,
+      logText: "",
+      logEntries: [],
+      logRevealed: false,
+      printOverflowCount: 0,
+      printTransportDropCount: 0,
+      supportsRunSettings: typeof handlers.setRunSettings === "function",
+      supportsFastMath: typeof handlers.setFastMath === "function",
+      canSetSampleRate: typeof handlers.setRunSettings === "function",
+      canSetBlockSize: typeof handlers.setRunSettings === "function",
       supportsParamSmoothing: typeof handlers.setParamSmoothing === "function",
       paramSmoothingMs: null,
       paramSmoothingDefaultMs: null,
@@ -43,20 +59,23 @@ export class BrowserRunViewHost {
       sampleRateHz: 48_000,
       blockSamples: 512,
       fastMath: false,
-      themeMode: document.documentElement.dataset.theme || "auto",
+      supportsThemeSelection: false,
+      themeMode: null,
+      hostTheme: document.documentElement.dataset.theme || "auto",
     };
     this.onWindowMessage = (event) => {
       if (
-        event.source !== this.iframe.contentWindow
-        || event.origin !== this.targetOrigin
-        || !event.data?.__ondaRunWebview
-      ) return;
+        event.source !== this.iframe.contentWindow ||
+        event.origin !== this.targetOrigin ||
+        !event.data?.__ondaRunUi
+      )
+        return;
       void this.handleMessage(event.data.message);
     };
     window.addEventListener("message", this.onWindowMessage);
     this.themeObserver = new MutationObserver(() => {
       this.setState({
-        themeMode: document.documentElement.dataset.theme || "auto",
+        hostTheme: document.documentElement.dataset.theme || "auto",
       });
     });
     this.themeObserver.observe(document.documentElement, {
@@ -65,9 +84,14 @@ export class BrowserRunViewHost {
     });
     this.onFrameLoad = () => {
       this.ready = false;
+      this.viewFailed = false;
       this.requestViewReset();
       this.unbindAudioActivation?.();
-      this.unbindAudioActivation = bindAudioActivation(this.iframe.contentDocument, this.handlers);
+      this.unbindAudioActivation = bindAudioActivation(
+        this.iframe.contentDocument,
+        this.handlers,
+      );
+      this.post({ type: "requestRunViewReady" });
     };
     this.iframe.addEventListener("load", this.onFrameLoad);
   }
@@ -76,25 +100,40 @@ export class BrowserRunViewHost {
     this.setState({ path });
   }
 
+  setLoading(loading) {
+    loading &&= !this.viewFailed;
+    this.iframe.style.opacity = loading ? "0" : "";
+    this.handlers.loadingChanged?.(loading);
+  }
+
   requestViewReset() {
     this.pendingViewReset = true;
     this.viewResetId += 1;
-    this.iframe.style.opacity = "0";
+    this.setLoading(true);
   }
 
   setState(update, { resetViewState = false } = {}) {
-    if (resetViewState || (update.path !== undefined && update.path !== this.state.path)) {
+    if (
+      resetViewState ||
+      (update.path !== undefined && update.path !== this.state.path)
+    ) {
+      if (resetViewState) {
+        this.viewState = null;
+        try {
+          window.localStorage?.removeItem("onda.browser-ide.run-view.v1");
+        } catch {}
+      }
       this.requestViewReset();
     }
     Object.assign(this.state, update);
-    this.postState();
+    this.postState({}, update);
   }
 
   setCompiling(path, options = null) {
     this.setState({
+      ...this.disconnectedEngineState(),
       path,
-      running: false,
-      connected: false,
+      schemaReady: false,
       status: "Compiling...",
       error: "",
       sampleRateHz: options?.sampleRate ?? this.state.sampleRateHz,
@@ -104,14 +143,23 @@ export class BrowserRunViewHost {
   }
 
   setArtifact(artifact, bufferFiles) {
+    Object.assign(this.state, this.disconnectedEngineState());
     const metadata = artifact.metadata.metadata;
+    this.sourceFiles = metadata.source_files ?? [];
     const hostEvents = partitionHostEvents(metadata.events ?? []);
     this.state.params = mergeParams(metadata.params ?? [], this.state.params);
+    const firstSchema = this.state.events.length === 0;
     this.state.events = mergeEvents(hostEvents.visible, this.state.events);
+    if (firstSchema) this.restoreEventValues(this.viewState);
     this.state.midi = hostEvents.midi;
     this.handlers.midiEventsChanged?.(hostEvents.declaredMidi);
-    this.state.buffers = mergeBuffers(metadata.buffers ?? [], this.state.buffers, bufferFiles);
+    this.state.buffers = mergeBuffers(
+      metadata.buffers ?? [],
+      this.state.buffers,
+      bufferFiles,
+    );
     this.state.outputChannels = flattenedAudioChannelCount(metadata.outputs);
+    this.state.schemaReady = true;
     const sampleRateHz = Number(artifact.metadata.compile?.sample_rate);
     const blockSamples = Number(artifact.metadata.compile?.block_size);
     this.state.fastMath = artifact.metadata.compile?.fast_math === true;
@@ -123,26 +171,36 @@ export class BrowserRunViewHost {
     }
     this.state.error = "";
     this.state.sourceDirty = false;
-    this.postState();
+    this.postState({ resetEventArguments: true });
   }
 
   clearArtifact(path = this.state.path) {
-    this.setState({
-      path,
-      running: false,
-      connected: false,
-      status: "Stopped",
-      error: "",
-      sourceDirty: false,
-      outputChannels: 0,
-      fastMath: false,
-      buffers: [],
-      events: [],
-      midi: { available: false, noteOn: false, noteOff: false },
-      params: [],
-    }, { resetViewState: true });
+    if (this.logFrame) cancelAnimationFrame(this.logFrame);
+    this.logFrame = 0;
+    this.sourceFiles = [];
+    this.setState(
+      {
+        ...this.disconnectedEngineState(),
+        path,
+        schemaReady: true,
+        status: "Stopped",
+        error: "",
+        sourceDirty: false,
+        outputChannels: 0,
+        buffers: [],
+        events: [],
+        midi: { available: false, noteOn: false, noteOff: false },
+        params: [],
+        logText: "",
+        logEntries: [],
+        logRevealed: false,
+        printOverflowCount: 0,
+        printTransportDropCount: 0,
+      },
+      { resetViewState: true },
+    );
     this.handlers.midiEventsChanged?.(new Set());
-    this.postScope(0, []);
+    this.postVisualization({ channels: 0, peaks: [], samples: [] });
   }
 
   markSourceDirty(path = this.state.path) {
@@ -161,24 +219,34 @@ export class BrowserRunViewHost {
 
   setStopped(status = "Stopped") {
     this.setState({
-      running: false,
-      connected: false,
+      ...this.disconnectedEngineState(),
+      schemaReady: true,
       status,
     });
-    this.postScope(0, []);
+    this.postVisualization({ channels: 0, peaks: [], samples: [] });
+  }
+
+  disconnectedEngineState() {
+    this.engineGeneration = (this.engineGeneration ?? 0) + 1;
+    return {
+      engineGeneration: String(this.engineGeneration),
+      running: false,
+      connected: false,
+    };
   }
 
   setError(error) {
     this.setState({
       running: false,
       connected: false,
+      schemaReady: true,
       status: "Stopped",
-      error: String(error?.message ?? error),
+      error: formatError(error),
     });
   }
 
   showError(error) {
-    this.setState({ error: String(error?.message ?? error) });
+    this.setState({ error: formatError(error) });
   }
 
   resetParamValues() {
@@ -192,9 +260,12 @@ export class BrowserRunViewHost {
   resetEventArguments() {
     this.state.events = this.state.events.map((event) => ({
       ...event,
-      args: event.args.map((arg) => ({ ...arg, value: initialEventArgValue(arg) })),
+      args: event.args.map((arg) => ({
+        ...arg,
+        value: initialEventArgValue(arg),
+      })),
     }));
-    this.postState();
+    this.postState({ resetEventArguments: true });
   }
 
   updateBufferFile(name, file, metadata = null) {
@@ -202,18 +273,18 @@ export class BrowserRunViewHost {
   }
 
   updateBufferFiles(updates) {
-    const byName = new Map(updates.map(update => [update.name, update]));
-    this.state.buffers = this.state.buffers.map(buffer => {
+    const byName = new Map(updates.map((update) => [update.name, update]));
+    this.state.buffers = this.state.buffers.map((buffer) => {
       const update = byName.get(buffer.name);
       if (!update) return buffer;
       const { file, metadata } = update;
       return {
         ...buffer,
         loadedPath: file?.name ?? null,
-        loadedFrames: file ? metadata?.frames ?? null : null,
-        loadedChannels: file ? metadata?.channels ?? null : null,
-        loadedSampleRate: file ? metadata?.sampleRate ?? null : null,
-        waveform: file ? metadata?.waveform ?? null : null,
+        loadedSamples: file ? (metadata?.frames ?? null) : null,
+        loadedChannels: file ? (metadata?.channels ?? null) : null,
+        loadedSampleRate: file ? (metadata?.sampleRate ?? null) : null,
+        waveform: file ? (metadata?.waveform ?? null) : null,
       };
     });
     this.state.error = "";
@@ -239,11 +310,128 @@ export class BrowserRunViewHost {
     this.post({ type: "midiActivity", activeNotes });
   }
 
-  postState() {
-    if (!this.ready) return;
-    this.post({ type: "state", state: this.pendingViewReset
-      ? { ...this.state, viewState: { reset: true, readyId: this.viewResetId } }
-      : this.state });
+  readViewState() {
+    try {
+      return JSON.parse(
+        window.localStorage?.getItem("onda.browser-ide.run-view.v1") ?? "null",
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  saveViewState(view) {
+    if (!view || view.path !== this.state.path) return;
+    const json = wireJson(view);
+    if (json.length > 256 * 1024) return;
+    this.viewState = view;
+    this.restoreEventValues(view);
+    try {
+      window.localStorage?.setItem(
+        "onda.browser-ide.run-view.v1",
+        json,
+      );
+    } catch {}
+  }
+
+  restoreEventValues(view) {
+    if (
+      !view ||
+      view.path !== this.state.path ||
+      !Array.isArray(view.eventValues)
+    )
+      return;
+    for (const event of this.state.events) {
+      const saved = view.eventValues?.find((item) => item.name === event.name);
+      if (
+        Array.isArray(saved?.values) &&
+        saved.values.length === event.args.length &&
+        Array.isArray(saved.args) &&
+        saved.args.length === event.args.length &&
+        event.args.every((arg, i) =>
+          arg.name === saved.args[i]?.name &&
+          metadataValuesMatch(arg.shape, saved.args[i].shape) &&
+          Object.hasOwn(arg, "default") &&
+          Object.hasOwn(saved.args[i], "default") &&
+          metadataValuesMatch(
+            JSON.parse(wireJson(arg.default)),
+            JSON.parse(wireJson(saved.args[i].default)),
+          ),
+        )
+      ) {
+        for (let i = 0; i < event.args.length; i++)
+          event.args[i].value = structuredClone(saved.values[i]);
+      }
+    }
+  }
+
+  appendPrint({ text = "", entries = [], overflowCount = 0, transportDropCount = 0 }) {
+    const previous = this.state.logText;
+    const lines = text.split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    // A partial line keeps its original context when the next batch completes it.
+    const continued = previous.length > 0 && !previous.endsWith("\n");
+    for (let i = Number(continued); i < lines.length; i++) {
+      const entry = entries[i];
+      const source = entry?.source;
+      // Only context crosses the UI bridge; decoded values can contain BigInts.
+      this.state.logEntries.push(
+        entry ? {
+          source: source && {
+            ...source,
+            file: Number.isInteger(source.file)
+              ? this.sourceFiles[source.file]?.path : source.file,
+          },
+          lexicalOwner: entry.lexicalOwner,
+        } : null,
+      );
+    }
+    const combined = previous + text;
+    let removed = Math.max(0, combined.length - 65536);
+    // Drop the whole code point when the budget cuts a surrogate pair in half.
+    if (removed > 0 && combined.codePointAt(removed - 1) > 0xffff) removed++;
+    const removedLines = combined.slice(0, removed).split("\n").length - 1;
+    this.state.logText = combined.slice(removed);
+    this.state.logEntries.splice(0, removedLines);
+    this.state.logRevealed = true;
+    this.state.printOverflowCount += overflowCount;
+    this.state.printTransportDropCount += transportDropCount;
+    if (!this.logFrame)
+      this.logFrame = requestAnimationFrame(() => {
+        this.logFrame = 0;
+        this.post({
+          type: "state",
+          state: {
+            logText: this.state.logText,
+            logEntries: this.state.logEntries,
+            logRevealed: true,
+            printOverflowCount: this.state.printOverflowCount,
+            printTransportDropCount: this.state.printTransportDropCount,
+          },
+        });
+      });
+  }
+
+  postState(extra = {}, update = this.state) {
+    if (
+      !this.ready ||
+      !this.state.path ||
+      (this.pendingViewReset && this.state.schemaReady === false)
+    ) return;
+    const saved =
+      this.viewState?.path === this.state.path
+        ? this.viewState
+        : { reset: true };
+    this.post({
+      type: "state",
+      state: {
+        ...(this.pendingViewReset ? this.state : update),
+        ...extra,
+        ...(this.pendingViewReset
+          ? { viewState: { ...saved, readyId: this.viewResetId } }
+          : {}),
+      },
+    });
     this.pendingViewReset = false;
   }
 
@@ -253,13 +441,16 @@ export class BrowserRunViewHost {
       this.postState();
       return;
     }
-    this.post({ type: "parameterValues", state: {
-      params: params.map(({ name, value }) => ({ name, value })),
-    } });
+    this.post({
+      type: "parameterValues",
+      state: {
+        params: params.map(({ name, value }) => ({ name, value })),
+      },
+    });
   }
 
-  postScope(channels, samples) {
-    this.post({ type: "scopeData", channels, samples });
+  postVisualization(frame) {
+    this.post({ type: "scopeData", ...frame });
   }
 
   post(message) {
@@ -273,12 +464,35 @@ export class BrowserRunViewHost {
     if (!message) return;
     try {
       switch (message.type) {
-        case "webviewReady":
+        case "uiReady":
+          this.viewFailed = false;
           this.ready = true;
           this.postState();
           break;
         case "runViewReady":
-          if (message.readyId === this.viewResetId) this.iframe.style.opacity = "";
+          if (!this.pendingViewReset && message.readyId === this.viewResetId)
+            this.setLoading(false);
+          break;
+        case "runViewError":
+          this.viewFailed = true;
+          this.setLoading(false);
+          break;
+        case "scopeConfig":
+          this.handlers.scopeConfig?.(message);
+          break;
+        case "viewState":
+          this.saveViewState(message.state);
+          break;
+        case "clearLog":
+          if (this.logFrame) cancelAnimationFrame(this.logFrame);
+          this.logFrame = 0;
+          this.setState({
+            logText: "",
+            logEntries: [],
+            logRevealed: false,
+            printOverflowCount: 0,
+            printTransportDropCount: 0,
+          });
           break;
         case "start":
           await this.handlers.start?.();
@@ -293,12 +507,26 @@ export class BrowserRunViewHost {
         case "resetEventArguments":
           this.resetEventArguments();
           break;
+        case "setRunSettings":
+          if (this.state.supportsRunSettings) {
+            await this.handlers.setRunSettings({
+              sampleRateHz: message.sampleRateHz,
+              blockSamples: message.blockSamples,
+            });
+          }
+          break;
+        case "setFastMath":
+          if (this.state.supportsFastMath && typeof message.enabled === "boolean")
+            await this.handlers.setFastMath(message.enabled);
+          break;
         case "setParamSmoothing": {
           const milliseconds = message.milliseconds;
           if (!this.state.supportsParamSmoothing) break;
           try {
             if (!Number.isFinite(milliseconds) || milliseconds < 0) {
-              throw new Error("Smoothing duration must be a finite, non-negative number");
+              throw new Error(
+                "Smoothing duration must be a finite, non-negative number",
+              );
             }
             await this.handlers.setParamSmoothing(milliseconds);
             this.setState({ paramSmoothingMs: milliseconds, error: "" });
@@ -309,24 +537,41 @@ export class BrowserRunViewHost {
         }
         case "setParam":
           this.state.params = this.state.params.map((param) =>
-            param.name === message.name ? { ...param, value: message.value } : param
+            param.name === message.name
+              ? { ...param, value: message.value }
+              : param,
           );
-          this.postParameterValues([{ name: message.name, value: message.value }]);
+          this.postParameterValues([
+            { name: message.name, value: message.value },
+          ]);
           await this.handlers.setParam?.(message.name, message.value);
           break;
         case "triggerEvent":
-          await this.handlers.triggerEvent?.(message.name, message.values ?? []);
-          break;
         case "midiNote": {
-          const name = message.pressed
-            ? (this.state.midi.noteOn ? "note_on" : null)
-            : (this.state.midi.noteOff ? "note_off" : null);
-          if (name) {
+          const current = () => typeof message.engineGeneration === "string" &&
+            message.engineGeneration === this.state.engineGeneration &&
+            this.state.connected === true && this.state.schemaReady !== false;
+          if (!current()) break;
+          let name, values;
+          if (message.type === "midiNote") {
+            const enabled = message.pressed ? this.state.midi.noteOn : this.state.midi.noteOff;
+            if (!enabled) break;
+            name = message.pressed ? "note_on" : "note_off";
             const key = Math.max(0, Math.min(127, Number(message.key) || 0));
             const velocity = message.pressed
               ? Math.max(0, Math.min(1, Number(message.velocity) || 0))
               : 0;
-            await this.handlers.triggerEvent?.(name, [-1, 0, key, velocity]);
+            values = [-1, 0, key, velocity];
+          } else {
+            const event = this.state.events.find((item) => item.name === message.name);
+            if (!event) break;
+            name = message.name;
+            values = event.args.map((arg, i) => eventValue(arg.shape, message.values?.[i]));
+          }
+          try {
+            await this.handlers.triggerEvent?.(name, values);
+          } catch (error) {
+            if (current()) throw error;
           }
           break;
         }
@@ -353,6 +598,7 @@ export class BrowserRunViewHost {
   }
 
   dispose() {
+    if (this.logFrame) cancelAnimationFrame(this.logFrame);
     window.removeEventListener("message", this.onWindowMessage);
     this.iframe.removeEventListener("load", this.onFrameLoad);
     this.unbindAudioActivation?.();
@@ -360,69 +606,26 @@ export class BrowserRunViewHost {
   }
 }
 
-export class BrowserScopeSource {
-  constructor(runView) {
-    this.runView = runView;
-    this.timer = 0;
-    this.analysers = [];
-    this.samples = [];
-  }
+export { BrowserScopeSource } from "./browser-scope.js";
 
-  start(context, node, channels) {
-    this.stop();
-    if (!channels) return;
-    this.splitter = context.createChannelSplitter(channels);
-    this.silentGain = context.createGain();
-    this.silentGain.gain.value = 0;
-    node.connect(this.splitter);
-    for (let channel = 0; channel < channels; channel += 1) {
-      const analyser = context.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0;
-      this.splitter.connect(analyser, channel, 0);
-      analyser.connect(this.silentGain);
-      this.analysers.push(analyser);
-      this.samples.push(new Float32Array(analyser.fftSize));
-    }
-    this.silentGain.connect(context.destination);
-    this.timer = setInterval(() => this.capture(), 50);
-    this.capture();
-  }
-
-  capture() {
-    const channels = this.analysers.length;
-    if (!channels) return;
-    for (let channel = 0; channel < channels; channel += 1) {
-      this.analysers[channel].getFloatTimeDomainData(this.samples[channel]);
-    }
-    const frames = this.samples[0].length;
-    const interleaved = new Array(frames * channels);
-    for (let frame = 0; frame < frames; frame += 1) {
-      for (let channel = 0; channel < channels; channel += 1) {
-        interleaved[frame * channels + channel] = this.samples[channel][frame];
-      }
-    }
-    this.runView.postScope(channels, interleaved);
-  }
-
-  stop() {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = 0;
-    this.splitter?.disconnect();
-    this.silentGain?.disconnect();
-    for (const analyser of this.analysers) analyser.disconnect();
-    this.splitter = null;
-    this.silentGain = null;
-    this.analysers = [];
-    this.samples = [];
-    this.runView.postScope(0, []);
-  }
+function formatError(error) {
+  const message = String(error?.message ?? error);
+  const diagnostic = error?.diagnostics?.[0];
+  if (!Number.isInteger(diagnostic?.line) || diagnostic.line <= 0) return message;
+  const file = diagnostic.file ? `${diagnostic.file}:` : "line ";
+  const column = Number.isInteger(diagnostic.column) && diagnostic.column > 0
+    ? `:${diagnostic.column}` : "";
+  return `${message} (${file}${diagnostic.line}${column})`;
 }
 
 export function mergeParams(params, existing) {
-  return params.flatMap((root, index) => Array.from({ length: root.array_len }, (_, element) => {
+  return params.flatMap((root, index) =>
+    Array.from({ length: root.array_len }, (_, element) => {
       const isArray = root.type_repr !== root.scalar;
-      const param = { ...root, name: isArray ? `${root.name}[${element}]` : root.name };
+      const param = {
+        ...root,
+        name: isArray ? `${root.name}[${element}]` : root.name,
+      };
 
       const previous = existing.find((item) => item.name === param.name);
       const control = param.param_control;
@@ -438,23 +641,30 @@ export function mergeParams(params, existing) {
         unit: control?.unit ?? null,
         step: decodeScalarRepr(param.scalar, control?.step_repr),
         stepCount: control?.step_count ?? null,
+        ...(param.enumeration ? { enumeration: param.enumeration } : {}),
         scalar: true,
-        array: isArray ? { name: root.name, length: root.array_len, index: element } : null,
+        array: isArray
+          ? { name: root.name, length: root.array_len, index: element }
+          : null,
       };
       return {
         ...next,
-        value: previous && paramShapeMatches(next, previous)
-          ? previous.value
-          : initialParamValue(next),
+        value:
+          previous && paramShapeMatches(next, previous)
+            ? previous.value
+            : initialParamValue(next),
       };
-    }));
+    }),
+  );
 }
 
 function mergeBuffers(buffers, existing, bufferFiles) {
   return buffers.map((buffer, index) => {
     const previous = existing.find((item) => item.name === buffer.name);
-    const loadedPath = bufferFiles.get(buffer.name)?.name ?? previous?.loadedPath ?? null;
-    const preservesLoadedFile = loadedPath !== null && previous?.loadedPath === loadedPath;
+    const loadedPath =
+      bufferFiles.get(buffer.name)?.name ?? previous?.loadedPath ?? null;
+    const preservesLoadedFile =
+      loadedPath !== null && previous?.loadedPath === loadedPath;
     return {
       index,
       name: buffer.name,
@@ -462,10 +672,16 @@ function mergeBuffers(buffers, existing, bufferFiles) {
       channelsKind: buffer.channels,
       channelsStatic: buffer.static_channels ?? null,
       loadedPath,
-      loadedFrames: preservesLoadedFile ? previous.loadedFrames ?? null : null,
-      loadedChannels: preservesLoadedFile ? previous.loadedChannels ?? null : null,
-      loadedSampleRate: preservesLoadedFile ? previous.loadedSampleRate ?? null : null,
-      waveform: preservesLoadedFile ? previous.waveform ?? null : null,
+      loadedSamples: preservesLoadedFile
+        ? (previous.loadedSamples ?? null)
+        : null,
+      loadedChannels: preservesLoadedFile
+        ? (previous.loadedChannels ?? null)
+        : null,
+      loadedSampleRate: preservesLoadedFile
+        ? (previous.loadedSampleRate ?? null)
+        : null,
+      waveform: preservesLoadedFile ? (previous.waveform ?? null) : null,
     };
   });
 }
@@ -473,111 +689,152 @@ function mergeBuffers(buffers, existing, bufferFiles) {
 export function mergeEvents(events, existing) {
   return events.map((event, index) => {
     const previous = existing.find((item) => item.name === event.name);
-    return {
-      index,
-      name: event.name,
-      args: event.schema.params.map((param, argIndex) => {
-        const prior = previous?.args.find((arg) => arg.name === param.name);
-        const ty = param.ty;
-        const scalar = ty.kind === "scalar" ? ty.encoding : ty.element?.encoding ?? null;
-        const next = {
-          index: argIndex,
-          name: param.name,
-          type: payloadTypeName(ty),
-          scalar,
-          arrayLength: ty.kind === "slice" ? null : ty.kind === "array" ? ty.len : 1,
-          isSlice: ty.kind === "slice",
-          default: payloadDefault(ty, param.default),
-          ...(scalar === null ? { shape: JSON.stringify(ty) } : {}),
-        };
-        return {
-          ...next,
-          value: prior && eventArgShapeMatches(next, prior)
-            ? prior.value
-            : initialEventArgValue(next),
-        };
-      }),
-    };
+    const args = event.schema.params.map((param, argIndex) => {
+      const ty = param.ty;
+      const next = {
+        index: argIndex,
+        name: param.name,
+        type: payloadTypeName(ty),
+        scalar: ty.kind === "scalar" ? ty.encoding : (ty.element?.encoding ?? null),
+        arrayLength: ty.kind === "slice" ? null : ty.kind === "array" ? ty.len : 1,
+        isSlice: ty.kind === "slice",
+        default: payloadDefault(ty, param.default),
+        shape: structuredClone(ty),
+      };
+      return next;
+    });
+    const preserve = previous?.args.length === args.length && args.every((arg, i) =>
+      arg.name === previous.args[i].name && eventArgShapeMatches(arg, previous.args[i]));
+    for (let i = 0; i < args.length; i++)
+      args[i].value = preserve ? previous.args[i].value : initialEventArgValue(args[i]);
+    return { index, name: event.name, args };
   });
 }
 
 function paramShapeMatches(left, right) {
-  return left.type === right.type
-    && left.array?.name === right.array?.name
-    && left.array?.length === right.array?.length
-    && left.default === right.default
-    && left.rangeMin === right.rangeMin
-    && left.rangeMax === right.rangeMax
-    && left.scale === right.scale
-    && left.curve === right.curve
-    && left.unit === right.unit
-    && left.step === right.step
-    && left.stepCount === right.stepCount;
+  return (
+    left.type === right.type &&
+    left.array?.name === right.array?.name &&
+    left.array?.length === right.array?.length &&
+    left.default === right.default &&
+    left.rangeMin === right.rangeMin &&
+    left.rangeMax === right.rangeMax &&
+    left.scale === right.scale &&
+    left.curve === right.curve &&
+    left.unit === right.unit &&
+    left.step === right.step &&
+    left.stepCount === right.stepCount &&
+    enumChoicesMatch(left.enumeration ?? null, right.enumeration ?? null)
+  );
+}
+
+function enumChoicesMatch(left, right) {
+  return left === right || left !== null && right !== null
+    && left.name === right.name
+    && left.members.length === right.members.length
+    && left.members.every((member, index) => member.name === right.members[index].name);
 }
 
 function eventArgShapeMatches(left, right) {
-  return left.type === right.type
-    && left.shape === right.shape
-    && left.scalar === right.scalar
-    && left.arrayLength === right.arrayLength
-    && left.isSlice === right.isSlice
-    && eventDefaultsMatch(left.default, right.default);
+  return (
+    left.type === right.type &&
+    metadataValuesMatch(left.shape, right.shape) &&
+    left.scalar === right.scalar &&
+    left.arrayLength === right.arrayLength &&
+    left.isSlice === right.isSlice &&
+    metadataValuesMatch(left.default, right.default)
+  );
 }
 
-function eventDefaultsMatch(left, right) {
+function metadataValuesMatch(left, right) {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left)) {
-    return Array.isArray(right)
-      && left.length === right.length
-      && left.every((value, index) => eventDefaultsMatch(value, right[index]));
+    return (
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => metadataValuesMatch(value, right[index]))
+    );
   }
-  if (Array.isArray(right)
-      || left === null || right === null
-      || typeof left !== "object" || typeof right !== "object") {
+  if (
+    Array.isArray(right) ||
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
     return false;
   }
   const leftKeys = Object.keys(left);
   const rightKeys = Object.keys(right);
-  return leftKeys.length === rightKeys.length
-    && leftKeys.every((key) =>
-      Object.hasOwn(right, key) && eventDefaultsMatch(left[key], right[key]));
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(right, key) && metadataValuesMatch(left[key], right[key]),
+    )
+  );
 }
 
 function payloadTypeName(ty) {
   switch (ty.kind) {
-    case "scalar": return ty.encoding;
-    case "struct": return ty.name;
-    case "tuple": return `(${ty.elements.map(payloadTypeName).join(", ")})`;
-    case "array": return `${payloadTypeName(ty.element)}[${ty.len}]`;
-    case "slice": return `${payloadTypeName(ty.element)}[]`;
+    case "scalar":
+      return ty.encoding;
+    case "struct":
+      return ty.name;
+    case "tuple":
+      return `(${ty.elements.map(payloadTypeName).join(", ")})`;
+    case "array":
+      return `${payloadTypeName(ty.element)}[${ty.len}]`;
+    case "slice":
+      return `${payloadTypeName(ty.element)}[]`;
   }
 }
 
 function payloadDefault(ty, value) {
   switch (ty.kind) {
-    case "scalar": return decodeEventScalarRepr(ty.encoding, value)
-      ?? (ty.encoding === "bool" ? false : ty.encoding === "i64" ? "0" : 0);
-    case "struct": return Object.fromEntries(ty.fields.map((field, index) =>
-      [field.name, payloadDefault(field.ty, value?.[index] ?? field.default)]));
-    case "tuple": return ty.elements.map((element, index) => payloadDefault(element, value?.[index]));
-    case "array": return Array.from({ length: ty.len }, (_, index) => payloadDefault(ty.element, value?.[index]));
-    case "slice": return [];
+    case "scalar":
+      return (
+        decodeEventScalarRepr(ty.encoding, value) ??
+        (ty.encoding === "bool" ? false : ty.encoding === "i64" ? "0" : 0)
+      );
+    case "struct":
+      return Object.fromEntries(
+        ty.fields.map((field, index) => [
+          field.name,
+          payloadDefault(field.ty, value?.[index] ?? field.default),
+        ]),
+      );
+    case "tuple":
+      return ty.elements.map((element, index) =>
+        payloadDefault(element, value?.[index]),
+      );
+    case "array":
+      return Array.from({ length: ty.len }, (_, index) =>
+        payloadDefault(ty.element, value?.[index]),
+      );
+    case "slice":
+      return [];
   }
 }
 
 function initialParamValue(param) {
   if (param.type === "bool") return Boolean(param.default);
-  if (param.default !== null && param.default !== undefined) return param.default;
-  if (param.rangeMin !== null && param.rangeMin !== undefined) return param.rangeMin;
+  if (param.default !== null && param.default !== undefined)
+    return param.default;
+  if (param.rangeMin !== null && param.rangeMin !== undefined)
+    return param.rangeMin;
   return 0;
 }
 
 function initialEventArgValue(arg) {
-  return structuredClone(arg.default ?? (arg.type === "bool" ? false : arg.type === "i64" ? "0" : 0));
+  return structuredClone(
+    arg.default ?? (arg.type === "bool" ? false : arg.type === "i64" ? "0" : 0),
+  );
 }
 
 function decodeEventScalarRepr(type, value) {
-  if (type === "i64") return value === null || value === undefined ? null : String(value);
+  if (type === "i64")
+    return value === null || value === undefined ? null : String(value);
   return decodeScalarRepr(type, value);
 }
 
@@ -600,4 +857,29 @@ function decodeScalarRepr(type, value) {
   }
   view.setBigUint64(0, BigInt(value), false);
   return view.getFloat64(0, false);
+}
+
+// The shader UI uses JSON strings for non-finite floats; the Web Audio API uses
+// JavaScript numbers. Wide integers remain decimal strings at both boundaries.
+function eventValue(shape, value) {
+  switch (shape?.kind) {
+    case "scalar":
+      return ["f32", "f64"].includes(shape.encoding) &&
+        typeof value === "string"
+        ? Number(value)
+        : value;
+    case "struct":
+      return Object.fromEntries(
+        shape.fields.map((f) => [f.name, eventValue(f.ty, value?.[f.name])]),
+      );
+    case "tuple":
+      return shape.elements.map((s, i) => eventValue(s, value?.[i]));
+    case "array":
+    case "slice":
+      return Array.isArray(value)
+        ? value.map((v) => eventValue(shape.element, v))
+        : value;
+    default:
+      return value;
+  }
 }

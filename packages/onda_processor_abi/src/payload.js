@@ -1,3 +1,4 @@
+import { enumMemberCount } from "./enum-metadata.js";
 // Logical SoA shape planning. Array extents remain axes; plans never expand
 // array elements into metadata. This mirrors the compiler-free Rust planner.
 const LIMIT = 0x7fffffff;
@@ -85,6 +86,12 @@ export class PayloadPlan {
       shape.reduce((count, axis) => extent(count * axis), 1);
       switch (ty.kind) {
         case "scalar": {
+          const enumCount = enumMemberCount(ty.enumeration);
+          if (enumCount !== null && (ty.encoding !== "i32" || ty.integer_range?.mode !== "clamp"
+            || ty.integer_range?.min?.type !== "i32" || ty.integer_range?.min?.value !== "0"
+            || ty.integer_range?.max?.type !== "i32" || ty.integer_range?.max?.value !== String(enumCount - 1))) {
+            throw new TypeError("enum payload range must match its members");
+          }
           const size = SIZES[ty.encoding];
           if (size === undefined) throw new TypeError("invalid payload scalar encoding");
           const elements = shape.reduce((count, axis) => extent(count * axis), 1);

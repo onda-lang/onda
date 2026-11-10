@@ -463,6 +463,11 @@ impl<'a> FunctionLowerer<'a> {
         location: SourceLoc,
         block: &mut MirBlock,
     ) -> Result<LoweredValue, MirLoweringError> {
+        if !self.bindings.contains_key(name) {
+            if let Some((owner, _)) = name.rsplit_once('.') {
+                self.prepare_scalar_processor_view(owner, block, location.clone())?;
+            }
+        }
         if let Some(binding) = self.bindings.get(name).cloned() {
             return match binding {
                 Binding::PlaceAlias(place, ty) => Ok(self.emit_temp(block, ty, Rvalue::Load(place), location)),
@@ -516,7 +521,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("buffer parameter '{name}' used where a scalar value is required"),
                     location,
                 )),
-                Binding::BufferAlias(_, _) => Err(self.error(
+                Binding::BufferAlias(_, _) | Binding::BufferValue(_, _) | Binding::BufferCollectionValue { .. } => Err(self.error(
                     format!("buffer-reference alias '{name}' used where a scalar value is required"),
                     location,
                 )),
@@ -1216,6 +1221,32 @@ impl<'a> FunctionLowerer<'a> {
                 element,
                 clamped,
             } => {
+                if let Some(binding) = self.smoothed_input_endpoints.get(&input) {
+                    if let (Binding::Slice(slice, _, _, _), Some(element)) = (binding, element) {
+                        return Ok(Rvalue::SliceLoad {
+                            slice: Value::Local(*slice),
+                            index: Value::Constant(ScalarValue::I32(element as i32)),
+                            bounds: BoundsMode::Unchecked,
+                        });
+                    }
+                    let place = match (binding, element) {
+                        (Binding::Local(local, _), None) => Place::local(*local),
+                        (Binding::Array(local, _, _), Some(element)) => Place {
+                            base: PlaceBase::Local(*local),
+                            projections: vec![Projection::Index {
+                                index: Value::Constant(ScalarValue::I32(element as i32)),
+                                bounds: BoundsMode::Unchecked,
+                            }],
+                        },
+                        _ => {
+                            return Err(self.error(
+                                format!("invalid smoothed input cache for element {element:?}"),
+                                location,
+                            ))
+                        }
+                    };
+                    return Ok(Rvalue::Load(place));
+                }
                 if let Some(alias) = clamped {
                     debug_assert!(element.is_none());
                     let base = match self.bindings.get(&alias) {
@@ -1344,8 +1375,10 @@ impl<'a> FunctionLowerer<'a> {
         let [left, right] = operands;
         let (left_ty, right_ty) =
             adapt_binary_types_from_purity(left.ty(), right.ty(), left.pure(), right.pure());
-        let operand_ty = if left_ty == PrimitiveType::Bool && right_ty == PrimitiveType::Bool {
-            PrimitiveType::Bool
+        let operand_ty = if left_ty == right_ty
+            && matches!(left_ty, PrimitiveType::Bool | PrimitiveType::Enum(_))
+        {
+            left_ty
         } else {
             self.merge_numeric(left_ty, right_ty, "comparison", location.clone())?
         };

@@ -16,7 +16,33 @@ export class OndaExecutionError extends Error {
   readonly status: number;
 }
 
-export type OndaExecutionErrorListener = (error: OndaExecutionError) => void;
+/** Negative host-validation and transport codes; generated execution statuses remain positive. */
+export const ONDA_RUNTIME_ERROR: Readonly<{
+  UNINITIALIZED: -1;
+  INVALID_INIT_MODE: -2;
+  UNKNOWN_EVENT: -3;
+  INVALID_PAYLOAD: -4;
+  PAYLOAD_CAPACITY: -5;
+  INVALID_SNAPSHOT: -6;
+  UNKNOWN_OPERATION: -7;
+  INVALID_PARAMETER: -8;
+  INVALID_SMOOTHING: -9;
+  INVALID_AUDIO_SHAPE: -10;
+  INVALID_OUTPUT: -11;
+  UNEXPECTED_FAILURE: -12;
+  TRANSPORT_OVERFLOW: -13;
+  INVALID_STORAGE: -14;
+  UNKNOWN_BUFFER: -15;
+}>;
+
+/** Worklet validation, storage, unexpected execution, or transport failure. */
+export class OndaRuntimeError extends Error {
+  constructor(operation: string, code: number);
+  readonly operation: string;
+  readonly code: number;
+}
+
+export type OndaExecutionErrorListener = (error: OndaExecutionError | OndaRuntimeError | Error) => void;
 
 export type {
   OndaParamDomain,
@@ -97,6 +123,7 @@ export function ondaAudioWorkletNodeOptions(
 ): AudioWorkletNodeOptions & {
   processorOptions: {
     executionOutputRing: SharedArrayBuffer | null;
+    executionStatusRing: SharedArrayBuffer | null;
     [key: string]: unknown;
   };
 };
@@ -126,6 +153,8 @@ export class OndaAudioProcessor {
     initialPrintListener?: OndaAudioPrintListener,
     /** Shared ring returned in processorOptions by ondaAudioWorkletNodeOptions(). */
     executionOutputRing?: SharedArrayBuffer | null,
+    /** Independent status ring returned by the node-option builder. */
+    executionStatusRing?: SharedArrayBuffer | null,
   );
   readonly node: AudioWorkletNode;
   readonly metadata: OndaProcessorMetadata | null;
@@ -148,7 +177,7 @@ export class OndaAudioProcessor {
   ): Promise<any>;
   /** Unknown nonnegative numeric event indices are successful no-ops; unknown names are rejected. */
   trigger(event: string | number, values?: Record<string, unknown> | unknown[]): Promise<any>;
-  /** Subscribe to asynchronous render-time generated failures. */
+  /** Subscribe to asynchronous render-time failures; requested failures reject their promises. */
   onExecutionError(listener: OndaExecutionErrorListener): () => boolean;
   /**
    * Subscribe to batches decoded after generated execution. Collection is active only while at

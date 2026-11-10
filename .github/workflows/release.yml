@@ -1,4 +1,5 @@
 name: Build Onda Releases
+run-name: Build Onda — ${{ github.ref_name }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -11,7 +12,7 @@ on:
       publish_release:
         description: "Publish archives to a GitHub release"
         required: true
-        default: true
+        default: false
         type: boolean
   push:
     tags:
@@ -25,27 +26,50 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: windows-x64
-            runner: windows-latest
+            runner: windows-2022
+            container: ''
             platform: windows
             arch: x64
             archive_ext: zip
           - name: linux-x64
             runner: ubuntu-24.04
+            container: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
             platform: linux
             arch: x64
             archive_ext: tar.xz
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            container: debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8
+            platform: linux
+            arch: arm64
+            archive_ext: tar.xz
           - name: macos-arm64
             runner: macos-latest
+            container: ''
             platform: macos
             arch: arm64
             archive_ext: tar.xz
 
     steps:
+      - name: Prepare Debian 12 build environment
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          source /etc/os-release
+          test "$ID:$VERSION_ID" = debian:12
+          test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.36'
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates cmake curl git libclang-dev libssl-dev \
+            ninja-build pkg-config python-is-python3 xz-utils
+
       - name: Checkout repo
         uses: actions/checkout@v5
         with:
@@ -55,27 +79,32 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get install -y --no-install-recommends \
             pkg-config \
             libpipewire-0.3-dev \
             libdbus-1-dev \
             libasound2-dev \
             libudev-dev \
-            libxkbcommon-dev \
+            libxkbcommon-dev libxkbcommon-x11-0 \
             libwayland-dev \
             libx11-dev \
             libxi-dev \
             libxcursor-dev \
             libxrandr-dev \
             libxinerama-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            libvulkan1 mesa-vulkan-drivers xvfb xauth weston
 
           pipewire_version="$(pkg-config --modversion libpipewire-0.3)"
           if ! printf '%s\n%s\n' "0.3.53" "$pipewire_version" | sort -V -C; then
             echo "PipeWire >= 0.3.53 is required; found $pipewire_version" >&2
             exit 1
           fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.98.0
@@ -110,7 +139,7 @@ jobs:
         shell: bash
         run: ./scripts/bootstrap-llvm.sh --version "${{ env.LLVM_VERSION }}"
 
-      - name: Build onda and onda_api on Windows
+      - name: Build Onda and native libraries on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -120,21 +149,25 @@ jobs:
           $llvmBinDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           # Both targets produce onda.pdb on MSVC, so Cargo must build them separately.
           cargo build --release -p onda_api
-          cargo test --release -p onda_api --test events_c_api project_buffer_updates
-          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
+          if ($LASTEXITCODE -ne 0) { throw "Onda API build failed" }
+          cargo test --release -p onda_api --test events_c_api
+          if ($LASTEXITCODE -ne 0) { throw "Onda API validation failed" }
+          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization --test target_initialization -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Native vector math validation failed" }
-          cargo build --release -p onda_cli
-          cargo test --release -p onda_webview --lib windows_webview_startup_shows_run_controls
-          if ($LASTEXITCODE -ne 0) {
-            throw "The Windows webview failed to show the run controls"
-          }
+          cargo build --release -p onda_cli -p onda_ui --features onda_ui/ffi
+          if ($LASTEXITCODE -ne 0) { throw "Onda and GPU UI build failed" }
+          # Hosted WARP faults in d3d10warp.dll when independent GPU tests run concurrently.
+          cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { throw "GPU UI tests failed" }
           $ondaCmakeDir = Join-Path $PWD "cmake"
           cmake `
             -S tests\cmake_sdk `
             -B target\cmake-sdk `
             -A x64 `
             "-DOnda_DIR=$ondaCmakeDir"
+          if ($LASTEXITCODE -ne 0) { throw "CMake SDK configuration failed" }
           cmake --build target\cmake-sdk --config Release
+          if ($LASTEXITCODE -ne 0) { throw "CMake SDK validation failed" }
 
           $resources = & llvm-readobj --coff-resources target\release\onda.exe
           if ($LASTEXITCODE -ne 0 -or -not ($resources -match 'Type:\s+(?:GROUP_)?ICON\b')) {
@@ -153,14 +186,16 @@ jobs:
             throw "onda-run.exe is not a console-free Windows GUI application"
           }
 
-      - name: Build onda and onda_api on Unix
+      - name: Build Onda and native libraries on Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "${{ env.LLVM_VERSION }}"
-          cargo build --release -p onda_cli -p onda_api
-          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization
-          cargo test --release -p onda_api --test events_c_api project_buffer_updates
+          cargo build --release -p onda_cli -p onda_api -p onda_ui --features onda_ui/ffi
+          if [[ "$RUNNER_OS" == Linux ]]; then export WGPU_BACKEND=vulkan; fi
+          cargo test --release -p onda_ui -p onda_gpu -p onda_scope --features onda_ui/ffi --lib
+          cargo test --release -p onda_codegen_llvm --test math_policy --test slice_optimization --test target_initialization -- --nocapture
+          cargo test --release -p onda_api --test events_c_api
           cmake \
             -S tests/cmake_sdk \
             -B target/cmake-sdk \
@@ -168,13 +203,36 @@ jobs:
             -DOnda_DIR="$PWD/cmake"
           cmake --build target/cmake-sdk --parallel
 
+      - name: Test Linux X11 and Wayland adapters
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          WGPU_BACKEND: vulkan
+        run: |
+          source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
+          xvfb-run -a cargo test --release -p onda_ui --features ffi --lib ffi::tests -- --ignored
+          xvfb-run -a cargo test --release -p onda_gpu --lib native_x11 -- --ignored
+          export XDG_RUNTIME_DIR
+          XDG_RUNTIME_DIR="$(mktemp -d)"
+          export WAYLAND_DISPLAY=wayland-onda
+          weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 --log="$RUNNER_TEMP/weston.log" &
+          compositor=$!
+          trap 'kill "$compositor"; wait "$compositor" || true' EXIT
+          for _ in {1..100}; do
+            if [[ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]]; then break; fi
+            kill -0 "$compositor" || { cat "$RUNNER_TEMP/weston.log"; exit 1; }
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          cargo test --release -p onda_gpu --lib standalone_prefers_native_wayland_over_the_xwayland_bridge -- --ignored
+
       - name: Verify macOS deployment targets
         if: runner.os == 'macOS'
         shell: bash
         run: |
           bash tests/cmake_sdk/check-macos-deployment-target.sh \
             "$MACOSX_DEPLOYMENT_TARGET" \
-            target/release/onda target/release/libonda.dylib target/release/libonda.a
+            target/release/onda target/release/libonda.dylib target/release/libonda.a target/release/libonda_ui.dylib
 
       - name: Generate Rust third-party licenses
         shell: bash
@@ -211,6 +269,7 @@ jobs:
           Copy-Item target\release\onda.exe $binDir
           Copy-Item target\release\onda-run.exe (Join-Path $packageRoot "Onda.exe")
           Copy-Item target\release\onda.dll $libDir
+          Copy-Item target\release\onda_ui.dll $libDir
           if (Test-Path target\release\onda.lib) {
             Copy-Item target\release\onda.lib $libDir
           }
@@ -221,6 +280,7 @@ jobs:
             Copy-Item target\release\onda.exp $libDir
           }
           Copy-Item include\onda.h $includeDir
+          Copy-Item include\onda_ui.h $includeDir
           Copy-Item include\onda_processor_abi.h $includeDir
           Copy-Item cmake\OndaConfig.cmake $cmakeDir
           Copy-Item LICENSE $packageRoot
@@ -233,18 +293,21 @@ jobs:
           Copy-Item licenses\LLVM-REGEX-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-UNICODE-LICENSE.txt $licensesDir
           Copy-Item licenses\LLVM-MSVCSETUPAPI-LICENSE.txt $licensesDir
+          Copy-Item assets\fonts\OFL-*.txt $licensesDir
           Copy-Item target\release-licenses\RUST-DEPENDENCIES.txt $licensesDir
           Copy-Item target\release-licenses\MPL-2.0-SOURCES $licensesDir -Recurse
           Copy-Item README.md $packageRoot
           Copy-Item CHANGELOG.md $packageRoot
           Copy-Item docs\syntax.md $docsDir
           Copy-Item docs\api.md $docsDir
+          Copy-Item docs\ui-api.md $docsDir
           Copy-Item docs\processor-abi.md $docsDir
           Copy-Item docs\stdlib.md $docsDir
           Copy-Item examples $packageRoot -Recurse
 
           if (-not (Test-Path (Join-Path $docsDir "syntax.md")) -or
               -not (Test-Path (Join-Path $docsDir "api.md")) -or
+              -not (Test-Path (Join-Path $docsDir "ui-api.md")) -or
               -not (Test-Path (Join-Path $docsDir "processor-abi.md")) -or
               -not (Test-Path (Join-Path $docsDir "stdlib.md")) -or
               -not (Test-Path (Join-Path $licensesDir "SLEEF-LICENSE.txt")) -or
@@ -298,6 +361,7 @@ jobs:
           cp target/release/onda "$bin_dir/"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             cp target/release/libonda.dylib "$lib_dir/"
+            cp target/release/libonda_ui.dylib "$lib_dir/"
             cp target/release/libonda.a "$lib_dir/"
 
             app_contents="$package_root/Onda.app/Contents"
@@ -330,6 +394,7 @@ jobs:
             test -s "$app_resources/Onda.icns"
           else
             cp target/release/libonda.so "$lib_dir/"
+            cp target/release/libonda_ui.so "$lib_dir/"
             cp target/release/libonda.a "$lib_dir/"
             mkdir -p \
               "$package_root/share/applications" \
@@ -366,6 +431,7 @@ jobs:
             test ! -e "$install_test_data/icons/hicolor/scalable/apps/onda-run.svg"
           fi
           cp include/onda.h "$include_dir/"
+          cp include/onda_ui.h "$include_dir/"
           cp include/onda_processor_abi.h "$include_dir/"
           cp cmake/OndaConfig.cmake "$cmake_dir/"
           cp LICENSE "$package_root/"
@@ -378,18 +444,21 @@ jobs:
           cp licenses/LLVM-REGEX-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-UNICODE-LICENSE.txt "$licenses_dir/"
           cp licenses/LLVM-MSVCSETUPAPI-LICENSE.txt "$licenses_dir/"
+          cp assets/fonts/OFL-*.txt "$licenses_dir/"
           cp target/release-licenses/RUST-DEPENDENCIES.txt "$licenses_dir/"
           cp -R target/release-licenses/MPL-2.0-SOURCES "$licenses_dir/"
           cp README.md "$package_root/"
           cp CHANGELOG.md "$package_root/"
           cp docs/syntax.md "$docs_dir/"
           cp docs/api.md "$docs_dir/"
+          cp docs/ui-api.md "$docs_dir/"
           cp docs/processor-abi.md "$docs_dir/"
           cp docs/stdlib.md "$docs_dir/"
           cp -R examples "$package_root/"
 
           test -f "$docs_dir/syntax.md"
           test -f "$docs_dir/api.md"
+          test -f "$docs_dir/ui-api.md"
           test -f "$docs_dir/processor-abi.md"
           test -f "$docs_dir/stdlib.md"
           test -s "$licenses_dir/SLEEF-LICENSE.txt"
@@ -427,6 +496,10 @@ jobs:
           bash tests/cmake_sdk/check-macos-shared-library.sh \
             target/release/libonda.dylib \
             target/cmake-sdk-packaged/libonda_cmake_shared_smoke.so
+          cc -dynamiclib -Iinclude tests/cmake_sdk/ui_consumer.c \
+            target/release/libonda_ui.dylib -o target/onda_ui_sdk_smoke.dylib
+          bash tests/cmake_sdk/check-macos-shared-library.sh \
+            target/release/libonda_ui.dylib target/onda_ui_sdk_smoke.dylib
 
       - name: Verify Linux shared SDK identity
         if: runner.os == 'Linux'
@@ -435,6 +508,25 @@ jobs:
           bash tests/cmake_sdk/check-linux-shared-library.sh \
             target/release/libonda.so \
             target/cmake-sdk-packaged/libonda_cmake_shared_smoke.so
+          cc -shared -fPIC -Iinclude tests/cmake_sdk/ui_consumer.c \
+            target/release/libonda_ui.so -o target/onda_ui_sdk_smoke.so
+          bash tests/cmake_sdk/check-linux-shared-library.sh \
+            target/release/libonda_ui.so target/onda_ui_sdk_smoke.so
+
+      - name: Verify Linux SDK runtime baseline
+        if: runner.os == 'Linux'
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE_ARCH: ${{ matrix.arch }}
+        run: |
+          import os, sys
+          from pathlib import Path
+          # Share the ABI policy with the pinned LLVM builder.
+          sys.path.insert(0, "deps/llvm-bootstrap/tests")
+          from check_linux_package import audit_elf
+          root = Path("dist") / f"onda-{os.environ['PACKAGE_VERSION']}-linux-{os.environ['PACKAGE_ARCH']}"
+          audit_elf(root, os.environ["PACKAGE_ARCH"])
 
       - name: Verify CMake SDK exports
         if: runner.os == 'Windows'
@@ -450,12 +542,28 @@ jobs:
           $module = Join-Path $PWD "target\cmake-sdk-packaged\Release\onda_cmake_shared_smoke.dll"
           .\tests\cmake_sdk\check-windows-shared-library.ps1 -Consumer $module
 
+      - name: Certify SDK artifacts
+        shell: python
+        run: |
+          import hashlib, os
+          from pathlib import Path
+          root = Path("dist")
+          archives = sorted([*root.glob("*.zip"), *root.glob("*.tar.xz")])
+          assert len(archives) == 1, archives
+          with archives[0].open("rb") as archive:
+              digest = hashlib.file_digest(archive, "sha256").hexdigest()
+          (root / "SHA256SUMS.txt").write_text(f"{digest}  {archives[0].name}\n")
+          (root / "onda-source.txt").write_text(os.environ["GITHUB_SHA"] + "\n")
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
         with:
           name: onda-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dist/*.${{ matrix.archive_ext }}
-          retention-days: 1
+          path: |
+            dist/*.${{ matrix.archive_ext }}
+            dist/SHA256SUMS.txt
+            dist/onda-source.txt
+          retention-days: 14
 
   web:
     name: WebAssembly compiler packages
@@ -483,6 +591,11 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
+      - name: Install browser test display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth
+
       - name: Install package dependencies
         run: |
           node ./scripts/sync-package-versions.mjs --check
@@ -498,6 +611,19 @@ jobs:
           npm run test:built --workspace @onda-lang/wasm-compiler
           npm run test:pack:built --workspace @onda-lang/wasm-compiler
 
+      - name: Build and test shared GPU UI and web editors
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+          ONDA_UI_TEST_WEBGPU: "0"
+        run: |
+          npm run build:gpu-ui
+          bash examples/web/onda_wasm_playground/build-demo.sh --skip-build
+          node scripts/build-website-playground.mjs
+          node --test scripts/stage-gpu-ui.test.mjs
+          npm run test:playground
+          xvfb-run -a npm run test:gpu-ui
+          xvfb-run -a npm run test:gpu-web-editor
+
       - name: Pack WebAssembly packages
         run: |
           node ./scripts/stage-web-api-docs.mjs
@@ -512,7 +638,7 @@ jobs:
         with:
           name: onda-web-packages
           path: dist/*.tgz
-          retention-days: 1
+          retention-days: 14
 
   npm-publish:
     name: Publish npm packages
@@ -565,9 +691,9 @@ jobs:
 
   release:
     name: Publish Release
-    if: ${{ github.event_name == 'push' || inputs.publish_release }}
+    if: github.event_name == 'push' || inputs.publish_release
     needs: [build, web]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repo
@@ -634,13 +760,6 @@ jobs:
         with:
           path: dist
 
-      - name: Generate checksums
-        shell: bash
-        run: |
-          find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' \) -print0 \
-            | sort -z \
-            | xargs -0 sha256sum > dist/SHA256SUMS.txt
-
       - name: Publish GitHub release
         shell: bash
         env:
@@ -649,7 +768,7 @@ jobs:
           RELEASE_NAME: ${{ steps.version.outputs.version }}
         run: |
           mapfile -t release_files < <(
-            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' -o -name 'SHA256SUMS.txt' \) \
+            find dist -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.tgz' \) \
               | sort
           )
 
@@ -657,6 +776,12 @@ jobs:
             echo "no release artifacts found under dist/" >&2
             exit 1
           fi
+
+          # Release assets have flat filenames, independent of artifact directories.
+          for archive in "${release_files[@]}"; do
+            (cd -- "$(dirname -- "$archive")" && sha256sum -- "$(basename -- "$archive")")
+          done > dist/SHA256SUMS.txt
+          release_files+=(dist/SHA256SUMS.txt)
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$RELEASE_NAME" --notes-file release-notes.md

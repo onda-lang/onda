@@ -10,22 +10,22 @@ namespace std::data<S = SR, C = 1>:
     def len(self):
       return self.storage.len()
 
-    def frames(self):
+    def samples(self):
       return i32(S)
 
     def chans(self):
       return i32(C)
 
-    def _index(self, frame_i: i32, ch_i: i32 = 0):
-      frame = frame_i {S, wrap}
+    def _index(self, sample_index: i32, ch_i: i32 = 0):
+      index = sample_index {S, wrap}
       channel = ch_i {C, wrap}
-      return channel * S + frame
+      return channel * S + index
 
-    def read(self, frame_i: i32, ch_i: i32 = 0):
-      return self.storage[self._index(frame_i, ch_i)]
+    def read(self, sample_index: i32, ch_i: i32 = 0):
+      return self.storage[self._index(sample_index, ch_i)]
 
-    def write(self, frame_i: i32, value: T, ch_i: i32 = 0):
-      self.storage[self._index(frame_i, ch_i)] = value
+    def write(self, sample_index: i32, value: T, ch_i: i32 = 0):
+      self.storage[self._index(sample_index, ch_i)] = value
 
     def readL(self, pos, ch_i: i32 = 0):
       pos_floor = floor(pos)

@@ -437,7 +437,7 @@ mod tests {
                     Statement {
                         kind: StatementKind::Assign {
                             destination: Place::local(LocalId::new(3)),
-                            value: Rvalue::BufferLen(BufferRef::ArrayElement {
+                            value: Rvalue::BufferSamples(BufferRef::ArrayElement {
                                 first: BufferId::new(0),
                                 len: 4,
                                 selector: Value::Local(LocalId::new(0)),
@@ -449,7 +449,7 @@ mod tests {
                     Statement {
                         kind: StatementKind::Assign {
                             destination: Place::local(LocalId::new(4)),
-                            value: Rvalue::BufferParamLen(BufferParamRef::ArrayElement {
+                            value: Rvalue::BufferParamSamples(BufferParamRef::ArrayElement {
                                 span: ParameterId::new(0),
                                 selector: Value::Local(LocalId::new(0)),
                                 bounds: BoundsMode::Checked,
@@ -500,7 +500,7 @@ mod tests {
         }
         let StatementKind::Assign {
             value:
-                Rvalue::BufferLen(BufferRef::ArrayElement {
+                Rvalue::BufferSamples(BufferRef::ArrayElement {
                     bounds: buffer_bounds,
                     ..
                 }),
@@ -511,7 +511,7 @@ mod tests {
         };
         let StatementKind::Assign {
             value:
-                Rvalue::BufferParamLen(BufferParamRef::ArrayElement {
+                Rvalue::BufferParamSamples(BufferParamRef::ArrayElement {
                     bounds: parameter_bounds,
                     ..
                 }),

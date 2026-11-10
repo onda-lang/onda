@@ -54,7 +54,7 @@ proc Kick:
 proc Snare:
   init:
     rng = std::random::Rng()
-    noise_hp = std::filter::OnePole(cutoff = 1100.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+    noise_hp = std::filter::OnePole(cutoff = 1100.0, mode = std::filter::OnePoleMode::HighPass)
     oscillator = std::osc::Sine(freq = 185.0)
     amplitude = std::env::DecayEnv()
     tone = std::env::DecayEnv(decay_s = 0.045)
@@ -76,7 +76,7 @@ proc Hat:
     square_b = std::osc::Square(freq = 7433.0)
     square_c = std::osc::Square(freq = 8939.0)
     amplitude = std::env::DecayEnv()
-    hp = std::filter::OnePole(cutoff = 6200.0, mode = std::filter::mode::ONE_POLE_HIGHPASS)
+    hp = std::filter::OnePole(cutoff = 6200.0, mode = std::filter::OnePoleMode::HighPass)
 
   event hit(decay_s: f32, velocity: f32):
     square_a.reset()

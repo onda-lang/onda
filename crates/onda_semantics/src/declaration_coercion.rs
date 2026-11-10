@@ -1,5 +1,5 @@
 use super::*;
-use onda_frontend::ArrayTypeSpec;
+use onda_frontend::{ArrayTypeSpec, ParamControl};
 
 fn reinterpret_scalar_specialized_struct_field(
     spec: &ArrayTypeSpec,
@@ -604,6 +604,7 @@ pub(crate) fn coerce_params(
                         )
                     })
                 });
+                let range = range.or_else(|| enum_value_range(ty));
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
@@ -651,6 +652,7 @@ pub(crate) fn coerce_params(
                         )
                     })
                 });
+                let range = range.or_else(|| enum_value_range(ty));
                 let default = range
                     .map(|r| clamp_typed_const_to_range(raw_default, r))
                     .unwrap_or(raw_default);
@@ -820,15 +822,14 @@ pub(crate) fn coerce_params(
     (out, arrays)
 }
 
-fn coerce_top_level_param_control(
+fn coerce_param_attributes(
     param: &ParamDecl,
     ty: PrimitiveType,
     range: Option<TypedValueRange>,
-    default: TypedConstValue,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
 ) -> TypedParamControl {
-    let context = format!("param '{}.{}'", "<top-level>", param.name);
+    let context = format!("param '{}'", param.name);
     let mut control = TypedParamControl {
         scale: param.control.scale,
         unit: param.control.unit.clone(),
@@ -850,6 +851,123 @@ fn coerce_top_level_param_control(
             }
         })
     });
+    if control.scale == ParamScale::Log {
+        if control.curve.is_some() {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} cannot combine logarithmic scale with curve"),
+                param.loc.as_ref(),
+            ));
+        }
+        if !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} logarithmic scale requires f32 or f64"),
+                param.loc.as_ref(),
+            ));
+        }
+        if range.is_none_or(|range| {
+            range.min.to_f64() <= 0.0 || range.min.to_f64() >= range.max.to_f64()
+        }) {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} logarithmic scale requires 0 < min < max"),
+                param.loc.as_ref(),
+            ));
+        }
+    }
+
+    control.step = param.control.step.as_ref().and_then(|step| {
+        with_loc_diag_context(param.loc.as_ref(), |_diag| {
+            eval_typed_const_expr(step, ty, options, &format!("{context} step"), false, errors)
+        })
+    });
+    if let Some(step) = control.step {
+        if !ty.is_numeric() || !step.to_f64().is_finite() || step.to_f64() <= 0.0 {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} step must be numeric, finite and greater than zero"),
+                &param.loc,
+            ));
+        }
+        if control.scale == ParamScale::Log {
+            errors.push(Diagnostic::semantic_span(
+                format!("{context} cannot combine logarithmic scale with step"),
+                &param.loc,
+            ));
+        }
+    }
+    control
+}
+
+/// Proc metadata describes a possible external control. Numeric proc ranges and
+/// stores remain independent; descriptor/grid representability is checked when
+/// that surface is actually exported to a host.
+pub(crate) fn validate_proc_param_attributes(
+    params: &[ParamDecl],
+    specs: &[ProcParamSpec],
+    options: AnalysisOptions,
+    constants: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for param in params
+        .iter()
+        .filter(|param| param.control != ParamControl::default())
+    {
+        let Some(slot) = specs
+            .iter()
+            .find(|spec| spec.name == param.name)
+            .and_then(|spec| spec.slots.first())
+        else {
+            continue;
+        };
+        let mut declaration = param.clone();
+        if let Some(constants) = constants {
+            for expr in [
+                &mut declaration.control.curve,
+                &mut declaration.control.step,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                constants.materialize(expr, options, errors);
+            }
+        }
+        if matches!(slot.ty, PrimitiveType::Enum(_)) {
+            errors.push(Diagnostic::semantic_span(
+                "enum controls derive their range and steps from their members",
+                &param.loc,
+            ));
+        } else {
+            coerce_param_attributes(&declaration, slot.ty, slot.range, options, errors);
+        }
+    }
+}
+
+fn coerce_top_level_param_control(
+    param: &ParamDecl,
+    ty: PrimitiveType,
+    range: Option<TypedValueRange>,
+    default: TypedConstValue,
+    options: AnalysisOptions,
+    errors: &mut Vec<Diagnostic>,
+) -> TypedParamControl {
+    if let PrimitiveType::Enum(enum_ty) = ty {
+        if param.range.is_some()
+            || param.control.scale != ParamScale::Linear
+            || param.control.curve.is_some()
+            || param.control.unit.is_some()
+            || param.control.step.is_some()
+        {
+            errors.push(Diagnostic::semantic_span(
+                "enum controls derive their range and steps from their members",
+                &param.loc,
+            ));
+        }
+        return TypedParamControl {
+            step: Some(TypedConstValue::I32(1)),
+            step_count: Some(enum_ty.count - 1),
+            ..TypedParamControl::default()
+        };
+    }
+    let context = format!("param '{}.{}'", "<top-level>", param.name);
+    let mut control = coerce_param_attributes(param, ty, range, options, errors);
     let Some(range) = range else {
         return control;
     };
@@ -877,48 +995,14 @@ fn coerce_top_level_param_control(
         return control;
     }
 
-    if control.scale == ParamScale::Log {
-        if control.curve.is_some() {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context} cannot combine logarithmic scale with curve"),
-                param.loc.as_ref(),
-            ));
-        }
-        if !matches!(ty, PrimitiveType::F32 | PrimitiveType::F64) {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context} logarithmic scale requires f32 or f64"),
-                param.loc.as_ref(),
-            ));
-        }
-        if range.min.to_f64() <= 0.0 {
-            errors.push(Diagnostic::semantic_span(
-                format!("{context} logarithmic scale requires 0 < min < max"),
-                param.loc.as_ref(),
-            ));
-        }
-    }
-
-    let explicit_step = param.control.step.as_ref().and_then(|step| {
-        with_loc_diag_context(param.loc.as_ref(), |_diag| {
-            eval_typed_const_expr(step, ty, options, &format!("{context} step"), false, errors)
-        })
-    });
-    let step = explicit_step.or(match ty {
-        PrimitiveType::I32 => Some(TypedConstValue::I32(1)),
+    let step = control.step.or(match ty {
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => Some(TypedConstValue::I32(1)),
         PrimitiveType::I64 => Some(TypedConstValue::I64(1)),
         PrimitiveType::F32 | PrimitiveType::F64 | PrimitiveType::Bool => None,
     });
     let Some(step) = step else {
         return control;
     };
-
-    if control.scale == ParamScale::Log {
-        errors.push(Diagnostic::semantic_span(
-            format!("{context} cannot combine logarithmic scale with step"),
-            param.loc.as_ref(),
-        ));
-        return control;
-    }
 
     let Some(step_count) =
         validate_param_step_grid(&context, range, default, step, param.loc.clone(), errors)

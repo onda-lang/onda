@@ -34,6 +34,7 @@ pub enum Block {
     Use(UseDecl),
     Proc(ProcessorDef),
     Struct(StructDef),
+    Enum(EnumDef),
     Def(FunctionDef),
     Init(InitBlock),
     Block(BlockExec),
@@ -60,6 +61,7 @@ impl Block {
             Self::Use(_) => BlockKind::Use,
             Self::Proc(_) => BlockKind::Proc,
             Self::Struct(_) => BlockKind::Struct,
+            Self::Enum(_) => BlockKind::Enum,
             Self::Def(_) => BlockKind::Def,
             Self::Init(_) => BlockKind::Init,
             Self::Block(_) => BlockKind::Block,
@@ -84,6 +86,7 @@ impl Block {
             Self::Use(use_decl) => use_decl.loc.clone().into(),
             Self::Proc(proc_def) => proc_def.loc.clone().into(),
             Self::Struct(struct_def) => struct_def.loc.clone().into(),
+            Self::Enum(def) => def.loc.clone().into(),
             Self::Def(def) => def.loc.clone().into(),
             Self::Init(init) => init.loc.clone().into(),
             Self::Block(exec) => exec.loc.clone().into(),
@@ -111,6 +114,7 @@ pub enum BlockKind {
     Use,
     Proc,
     Struct,
+    Enum,
     Def,
     Init,
     Block,
@@ -444,6 +448,21 @@ pub struct PortDecl {
     pub ty_loc: Span,
     pub default: Option<Expr>,
     pub range: Option<DeclRange>,
+    pub smoothing: Option<InputSmoothing>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum InputSmoothingKind {
+    Ramp,
+    Lag,
+}
+
+pub const INPUT_DOMAIN_FIELDS: &[&str] = &["min", "max", "ramp", "lag"];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputSmoothing {
+    pub kind: InputSmoothingKind,
+    pub time_s: Expr,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -544,6 +563,7 @@ pub enum NamespaceItem {
     Assert(AssertDecl),
     Const(ConstDecl),
     Struct(StructDef),
+    Enum(EnumDef),
     Def(FunctionDef),
     Proc(ProcessorDef),
     Namespace(NamespaceDecl),
@@ -653,8 +673,32 @@ impl DerefMut for TaskBlock {
     }
 }
 
+/// A nominal scalar identity assigned within one semantic analysis. Enum values
+/// have dense zero-based ordinals and lower to i32 after type checking.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct EnumType {
+    pub id: u32,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDef {
+    pub loc: Span,
+    pub name: String,
+    pub members: Vec<EnumMember>,
+    pub resolved: Option<EnumType>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumMember {
+    pub loc: Span,
+    pub name: String,
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum PrimitiveType {
+    Enum(EnumType),
     F32,
     F64,
     I32,
@@ -665,13 +709,30 @@ pub enum PrimitiveType {
 impl PrimitiveType {
     pub const ALL: [Self; 5] = [Self::F32, Self::F64, Self::I32, Self::I64, Self::Bool];
 
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow;
         match self {
+            Self::Enum(ty) => return Cow::Owned(format!("enum_{}", ty.id)),
             Self::F32 => "f32",
             Self::F64 => "f64",
             Self::I32 => "i32",
             Self::I64 => "i64",
             Self::Bool => "bool",
+        }
+        .into()
+    }
+
+    pub const fn storage_type(self) -> Self {
+        match self {
+            Self::Enum(_) => Self::I32,
+            other => other,
+        }
+    }
+
+    pub const fn into_enum(self) -> Option<EnumType> {
+        match self {
+            Self::Enum(ty) => Some(ty),
+            _ => None,
         }
     }
 
@@ -684,7 +745,7 @@ impl PrimitiveType {
     }
 
     pub fn is_numeric(self) -> bool {
-        !matches!(self, Self::Bool)
+        !matches!(self, Self::Bool | Self::Enum(_))
     }
 }
 
@@ -704,9 +765,25 @@ pub const METHOD_RECEIVER_ARG: &str = "__onda_method_receiver";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstType {
-    Scalar(PrimitiveType),
-    Array { elem: PrimitiveType, size: Expr },
-    Slice { elem: PrimitiveType },
+    Scalar(ScalarTypeRef),
+    Array { elem: ScalarTypeRef, size: Expr },
+    Slice { elem: ScalarTypeRef },
+}
+
+impl ConstType {
+    pub fn element(&self) -> &ScalarTypeRef {
+        match self {
+            Self::Scalar(ty) | Self::Array { elem: ty, .. } | Self::Slice { elem: ty } => ty,
+        }
+    }
+
+    /// Named constant types are enums and use ordinary i32 host values.
+    pub fn storage_element(&self) -> PrimitiveType {
+        self.element()
+            .primitive()
+            .map(PrimitiveType::storage_type)
+            .unwrap_or(PrimitiveType::I32)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -716,7 +793,7 @@ pub enum DeclType {
     Generic(String),
     ArrayGeneric { elem: String, size: Expr },
     Array { elem: PrimitiveType, size: Expr },
-    Tuple(Vec<PrimitiveType>),
+    Tuple(Vec<ScalarTypeRef>),
 }
 
 impl DeclType {
@@ -731,9 +808,9 @@ impl DeclType {
         }
     }
 
-    pub fn tuple(&self) -> Option<&[PrimitiveType]> {
+    pub fn tuple(&self) -> Option<Vec<PrimitiveType>> {
         match self {
-            Self::Tuple(elements) => Some(elements),
+            Self::Tuple(elements) => ScalarTypeRef::primitives(elements),
             Self::Slice(_)
             | Self::Scalar(_)
             | Self::Generic(_)
@@ -766,7 +843,7 @@ pub enum FnParamType {
         size: Expr,
     },
     BareBuffer,
-    Tuple(Vec<PrimitiveType>),
+    Tuple(Vec<ScalarTypeRef>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -776,6 +853,18 @@ pub enum ScalarTypeRef {
 }
 
 impl ScalarTypeRef {
+    /// Project a resolved scalar tuple into the ordinary semantic types.
+    pub fn primitives(types: &[Self]) -> Option<Vec<PrimitiveType>> {
+        types.iter().map(Self::primitive).collect()
+    }
+
+    pub fn name(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Primitive(ty) => ty.name(),
+            Self::Named(name) => name.as_str().into(),
+        }
+    }
+
     pub fn primitive(&self) -> Option<PrimitiveType> {
         match self {
             Self::Primitive(ty) => Some(*ty),
@@ -885,7 +974,7 @@ pub struct EventParamDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventParamType {
-    Tuple(Vec<PrimitiveType>),
+    Tuple(Vec<ScalarTypeRef>),
     Scalar(PrimitiveType),
     GenericScalar { name: String },
     Array { elem: PrimitiveType, size: Expr },
@@ -1055,6 +1144,9 @@ pub enum Stmt {
         generic_decl_ty: Option<String>,
         is_typed_decl: bool,
         typed_decl_ty_loc: Span,
+        /// The producer has validated/clamped this processor parameter write
+        /// and scheduled its hooks. Later rewrites must preserve the raw store.
+        param_write_lowered: bool,
         expr: Expr,
     },
     Expr {

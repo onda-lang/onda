@@ -1,8 +1,8 @@
 use crate::{
-    AccessMode, BufferChannels, BufferId, ConstDataId, ConstantValue, ControlOutputId, DelegateId,
-    EventId, EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant, LocalId, LogSiteId,
-    OutputId, ParamControl, ParamId, ParameterId, ScalarType, ScalarValue, SourceFileId, StateId,
-    Type, TypeId, ValueRange, MIR_SCHEMA_VERSION,
+    AccessMode, BufferChannels, BufferId, BufferMapId, ConstDataId, ConstantValue, ControlOutputId,
+    DelegateId, EventId, EventParamId, FieldId, FunctionId, InputId, IntegerRangeInvariant,
+    LocalId, LogSiteId, OutputId, ParamControl, ParamId, ParameterId, ScalarType, ScalarValue,
+    SourceFileId, StateId, Type, TypeId, ValueRange, MIR_SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -120,6 +120,8 @@ pub struct Program {
     pub interface: Interface,
     pub state: Vec<StateSlot>,
     pub const_data: Vec<ConstData>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffer_maps: Vec<BufferMap>,
     pub functions: Vec<Function>,
     pub entry_points: EntryPoints,
 }
@@ -172,6 +174,7 @@ impl Program {
             interface: Interface::default(),
             state: Vec::new(),
             const_data: Vec::new(),
+            buffer_maps: Vec::new(),
             functions: Vec::new(),
             entry_points: EntryPoints { init, process },
         }
@@ -267,6 +270,20 @@ impl Program {
                     access: rhs_access,
                     len: rhs_len,
                 },
+            )
+            | (
+                Type::BufferMap {
+                    element: lhs_element,
+                    channels: lhs_channels,
+                    access: lhs_access,
+                    len: lhs_len,
+                },
+                Type::BufferMap {
+                    element: rhs_element,
+                    channels: rhs_channels,
+                    access: rhs_access,
+                    len: rhs_len,
+                },
             ) => {
                 lhs_element == rhs_element
                     && lhs_channels == rhs_channels
@@ -323,6 +340,8 @@ pub struct Output {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
     pub name: String,
     pub ty: TypeId,
     /// Dedicated state slot containing the host-visible control value.
@@ -334,6 +353,8 @@ pub struct ControlOutput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
     pub name: String,
     pub ty: TypeId,
     pub default: ConstantValue,
@@ -356,6 +377,13 @@ pub struct BufferArray {
     pub len: u32,
 }
 
+/// Immutable symbolic selections into the current host binding tables.
+/// Repeated entries and non-contiguous resources are allowed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BufferMap {
+    pub buffers: Vec<BufferId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum BufferRef {
@@ -373,33 +401,69 @@ pub enum BufferRef {
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum BufferParamRef {
     Direct(ParameterId),
+    Local(LocalId),
     ArrayElement {
         span: ParameterId,
+        selector: Value,
+        bounds: BoundsMode,
+    },
+    LocalElement {
+        collection: LocalId,
         selector: Value,
         bounds: BoundsMode,
     },
 }
 
 impl BufferParamRef {
-    pub const fn first(self) -> ParameterId {
+    pub fn ty(self, function: &Function) -> Option<TypeId> {
         match self {
             Self::Direct(parameter)
             | Self::ArrayElement {
                 span: parameter, ..
-            } => parameter,
+            } => function
+                .params
+                .get(parameter.index())
+                .map(|parameter| parameter.ty),
+            Self::Local(local)
+            | Self::LocalElement {
+                collection: local, ..
+            } => function.locals.get(local.index()).map(|local| local.ty),
         }
     }
 
-    pub const fn index(self) -> usize {
-        self.first().index()
+    pub const fn local(self) -> Option<LocalId> {
+        match self {
+            Self::Local(local)
+            | Self::LocalElement {
+                collection: local, ..
+            } => Some(local),
+            _ => None,
+        }
     }
 
-    pub const fn raw(self) -> u32 {
-        self.first().raw()
+    pub const fn selection(self) -> Option<(Value, BoundsMode)> {
+        match self {
+            Self::ArrayElement {
+                selector, bounds, ..
+            }
+            | Self::LocalElement {
+                selector, bounds, ..
+            } => Some((selector, bounds)),
+            _ => None,
+        }
+    }
+    pub const fn parameter(self) -> Option<ParameterId> {
+        match self {
+            Self::Direct(parameter)
+            | Self::ArrayElement {
+                span: parameter, ..
+            } => Some(parameter),
+            Self::Local(_) | Self::LocalElement { .. } => None,
+        }
     }
 
     pub fn possible_indices(self) -> impl Iterator<Item = usize> {
-        self.index()..self.index().saturating_add(1)
+        self.parameter().into_iter().map(ParameterId::index)
     }
 }
 
@@ -412,10 +476,21 @@ pub enum BufferSpanRef {
         first: BufferId,
         len: u32,
     },
+    MappedInterface {
+        map: BufferMapId,
+        start: u32,
+        len: u32,
+    },
     Parameter {
         span: ParameterId,
         start: u32,
         len: u32,
+    },
+    Local {
+        collection: LocalId,
+        start: Value,
+        len: u32,
+        bounds: BoundsMode,
     },
 }
 
@@ -526,11 +601,6 @@ pub struct Function {
     pub source: SourceSpan,
 }
 
-/// Maximum positional ABI slots exposed by one function.
-///
-/// Together with the local limit, this keeps every MIR producer and backend's
-/// work proportional and prevents impractically large target call frames.
-pub const MAX_FUNCTION_PARAMETER_COUNT: usize = 1024;
 /// Maximum local-storage descriptors declared by one function.
 pub const MAX_FUNCTION_LOCAL_COUNT: usize = 32 * 1024;
 
@@ -727,6 +797,12 @@ pub enum StatementKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Rvalue {
+    /// Materializes one ephemeral buffer or collection descriptor. The logical
+    /// type validates its source contract; no sample storage is copied.
+    MakeBuffer {
+        source: CallArgument,
+        ty: TypeId,
+    },
     Use(Value),
     Load(Place),
     /// Whether the init entry should initialize pinned state as well as
@@ -799,11 +875,13 @@ pub enum Rvalue {
         index: Value,
         bounds: BoundsMode,
     },
-    BufferLen(BufferRef),
+    /// Per-channel sample count; total elements are samples multiplied by channels.
+    BufferSamples(BufferRef),
     BufferChannels(BufferRef),
     BufferSampleRate(BufferRef),
     BufferIsBound(BufferRef),
-    BufferParamLen(BufferParamRef),
+    /// Per-channel sample count of a buffer parameter.
+    BufferParamSamples(BufferParamRef),
     BufferParamChannels(BufferParamRef),
     BufferParamSampleRate(BufferParamRef),
     BufferParamIsBound(BufferParamRef),

@@ -1,11 +1,13 @@
 // Own the browser preference independently of each processor's lifetime.
+export const DEFAULT_PARAM_SMOOTHING_MS = 30;
+
 export class BrowserParamSmoothing {
   constructor(maxSampleRate, getProcessor, onError, storage) {
     this.maxSampleRate = maxSampleRate;
     this.getProcessor = getProcessor;
     this.onError = onError;
     this.storageKey = "onda.browser-ide.param-smoothing-ms.v1";
-    this.milliseconds = 30;
+    this.milliseconds = DEFAULT_PARAM_SMOOTHING_MS;
     try {
       this.storage = storage ?? globalThis.localStorage;
       const saved = this.storage?.getItem(this.storageKey);

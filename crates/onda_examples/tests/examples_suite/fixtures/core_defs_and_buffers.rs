@@ -946,11 +946,11 @@ buffers {
 outs {
   out1
 }
-def frames_of(b: buffer<f32[]>) {
+def elements_of(b: buffer<f32[]>) {
   return f32(b.len())
 }
 sample {
-  out1 = frames_of(buf1)
+  out1 = elements_of(buf1)
 }
 "#;
 

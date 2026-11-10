@@ -48,12 +48,19 @@ Take a look at the `examples/` folder for more usage examples.
 ## Precompiled releases
 
 [GitHub Releases](https://github.com/onda-lang/onda/releases/latest) provides precompiled packages
-for Linux x64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application
+for Linux x64 and arm64, macOS arm64, and Windows x64. Each package includes the CLI, an Onda Run application
 entry, static and shared C libraries, public headers, hosted and raw processor API references,
 language guide, standard-library reference, and examples. The Linux archive includes `install.sh`
 and `uninstall.sh` for a per-user CLI and desktop installation.
 
-The precompiled macOS binaries, including `Onda.app`, are not signed.
+Release signing status:
+
+- **macOS:** binaries, including `Onda.app`, are not signed with an Apple Developer ID and are not
+  notarized. macOS may require manual approval before opening them.
+- **Windows:** binaries are not code-signed (Authenticode). Windows may warn about
+  unrecognized downloads and it may trigger Microsoft Defender SmartScreen ("Windows protected your PC").
+
+See the [installation guide](docs/getting-started.md#install-a-precompiled-release) for approval steps.
 
 Tagged releases attach portable tarballs and publish the four public npm packages:
 `@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and `@onda-lang/wasm-compiler`.
@@ -67,13 +74,14 @@ Tagged releases attach portable tarballs and publish the four public npm package
 - [docs/projects.md](docs/projects.md): project manifests, typed buffer assets, and project images
 - [docs/mir.md](docs/mir.md): backend-neutral MIR and backend boundary
 - [docs/api.md](docs/api.md): complete hosted C API and library integration reference
+- [docs/ui-api.md](docs/ui-api.md): GPU UI embedding, host protocol, and Rust/C/browser interfaces
 - [docs/processor-abi.md](docs/processor-abi.md): raw processor-object API, ABI, and target profiles
 - [docs/web-api.md](docs/web-api.md): complete JavaScript and WebAssembly package API
 - [packages/onda_wasm_compiler](packages/onda_wasm_compiler/README.md): packaged source-to-WebAssembly compiler and `onda-wasm` CLI
 - [packages/onda_binaryen_web](packages/onda_binaryen_web/README.md): current MIR-to-Wasm backend
 - [packages/onda_processor_abi](packages/onda_processor_abi/README.md): compiler-free artifact schema, validation, and integrity helpers
 - [packages/onda_webaudio](packages/onda_webaudio/README.md): optional reusable Web Audio adapter
-- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground
+- [examples/web/onda_wasm_playground](examples/web/onda_wasm_playground/README.md): editable embedded-compiler playground with shared WebGPU/WebGL2 run panels
 - [examples/native/raw_processor_object](examples/native/raw_processor_object/README.md): link and call a native relocatable processor object directly
 
 ## The `onda` CLI
@@ -83,6 +91,7 @@ The CLI surface is:
 ```text
 onda
 onda compile <input>
+onda bench <input>
 onda run [input]
 onda run play <input>
 onda run render <input>
@@ -118,23 +127,26 @@ Cross-target IR and object emission is also supported:
 onda compile examples/basic/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
+### `onda bench`
+
+Benchmarks native Onda processing and reports timings, throughput, and estimated realtime DSP CPU use.
+Compilation, warmup, and host overhead are excluded.
+
+```bash
+onda bench examples/basic/sine.onda --runs 10 --blocks 1000 --block-size 128
+```
+
 ### `onda run`
 
 Opens the standalone UI window.
 This can be used to interactively play with the live-running code.
 Running `onda` without a command opens the same window with its file picker.
-The empty view lets you choose the sample rate and compile block size before loading a file. Use
-**Unload** to return there and recompile with different settings.
-Loaded filesystem sources and projects reload when their entry, transitive source dependencies,
-manifest, or file-backed assets change; unresolved and temporarily missing paths remain watchable.
 
 ```bash
 onda run examples/basic/sine.onda
 ```
 
-Run host selection:
-- egui is the default run host
-- `--webview` selects the webview run host explicitly
+`onda run` uses the shared GPU UI also used by the plugin, VS Code, and browser editors.
 
 ### `onda run play`
 
@@ -148,6 +160,8 @@ onda run play examples/basic/sine.onda --forever --set freq=220
 ```
 
 With `--control-json`, `onda run play` prints a control handshake on stdout and serves a localhost control socket for run clients.
+Add `--start-paused` to expose metadata and restore controls and buffers before initialization.
+The control client's `play` command initializes with the restored values, then starts audio processing.
 
 ### `onda run render`
 
@@ -267,9 +281,10 @@ The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) reposi
 
 The VS Code extension lives in the standalone [`onda-lang/onda-vscode`](https://github.com/onda-lang/onda-vscode) repository.
 It provides:
+- The embedded compiler
 - `.onda` and `.on` language registration
 - builtin LSP through `onda lsp`
-- `Onda: Run File` to launch the `onda run --webview` UI directly in-editor
+- `Onda: Run` to open the shared UI directly in-editor
 
 ### Neovim
 

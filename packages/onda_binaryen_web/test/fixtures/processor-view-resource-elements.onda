@@ -1,0 +1,29 @@
+proc Voice:
+  buffers:
+    clip: f32
+  sample:
+    clip[0] += 1.0
+    out1 = clip[0]
+
+def step(voices: Voice[], index: i32) -> f32:
+  return voices[index]()
+
+def forward(voices: Voice[], index: i32) -> f32:
+  return step(voices, index)
+
+proc Bank:
+  buffers:
+    clips: f32 {4}
+  init:
+    voices: Voice[2] = [Voice(clip = clips[1]), Voice(clip = clips[3])]
+    selector: i32 = 0
+  sample:
+    out1 = forward(voices, selector)
+    selector = 1 - selector
+
+buffers:
+  clips: f32 {4}
+init:
+  bank = Bank(clips = clips)
+sample:
+  out1 = bank()

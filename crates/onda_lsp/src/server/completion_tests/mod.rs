@@ -1,3 +1,6 @@
+mod enums;
+mod input_smoothing;
+
 use super::*;
 
 #[test]
@@ -77,7 +80,7 @@ fn integer_binding_ranges_complete_mode_and_wrap() {
 
 #[test]
 fn input_domains_complete_domain_fields_instead_of_binding_ranges() {
-    let source = "ins:\n  cutoff = 440.0 {20, 20000, sc";
+    let source = "ins:\n  cutoff = 440.0 {20, 20000, ra";
     let result = completion_items_for_document_with_index(
         source,
         None,
@@ -86,11 +89,11 @@ fn input_domains_complete_domain_fields_instead_of_binding_ranges() {
         None,
         CompletionPosition {
             line: 1,
-            character: "  cutoff = 440.0 {20, 20000, sc".len() as u32,
+            character: "  cutoff = 440.0 {20, 20000, ra".len() as u32,
         },
         true,
     );
-    assert!(result.items.iter().any(|item| item["label"] == "scale"));
+    assert!(result.items.iter().any(|item| item["label"] == "ramp"));
     assert!(!result.items.iter().any(|item| item["label"] == "mode"));
 }
 
@@ -768,6 +771,7 @@ sample:
 
     let selected_labels = labels(index.member_items("selected", ""));
     assert!(selected_labels.iter().any(|label| label == "bound"));
+    assert!(selected_labels.iter().any(|label| label == "samples"));
     assert!(selected_labels
         .iter()
         .any(|label| label == ARRAY_LEN_METHOD));
@@ -982,5 +986,35 @@ sample:
     assert!(
         external_index.member_items("loader", "pre").is_empty(),
         "proc tasks are owner-private control symbols"
+    );
+}
+
+#[test]
+fn enum_types_and_members_are_completed() {
+    let source = "enum Mode:\n  LowPass\n  HighPass\nparams:\n  mode = Mode::HighPass\n";
+    let parsed = parse_program(source).unwrap();
+    let result = completion_items_for_document_with_index(
+        source,
+        None,
+        &HashMap::new(),
+        Some(&parsed),
+        None,
+        position_at(source, "Mode::HighPass", "Mode::".len()),
+        true,
+    );
+    assert!(
+        result.items.iter().any(|item| item["label"] == "LowPass"),
+        "{:?}",
+        result.items
+    );
+    assert!(
+        result.items.iter().any(|item| item["label"] == "HighPass"),
+        "{:?}",
+        result.items
+    );
+    let formatted = crate::formatting::format_program(&parsed);
+    assert_eq!(
+        crate::formatting::format_program(&parse_program(&formatted).unwrap()),
+        formatted
     );
 }

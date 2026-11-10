@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use onda_frontend::{absolute_lexical_path, load_program_file, SourceManifest};
+use onda_frontend::{absolute_lexical_path, load_program_file_with_overlays, SourceManifest};
 use onda_project::{
     is_project_file_path, resolve_project_watch_snapshot, FileReadDigest, FileReadDigests,
     ProjectLimits,
@@ -80,6 +80,15 @@ impl RunSourceGraph {
 /// Uses the same frontend manifest and project recovery paths as native Run.
 /// Discovery does not require a successful compilation or an audio device.
 pub fn run_source_graph(input: &Path) -> RunSourceGraph {
+    run_source_graph_with_overlays(input, &HashMap::new())
+}
+
+/// Resolve editor dependencies with the same overlays used by language analysis.
+/// Overlay paths remain watched, but their in-memory contents are not disk hashes.
+pub fn run_source_graph_with_overlays(
+    input: &Path,
+    overlays: &HashMap<PathBuf, String>,
+) -> RunSourceGraph {
     let input = absolute_lexical_path(input).unwrap_or_else(|_| input.to_path_buf());
     let is_project = is_project_file_path(&input);
     let mut file_digests = FileReadDigests::new();
@@ -96,7 +105,7 @@ pub fn run_source_graph(input: &Path) -> RunSourceGraph {
     let entry = project
         .as_ref()
         .map_or(input.as_path(), |paths| paths.entry.as_path());
-    let (sources, complete) = match load_program_file(entry) {
+    let (sources, complete) = match load_program_file_with_overlays(entry, overlays) {
         Ok(loaded) => (loaded.sources, true),
         Err(error) => (*error.sources, false),
     };
@@ -113,7 +122,11 @@ pub fn run_source_graph(input: &Path) -> RunSourceGraph {
             file_digests.insert(path, digest);
         }
     }
-    RunSourceGraph::from_sources(&sources, file_digests, complete)
+    let mut graph = RunSourceGraph::from_sources(&sources, file_digests, complete);
+    graph
+        .content_hashes
+        .retain(|path, _| !overlays.contains_key(path));
+    graph
 }
 
 fn source_hashes(sources: &SourceManifest) -> BTreeMap<PathBuf, Option<String>> {
@@ -161,6 +174,7 @@ fn format_digest(digest: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use onda_frontend::load_program_file;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

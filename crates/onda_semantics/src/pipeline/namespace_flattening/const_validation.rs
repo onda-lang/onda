@@ -6,6 +6,7 @@ pub(super) struct TemplateConstScope {
     aliases: HashMap<String, String>,
     uses: UseScope,
     members: HashSet<String>,
+    enums: HashMap<String, EnumType>,
 }
 
 /// Namespace arguments live in source name spellings rather than expression
@@ -62,6 +63,15 @@ pub(super) fn template_member_paths(decl: &NamespaceDecl, namespace: &str) -> Ha
     while let Some((items, namespace)) = pending.pop() {
         for item in items {
             let name = match item {
+                NamespaceItem::Enum(def) => {
+                    let owner = namespace_join(&namespace, &def.name);
+                    members.extend(
+                        def.members
+                            .iter()
+                            .map(|member| namespace_join(&owner, &member.name)),
+                    );
+                    &def.name
+                }
                 NamespaceItem::Const(decl) => &decl.name,
                 NamespaceItem::Def(def) => &def.name,
                 NamespaceItem::Struct(def) => &def.name,
@@ -84,11 +94,11 @@ pub(super) fn template_member_paths(decl: &NamespaceDecl, namespace: &str) -> Ha
 pub(super) fn validate_template_consts(
     decl: &NamespaceDecl,
     namespace: &str,
-    state: &NamespaceFlattenState,
+    state: &mut NamespaceFlattenState,
     parent: Option<(&ConstCheck, &TemplateConstScope)>,
     template_consts: &HashMap<String, Expr>,
     errors: &mut Vec<Diagnostic>,
-) -> (ConstCheck, SemanticConstArtifacts) {
+) -> (ConstCheck, SemanticConstArtifacts, TemplateConstScope) {
     let mut check = parent
         .map(|(check, _)| check.clone())
         .unwrap_or_else(ConstCheck::empty);
@@ -131,11 +141,43 @@ pub(super) fn validate_template_consts(
             );
         });
         match item {
+            NamespaceItem::Enum(def) => {
+                let Some(ty) = enums::allocate_type(def, state, errors) else {
+                    continue;
+                };
+                scope.enums.insert(namespace_join(namespace, &def.name), ty);
+                for member in &def.members {
+                    let name = namespace_join(&def.name, &member.name);
+                    check.scalar_constant(&name, PrimitiveType::Enum(ty), false);
+                    check.alias(&namespace_join(namespace, &name), &name);
+                }
+            }
             NamespaceItem::Const(decl) => {
-                check.constant(decl, errors);
+                let mut decl = decl.clone();
+                let resolve = |name: &str| resolve_enum(name, namespace, state, &scope);
+                if let Some(ty) = &mut decl.ty {
+                    let elem = match ty {
+                        ConstType::Scalar(ty)
+                        | ConstType::Array { elem: ty, .. }
+                        | ConstType::Slice { elem: ty } => ty,
+                    };
+                    enums::scalar_ref(elem, resolve);
+                }
+                if let Some(ConstType::Array { size, .. }) = &mut decl.ty {
+                    enums::rewrite_const_expr(size, resolve, errors);
+                }
+                enums::rewrite_const_expr(&mut decl.expr, resolve, errors);
+                check.constant(&decl, errors);
                 check.alias(&namespace_join(namespace, &decl.name), &decl.name);
             }
             NamespaceItem::Def(def) if def.is_const => {
+                let mut def = def.clone();
+                enums::rewrite_const_function(
+                    &mut def,
+                    |name| resolve_enum(name, namespace, state, &scope),
+                    errors,
+                );
+                let def = &def;
                 validate_const_def_declaration(def, errors);
                 let resolve_size = |expr: &Expr, context: &str, errors: &mut Vec<Diagnostic>| {
                     Some(check.dimension(expr, context, errors))
@@ -153,13 +195,20 @@ pub(super) fn validate_template_consts(
             }
             NamespaceItem::Namespace(child) => {
                 let child_ns = namespace_join(namespace, &child.name);
-                let (child_check, child_capture) = validate_template_consts(
+                let (child_check, child_capture, child_scope) = validate_template_consts(
                     child,
                     &child_ns,
                     state,
                     Some((&check, &scope)),
                     template_consts,
                     errors,
+                );
+                let prefix = format!("{child_ns}::");
+                scope.enums.extend(
+                    child_scope
+                        .enums
+                        .into_iter()
+                        .filter(|(name, _)| name.starts_with(&prefix)),
                 );
                 check.import_namespace(&child_ns, &child_check);
                 captured.import_all(&child_capture);
@@ -200,7 +249,48 @@ pub(super) fn validate_template_consts(
             _ => {}
         }
     }
-    (check, captured)
+    (check, captured, scope)
+}
+
+fn resolve_enum(
+    name: &str,
+    namespace: &str,
+    state: &NamespaceFlattenState,
+    scope: &TemplateConstScope,
+) -> Option<PrimitiveType> {
+    let target = template_reference_target(name, &scope.aliases);
+    let candidates = namespace_ref_candidates(&target, namespace, state);
+    let lookup = |name: &str| {
+        scope
+            .enums
+            .get(name)
+            .or_else(|| state.enums.get(name))
+            .copied()
+    };
+    let exists = |name: &str| lookup(name).is_some();
+    let mut imports = Vec::new();
+    scope.uses.collect_candidates(&target, exists, &mut imports);
+    collect_visible_use_candidates(
+        &target,
+        namespace,
+        SourceLoc::default(),
+        state,
+        exists,
+        &mut imports,
+    );
+    if !imports.is_empty() {
+        imports.extend(candidates.iter().find(|name| exists(name)).cloned());
+        imports.sort();
+        imports.dedup();
+        if imports.len() != 1 {
+            return None;
+        }
+        return lookup(&imports[0]).map(PrimitiveType::Enum);
+    }
+    candidates
+        .iter()
+        .find_map(|name| lookup(name))
+        .map(PrimitiveType::Enum)
 }
 
 #[allow(clippy::too_many_arguments)]

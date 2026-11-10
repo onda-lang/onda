@@ -1,3 +1,4 @@
+import { ONDA_RUNTIME_ERROR as ERROR } from "../../onda_webaudio/src/runtime-status.js";
 import assert from "node:assert/strict";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -182,7 +183,7 @@ globalThis.AudioWorkletProcessor = class {
     this.port = {
       messages: [],
       onmessage: null,
-      postMessage: (message) => this.port.messages.push(message),
+      postMessage: (message) => this.port.messages.push(structuredClone(message)),
     };
   }
 };
@@ -204,6 +205,8 @@ globalThis.registerProcessor = (name, processor) => {
 const workletFixture = await mkdtemp(join(tmpdir(), "onda-worklet-test-"));
 try {
   await Promise.all([
+    copyFile(new URL("../../onda_webaudio/src/runtime-status.js", import.meta.url), join(workletFixture, "runtime-status.js")),
+    copyFile(new URL("../../onda_webaudio/src/execution-status-ring.js", import.meta.url), join(workletFixture, "execution-status-ring.js")),
     copyFile(new URL("../../onda_webaudio/src/param-metadata.js", import.meta.url), join(workletFixture, "param-metadata.js")),
     copyFile(new URL("../../onda_webaudio/src/processor-constants.js", import.meta.url), join(workletFixture, "processor-constants.js")),
     copyFile(
@@ -324,7 +327,7 @@ test("AudioWorklet bounds dynamic event storage before rendering starts", () => 
 
   assert.throws(
     () => processor.dispatchEvent("load", new Uint8Array(12)),
-    /requires 12 payload bytes; configured capacity is 8/,
+    (status) => status === ERROR.PAYLOAD_CAPACITY,
   );
   assert.equal(processor.memory.buffer, memory);
   assert.equal(processor.heap, heap);
@@ -627,9 +630,10 @@ test("AudioWorklet snapshots persistent state and restores from a post-init base
   assert.equal(view.getFloat64(scratchAddress, true), 9);
   assert.equal(processor.blockCursor, 3);
   assert.deepEqual(processor.port.messages.at(-1), {
-    type: "onda-ok",
-    operation: "restore-snapshot",
+    type: "onda-status",
+    operation: 7,
     requestId: 8,
+    status: 0,
   });
 });
 
@@ -870,10 +874,10 @@ test("AudioWorklet reports generated execution failures and remains silent", () 
   assert.deepEqual([...output], [0, 0, 0, 0]);
   assert.equal(calls, 1);
   assert.deepEqual(processor.port.messages.at(-1), {
-    type: "onda-error",
-    operation: "process",
+    type: "onda-status",
+    operation: 1,
+    requestId: 0,
     status: PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
-    error: "processor process failed with Onda execution status 1",
   });
 
   output.fill(1);
@@ -884,4 +888,23 @@ test("AudioWorklet reports generated execution failures and remains silent", () 
   assert.deepEqual([...output], [0, 0, 0, 0]);
   assert.equal(calls, 1);
   assert.equal(processor.initialized, false);
+});
+
+test("AudioWorklet restores every element of categorical integer state arrays", () => {
+  const mir = f64PassthroughMir();
+  const arrayTy = mir.types.length;
+  mir.types.push({ kind: "array", data: { element: 1, len: 2 } });
+  mir.state = [{ name: "modes", ty: arrayTy, persistence: "snapshot", authored: true,
+    integer_range: { min: { type: "i32", value: 0 }, max: { type: "i32", value: 2 }, mode: "clamp" } }];
+  const artifact = compileMir(mir);
+  const processor = new WorkletProcessor({ processorOptions: { wasmBytes: artifact.wasm, metadata: artifact.metadata } });
+  const snapshot = new Uint8Array(artifact.metadata.runtime.snapshot_size_bytes);
+  const view = new DataView(snapshot.buffer);
+  view.setInt32(0, 99, true);
+  view.setInt32(4, -99, true);
+  processor.restoreSnapshot(snapshot);
+  const entry = artifact.metadata.metadata.states[0];
+  const state = processor.memoryView();
+  assert.equal(state.getInt32(processor.statePtr + entry.physical_state_byte_offset, true), 2);
+  assert.equal(state.getInt32(processor.statePtr + entry.physical_state_byte_offset + 4, true), 0);
 });

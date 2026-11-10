@@ -16,6 +16,7 @@ mod cse;
 mod dead_values;
 mod interprocedural;
 mod loop_distribution;
+mod loop_peeling;
 pub(crate) mod parameter_pruning;
 mod state_promotion;
 
@@ -36,6 +37,7 @@ pub struct PassStats {
     pub removed_function_parameters: u64,
     pub removed_functions: u64,
     pub distributed_loops: u64,
+    pub peeled_loops: u64,
 }
 
 /// A validated MIR program after portable cleanup or backend-selected
@@ -103,6 +105,7 @@ impl PassStats {
         self.iterations = self.iterations.saturating_add(other.iterations);
         self.removed_functions += other.removed_functions;
         self.distributed_loops += other.distributed_loops;
+        self.peeled_loops += other.peeled_loops;
         self.propagated_values = self
             .propagated_values
             .saturating_add(other.propagated_values);
@@ -278,18 +281,20 @@ pub fn optimize(
     }
 }
 
-/// Separates independent rendering from an ordered sum for backends that
-/// benefit from vector math. Portable optimization preserves the fused form.
+/// Separates distinguished first iterations and independent rendering from
+/// ordered sums for vectorizing backends. Portable MIR retains its schedule.
 /// Unchanged programs are borrowed; changed programs are revalidated and their
-/// analyses rebuilt. The distributed form cannot match this pass again.
-pub fn distribute_loops(
+/// analyses rebuilt. Both transformations are idempotent.
+pub fn schedule_vector_loops(
     program: &OptimizedProgram,
 ) -> Result<(Cow<'_, OptimizedProgram>, PassStats), Vec<ValidationError>> {
     let mut stats = PassStats::default();
-    if !loop_distribution::is_applicable(program) {
+    let peeling = loop_peeling::Plan::new(program);
+    if peeling.is_empty() && !loop_distribution::is_applicable(program) {
         return Ok((Cow::Borrowed(program), stats));
     }
     let mut raw = program.as_program().clone();
+    peeling.apply(&mut raw, &mut stats);
     loop_distribution::distribute(&mut raw, &mut stats);
     let validated = crate::validate::revalidate_owned(raw, program.program.producer_proofs())?;
     Ok((Cow::Owned(OptimizedProgram::new(validated)), stats))
@@ -1289,7 +1294,9 @@ fn propagate_buffer_param_ref(
     facts: &[Option<Value>],
     stats: &mut PassStats,
 ) {
-    if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+    if let crate::BufferParamRef::ArrayElement { selector, .. }
+    | crate::BufferParamRef::LocalElement { selector, .. } = buffer
+    {
         propagate_value(selector, facts, stats);
     }
 }
@@ -1304,6 +1311,7 @@ fn propagate_place_indices(place: &mut Place, facts: &[Option<Value>], stats: &m
 
 fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: &mut PassStats) {
     match rvalue {
+        Rvalue::MakeBuffer { source, .. } => propagate_call_argument(source, facts, stats),
         Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => {
             propagate_value(value, facts, stats);
@@ -1374,11 +1382,11 @@ fn propagate_rvalue_values(rvalue: &mut Rvalue, facts: &[Option<Value>], stats: 
             propagate_value(slice, facts, stats);
             propagate_value(index, facts, stats);
         }
-        Rvalue::BufferLen(buffer)
+        Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => propagate_buffer_ref(buffer, facts, stats),
-        Rvalue::BufferParamLen(parameter)
+        Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => {
@@ -1410,6 +1418,9 @@ fn propagate_call_argument(
         CallArgument::Buffer(buffer) => propagate_buffer_ref(buffer, facts, stats),
         CallArgument::BufferParam(parameter) => {
             propagate_buffer_param_ref(parameter, facts, stats);
+        }
+        CallArgument::BufferSpan(crate::BufferSpanRef::Local { start, .. }) => {
+            propagate_value(start, facts, stats)
         }
         CallArgument::BufferSpan(_) => {}
     }
@@ -1735,7 +1746,12 @@ fn collect_statement_read_references(statement: &Statement, referenced: &mut Has
         }
     }
     fn buffer_param_ref(buffer: crate::BufferParamRef, referenced: &mut HashSet<LocalId>) {
-        if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+        if let Some(local) = buffer.local() {
+            referenced.insert(local);
+        }
+        if let crate::BufferParamRef::ArrayElement { selector, .. }
+        | crate::BufferParamRef::LocalElement { selector, .. } = buffer
+        {
             value(selector, referenced);
         }
     }
@@ -1751,8 +1767,38 @@ fn collect_statement_read_references(statement: &Statement, referenced: &mut Has
             }
         }
     }
+    fn argument_references(argument: &CallArgument, referenced: &mut HashSet<LocalId>) {
+        match argument {
+            CallArgument::Value(v) => value(*v, referenced),
+            CallArgument::Place(p) => place(p, true, referenced),
+            CallArgument::ArrayWindow { array, start, .. } => {
+                place(array, true, referenced);
+                value(*start, referenced);
+            }
+            CallArgument::SliceElement { slice, index, .. } => {
+                value(*slice, referenced);
+                value(*index, referenced);
+            }
+            CallArgument::SliceWindow { slice, start, .. } => {
+                value(*slice, referenced);
+                value(*start, referenced);
+            }
+            CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
+            CallArgument::BufferParam(parameter) => {
+                buffer_param_ref(*parameter, referenced);
+            }
+            CallArgument::BufferSpan(crate::BufferSpanRef::Local {
+                collection, start, ..
+            }) => {
+                referenced.insert(*collection);
+                value(*start, referenced);
+            }
+            CallArgument::BufferSpan(_) => {}
+        }
+    }
     fn rvalue(rvalue: &Rvalue, referenced: &mut HashSet<LocalId>) {
         match rvalue {
+            Rvalue::MakeBuffer { source, .. } => argument_references(source, referenced),
             Rvalue::InitAll => {}
             Rvalue::Use(v) | Rvalue::SliceLen(v) => value(*v, referenced),
             Rvalue::Load(p) => place(p, true, referenced),
@@ -1830,11 +1876,11 @@ fn collect_statement_read_references(statement: &Statement, referenced: &mut Has
                 value(*slice, referenced);
                 value(*index, referenced);
             }
-            Rvalue::BufferLen(buffer)
+            Rvalue::BufferSamples(buffer)
             | Rvalue::BufferChannels(buffer)
             | Rvalue::BufferSampleRate(buffer)
             | Rvalue::BufferIsBound(buffer) => buffer_ref(*buffer, referenced),
-            Rvalue::BufferParamLen(parameter)
+            Rvalue::BufferParamSamples(parameter)
             | Rvalue::BufferParamChannels(parameter)
             | Rvalue::BufferParamSampleRate(parameter)
             | Rvalue::BufferParamIsBound(parameter) => {
@@ -1852,27 +1898,7 @@ fn collect_statement_read_references(statement: &Statement, referenced: &mut Has
         }
         StatementKind::Call { args, .. } | StatementKind::PublishDelegate { args, .. } => {
             for argument in args {
-                match argument {
-                    CallArgument::Value(v) => value(*v, referenced),
-                    CallArgument::Place(p) => place(p, true, referenced),
-                    CallArgument::ArrayWindow { array, start, .. } => {
-                        place(array, true, referenced);
-                        value(*start, referenced);
-                    }
-                    CallArgument::SliceElement { slice, index, .. } => {
-                        value(*slice, referenced);
-                        value(*index, referenced);
-                    }
-                    CallArgument::SliceWindow { slice, start, .. } => {
-                        value(*slice, referenced);
-                        value(*start, referenced);
-                    }
-                    CallArgument::Buffer(buffer) => buffer_ref(*buffer, referenced),
-                    CallArgument::BufferParam(parameter) => {
-                        buffer_param_ref(*parameter, referenced);
-                    }
-                    CallArgument::BufferSpan(_) => {}
-                }
+                argument_references(argument, referenced);
             }
         }
         StatementKind::PublishLog { arguments, .. } => {
@@ -2049,7 +2075,16 @@ fn rewrite_buffer_ref(buffer: &mut crate::BufferRef, mapping: &[Option<LocalId>]
 }
 
 fn rewrite_buffer_param_ref(buffer: &mut crate::BufferParamRef, mapping: &[Option<LocalId>]) {
-    if let crate::BufferParamRef::ArrayElement { selector, .. } = buffer {
+    match buffer {
+        crate::BufferParamRef::Local(local)
+        | crate::BufferParamRef::LocalElement {
+            collection: local, ..
+        } => *local = mapping[local.index()].expect("resource local retained"),
+        _ => {}
+    }
+    if let crate::BufferParamRef::ArrayElement { selector, .. }
+    | crate::BufferParamRef::LocalElement { selector, .. } = buffer
+    {
         rewrite_value(selector, mapping);
     }
 }
@@ -2065,8 +2100,38 @@ fn rewrite_place(place: &mut Place, mapping: &[Option<LocalId>]) {
     }
 }
 
+fn rewrite_argument_locals(argument: &mut CallArgument, mapping: &[Option<LocalId>]) {
+    match argument {
+        CallArgument::Value(value) => rewrite_value(value, mapping),
+        CallArgument::Place(place) => rewrite_place(place, mapping),
+        CallArgument::ArrayWindow { array, start, .. } => {
+            rewrite_place(array, mapping);
+            rewrite_value(start, mapping);
+        }
+        CallArgument::SliceElement { slice, index, .. } => {
+            rewrite_value(slice, mapping);
+            rewrite_value(index, mapping);
+        }
+        CallArgument::SliceWindow { slice, start, .. } => {
+            rewrite_value(slice, mapping);
+            rewrite_value(start, mapping);
+        }
+        CallArgument::Buffer(buffer) => rewrite_buffer_ref(buffer, mapping),
+        CallArgument::BufferParam(parameter) => {
+            rewrite_buffer_param_ref(parameter, mapping);
+        }
+        CallArgument::BufferSpan(crate::BufferSpanRef::Local {
+            collection, start, ..
+        }) => {
+            *collection = mapping[collection.index()].expect("resource local retained");
+            rewrite_value(start, mapping);
+        }
+        CallArgument::BufferSpan(_) => {}
+    }
+}
 fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
     match value {
+        Rvalue::MakeBuffer { source, .. } => rewrite_argument_locals(source, mapping),
         Rvalue::InitAll => {}
         Rvalue::Use(value) | Rvalue::SliceLen(value) => rewrite_value(value, mapping),
         Rvalue::Load(place) => rewrite_place(place, mapping),
@@ -2143,11 +2208,11 @@ fn rewrite_rvalue(value: &mut Rvalue, mapping: &[Option<LocalId>]) {
             rewrite_value(slice, mapping);
             rewrite_value(index, mapping);
         }
-        Rvalue::BufferLen(buffer)
+        Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => rewrite_buffer_ref(buffer, mapping),
-        Rvalue::BufferParamLen(parameter)
+        Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => {
@@ -2167,27 +2232,7 @@ fn rewrite_statement_locals(statement: &mut Statement, mapping: &[Option<LocalId
                 *result = mapping[result.index()].expect("call result local retained");
             }
             for argument in args {
-                match argument {
-                    CallArgument::Value(value) => rewrite_value(value, mapping),
-                    CallArgument::Place(place) => rewrite_place(place, mapping),
-                    CallArgument::ArrayWindow { array, start, .. } => {
-                        rewrite_place(array, mapping);
-                        rewrite_value(start, mapping);
-                    }
-                    CallArgument::SliceElement { slice, index, .. } => {
-                        rewrite_value(slice, mapping);
-                        rewrite_value(index, mapping);
-                    }
-                    CallArgument::SliceWindow { slice, start, .. } => {
-                        rewrite_value(slice, mapping);
-                        rewrite_value(start, mapping);
-                    }
-                    CallArgument::Buffer(buffer) => rewrite_buffer_ref(buffer, mapping),
-                    CallArgument::BufferParam(parameter) => {
-                        rewrite_buffer_param_ref(parameter, mapping);
-                    }
-                    CallArgument::BufferSpan(_) => {}
-                }
+                rewrite_argument_locals(argument, mapping);
             }
         }
         StatementKind::PublishDelegate { args, .. } => {
@@ -2359,7 +2404,7 @@ mod tests {
             bounds: BoundsMode::Clamp,
         };
         for value in [
-            Rvalue::BufferParamLen(parameter),
+            Rvalue::BufferParamSamples(parameter),
             Rvalue::BufferParamChannels(parameter),
             Rvalue::BufferParamSampleRate(parameter),
             Rvalue::BufferParamIsBound(parameter),

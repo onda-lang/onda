@@ -10,8 +10,8 @@ use onda_frontend::{
     inject_auto_std_math, ArrayElemType, ArrayTypeSpec, AssignTarget, BinaryOp, Block, BlockExec,
     BlockKind, BufferBlock, BufferChannels, BufferDecl, BufferElemType, BufferType, BuiltinFn,
     CallArg, CallTypeArg, CmpOp, ConstDecl, ConstType, DeclRange, DeclType, DelegateDef, DiagCtx,
-    Diagnostic, EventDef, EventParamDecl, EventParamType, Expr, FieldType, FnParamDecl,
-    FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
+    Diagnostic, EnumDef, EnumType, EventDef, EventParamDecl, EventParamType, Expr, FieldType,
+    FnParamDecl, FnParamType, FnReturnScalarType, FnReturnType, FunctionDef, GraphBlock, GraphEdge,
     GraphEndpoint, GraphRate, InitBlock, NamespaceAliasDecl, NamespaceCallArg, NamespaceDecl,
     NamespaceItem, NamespaceRefSegment, OutputTiming, ParamBlock, ParamDecl, ParamScale, PortBlock,
     PortDecl, PrimitiveType, ProcessorDef, Program, SampleBlock, ScalarTypeRef, SourceLoc, Stmt,
@@ -86,6 +86,7 @@ mod decl_symbols;
 mod declaration_coercion;
 mod def_semantics;
 mod diag_utils;
+mod enum_support;
 mod executable_data;
 mod executable_owner_analysis;
 mod expr_analysis;
@@ -93,6 +94,7 @@ mod expr_typing;
 mod expr_validation;
 mod generic_specialization;
 mod index_access;
+mod input_smoothing;
 pub mod internal_names;
 mod io_state_helpers;
 mod loop_range;
@@ -106,6 +108,7 @@ mod proc_call_support;
 mod proc_resolution;
 mod proc_state_rewrite;
 mod processor_lowering;
+pub mod processor_views;
 mod stmt_analysis;
 mod task_lowering;
 pub use aggregate_layout::{
@@ -130,6 +133,7 @@ use expr_validation::*;
 use generic_specialization::*;
 use index_access::*;
 pub(crate) use internal_names::runtime_proc_array_active_symbol;
+use internal_names::PROCESSOR_RESOURCE_SELECT;
 use io_state_helpers::*;
 pub use mir_lowering::{
     lower_program_to_optimized_mir, lower_program_to_validated_mir, MirLoweringError,
@@ -142,8 +146,7 @@ pub use pipeline::{
 use port_coercion::*;
 use proc_call_rewrite::*;
 use proc_call_support::{
-    rewrite_proc_alias_calls_for_validation, rewrite_proc_alias_calls_in_expr, split_dot_path,
-    ProcArrayAliasInfo,
+    rewrite_proc_alias_calls_for_validation, split_dot_path, ProcArrayAliasInfo,
 };
 use proc_resolution::*;
 use proc_state_rewrite::*;
@@ -151,10 +154,13 @@ use stmt_analysis::*;
 
 #[derive(Debug, Clone)]
 pub struct TypedProgram {
+    pub enums: Vec<EnumDef>,
     /// The compile-time host configuration used during semantic analysis.
     /// MIR construction consumes this exact configuration so contextual
     /// constants and loop bounds cannot drift between compiler stages.
     pub analysis_options: AnalysisOptions,
+    /// Optional public names for compiler-private host interface bindings.
+    pub(crate) interface_names: HashMap<String, String>,
     pub ins: Vec<String>,
     pub outs: Vec<String>,
     pub control_outs: Vec<String>,
@@ -169,6 +175,7 @@ pub struct TypedProgram {
     pub in_defaults: HashMap<String, TypedConstValue>,
     pub in_ranges: HashMap<String, TypedValueRange>,
     pub(crate) dynamic_input_range_aliases: HashMap<String, String>,
+    pub(crate) input_smoothing_aliases: HashMap<String, String>,
     pub(crate) dynamic_param_range_aliases: HashMap<String, String>,
     pub in_arrays: HashMap<String, TypedArrayInfo>,
     pub out_arrays: HashMap<String, TypedArrayInfo>,
@@ -194,6 +201,7 @@ pub struct TypedProgram {
     pub def_sample_oversample_factors: HashMap<String, usize>,
     pub proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub proc_instance_oversample_factors: HashMap<String, usize>,
+    pub(crate) proc_array_hook_types: HashSet<String>,
     pub init: Vec<Stmt>,
     pub block_pre: Vec<Stmt>,
     pub sample_oversample_factor: usize,
@@ -213,6 +221,8 @@ pub struct TypedProgram {
     /// fields. MIR uses this semantic map to resolve nested indexed processor
     /// references without interpreting generated storage names.
     pub nested_proc_arrays: Vec<TypedNestedProcArray>,
+    /// Complete processor environments, shared by source specialization and MIR.
+    pub processor_views: processor_views::ProcessorViewCatalog,
     pub ins_explicit: bool,
     pub audio_outs_explicit: bool,
     pub control_outs_explicit: bool,
@@ -347,8 +357,10 @@ fn compile_input_from_literal(
         }
     };
     let ty = match declared_ty {
-        ConstType::Array { elem, .. } => ConstType::Slice { elem: *elem },
-        other => other.clone(),
+        ConstType::Scalar(_) => ConstType::Scalar(declared_ty.storage_element().into()),
+        ConstType::Array { .. } | ConstType::Slice { .. } => ConstType::Slice {
+            elem: declared_ty.storage_element().into(),
+        },
     };
     let synthetic = Program {
         blocks: vec![Block::Const(ConstDecl {
@@ -384,10 +396,14 @@ pub struct CompileConstDescriptor {
     pub name: String,
     pub kind: CompileConstKind,
     pub value: ConstValue,
+    pub enumeration: Option<onda_processor_abi::EnumMetadata>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProcStepOversampleMeta {
+    /// Generated reference bindings evaluated once per outer processor call,
+    /// before filter state is resolved and before the oversampled substeps.
+    pub reference_prologue_len: usize,
     pub input_state_fields: HashMap<String, ProcInputOversampleStateFields>,
     pub output_state_fields: HashMap<String, ProcOutputOversampleStateFields>,
 }
@@ -507,6 +523,11 @@ pub(crate) fn zero_expr(ty: PrimitiveType) -> Expr {
     match ty {
         PrimitiveType::F32 | PrimitiveType::F64 => Expr::number(0.0),
         PrimitiveType::I32 | PrimitiveType::I64 => Expr::int(0),
+        PrimitiveType::Enum(ty) => Expr::Int {
+            loc: Default::default(),
+            value: 0,
+            const_ty: Some(PrimitiveType::Enum(ty)),
+        },
         PrimitiveType::Bool => Expr::bool(false),
     }
 }
@@ -687,6 +708,7 @@ pub struct TypedValueRange {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TypedConstValue {
+    Enum { ty: EnumType, ordinal: i32 },
     F32(f32),
     F64(f64),
     I32(i32),
@@ -697,6 +719,7 @@ pub enum TypedConstValue {
 impl TypedConstValue {
     pub const fn primitive_type(self) -> PrimitiveType {
         match self {
+            Self::Enum { ty, .. } => PrimitiveType::Enum(ty),
             Self::F32(_) => PrimitiveType::F32,
             Self::F64(_) => PrimitiveType::F64,
             Self::I32(_) => PrimitiveType::I32,
@@ -707,6 +730,7 @@ impl TypedConstValue {
 
     pub fn to_f32(self) -> f32 {
         match self {
+            Self::Enum { ordinal, .. } => ordinal as f32,
             Self::F32(v) => v,
             Self::F64(v) => v as f32,
             Self::I32(v) => v as f32,
@@ -723,6 +747,7 @@ impl TypedConstValue {
 
     pub fn to_f64(self) -> f64 {
         match self {
+            Self::Enum { ordinal, .. } => ordinal as f64,
             Self::F32(v) => v as f64,
             Self::F64(v) => v,
             Self::I32(v) => v as f64,
@@ -807,7 +832,8 @@ pub struct TypedNestedProcArray {
     pub owner_struct: String,
     pub field_name: String,
     pub proc_name: String,
-    pub slots: Vec<String>,
+    pub len: usize,
+    pub active_field: String,
 }
 
 #[derive(Debug, Clone)]
@@ -857,10 +883,19 @@ impl Default for AnalysisOptions {
 }
 
 impl TypedProgram {
+    /// Host-visible name of a logical interface binding or flattened array slot.
+    /// Interface collections use internal bindings; use this name for external
+    /// metadata, project bindings, and diagnostics.
+    pub fn interface_name<'a>(&'a self, binding: &'a str) -> &'a str {
+        self.interface_names
+            .get(binding)
+            .map_or(binding, String::as_str)
+    }
+
     pub fn param_default(&self, name: &str) -> Option<f32> {
         self.params
             .iter()
-            .find(|p| p.name == name)
+            .find(|p| self.interface_name(&p.name) == name)
             .map(|p| p.default.to_f32())
     }
 }

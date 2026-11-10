@@ -162,58 +162,98 @@ impl Validator<'_> {
         span: crate::BufferSpanRef,
         expected: crate::TypeId,
     ) -> bool {
-        let Some(Type::BufferSpan {
-            element: expected_element,
-            channels: expected_channels,
-            access: expected_access,
-            len: expected_len,
-        }) = self.program.types.get(expected.index())
+        let Some((element, channels, access, expected_len, mapped)) = self
+            .program
+            .types
+            .get(expected.index())
+            .and_then(Type::buffer_collection)
         else {
             return false;
         };
+        let accepts = |id: crate::BufferId| {
+            self.program
+                .interface
+                .buffers
+                .get(id.index())
+                .is_some_and(|source| {
+                    source.element == element
+                        && buffer_channels_accept(channels, source.channels)
+                        && access_permits(source.access, access)
+                })
+        };
         match span {
             crate::BufferSpanRef::Interface { first, len } => {
-                if len != *expected_len {
-                    return false;
-                }
-                let Some(source) = self.program.interface.buffers.get(first.index()) else {
-                    return false;
-                };
-                source.element == *expected_element
-                    && buffer_channels_accept(*expected_channels, source.channels)
-                    && access_permits(source.access, *expected_access)
-                    && (first.index()..first.index().saturating_add(len as usize)).all(|index| {
-                        self.program
-                            .interface
-                            .buffers
-                            .get(index)
-                            .is_some_and(|candidate| {
-                                candidate.element == source.element
-                                    && candidate.channels == source.channels
-                                    && candidate.access == source.access
-                            })
+                !mapped
+                    && len == expected_len
+                    && first.raw().checked_add(len).is_some_and(|end| {
+                        (first.raw()..end).all(|id| accepts(crate::BufferId::new(id)))
                     })
             }
-            crate::BufferSpanRef::Parameter { span, start, len } => {
-                if len != *expected_len {
-                    return false;
-                }
-                let Some(source) = function.params.get(span.index()) else {
-                    return false;
-                };
-                let Some(Type::BufferSpan {
-                    element,
-                    channels,
-                    access,
-                    len: source_len,
-                }) = self.program.types.get(source.ty.index())
+            crate::BufferSpanRef::MappedInterface { map, start, len } => {
+                mapped
+                    && len == expected_len
+                    && self
+                        .program
+                        .buffer_maps
+                        .get(map.index())
+                        .and_then(|map| {
+                            start
+                                .checked_add(len)
+                                .and_then(|end| map.buffers.get(start as usize..end as usize))
+                        })
+                        .is_some_and(|entries| entries.iter().copied().all(accepts))
+            }
+            crate::BufferSpanRef::Local {
+                collection,
+                start,
+                len,
+                bounds,
+            } => {
+                let Some((
+                    source_element,
+                    source_channels,
+                    source_access,
+                    source_len,
+                    source_mapped,
+                )) = function
+                    .locals
+                    .get(collection.index())
+                    .and_then(|local| self.program.types.get(local.ty.index()))
+                    .and_then(Type::buffer_collection)
                 else {
                     return false;
                 };
-                start.checked_add(len).is_some_and(|end| end <= *source_len)
-                    && element == expected_element
-                    && buffer_channels_accept(*expected_channels, *channels)
-                    && access_permits(*access, *expected_access)
+                mapped == source_mapped
+                    && len == expected_len
+                    && len <= source_len
+                    && self.window_start_is_statically_valid(start, bounds, source_len, len)
+                    && source_element == element
+                    && buffer_channels_accept(channels, source_channels)
+                    && access_permits(source_access, access)
+            }
+            crate::BufferSpanRef::Parameter { span, start, len } => {
+                if len != expected_len {
+                    return false;
+                }
+                let Some((
+                    source_element,
+                    source_channels,
+                    source_access,
+                    source_len,
+                    source_mapped,
+                )) = function
+                    .params
+                    .get(span.index())
+                    .and_then(|parameter| self.program.types.get(parameter.ty.index()))
+                    .and_then(Type::buffer_collection)
+                else {
+                    return false;
+                };
+                mapped == source_mapped
+                    && start.checked_add(len).is_some_and(|end| end <= source_len)
+                    && source_element == element
+                    && buffer_channels_accept(channels, source_channels)
+                    && access_permits(source_access, access)
             }
         }
     }
@@ -243,33 +283,18 @@ impl Validator<'_> {
         }
     }
 
-    fn function_buffer_param(
-        &self,
-        function: &Function,
-        parameter: crate::ParameterId,
-    ) -> Option<(crate::ScalarType, crate::AccessMode)> {
-        let parameter = function.params.get(parameter.index())?;
-        match self.program.types.get(parameter.ty.index())? {
-            Type::Buffer {
-                element, access, ..
-            } => Some((*element, *access)),
-            _ => None,
-        }
-    }
-
     fn buffer_param_ref_matches_type(
         &self,
         function: &Function,
         reference: crate::BufferParamRef,
         expected: crate::TypeId,
     ) -> bool {
-        let actual = function
-            .params
-            .get(reference.index())
-            .and_then(|parameter| self.program.types.get(parameter.ty.index()));
+        let actual = reference
+            .ty(function)
+            .and_then(|ty| self.program.types.get(ty.index()));
         let (actual_element, actual_channels, actual_access) = match (reference, actual) {
             (
-                crate::BufferParamRef::Direct(_),
+                crate::BufferParamRef::Direct(_) | crate::BufferParamRef::Local(_),
                 Some(Type::Buffer {
                     element,
                     channels,
@@ -277,13 +302,22 @@ impl Validator<'_> {
                 }),
             )
             | (
-                crate::BufferParamRef::ArrayElement { .. },
-                Some(Type::BufferSpan {
-                    element,
-                    channels,
-                    access,
-                    ..
-                }),
+                crate::BufferParamRef::ArrayElement { .. }
+                | crate::BufferParamRef::LocalElement { .. },
+                Some(
+                    Type::BufferSpan {
+                        element,
+                        channels,
+                        access,
+                        ..
+                    }
+                    | Type::BufferMap {
+                        element,
+                        channels,
+                        access,
+                        ..
+                    },
+                ),
             ) => (*element, *channels, *access),
             _ => return false,
         };
@@ -304,19 +338,25 @@ impl Validator<'_> {
         function: &Function,
         reference: crate::BufferParamRef,
     ) -> Option<(crate::ScalarType, crate::AccessMode)> {
-        match reference {
-            crate::BufferParamRef::Direct(parameter) => {
-                self.function_buffer_param(function, parameter)
-            }
-            crate::BufferParamRef::ArrayElement { span, .. } => {
-                let parameter = function.params.get(span.index())?;
-                match self.program.types.get(parameter.ty.index())? {
-                    Type::BufferSpan {
-                        element, access, ..
-                    } => Some((*element, *access)),
-                    _ => None,
+        let ty = self.program.types.get(reference.ty(function)?.index())?;
+        match (reference, ty) {
+            (
+                crate::BufferParamRef::Direct(_) | crate::BufferParamRef::Local(_),
+                Type::Buffer {
+                    element, access, ..
+                },
+            ) => Some((*element, *access)),
+            (
+                crate::BufferParamRef::ArrayElement { .. }
+                | crate::BufferParamRef::LocalElement { .. },
+                Type::BufferSpan {
+                    element, access, ..
                 }
-            }
+                | Type::BufferMap {
+                    element, access, ..
+                },
+            ) => Some((*element, *access)),
+            _ => None,
         }
     }
 
@@ -327,7 +367,10 @@ impl Validator<'_> {
         reference: crate::BufferParamRef,
         source: crate::SourceSpan,
     ) {
-        if let crate::BufferParamRef::ArrayElement { selector, .. } = reference {
+        if let Some(local) = reference.local() {
+            self.require_local(function_id, function, local, source);
+        }
+        if let Some((selector, _)) = reference.selection() {
             self.validate_value(function_id, function, selector, source);
             self.require_i32_value(
                 function_id,

@@ -189,7 +189,7 @@ fn stdlib_random_generic_rng_compile_and_run() {
     bind_output(&mut instance, 1, out2_bytes.as_mut_ptr(), out2_bytes.len()).expect("bind out2");
     bind_output(&mut instance, 2, out3_bytes.as_mut_ptr(), out3_bytes.len()).expect("bind out3");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out1 = decode_planar_f64(&out1_bytes);
@@ -269,7 +269,7 @@ fn stdlib_buffer_read_mono_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -315,7 +315,7 @@ fn stdlib_buffer_read_linear_and_cubic_with_channel_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -356,7 +356,7 @@ fn stdlib_buffer_is_auto_imported_for_arrays_and_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -397,7 +397,7 @@ fn stdlib_lookup_write_array_and_buffer_compiles_and_runs() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -879,7 +879,7 @@ sample:
     )
     .expect("bind i64 output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     for sample in decode_planar_i64(&out_i64_bytes) {
@@ -2855,7 +2855,7 @@ fn def_can_infer_duck_typed_mono_buffer_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -2896,7 +2896,7 @@ fn def_duck_typed_buffer_inference_propagates_through_def_calls() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -2952,7 +2952,7 @@ fn def_duck_typed_buffer_param_allows_mixed_element_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -2993,7 +2993,7 @@ fn def_indexable_param_accepts_array_and_buffer_call_sites() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3039,7 +3039,7 @@ fn def_indexable_param_supports_two_dimensional_buffer_indexing() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    process_checked(&mut instance, frames, onda_runtime::ExecutionOutput::none())
+    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
         .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
@@ -3372,7 +3372,7 @@ block {
 
     let mut out_bytes = vec![0_u8; frames * std::mem::size_of::<f32>()];
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
-    prepare_unchecked_process(&mut instance).expect("prepare unchecked process");
+    prepare_process(&instance).expect("prepare unchecked process");
 
     unsafe {
         process_unchecked_segment(
@@ -3683,7 +3683,12 @@ fn proc_array_dynamic_index_runs_block_hooks_only_for_active_slot_per_block() {
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3710,7 +3715,12 @@ fn proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_active_slo
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3738,7 +3748,12 @@ fn nested_proc_array_dynamic_index_assignment_call_runs_block_hooks_only_for_act
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]

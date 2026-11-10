@@ -21,36 +21,38 @@ static int views_from_metadata(
   size_t view_capacity,
   int* view_count
 ) {
-  const int tensor_count = onda_event_tensor_count(program, event_index);
+  const onda_message_info_t* info = onda_event_info(program, event_index);
+  const int tensor_count = info ? info->tensor_count : -1;
   if (tensor_count < 0 || (size_t) tensor_count > view_capacity)
     return -1;
   for (int tensor_index = 0; tensor_index < tensor_count; ++tensor_index) {
-    onda_event_tensor_info_t info;
-    if (onda_event_tensor_info(program, event_index, tensor_index, &info) != 0)
+    const onda_payload_tensor_info_t* tensor =
+      onda_payload_tensor_info(info->payload_plan, tensor_index);
+    if (tensor == NULL)
       return -1;
-    printf("tensor[%d] %s: type=%d shape=[", tensor_index, info.path, info.element_type);
-    for (int axis = 0; axis < info.shape_rank; ++axis)
-      printf("%s%d", axis == 0 ? "" : ",", info.shape[axis]);
-    printf("] slice=%d fixed_elements=%d\n", info.is_slice, info.fixed_element_count);
+    printf("tensor[%d] %s: type=%d shape=[", tensor_index, tensor->path, tensor->element_type);
+    for (int axis = 0; axis < tensor->shape_rank; ++axis)
+      printf("%s%d", axis == 0 ? "" : ",", tensor->shape[axis]);
+    printf("] slice=%d fixed_elements=%d\n", tensor->is_slice, tensor->fixed_element_count);
     int found = 0;
     for (size_t i = 0; i < binding_count; ++i) {
-      if (strcmp(bindings[i].path, info.path) != 0)
+      if (strcmp(bindings[i].path, tensor->path) != 0)
         continue;
-      if (bindings[i].element_type != info.element_type) {
+      if (bindings[i].element_type != tensor->element_type) {
         fprintf(
           stderr,
           "host tensor '%s' has primitive type %d; event requires %d\n",
-          info.path,
+          tensor->path,
           bindings[i].element_type,
-          info.element_type
+          tensor->element_type
         );
         return -1;
       }
       const int32_t count = bindings[i].element_count;
-      if ((!info.is_slice && count != info.fixed_element_count)
-          || (info.is_slice
-              && (count < 0 || count % info.fixed_element_count != 0))) {
-        fprintf(stderr, "host tensor '%s' has an incompatible shape\n", info.path);
+      if ((!tensor->is_slice && count != tensor->fixed_element_count)
+          || (tensor->is_slice
+              && (count < 0 || count % tensor->fixed_element_count != 0))) {
+        fprintf(stderr, "host tensor '%s' has an incompatible shape\n", tensor->path);
         return -1;
       }
       views[tensor_index] = (onda_event_tensor_view_t) {
@@ -61,7 +63,7 @@ static int views_from_metadata(
       break;
     }
     if (!found) {
-      fprintf(stderr, "no host tensor bound for event leaf '%s'\n", info.path);
+      fprintf(stderr, "no host tensor bound for event leaf '%s'\n", tensor->path);
       return -1;
     }
   }
@@ -88,16 +90,17 @@ static int run_case(
   int view_count,
   int unchecked
 ) {
+  onda_configure_current_thread_audio_fp_mode();
   onda_diag_t diagnostic = { 0 };
   onda_instance_t* instance =
-    onda_instance_create_initialized(program, 0, 1, NULL, &diagnostic);
+    onda_instance_create(program, NULL, &diagnostic);
   if (instance == NULL)
     return report_diagnostic("instance creation", &diagnostic);
   onda_diag_dispose(&diagnostic);
 
   float output = 0.0F;
   if (onda_bind_output(instance, 0, &output, sizeof output) != 0
-      || onda_validate_buffers(instance) != 0) {
+      || onda_init_checked(instance, ONDA_INIT_FULL, NULL) != 0) {
     fprintf(stderr, "binding preparation failed\n");
     onda_instance_destroy(instance);
     return -1;
@@ -107,7 +110,7 @@ static int run_case(
     ? onda_trigger_event_views_by_index_unchecked(instance, event_index, views, NULL)
     : onda_trigger_event_views_by_index_checked(instance, event_index, views, view_count, NULL);
   const int process_status = event_status == ONDA_EXECUTION_OK
-    ? onda_process_checked(instance, 1, NULL)
+    ? onda_process_checked(instance, NULL)
     : event_status;
   printf(
     "%s: event=%d process=%d output=%.1f\n",
@@ -138,6 +141,7 @@ int main(void) {
     .sample_rate = 48000.0F,
     .block_size = 1,
   };
+  onda_configure_current_thread_audio_fp_mode();
   onda_diag_t diagnostic = { 0 };
   onda_program_t* program = onda_compile(source, &options, &diagnostic);
   if (program == NULL)

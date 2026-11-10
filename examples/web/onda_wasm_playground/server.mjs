@@ -27,6 +27,8 @@ let lastResult = {
 
 const server = createServer(async (req, res) => {
   try {
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
     const url = new URL(req.url || "/", "http://127.0.0.1");
     if (url.pathname === "/__result") {
       if (req.method === "GET") {

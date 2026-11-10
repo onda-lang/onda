@@ -1,7 +1,7 @@
 namespace std::smoothing:
-  namespace shape:
-    const LINEAR = 0
-    const S_CURVE = 1
+  enum RampShape:
+    Linear
+    SCurve {label = "S-curve"}
 
   def time_coefficient<T>(time_s: T):
     if time_s <= 0.0:
@@ -21,6 +21,9 @@ namespace std::smoothing:
 
     def update_time():
       coef = std::smoothing::time_coefficient<T>(time_s)
+
+    event reset(value: T = 0.0):
+      y = value
 
     sample:
       y = in1 + (y - in1) * coef
@@ -88,7 +91,7 @@ namespace std::smoothing:
 
     params<T>:
       time_s = 0.05 => update_time
-      shape: i32 = shape::LINEAR {shape::LINEAR, shape::S_CURVE}
+      shape: RampShape = RampShape::Linear
 
     init<T>:
       y = 0.0
@@ -97,7 +100,7 @@ namespace std::smoothing:
       samples: i64 = 0
       elapsed: i64 = 0
       inverse_samples: f64 = 0.0
-      transition_shape: i32 = shape::LINEAR
+      transition_shape: RampShape = RampShape::Linear
       duration_samples: i64 = 0
       duration_inverse: f64 = 0.0
 
@@ -132,7 +135,7 @@ namespace std::smoothing:
           y = target
         else:
           phase = f64(elapsed) * inverse_samples
-          if transition_shape == shape::S_CURVE:
+          if transition_shape == RampShape::SCurve:
             phase = phase * phase * (3.0 - 2.0 * phase)
           weight = T(clamp(phase, 0.0, 1.0))
           # Keep finite extremes finite and retain precision near either endpoint.

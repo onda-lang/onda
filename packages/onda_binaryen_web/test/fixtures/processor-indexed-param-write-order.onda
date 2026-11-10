@@ -1,0 +1,35 @@
+proc Voice:
+  params:
+    gain: i32 = 0 => update
+  init:
+    cached: i32 = 0
+    updates: i32 = 0
+  def update():
+    cached = gain * 2
+    updates += 1
+  sample:
+    out1 = f32(cached)
+    out2 = f32(updates)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    selections: i32 = 0
+    order: i32 = 0
+  def choose() -> i32:
+    selections += 1
+    order = order * 10 + 2
+    return selections - 1
+  def value() -> i32:
+    order = order * 10 + 1
+    return 3
+  sample:
+    selections = 0
+    order = 0
+    voices[choose()].gain = value()
+    out1 = f32(selections)
+    out2, out4 = voices[0]()
+    out3 = f32(order)
+init:
+  bank = Bank()
+sample:
+  out1, out2, out3, out4 = bank()

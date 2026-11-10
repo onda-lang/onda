@@ -1,0 +1,26 @@
+proc Voice:
+  init:
+    count: i32 = 0
+  sample:
+    count += 1
+    out1 = f32(count)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+  sample:
+    out1 = 0.0
+def step(voices, index: i32) -> f32:
+  return voices[index]()
+def exercise(left: Bank, right: Bank, choose: bool) -> f32:
+  if choose:
+    selected = left.voices
+  else:
+    selected = right.voices
+  return step(selected, 1)
+init:
+  left = Bank()
+  right = Bank()
+  choose = true
+sample:
+  out1 = exercise(left, right, choose)
+  choose = !choose

@@ -6,6 +6,7 @@ mod param_arrays;
 
 mod aggregates;
 mod audio_outputs;
+mod buffer_metadata;
 mod calls;
 mod const_data;
 mod control_flow;
@@ -15,10 +16,21 @@ mod data_slices;
 #[cfg(test)]
 mod data_tests;
 mod expressions;
+mod input_smoothing;
 mod lowerer_core;
 mod messages;
+mod processor_captures;
+mod processor_elements;
+mod processor_lifecycle;
+mod processor_resource_recipes;
+mod processor_resources;
+mod processor_scalars;
+mod processor_scopes;
+mod processor_view_joins;
+mod processor_views;
 mod reference_joins;
 mod references;
+mod resource_calls;
 mod retained_bindings;
 mod retained_storage;
 mod scheduling;
@@ -46,23 +58,23 @@ use onda_mir::{
 use crate::executable_data::declared_binding_locations;
 use crate::indexed_read_source;
 use crate::internal_names::{
-    runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol, PROC_INDEX_BASE_ARG,
-    PROC_INDEX_BUFFER_SELECT_SENTINEL, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
+    runtime_buffer_alias_selector_symbol, runtime_proc_array_active_symbol,
+    PROCESSOR_RESOURCE_SELECT, PROC_INDEX_BASE_ARG, PROC_INDEX_CALL_SENTINEL, PROC_INDEX_EXPR_ARG,
 };
 use crate::mir_scalar::{
     map_binary, map_compare, map_intrinsic, mir_scalar, scalar_type, source_scalar_type,
 };
+use crate::processor_views::ProcessorViewCatalog;
 use crate::{
     bind_call_args_at, builtin_constant_type, builtin_constant_value_f64, can_assign_expr_to_type,
     can_eval_const_expr_exact_int, effective_untyped_assignment_type, eval_const_expr_i64_exact,
     intrinsic_result_type, merge_inferred_return_types, merge_numeric_types,
-    parse_array_len_instance_base, parse_buffer_bound_instance_base,
-    parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base, AggregateLayoutTable,
-    AggregatePathComponent, AnalysisOptions, DataType, IndexAccess, ProcSincStageStateFields,
-    ProcStepOversampleMeta, ResolvedInterfaceSlot, ResolvedInterfaceView, ReturnType,
-    TypedArrayInfo, TypedBufferChannels, TypedConstValue, TypedEvent, TypedEventParamDefault,
-    TypedEventParamType, TypedFieldType, TypedFnParam, TypedFunction, TypedNestedProcArray,
-    TypedParamControl, TypedProgram, TypedStructField, TypedValueRange,
+    parse_array_len_instance_base, AggregateLayoutTable, AggregatePathComponent, AnalysisOptions,
+    DataType, IndexAccess, ProcSincStageStateFields, ProcStepOversampleMeta, ResolvedInterfaceSlot,
+    ResolvedInterfaceView, ReturnType, TypedArrayInfo, TypedBufferChannels, TypedConstValue,
+    TypedEvent, TypedEventParamDefault, TypedEventParamType, TypedFieldType, TypedFnParam,
+    TypedFunction, TypedNestedProcArray, TypedParamControl, TypedProgram, TypedStructField,
+    TypedValueRange,
 };
 
 const SINC_A1_COEFF: f64 = 0.039_151_597_734_460_045;
@@ -245,7 +257,11 @@ fn lower_user_functions_with_const_data(
             .compile_context
             .map_or(mir.config, |context| context.config());
         let emitted_name = function.name.clone();
-        let lowerer = if function.runtime_context {
+        let lowerer = if function.runtime_context
+            || program
+                .processor_views
+                .function_uses_root_resource_recipes(&function.name)
+        {
             let globals = runtime_globals.ok_or_else(|| {
                 vec![MirLoweringError::new(
                     format!(
@@ -280,6 +296,8 @@ fn lower_user_functions_with_const_data(
                 &structs,
                 &program.aggregate_layouts,
                 &program.nested_proc_arrays,
+                &program.processor_views,
+                &program.proc_array_hook_types,
                 const_arrays,
                 mir.config,
                 config,
@@ -380,7 +398,12 @@ fn lower_program_to_mir(
         onda_mir::FunctionKind::Process,
     ));
 
-    let mut globals = RuntimeGlobals::default();
+    let processor_resources = processor_resources::ProcessorResourceCatalog::default();
+    let mut globals = RuntimeGlobals {
+        input_smoothing_aliases: program.input_smoothing_aliases.clone(),
+        processor_resources: Some(&processor_resources),
+        ..RuntimeGlobals::default()
+    };
     populate_interface(program, &mut mir, &mut globals)?;
     populate_delegates(program, &mut mir)?;
     populate_state(program, &mut mir, &mut globals)?;
@@ -482,6 +505,7 @@ fn lower_program_to_mir(
     )?;
     param_arrays::clamp_parameter_arrays(&mut mir);
     mir.const_data = const_arrays.take_data(true);
+    mir.buffer_maps = processor_resources.take_maps();
     if prune_before_range_analysis {
         // Processor lowering intentionally begins with uniform flattened ABIs.
         // Prune unused leaves before whole-program range propagation so every
@@ -994,7 +1018,7 @@ fn populate_interface(
             let default = (defaults.len() == info.len)
                 .then_some(onda_mir::ConstantValue::Aggregate(defaults));
             mir.interface.inputs.push(onda_mir::Input {
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 default,
                 range: None,
@@ -1014,7 +1038,7 @@ fn populate_interface(
         let id = onda_mir::InputId::new(mir.interface.inputs.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, ty);
         mir.interface.inputs.push(onda_mir::Input {
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
             default: program.in_defaults.get(name).copied().map(mir_constant),
             range: program.in_ranges.get(name).copied().map(mir_range),
@@ -1029,7 +1053,7 @@ fn populate_interface(
             let len = info.len as u32;
             let type_id = intern_array_type(&mut mir.types, info.elem_ty, len);
             mir.interface.outputs.push(onda_mir::Output {
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
             });
             globals
@@ -1047,7 +1071,7 @@ fn populate_interface(
         let id = onda_mir::OutputId::new(mir.interface.outputs.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, ty);
         mir.interface.outputs.push(onda_mir::Output {
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
         });
         globals.outputs.insert(name.clone(), (id, ty));
@@ -1061,15 +1085,16 @@ fn populate_interface(
             let type_id = intern_array_type(&mut mir.types, info.elem_ty, len);
             let mirror = onda_mir::StateId::new(mir.state.len() as u32);
             mir.state.push(onda_mir::StateSlot {
-                name: name.clone(),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 persistence: onda_mir::StatePersistence::ControlMirror,
                 authored: true,
                 pinned: false,
-                integer_range: None,
+                integer_range: crate::enum_support::storage_range(info.elem_ty),
             });
             mir.interface.control_outputs.push(onda_mir::ControlOutput {
-                name: name.clone(),
+                enumeration: crate::enum_support::for_type(program, info.elem_ty),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 mirror,
             });
@@ -1092,15 +1117,16 @@ fn populate_interface(
         let type_id = intern_scalar_type(&mut mir.types, ty);
         let mirror = onda_mir::StateId::new(mir.state.len() as u32);
         mir.state.push(onda_mir::StateSlot {
-            name: name.clone(),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
             persistence: onda_mir::StatePersistence::ControlMirror,
             authored: true,
             pinned: false,
-            integer_range: None,
+            integer_range: crate::enum_support::storage_range(ty),
         });
         mir.interface.control_outputs.push(onda_mir::ControlOutput {
-            name: name.clone(),
+            enumeration: crate::enum_support::for_type(program, ty),
+            name: program.interface_name(name).to_owned(),
             ty: type_id,
             mirror,
         });
@@ -1119,7 +1145,8 @@ fn populate_interface(
                 .map(|param| mir_constant(param.default))
                 .collect::<Vec<_>>();
             mir.interface.params.push(onda_mir::Param {
-                name: name.clone(),
+                enumeration: crate::enum_support::for_type(program, info.elem_ty),
+                name: program.interface_name(name).to_owned(),
                 ty: type_id,
                 default: onda_mir::ConstantValue::Aggregate(defaults),
                 range: program.params[index].range.map(mir_range),
@@ -1135,7 +1162,8 @@ fn populate_interface(
         let id = onda_mir::ParamId::new(mir.interface.params.len() as u32);
         let type_id = intern_scalar_type(&mut mir.types, param.ty);
         mir.interface.params.push(onda_mir::Param {
-            name: param.name.clone(),
+            enumeration: crate::enum_support::for_type(program, param.ty),
+            name: program.interface_name(&param.name).to_owned(),
             ty: type_id,
             default: mir_constant(param.default),
             range: param.range.map(mir_range),
@@ -1170,9 +1198,11 @@ fn populate_interface(
         for index in 0..array_len {
             mir.interface.buffers.push(onda_mir::Buffer {
                 name: if buffer.is_array {
-                    format!("{}[{index}]", buffer.name)
+                    program
+                        .interface_name(&format!("{}[{index}]", buffer.name))
+                        .to_owned()
                 } else {
-                    buffer.name.clone()
+                    program.interface_name(&buffer.name).to_owned()
                 },
                 element: scalar_type(buffer.elem_ty),
                 channels,
@@ -1185,7 +1215,7 @@ fn populate_interface(
                 .insert(buffer.name.clone(), (first, buffer.elem_ty));
         } else {
             mir.interface.buffer_arrays.push(onda_mir::BufferArray {
-                name: buffer.name.clone(),
+                name: program.interface_name(&buffer.name).to_owned(),
                 first,
                 len: array_len,
             });
@@ -1474,7 +1504,10 @@ fn populate_state(
     let proc_array_active_slots = program
         .array_struct_roots
         .iter()
-        .filter(|root| proc_array_types.contains(root.struct_name.as_str()))
+        .filter(|root| {
+            proc_array_types.contains(root.struct_name.as_str())
+                && program.proc_array_hook_types.contains(&root.struct_name)
+        })
         .map(|root| (runtime_proc_array_active_symbol(&root.name), root.len))
         .collect::<HashMap<_, _>>();
     let all_internal_active_names = program
@@ -1490,6 +1523,8 @@ fn populate_state(
     );
     globals.aggregate_layouts = program.aggregate_layouts.clone();
     globals.nested_proc_arrays = program.nested_proc_arrays.clone();
+    globals.processor_views = program.processor_views.clone();
+    globals.proc_array_hook_types = program.proc_array_hook_types.clone();
     globals.struct_roots = program.struct_roots.clone();
     for root in &program.array_struct_roots {
         let len = u32::try_from(root.len).map_err(|_| {
@@ -1544,7 +1579,10 @@ fn populate_state(
             persistence,
             authored: !program.compiler_owned_state_roots.contains(name),
             pinned: program.pinned_state_roots.contains(name),
-            integer_range: state_integer_ranges.get(name.as_str()).copied(),
+            integer_range: state_integer_ranges
+                .get(name.as_str())
+                .copied()
+                .or_else(|| crate::enum_support::storage_range(ty)),
         });
         if let Some(range) = mir.state[id.index()].integer_range {
             globals.integer_ranges.insert(name.clone(), range);
@@ -1616,7 +1654,7 @@ fn populate_state(
             persistence,
             authored: !program.compiler_owned_state_roots.contains(&array.name),
             pinned: program.pinned_state_roots.contains(&array.name),
-            integer_range: None,
+            integer_range: crate::enum_support::storage_range(array.elem_ty),
         });
         globals
             .state_arrays
@@ -2080,6 +2118,7 @@ struct RuntimeInterfaceView {
 
 #[derive(Debug, Default)]
 struct RuntimeGlobals<'a> {
+    input_smoothing_aliases: HashMap<String, String>,
     retained_init: Option<retained_bindings::RetainedBindings>,
     states: HashMap<String, (onda_mir::StateId, PrimitiveType)>,
     integer_ranges: HashMap<String, onda_mir::IntegerRangeInvariant>,
@@ -2087,6 +2126,7 @@ struct RuntimeGlobals<'a> {
     state_arrays: HashMap<String, (onda_mir::StateId, PrimitiveType, u32)>,
     array_struct_roots: HashMap<String, (String, u32)>,
     const_arrays: Option<&'a ConstDataCatalog<'a>>,
+    processor_resources: Option<&'a processor_resources::ProcessorResourceCatalog>,
     inputs: HashMap<String, (onda_mir::InputId, PrimitiveType)>,
     input_arrays: HashMap<String, (onda_mir::InputId, PrimitiveType, u32)>,
     outputs: HashMap<String, (onda_mir::OutputId, PrimitiveType)>,
@@ -2101,6 +2141,8 @@ struct RuntimeGlobals<'a> {
     structs: HashMap<String, Vec<TypedStructField>>,
     aggregate_layouts: AggregateLayoutTable,
     nested_proc_arrays: Vec<TypedNestedProcArray>,
+    processor_views: ProcessorViewCatalog,
+    proc_array_hook_types: HashSet<String>,
     struct_roots: HashMap<String, String>,
     top_level_oversampling: TopLevelOversamplingState,
 }
@@ -2142,12 +2184,20 @@ struct OversampledOutputRuntime {
     ty: PrimitiveType,
     destination: OversampledOutputDestination,
     values: LocalId,
-    down_stages: Vec<[Place; 8]>,
+    down_stages: Vec<[ScalarReference; 8]>,
+}
+
+/// A borrowed scalar location, including one selected from an aggregate view.
+/// Both forms preserve the original state identity in MIR memory analysis.
+#[derive(Debug, Clone)]
+enum ScalarReference {
+    Place(Place),
+    SliceElement { slice: LocalId, index: Value },
 }
 
 #[derive(Debug, Clone)]
 enum OversampledOutputDestination {
-    Place(Place),
+    State(ScalarReference),
     Interface {
         output: onda_mir::OutputId,
         element: Option<u32>,
@@ -2181,15 +2231,6 @@ struct LoweredStructArrayElement {
     fields: Vec<LoweredStructArrayField>,
 }
 
-#[derive(Debug, Clone)]
-enum LoweredIndexedStructArgument {
-    Direct(LoweredStructArrayElement),
-    Dispatch {
-        index: LocalId,
-        alternatives: Vec<Vec<CallArgument>>,
-    },
-}
-
 /// One source argument after its observable expression evaluation has
 /// completed, but before its value/reference pieces are reordered into the
 /// callee's ABI parameter order.
@@ -2198,7 +2239,7 @@ enum PreparedCallArgument {
     Scalar(LoweredValue),
     Array(LoweredSlice),
     Tuple(Vec<LoweredValue>),
-    IndexedStruct(LoweredIndexedStructArgument),
+    IndexedStruct(LoweredStructArrayElement),
     /// Direct resource/aggregate references contain no evaluable subexpression.
     /// ABI loads and slice-descriptor construction may happen later, but cannot
     /// invoke user code or mutate language-visible storage.
@@ -2209,22 +2250,14 @@ enum PreparedCallArgument {
 enum BufferArrayCallSource {
     Interface(onda_mir::BufferId),
     Parameters(ParameterId),
+    Local { collection: LocalId, start: Value },
 }
 
 #[derive(Debug, Clone)]
-struct PendingCallDispatch {
+struct ResourceCallSelection {
     index: LocalId,
-    argument_start: usize,
-    argument_len: usize,
-    alternatives: Vec<Vec<CallArgument>>,
-    slot_arguments: Vec<(usize, Vec<CallArgument>)>,
-}
-
-#[derive(Debug, Clone)]
-struct NestedProcElementAlias {
-    struct_name: String,
-    index: LocalId,
-    alternatives: Vec<Vec<CallArgument>>,
+    choices: usize,
+    arguments: Vec<(usize, Vec<CallArgument>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -2304,6 +2337,13 @@ enum Binding {
     BufferParameter(ParameterId, PrimitiveType),
     BufferParameterArray(ParameterId, PrimitiveType, u32),
     BufferAlias(BufferBindingReference, PrimitiveType),
+    BufferValue(LocalId, PrimitiveType),
+    BufferCollectionValue {
+        local: LocalId,
+        element: PrimitiveType,
+        start: Value,
+        len: u32,
+    },
     Local(LocalId, PrimitiveType),
     Array(LocalId, PrimitiveType, u32),
     ArrayParameter(ParameterId, PrimitiveType, u32),
@@ -2319,21 +2359,25 @@ enum Binding {
     },
     StructParameter {
         struct_name: String,
+        processor: Option<processor_views::LoweredProcessorView>,
     },
     StructArrayParameter {
         struct_name: String,
+        processor: Option<processor_views::LoweredProcessorView>,
         length: StructArrayLength,
         fields: Vec<(String, LocalId, PrimitiveType)>,
     },
     ProcArrayParameter {
         proc_name: String,
         fixed_len: u32,
+        processor: Option<processor_views::LoweredProcessorView>,
         length: ParameterId,
-        active: LocalId,
+        active: Option<LocalId>,
         fields: Vec<(String, LocalId, PrimitiveType)>,
     },
     StructView {
         struct_name: String,
+        processor: Option<processor_views::LoweredProcessorView>,
     },
     StructArrayStorage {
         struct_name: String,
@@ -2384,6 +2428,8 @@ struct FunctionLowerer<'a> {
     structs: &'a HashMap<String, Vec<TypedStructField>>,
     aggregate_layouts: &'a AggregateLayoutTable,
     nested_proc_arrays: &'a [TypedNestedProcArray],
+    processor_views: &'a ProcessorViewCatalog,
+    proc_array_hook_types: &'a HashSet<String>,
     const_arrays: &'a ConstDataCatalog<'a>,
     host_config: onda_mir::CompileConfig,
     config: onda_mir::CompileConfig,
@@ -2393,6 +2439,7 @@ struct FunctionLowerer<'a> {
     log_sites: &'a mut Vec<onda_mir::LogSite>,
     runtime_globals: Option<&'a RuntimeGlobals<'a>>,
     current_frame: Option<Value>,
+    smoothed_input_endpoints: HashMap<onda_mir::InputId, Binding>,
     oversampled_inputs: HashMap<String, (LocalId, PrimitiveType)>,
     audio_output_caches: HashMap<String, (LocalId, PrimitiveType)>,
     oversampled_input_endpoints: HashMap<onda_mir::InputId, (LocalId, PrimitiveType)>,
@@ -2403,12 +2450,15 @@ struct FunctionLowerer<'a> {
     results: Vec<TypeId>,
     locals: Vec<onda_mir::Local>,
     bindings: HashMap<String, Binding>,
+    local_processor_lifetimes: bool,
+    scoped_processors: Vec<processor_scopes::ScopedProcessor>,
+    scoped_processor_bindings: HashMap<String, Binding>,
+    processor_loop_scopes: Vec<usize>,
     /// Lexical introductions that may construct directly in their final
     /// storage. Later assignments must preserve value/snapshot semantics by
     /// materializing their right-hand side before replacing that storage.
     data_initialization_sites: HashSet<(String, SourceLoc)>,
     next_data_id: usize,
-    nested_proc_aliases: HashMap<String, NestedProcElementAlias>,
     event_struct_slices: Vec<(String, String)>,
     event_slice_parameters: Vec<(String, onda_mir::EventParamId, PrimitiveType)>,
 }
@@ -2500,7 +2550,7 @@ fn typed_integer_range_invariant(
     range: &crate::TypedIntegerRange,
 ) -> Option<onda_mir::IntegerRangeInvariant> {
     let (min, max) = match range.ty {
-        PrimitiveType::I32 => (
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => (
             ScalarValue::I32(i32::try_from(range.min).ok()?),
             ScalarValue::I32(i32::try_from(range.max).ok()?),
         ),
@@ -2928,7 +2978,7 @@ fn zero_value(ty: PrimitiveType) -> Value {
     Value::Constant(match ty {
         PrimitiveType::F32 => ScalarValue::F32(0.0),
         PrimitiveType::F64 => ScalarValue::F64(0.0),
-        PrimitiveType::I32 => ScalarValue::I32(0),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarValue::I32(0),
         PrimitiveType::I64 => ScalarValue::I64(0),
         PrimitiveType::Bool => ScalarValue::Bool(false),
     })
@@ -2946,11 +2996,13 @@ fn scalar_value_is_all_bits_zero(value: Value) -> bool {
     }
 }
 
-fn mir_sinc_stage_places(stage: &MirSincStageState) -> [Place; 8] {
+fn mir_sinc_stage_references(stage: &MirSincStageState) -> [ScalarReference; 8] {
     debug_assert!(matches!(stage.ty, PrimitiveType::F32 | PrimitiveType::F64));
-    stage.taps.map(|state| Place {
-        base: PlaceBase::State(state),
-        projections: Vec::new(),
+    stage.taps.map(|state| {
+        ScalarReference::Place(Place {
+            base: PlaceBase::State(state),
+            projections: Vec::new(),
+        })
     })
 }
 
@@ -3049,7 +3101,7 @@ fn zero_scalar(ty: PrimitiveType) -> ScalarValue {
     match ty {
         PrimitiveType::F32 => ScalarValue::F32(0.0),
         PrimitiveType::F64 => ScalarValue::F64(0.0),
-        PrimitiveType::I32 => ScalarValue::I32(0),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarValue::I32(0),
         PrimitiveType::I64 => ScalarValue::I64(0),
         PrimitiveType::Bool => ScalarValue::Bool(false),
     }
@@ -3059,7 +3111,7 @@ fn scalar_from_f64(value: f64, ty: PrimitiveType) -> ScalarValue {
     match ty {
         PrimitiveType::F32 => ScalarValue::F32(value as f32),
         PrimitiveType::F64 => ScalarValue::F64(value),
-        PrimitiveType::I32 => ScalarValue::I32(value as i32),
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarValue::I32(value as i32),
         PrimitiveType::I64 => ScalarValue::I64(value as i64),
         PrimitiveType::Bool => ScalarValue::Bool(value != 0.0),
     }

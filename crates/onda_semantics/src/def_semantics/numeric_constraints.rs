@@ -84,9 +84,9 @@ pub(super) fn resolve_numeric_constraints(
         }
         target.unwrap_or(PrimitiveType::F32)
     };
-    if !target.is_numeric() {
+    if target == PrimitiveType::Bool {
         return Err(NumericConstraintError {
-            message: "inferred as bool, but generic type arguments must be numeric (f32, f64, i32, or i64)"
+            message: "inferred as bool, but generic type arguments must be numeric (f32, f64, i32, or i64) or enum types"
                 .to_owned(),
             location: constraints.first().map_or(SourceLoc::default(), |(_, _, expr)| expr.loc()),
         });

@@ -39,8 +39,17 @@ also includes `Onda.app`, and Windows packages include a console-free `Onda.exe`
 the Windows launcher in the extracted package and create a shortcut when moving it to the desktop
 or Start menu, because it launches the bundled `bin\onda.exe`.
 
-The precompiled macOS binaries, including `Onda.app`, are not signed. macOS may block them when you
-first try to open them.
+The precompiled macOS binaries, including `Onda.app`, are not signed with an Apple Developer ID and
+are not notarized. If macOS blocks an app you trust, try opening it once, then go to
+**System Settings → Privacy & Security → Open Anyway** and confirm **Open**. See
+[Apple's instructions](https://support.apple.com/102445) for details. Separate executables or
+plug-ins may require their own approval.
+
+Windows binaries are not code-signed (Authenticode). Windows may warn about
+unrecognized downloads and it may trigger Microsoft Defender
+SmartScreen's **Windows protected your PC** dialog. To run `Onda.exe`, select
+**More info → Run anyway**, when offered. See
+[Microsoft's SmartScreen guidance](https://learn.microsoft.com/windows/apps/package-and-deploy/code-signing-options).
 
 Releases also contain portable npm tarballs for the WebAssembly compiler and Web Audio packages.
 
@@ -108,11 +117,7 @@ Open the standalone run window:
 onda run sine.onda
 ```
 
-The default host uses the native egui interface. To select the webview host explicitly:
-
-```bash
-onda run sine.onda --webview
-```
+The window uses Onda’s shared GPU interface.
 
 You can also run without the UI and set parameters from the command line:
 

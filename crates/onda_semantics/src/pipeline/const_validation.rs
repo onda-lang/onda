@@ -207,6 +207,11 @@ impl ConstCheck {
         );
     }
 
+    pub(super) fn deferred_scalar_constant(&mut self, name: &str) {
+        self.scalar_constant(name, PrimitiveType::F32, false);
+        self.symbols.unresolved_types.insert(name.to_owned());
+    }
+
     fn array(&mut self, name: &str, elem_ty: PrimitiveType, len: Option<usize>) {
         self.fixed_arrays.insert(name.to_owned());
         self.symbols.unresolved_types.remove(name);
@@ -245,14 +250,14 @@ impl ConstCheck {
         decl: &ConstDecl,
         errors: &mut Vec<Diagnostic>,
     ) -> Option<PrimitiveType> {
-        if let Some(ConstType::Scalar(ty)) = decl.ty {
+        if let Some(ConstType::Scalar(ScalarTypeRef::Primitive(ty))) = &decl.ty {
             self.scalar_value(
                 &decl.expr,
-                ty,
+                *ty,
                 &format!("const '{}' initializer", decl.name),
                 errors,
             );
-            Some(ty)
+            Some(*ty)
         } else {
             // Scalar consts retain literal precision. Ordinary first-assignment
             // defaults apply to array elements and mutable bindings instead.
@@ -728,17 +733,21 @@ impl ConstCheck {
         let context = format!("const '{}' initializer", decl.name);
         let inferred = infer_array_initializer_type(&decl.expr, self.env());
         let array = match &decl.ty {
-            Some(ConstType::Scalar(ty)) => {
-                self.scalar_constant_type(decl, errors);
-                self.scalar_constant(&decl.name, *ty, false);
+            Some(ConstType::Scalar(_)) => {
+                if let Some(ty) = self.scalar_constant_type(decl, errors) {
+                    self.scalar_constant(&decl.name, ty, false);
+                } else {
+                    self.deferred_scalar_constant(&decl.name);
+                }
                 return;
             }
             Some(ConstType::Array { elem, size }) => {
-                Some((Some(*elem), self.dimension(size, &context, errors)))
+                Some((elem.primitive(), self.dimension(size, &context, errors)))
             }
-            Some(ConstType::Slice { elem }) => {
-                Some((Some(*elem), inferred.as_ref().and_then(|(_, len)| *len)))
-            }
+            Some(ConstType::Slice { elem }) => Some((
+                elem.primitive(),
+                inferred.as_ref().and_then(|(_, len)| *len),
+            )),
             None => inferred.and_then(|(elem, len)| match elem {
                 Some(ArrayElemType::Primitive(elem)) => Some((Some(elem), len)),
                 None => Some((None, len)),
@@ -777,8 +786,7 @@ impl ConstCheck {
                     *stored = value;
                 }
             } else {
-                self.scalar_constant(&decl.name, PrimitiveType::F32, false);
-                self.symbols.unresolved_types.insert(decl.name.clone());
+                self.deferred_scalar_constant(&decl.name);
             }
         }
     }

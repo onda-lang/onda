@@ -1,3 +1,6 @@
+mod scope_capture;
+use scope_capture::ScopeCapture;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, BufWriter, Write};
@@ -8,6 +11,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use onda_codegen_llvm::TargetOptLevel;
 use onda_cpal::{
     configure_current_thread_fp_mode, sample_ring, AudioHost, InputEndpoint, OutputEndpoint,
@@ -47,6 +51,7 @@ const MIDI_INPUT_CAPACITY: usize = 256;
 const MAX_PENDING_EVENTS: usize = 4096;
 const MAX_MIDI_MESSAGES_PER_RENDER_BLOCK: usize = 256;
 const RENDER_AHEAD_BLOCKS: usize = 4;
+const SAMPLE_QUEUE_BLOCKS: usize = 16;
 
 #[cfg(unix)]
 static RUN_TERMINATION_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -68,6 +73,8 @@ pub struct PlaybackLaunch {
     pub fast_math: bool,
     pub show_meta: bool,
     pub control_json: bool,
+    /// Compile and expose controls; defer initialization until a control `play` command.
+    pub start_paused: bool,
     pub param_sets: Vec<(String, RunParamValue)>,
     pub buffer_bindings: Vec<(String, PathBuf)>,
     pub project_buffer_bindings: Vec<ProjectBufferBinding>,
@@ -103,19 +110,23 @@ struct PlaybackStartupError {
     sources: Option<crate::RunSourceGraph>,
 }
 
+struct PlaybackStarted {
+    metadata: PlaybackStartup,
+    samples: SampleConsumer,
+    input: SampleProducer,
+}
+
 type PlaybackReply<T> = mpsc::Sender<Result<T, String>>;
 
 struct RenderThreadContext {
-    sample_queue: SampleProducer,
-    input_queue: SampleConsumer,
     stream_errors: StreamErrorState,
     midi_rx: mpsc::Receiver<TimedMidiMessage>,
     midi_overflowed: Arc<AtomicBool>,
     midi_reset_requested: Arc<AtomicBool>,
-    scope_ring: Arc<Mutex<ScopeRing>>,
+    scope_ring: Arc<ScopeCapture>,
     stop_flag: Arc<AtomicBool>,
     render_error: Arc<Mutex<Option<String>>>,
-    startup_tx: mpsc::Sender<Result<PlaybackStartup, PlaybackStartupError>>,
+    startup_tx: mpsc::Sender<Result<PlaybackStarted, PlaybackStartupError>>,
     control_rx: Option<mpsc::Receiver<PlaybackControlCommand>>,
     output_transport: Option<OutputTransport>,
     print_transport: PrintTransport,
@@ -193,18 +204,6 @@ enum PlaybackControlCommand {
     },
 }
 
-struct ScopeSnapshot {
-    channels: usize,
-    samples: Vec<f32>,
-}
-
-struct ScopeRing {
-    buffer: Vec<f32>,
-    channels: usize,
-    write_pos: usize,
-    frames_written: usize,
-}
-
 struct PendingParamUpdate {
     value: RunParamValue,
     replies: Vec<PlaybackReply<()>>,
@@ -264,46 +263,6 @@ impl MidiTimeline {
     }
 }
 
-impl ScopeRing {
-    fn new(capacity_frames: usize, channels: usize) -> Self {
-        Self {
-            buffer: vec![0.0; capacity_frames * channels],
-            channels,
-            write_pos: 0,
-            frames_written: 0,
-        }
-    }
-
-    fn push_interleaved(&mut self, samples: &[f32]) {
-        let cap = self.buffer.len();
-        if cap == 0 {
-            return;
-        }
-        for (i, &sample) in samples.iter().enumerate() {
-            self.buffer[(self.write_pos + i) % cap] = sample;
-        }
-        self.write_pos = (self.write_pos + samples.len()) % cap;
-        self.frames_written += samples.len() / self.channels.max(1);
-    }
-
-    fn snapshot(&self, max_frames: usize) -> ScopeSnapshot {
-        let total_frames = self.buffer.len() / self.channels.max(1);
-        let available = total_frames.min(self.frames_written);
-        let frames = max_frames.min(available);
-        let sample_count = frames * self.channels;
-        let cap = self.buffer.len();
-        let start = (self.write_pos + cap - sample_count) % cap;
-        let mut samples = Vec::with_capacity(sample_count);
-        for i in 0..sample_count {
-            samples.push(self.buffer[(start + i) % cap]);
-        }
-        ScopeSnapshot {
-            channels: self.channels,
-            samples,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct PlaybackControlRequest {
     #[serde(default)]
@@ -319,6 +278,8 @@ struct PlaybackControlRequest {
     values: Option<Vec<Value>>,
     #[serde(default, rename = "maxFrames")]
     max_frames: Option<usize>,
+    #[serde(default)]
+    columns: Option<usize>,
 }
 
 struct DelegateSubscriptionGuard {
@@ -350,13 +311,6 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         launch.sample_rate_hz,
         launch.block_samples,
     )?;
-    let output_device_channels = output_endpoint.channels();
-
-    let queue_capacity = (launch.block_samples * output_device_channels.max(2) * 16)
-        .next_power_of_two()
-        .max(1024);
-    let (sample_producer, sample_consumer) = sample_ring(queue_capacity);
-    let (input_producer, input_consumer) = sample_ring(queue_capacity);
     let (midi_tx, midi_rx) = mpsc::sync_channel(MIDI_INPUT_CAPACITY);
     let midi_overflowed = Arc::new(AtomicBool::new(false));
     let midi_reset_requested = Arc::new(AtomicBool::new(false));
@@ -410,12 +364,10 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         pending_overflow: Arc::clone(&pending_print_overflow),
     };
 
-    let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+    let scope_ring = Arc::new(ScopeCapture::default());
     let render_thread = spawn_run_render_thread(
         launch.clone(),
         RenderThreadContext {
-            sample_queue: sample_producer,
-            input_queue: input_consumer,
             stream_errors: error_state.clone(),
             midi_rx,
             midi_overflowed: Arc::clone(&midi_overflowed),
@@ -429,7 +381,11 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
             print_transport,
         },
     );
-    let startup = startup_rx
+    let PlaybackStarted {
+        metadata: startup,
+        samples: sample_consumer,
+        input: input_producer,
+    } = startup_rx
         .recv()
         .map_err(|_| "run render thread exited before startup completed".to_owned())?
         .or_else(|error| {
@@ -623,6 +579,8 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
         &error_state,
         midi_input.as_mut(),
     );
+    // Explicit-device backends can report disconnection during intentional teardown.
+    let stream_error = error_state.message();
 
     stop_flag.store(true, Ordering::Release);
     drop(input_stream);
@@ -638,7 +596,7 @@ pub fn play_run_realtime(launch: PlaybackLaunch) -> Result<(), String> {
 
     playback_result?;
 
-    if let Some(err) = error_state.message() {
+    if let Some(err) = stream_error {
         return Err(err);
     }
     if let Some(err) = render_error
@@ -864,8 +822,6 @@ fn spawn_run_render_thread(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let RenderThreadContext {
-            sample_queue,
-            input_queue,
             stream_errors,
             midi_rx,
             midi_overflowed,
@@ -916,7 +872,7 @@ fn spawn_run_render_thread(
                     })?,
                 );
             }
-            if let Err(error) = session.start_run_with_options_inputs_and_initial_buffers(
+            if let Err(error) = session.prepare_run_with_options_inputs_and_initial_buffers(
                 &launch.input,
                 run_options,
                 &launch.compile_inputs,
@@ -944,6 +900,14 @@ fn spawn_run_render_thread(
                     .expect("run should be active while applying params")
                     .set_param(name, *value)
                     .map_err(|diag| format_single_diagnostic("daemon play param failed", &diag))?;
+            }
+
+            if !launch.start_paused {
+                session
+                    .run_mut(&launch.input)
+                    .expect("run should be prepared before initialization")
+                    .restart()
+                    .map_err(|diag| format_single_diagnostic("daemon play start failed", &diag))?;
             }
 
             publish_run_output_batch(
@@ -1007,29 +971,43 @@ fn spawn_run_render_thread(
             })
         })();
 
-        let (render_input_channels, render_output_channels) = match startup {
-            Ok(startup) => {
-                {
-                    let mut ring = scope_ring.lock().unwrap();
-                    *ring = ScopeRing::new(SCOPE_CAPACITY_FRAMES, startup.output_channels);
+        let (render_input_channels, render_output_channels, sample_queue, input_queue) =
+            match startup {
+                Ok(startup) => {
+                    scope_ring.reconfigure(SCOPE_CAPACITY_FRAMES, startup.output_channels);
+                    let channel_counts = (startup.input_channels, startup.output_channels);
+                    let (sample_queue, samples) =
+                        playback_sample_ring(launch.block_samples, startup.output_channels);
+                    let (input, input_queue) =
+                        playback_sample_ring(launch.block_samples, startup.input_channels);
+                    if startup_tx
+                        .send(Ok(PlaybackStarted {
+                            metadata: startup,
+                            samples,
+                            input,
+                        }))
+                        .is_err()
+                    {
+                        return;
+                    }
+                    (
+                        channel_counts.0,
+                        channel_counts.1,
+                        sample_queue,
+                        input_queue,
+                    )
                 }
-                let channel_counts = (startup.input_channels, startup.output_channels);
-                if startup_tx.send(Ok(startup)).is_err() {
+                Err(err) => {
+                    if let Some(sources) = &mut startup_sources {
+                        sources.complete = false;
+                    }
+                    let _ = startup_tx.send(Err(PlaybackStartupError {
+                        message: err,
+                        sources: startup_sources,
+                    }));
                     return;
                 }
-                channel_counts
-            }
-            Err(err) => {
-                if let Some(sources) = &mut startup_sources {
-                    sources.complete = false;
-                }
-                let _ = startup_tx.send(Err(PlaybackStartupError {
-                    message: err,
-                    sources: startup_sources,
-                }));
-                return;
-            }
-        };
+            };
 
         let output_worker = OutputWorker::new(
             session.run(&launch.input).expect("active run"),
@@ -1041,8 +1019,8 @@ fn spawn_run_render_thread(
         let mut midi_timeline = MidiTimeline::default();
         let mut rendered_frame = 0_u64;
         let mut delegate_subscription_id = 0_u64;
-        let mut play_requested = true;
-        let mut playing = session.run(&launch.input).is_some();
+        let mut play_requested = !launch.start_paused;
+        let mut playing = play_requested && session.run(&launch.input).is_some();
         let mut captured =
             vec![0.0_f32; launch.block_samples.saturating_mul(render_input_channels)];
         let mut interleaved =
@@ -1068,7 +1046,6 @@ fn spawn_run_render_thread(
                         }
                         PlaybackControlCommand::Play { reply } => {
                             stream_errors.set_output_expected(false);
-                            play_requested = true;
                             midi_timeline.reset();
                             flush_pending_param_updates(
                                 &mut pending_param_updates,
@@ -1093,14 +1070,11 @@ fn spawn_run_render_thread(
                                     output_worker.publish(run, delegate_subscription_id)?;
                                     execution
                                 });
-                            playing = play_requested && result.is_ok();
+                            play_requested = result.is_ok();
+                            playing = play_requested;
                             if playing {
-                                if let Ok(mut ring) = scope_ring.try_lock() {
-                                    *ring = ScopeRing::new(
-                                        SCOPE_CAPACITY_FRAMES,
-                                        render_output_channels,
-                                    );
-                                }
+                                scope_ring
+                                    .reconfigure(SCOPE_CAPACITY_FRAMES, render_output_channels);
                             }
                             let _ = reply.send(result);
                         }
@@ -1493,9 +1467,7 @@ fn spawn_run_render_thread(
             );
             rendered_frame = block_end;
 
-            if let Ok(mut ring) = scope_ring.try_lock() {
-                ring.push_interleaved(&interleaved);
-            }
+            scope_ring.push_interleaved(&interleaved);
 
             let mut offset = 0;
             while offset < interleaved.len() && !stop_flag.load(Ordering::Acquire) {
@@ -1678,6 +1650,16 @@ fn wait_for_prefill(
     Ok(())
 }
 
+fn playback_sample_ring(block_samples: usize, channels: usize) -> (SampleProducer, SampleConsumer) {
+    // These queues carry program channels, before mapping to/from the device.
+    sample_ring(
+        block_samples
+            .saturating_mul(channels.max(1))
+            .saturating_mul(SAMPLE_QUEUE_BLOCKS)
+            .max(1024),
+    )
+}
+
 fn render_ahead_samples(block_samples: usize, channels: usize, capacity: usize) -> usize {
     if channels == 0 {
         return 0;
@@ -1756,7 +1738,7 @@ fn write_json_line(writer: &mut impl Write, value: &Value) -> Result<(), std::io
 
 struct RunControlServerContext {
     control_tx: mpsc::Sender<PlaybackControlCommand>,
-    scope_ring: Arc<Mutex<ScopeRing>>,
+    scope_ring: Arc<ScopeCapture>,
     stop_flag: Arc<AtomicBool>,
     output_rx: mpsc::Receiver<RunOutputBatch>,
     dropped_delegate_occurrences: Arc<AtomicU32>,
@@ -1801,11 +1783,21 @@ fn handle_run_control_client(
     context: &RunControlServerContext,
     subscription_id: u64,
 ) -> Result<(), String> {
+    // Accepted sockets may inherit the listener's nonblocking mode on BSD.
+    // Timeouts only bound blocking reads; EAGAIN on a nonblocking socket
+    // otherwise makes the control loop spin while the UI is idle or paused.
+    stream
+        .set_nonblocking(false)
+        .map_err(|err| format!("failed to set blocking control socket mode: {err}"))?;
+    let _scope_subscription = context.scope_ring.subscription();
     let mut delegate_subscription = DelegateSubscriptionGuard {
         control_tx: context.control_tx.clone(),
         subscription_id,
         enabled: false,
     };
+    stream
+        .set_nodelay(true)
+        .map_err(|err| format!("failed to configure control socket: {err}"))?;
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|err| format!("failed to set control socket read timeout: {err}"))?;
@@ -2172,7 +2164,7 @@ fn write_pending_delegate_batch(
 fn run_control_response(
     request: PlaybackControlRequest,
     control_tx: &mpsc::Sender<PlaybackControlCommand>,
-    scope_ring: &Arc<Mutex<ScopeRing>>,
+    scope_ring: &Arc<ScopeCapture>,
     delegate_subscription_id: u64,
 ) -> Option<Value> {
     let request_id = request.id;
@@ -2443,20 +2435,44 @@ fn run_control_response(
                 .clone()
                 .map(|id| buffer_load_response(id, result)))
         })(),
-        "getScopeData" => scope_ring
-            .lock()
-            .map_err(|_| "failed to lock scope ring".to_owned())
-            .map(|ring| {
-                let snapshot = ring.snapshot(request.max_frames.unwrap_or(2048));
-                Some(json!({
-                    "id": request_id,
-                    "ok": true,
-                    "result": {
-                        "channels": snapshot.channels,
-                        "samples": snapshot.samples,
-                    }
-                }))
-            }),
+        "setScopeCaptureMode" => scope_ring
+            .set_mode(request.value.as_ref().and_then(Value::as_str).unwrap_or(""))
+            .map(|()| request_id.clone().map(|id| json!({"id":id,"ok":true}))),
+        "setScopeCaptureEnabled" => {
+            let enabled = request.value.as_ref().and_then(Value::as_bool);
+            match enabled {
+                Some(enabled) => scope_ring
+                    .set_enabled(enabled)
+                    .map(|()| request_id.clone().map(|id| json!({"id":id,"ok":true}))),
+                None => Err("setScopeCaptureEnabled requires boolean 'value'".to_owned()),
+            }
+        }
+        "getScopeData" => {
+            let levels = scope_ring.levels();
+            if !scope_ring.waveform_enabled() {
+                return Some(
+                    json!({"id":request_id,"ok":true,"result":{"channels":levels.channels,"peaks":levels.values()}}),
+                );
+            }
+            // Release the producer's ring before allocating/serializing transport data.
+            if let Some(columns) = request.columns {
+                let frame = scope_ring.envelope(request.max_frames.unwrap_or(2048), columns);
+                frame.map(|frame| {
+                    Some(json!({
+                        "id": request_id, "ok": true,
+                        "result": {"channels":levels.channels,"peaks":levels.values(),"packet": base64::engine::general_purpose::STANDARD.encode(frame.packet())}
+                    }))
+                })
+            } else {
+                let frame = scope_ring.snapshot(request.max_frames.unwrap_or(2048));
+                frame.map(|frame| {
+                    Some(json!({
+                        "id": request_id, "ok": true,
+                        "result": {"channels": frame.channels, "peaks":levels.values(), "samples": frame.samples}
+                    }))
+                })
+            }
+        }
         "clearBuffer" => (|| -> Result<Option<Value>, String> {
             let name = request
                 .name
@@ -2515,14 +2531,23 @@ fn run_device_lists_json(
 }
 
 #[cfg(test)]
+mod audio_queue_tests;
+
+#[cfg(test)]
+mod startup_tests;
+
+#[cfg(all(test, unix))]
+mod control_server_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         render_ahead_samples, run_control_response, run_device_lists_json,
         write_pending_delegate_batch, write_pending_output_batches, write_pending_print_batches,
         DelegateSubscriptionGuard, MidiTimeline, PlaybackControlCommand, PlaybackControlRequest,
-        PlaybackLaunch, PrintTransport, RenderThreadContext, RunOutputBatch, ScopeRing,
+        PlaybackLaunch, PrintTransport, RenderThreadContext, RunOutputBatch, ScopeCapture,
     };
-    use onda_cpal::{sample_ring, StreamErrorState};
+    use onda_cpal::StreamErrorState;
     use onda_daemon::{
         RunDelegateBatch, RunDelegateOccurrence, RunDelegateValue, RunEventValue, RunPrintBatch,
         RunPrintEntry, RunPrintValue,
@@ -2571,8 +2596,6 @@ mod tests {
                 fs::write(&voice, "const voice_gain = 0.5\n").unwrap();
                 let mut expected = crate::run_source_graph(&main);
                 expected.complete = false;
-                let (sample_queue, _samples) = sample_ring(1024);
-                let (_input, input_queue) = sample_ring(1024);
                 let (_midi, midi_rx) = mpsc::sync_channel(1);
                 let (startup_tx, startup_rx) = mpsc::channel();
                 let (sender, _prints) = mpsc::sync_channel(1);
@@ -2592,18 +2615,17 @@ mod tests {
                         fast_math: false,
                         show_meta: false,
                         control_json: true,
+                        start_paused: false,
                         param_sets: param_sets.iter().map(|(name, value)| (name.clone(), onda_daemon::RunParamValue::F64(*value))).collect(),
                         buffer_bindings: Vec::new(),
                         project_buffer_bindings: Vec::new(),
                     },
                     RenderThreadContext {
-                        sample_queue,
-                        input_queue,
                         stream_errors: StreamErrorState::default(),
                         midi_rx,
                         midi_overflowed: Arc::new(AtomicBool::new(false)),
                         midi_reset_requested: Arc::new(AtomicBool::new(false)),
-                        scope_ring: Arc::new(Mutex::new(ScopeRing::new(0, 0))),
+                        scope_ring: Arc::new(ScopeCapture::default()),
                         stop_flag: Arc::new(AtomicBool::new(false)),
                         render_error: Arc::new(Mutex::new(None)),
                         startup_tx,
@@ -3032,7 +3054,7 @@ mod tests {
     #[test]
     fn run_set_param_notification_enqueues_without_waiting_for_reply() {
         let (control_tx, control_rx) = mpsc::channel();
-        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let scope_ring = Arc::new(ScopeCapture::default());
         let response = run_control_response(
             PlaybackControlRequest {
                 id: None,
@@ -3042,6 +3064,7 @@ mod tests {
                 value: Some(Value::from(0.5)),
                 values: None,
                 max_frames: None,
+                columns: None,
             },
             &control_tx,
             &scope_ring,
@@ -3062,7 +3085,7 @@ mod tests {
     #[test]
     fn run_trigger_event_notifications_queue_without_waiting_for_replies() {
         let (control_tx, control_rx) = mpsc::channel();
-        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let scope_ring = Arc::new(ScopeCapture::default());
         let note_on_response = run_control_response(
             PlaybackControlRequest {
                 id: None,
@@ -3077,6 +3100,7 @@ mod tests {
                     serde_json::json!([0.25, 0.5]),
                 ]),
                 max_frames: None,
+                columns: None,
             },
             &control_tx,
             &scope_ring,
@@ -3096,6 +3120,7 @@ mod tests {
                     Value::from(0.0),
                 ]),
                 max_frames: None,
+                columns: None,
             },
             &control_tx,
             &scope_ring,
@@ -3141,7 +3166,7 @@ mod tests {
     #[test]
     fn run_play_command_waits_for_runtime_restart() {
         let (control_tx, control_rx) = mpsc::channel();
-        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let scope_ring = Arc::new(ScopeCapture::default());
         let worker =
             std::thread::spawn(
                 move || match control_rx.recv().expect("play should be queued") {
@@ -3161,6 +3186,7 @@ mod tests {
                 value: None,
                 values: None,
                 max_frames: None,
+                columns: None,
             },
             &control_tx,
             &scope_ring,
@@ -3176,7 +3202,7 @@ mod tests {
     #[test]
     fn run_reset_params_command_waits_for_runtime_reset() {
         let (control_tx, control_rx) = mpsc::channel();
-        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let scope_ring = Arc::new(ScopeCapture::default());
         let worker = std::thread::spawn(move || {
             match control_rx.recv().expect("resetParams should be queued") {
                 PlaybackControlCommand::ResetParams { reply } => {
@@ -3197,6 +3223,7 @@ mod tests {
                 value: None,
                 values: None,
                 max_frames: None,
+                columns: None,
             },
             &control_tx,
             &scope_ring,
@@ -3210,7 +3237,7 @@ mod tests {
     }
     #[test]
     fn run_smoothing_command_validates_input_and_waits_for_runtime_result() {
-        let scope_ring = Arc::new(Mutex::new(ScopeRing::new(0, 0)));
+        let scope_ring = Arc::new(ScopeCapture::default());
         for value in [Value::Null, Value::from(-1), Value::from("30")] {
             let (tx, rx) = mpsc::channel();
             let request = serde_json::from_value(serde_json::json!({

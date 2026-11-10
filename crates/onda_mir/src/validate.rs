@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::ops::Deref;
 
@@ -8,6 +8,7 @@ use crate::{
     PROCESS_PARAM_COUNT, PROCESS_PARAM_NAMES,
 };
 
+mod buffer_values;
 mod call_arguments;
 mod helpers;
 mod messages;
@@ -325,6 +326,7 @@ fn statement_uses_unchecked_bounds(statement: &StatementKind) -> bool {
 
 fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
     match value {
+        Rvalue::MakeBuffer { source, .. } => call_arg_uses_unchecked_bounds(source),
         Rvalue::Load(place) => place_uses_unchecked_bounds(place),
         Rvalue::BufferLoad { buffer, bounds, .. } => {
             *bounds == crate::BoundsMode::Unchecked || buffer_ref_uses_unchecked_bounds(*buffer)
@@ -352,11 +354,11 @@ fn rvalue_uses_unchecked_bounds(value: &Rvalue) -> bool {
         | Rvalue::Intrinsic { .. }
         | Rvalue::ProcessFrame { .. }
         | Rvalue::SliceLen(_) => false,
-        Rvalue::BufferLen(buffer)
+        Rvalue::BufferSamples(buffer)
         | Rvalue::BufferChannels(buffer)
         | Rvalue::BufferSampleRate(buffer)
         | Rvalue::BufferIsBound(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
-        Rvalue::BufferParamLen(parameter)
+        Rvalue::BufferParamSamples(parameter)
         | Rvalue::BufferParamChannels(parameter)
         | Rvalue::BufferParamSampleRate(parameter)
         | Rvalue::BufferParamIsBound(parameter) => {
@@ -377,6 +379,9 @@ fn call_arg_uses_unchecked_bounds(argument: &CallArgument) -> bool {
         CallArgument::Value(_) => false,
         CallArgument::Buffer(buffer) => buffer_ref_uses_unchecked_bounds(*buffer),
         CallArgument::BufferParam(parameter) => buffer_param_ref_uses_unchecked_bounds(*parameter),
+        CallArgument::BufferSpan(crate::BufferSpanRef::Local { bounds, .. }) => {
+            *bounds == crate::BoundsMode::Unchecked
+        }
         CallArgument::BufferSpan(_) => false,
     }
 }
@@ -395,6 +400,9 @@ fn buffer_param_ref_uses_unchecked_bounds(parameter: crate::BufferParamRef) -> b
     matches!(
         parameter,
         crate::BufferParamRef::ArrayElement {
+            bounds: crate::BoundsMode::Unchecked,
+            ..
+        } | crate::BufferParamRef::LocalElement {
             bounds: crate::BoundsMode::Unchecked,
             ..
         }
@@ -478,6 +486,12 @@ impl Validator<'_> {
                     channels,
                     len,
                     ..
+                }
+                | Type::BufferMap {
+                    element,
+                    channels,
+                    len,
+                    ..
                 } => {
                     if *len == 0 || *len > i32::MAX as u32 {
                         self.program_error(format!(
@@ -497,6 +511,24 @@ impl Validator<'_> {
             }
         }
 
+        for (index, map) in self.program.buffer_maps.iter().enumerate() {
+            if map.buffers.is_empty() || map.buffers.len() > i32::MAX as usize {
+                self.program_error(format!(
+                    "buffer map {index} length must be in 1..={}",
+                    i32::MAX
+                ));
+            }
+            if map
+                .buffers
+                .iter()
+                .any(|id| id.index() >= self.program.interface.buffers.len())
+            {
+                self.program_error(format!(
+                    "buffer map {index} references an invalid interface buffer"
+                ));
+            }
+        }
+
         for structure in &self.program.structs {
             if structure.fields.is_empty() {
                 self.program_error(format!(
@@ -510,6 +542,7 @@ impl Validator<'_> {
         }
         self.validate_fixed_aggregate_types();
         self.validate_interface_names();
+        self.validate_enum_interfaces();
         self.validate_message_schemas();
         for input in &self.program.interface.inputs {
             self.require_type(input.ty, None, SourceSpan::UNKNOWN);
@@ -792,38 +825,38 @@ impl Validator<'_> {
     }
 
     fn validate_interface_names(&mut self) {
-        let mut names = HashMap::<String, &str>::new();
+        // Host lookup tables are separate for each interface kind. Scalar
+        // buffers and logical buffer arrays share the buffer binding namespace.
+        let mut names = HashSet::<(&'static str, String)>::new();
         let mut insert = |name: &str, kind: &'static str, errors: &mut Vec<ValidationError>| {
-            if let Some(previous) = names.insert(name.to_owned(), kind) {
+            if !names.insert((kind, name.to_owned())) {
                 errors.push(ValidationError {
-                    message: format!(
-                        "interface name '{name}' is used by both {previous} and {kind}"
-                    ),
+                    message: format!("duplicate {kind} interface name '{name}'"),
                     function: None,
                     source: SourceSpan::UNKNOWN,
                 });
             }
         };
         for input in &self.program.interface.inputs {
-            insert(&input.name, "an input", &mut self.errors);
+            insert(&input.name, "input", &mut self.errors);
         }
         for output in &self.program.interface.outputs {
-            insert(&output.name, "an audio output", &mut self.errors);
+            insert(&output.name, "audio output", &mut self.errors);
         }
         for output in &self.program.interface.control_outputs {
-            insert(&output.name, "a control output", &mut self.errors);
+            insert(&output.name, "control output", &mut self.errors);
         }
         for param in &self.program.interface.params {
-            insert(&param.name, "a parameter", &mut self.errors);
+            insert(&param.name, "parameter", &mut self.errors);
         }
         for buffer in &self.program.interface.buffers {
-            insert(&buffer.name, "a buffer", &mut self.errors);
+            insert(&buffer.name, "buffer", &mut self.errors);
         }
         for array in &self.program.interface.buffer_arrays {
-            insert(&array.name, "a buffer array", &mut self.errors);
+            insert(&array.name, "buffer", &mut self.errors);
         }
         for event in &self.program.interface.events {
-            insert(&event.name, "an event", &mut self.errors);
+            insert(&event.name, "event", &mut self.errors);
             let mut event_params = HashSet::new();
             for param in &event.params {
                 if !event_params.insert(param.name.as_str()) {
@@ -835,7 +868,7 @@ impl Validator<'_> {
             }
         }
         for delegate in &self.program.interface.delegates {
-            insert(&delegate.name, "a delegate", &mut self.errors);
+            insert(&delegate.name, "delegate", &mut self.errors);
             let mut delegate_params = HashSet::new();
             for param in &delegate.params {
                 if !delegate_params.insert(param.name.as_str()) {
@@ -961,7 +994,8 @@ impl Validator<'_> {
                 Type::Scalar(_)
                 | Type::Slice { .. }
                 | Type::Buffer { .. }
-                | Type::BufferSpan { .. } => Vec::new(),
+                | Type::BufferSpan { .. }
+                | Type::BufferMap { .. } => Vec::new(),
                 Type::Tuple(elements) => elements.clone(),
                 Type::Array { element, .. } => vec![*element],
                 Type::Struct(structure) => self
@@ -984,9 +1018,10 @@ impl Validator<'_> {
             .iter()
             .map(|ty| match ty {
                 Type::Scalar(scalar) => LogicalSize::Fixed(logical_scalar_bytes(*scalar)),
-                Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => {
-                    LogicalSize::Unsized
-                }
+                Type::Slice { .. }
+                | Type::Buffer { .. }
+                | Type::BufferSpan { .. }
+                | Type::BufferMap { .. } => LogicalSize::Unsized,
                 Type::Tuple(_) | Type::Array { .. } | Type::Struct(_) => LogicalSize::Pending,
             })
             .collect::<Vec<_>>();
@@ -1056,7 +1091,8 @@ impl Validator<'_> {
                     Type::Scalar(_)
                     | Type::Slice { .. }
                     | Type::Buffer { .. }
-                    | Type::BufferSpan { .. } => unreachable!(),
+                    | Type::BufferSpan { .. }
+                    | Type::BufferMap { .. } => unreachable!(),
                 };
                 match computed {
                     Some(bytes) if bytes <= i32::MAX as u64 => {
@@ -1131,17 +1167,6 @@ impl Validator<'_> {
     }
 
     fn validate_function(&mut self, id: FunctionId, function: &Function) {
-        if function.params.len() > crate::MAX_FUNCTION_PARAMETER_COUNT {
-            self.function_error(
-                id,
-                function.source,
-                format!(
-                    "function declares {} parameters, exceeding the limit of {}",
-                    function.params.len(),
-                    crate::MAX_FUNCTION_PARAMETER_COUNT
-                ),
-            );
-        }
         if function.locals.len() > crate::MAX_FUNCTION_LOCAL_COUNT {
             self.function_error(
                 id,
@@ -1205,7 +1230,9 @@ impl Validator<'_> {
                 }
             }
             match self.program.types.get(param.ty.index()) {
-                Some(Type::BufferSpan { .. }) if param.mode != crate::PassingMode::Value => {
+                Some(Type::BufferSpan { .. } | Type::BufferMap { .. })
+                    if param.mode != crate::PassingMode::Value =>
+                {
                     self.function_error(
                         id,
                         function.source,
@@ -1341,6 +1368,22 @@ impl Validator<'_> {
                         );
                     }
                     if let Some(destination_ty) = self.place_type(function, destination) {
+                        if matches!(
+                            self.program.types.get(destination_ty.index()),
+                            Some(
+                                Type::Buffer { .. }
+                                    | Type::BufferSpan { .. }
+                                    | Type::BufferMap { .. }
+                            )
+                        ) && (!matches!(destination.base, PlaceBase::Local(_))
+                            || !destination.projections.is_empty())
+                        {
+                            self.function_error(
+                                function_id,
+                                statement.source,
+                                "buffer descriptor destination must be an unprojected local",
+                            );
+                        }
                         if !self.rvalue_matches_type(function, value, destination_ty) {
                             self.function_error(
                                 function_id,
@@ -1523,19 +1566,19 @@ impl Validator<'_> {
                                         "buffer-parameter call argument references a non-buffer parameter",
                                     );
                                 }
-                                if let crate::BufferParamRef::ArrayElement { selector, .. } =
-                                    parameter
-                                {
-                                    self.require_i32_value(
-                                        function_id,
-                                        function,
-                                        *selector,
-                                        statement.source,
-                                        "buffer-parameter collection selector",
-                                    );
-                                }
+                                self.validate_buffer_param_ref(
+                                    function_id,
+                                    function,
+                                    *parameter,
+                                    statement.source,
+                                );
                             }
-                            CallArgument::BufferSpan(_) => {}
+                            CallArgument::BufferSpan(span) => self.validate_buffer_span_value(
+                                function_id,
+                                function,
+                                *span,
+                                statement.source,
+                            ),
                         }
                     }
                     for (index, (arg, param)) in
@@ -1890,8 +1933,7 @@ impl Validator<'_> {
                             function_id,
                             statement.source,
                             format!(
-                                "buffer operation references non-buffer parameter {}",
-                                parameter.raw()
+                                "buffer operation references non-buffer parameter {parameter:?}"
                             ),
                         ),
                     }
@@ -2307,7 +2349,13 @@ impl Validator<'_> {
                                 statement.source,
                                 state,
                             ),
-                        CallArgument::BufferSpan(_) => {}
+                        CallArgument::BufferSpan(span) => self.assignment_read_buffer_argument(
+                            function_id,
+                            function,
+                            &CallArgument::BufferSpan(*span),
+                            statement.source,
+                            state,
+                        ),
                     }
                 }
                 if let Some(parameters) = self
@@ -2404,7 +2452,13 @@ impl Validator<'_> {
                         }
                         CallArgument::Buffer(_)
                         | CallArgument::BufferParam(_)
-                        | CallArgument::BufferSpan(_) => {}
+                        | CallArgument::BufferSpan(_) => self.assignment_read_buffer_argument(
+                            function_id,
+                            function,
+                            argument,
+                            statement.source,
+                            state,
+                        ),
                     }
                 }
             }
@@ -2565,6 +2619,11 @@ impl Validator<'_> {
         state: &AssignmentState,
     ) {
         match rvalue {
+            Rvalue::MakeBuffer {
+                source: argument, ..
+            } => {
+                self.assignment_read_buffer_argument(function_id, function, argument, source, state)
+            }
             Rvalue::InitAll => {}
             Rvalue::Use(value) => {
                 self.assignment_read_value(function_id, function, *value, source, state)
@@ -2634,13 +2693,13 @@ impl Validator<'_> {
                 self.assignment_read_optional_value(function_id, function, *channel, source, state);
                 self.assignment_read_value(function_id, function, *index, source, state);
             }
-            Rvalue::BufferLen(buffer)
+            Rvalue::BufferSamples(buffer)
             | Rvalue::BufferChannels(buffer)
             | Rvalue::BufferSampleRate(buffer)
             | Rvalue::BufferIsBound(buffer) => {
                 self.assignment_read_buffer_ref(function_id, function, *buffer, source, state);
             }
-            Rvalue::BufferParamLen(parameter)
+            Rvalue::BufferParamSamples(parameter)
             | Rvalue::BufferParamChannels(parameter)
             | Rvalue::BufferParamSampleRate(parameter)
             | Rvalue::BufferParamIsBound(parameter) => {
@@ -2758,7 +2817,10 @@ impl Validator<'_> {
         source: SourceSpan,
         state: &AssignmentState,
     ) {
-        if let crate::BufferParamRef::ArrayElement { selector, .. } = parameter {
+        if let Some(local) = parameter.local() {
+            self.assignment_read_value(function_id, function, Value::Local(local), source, state);
+        }
+        if let Some((selector, _)) = parameter.selection() {
             self.assignment_read_value(function_id, function, selector, source, state);
         }
     }
@@ -3033,6 +3095,10 @@ impl Validator<'_> {
         source: SourceSpan,
     ) {
         match value {
+            Rvalue::MakeBuffer {
+                source: argument,
+                ty,
+            } => self.validate_buffer_value(function_id, function, argument, *ty, source),
             Rvalue::InitAll => {
                 if function.kind != FunctionKind::Init {
                     self.function_error(
@@ -3324,10 +3390,7 @@ impl Validator<'_> {
                     self.function_error(
                         function_id,
                         source,
-                        format!(
-                            "buffer operation references non-buffer parameter {}",
-                            parameter.raw()
-                        ),
+                        format!("buffer operation references non-buffer parameter {parameter:?}"),
                     );
                 }
                 self.validate_optional_value(function_id, function, *channel, source);
@@ -3341,7 +3404,7 @@ impl Validator<'_> {
                 );
                 self.require_i32_value(function_id, function, *index, source, "buffer index");
             }
-            Rvalue::BufferLen(buffer)
+            Rvalue::BufferSamples(buffer)
             | Rvalue::BufferChannels(buffer)
             | Rvalue::BufferSampleRate(buffer)
             | Rvalue::BufferIsBound(buffer) => {
@@ -3353,7 +3416,7 @@ impl Validator<'_> {
                 );
                 self.require_buffer(function_id, function, *buffer, source);
             }
-            Rvalue::BufferParamLen(parameter)
+            Rvalue::BufferParamSamples(parameter)
             | Rvalue::BufferParamChannels(parameter)
             | Rvalue::BufferParamSampleRate(parameter)
             | Rvalue::BufferParamIsBound(parameter) => {
@@ -3365,10 +3428,7 @@ impl Validator<'_> {
                     self.function_error(
                         function_id,
                         source,
-                        format!(
-                            "buffer metadata references non-buffer parameter {}",
-                            parameter.raw()
-                        ),
+                        format!("buffer metadata references non-buffer parameter {parameter:?}"),
                     );
                 }
             }
@@ -3426,10 +3486,7 @@ impl Validator<'_> {
                             self.function_error(
                                 function_id,
                                 source,
-                                format!(
-                                    "slice references non-buffer parameter {}",
-                                    parameter.raw()
-                                ),
+                                format!("slice references non-buffer parameter {parameter:?}"),
                             );
                         }
                         self.validate_optional_value(function_id, function, *channel, source);
@@ -3504,10 +3561,7 @@ impl Validator<'_> {
                     self.function_error(
                         function_id,
                         source,
-                        format!(
-                            "place references missing function parameter {}",
-                            parameter.raw()
-                        ),
+                        format!("place references missing function parameter {parameter:?}"),
                     );
                 }
                 function.params.get(parameter.index()).map(|param| param.ty)
@@ -3686,6 +3740,7 @@ impl Validator<'_> {
         expected: crate::TypeId,
     ) -> bool {
         match value {
+            Rvalue::MakeBuffer { ty, .. } => self.program.types_equivalent(*ty, expected),
             Rvalue::Use(value) => self.value_matches_type(function, *value, expected),
             Rvalue::Load(place) => self
                 .place_type(function, place)
@@ -3760,9 +3815,9 @@ impl Validator<'_> {
             Rvalue::BufferParamLoad { parameter, .. } => self
                 .function_buffer_param_ref(function, *parameter)
                 .is_some_and(|(element, _)| self.type_is_scalar(expected, element)),
-            Rvalue::BufferLen(_)
+            Rvalue::BufferSamples(_)
             | Rvalue::BufferChannels(_)
-            | Rvalue::BufferParamLen(_)
+            | Rvalue::BufferParamSamples(_)
             | Rvalue::BufferParamChannels(_) => {
                 self.type_is_scalar(expected, crate::ScalarType::I32)
             }
@@ -4132,6 +4187,10 @@ impl Validator<'_> {
         range: crate::IntegerRangeInvariant,
         ty: crate::TypeId,
     ) -> Option<String> {
+        let ty = match self.program.types.get(ty.index()) {
+            Some(Type::Array { element, .. }) => *element,
+            _ => ty,
+        };
         if let Some(reason) = self.value_range_validation_error(
             crate::ValueRange {
                 min: range.min,
@@ -4147,6 +4206,44 @@ impl Validator<'_> {
         }
     }
 
+    fn validate_enum_interfaces(&mut self) {
+        let interface = &self.program.interface;
+        let entries = interface
+            .params
+            .iter()
+            .map(|v| (&v.name, v.ty, &v.enumeration, v.range, true))
+            .chain(
+                interface
+                    .control_outputs
+                    .iter()
+                    .map(|v| (&v.name, v.ty, &v.enumeration, None, false)),
+            );
+        for (name, ty, enumeration, range, requires_range) in entries {
+            let Some(enumeration) = enumeration else {
+                continue;
+            };
+            let element = match self.program.types.get(ty.index()) {
+                Some(Type::Array { element, .. }) => *element,
+                _ => ty,
+            };
+            let valid_range = !requires_range
+                || range.is_some_and(|range| {
+                    range.min == crate::ScalarValue::I32(0)
+                        && range.max
+                            == crate::ScalarValue::I32(enumeration.members.len() as i32 - 1)
+                });
+            if !enumeration.is_valid()
+                || self.program.types.get(element.index())
+                    != Some(&Type::Scalar(crate::ScalarType::I32))
+                || !valid_range
+            {
+                self.program_error(format!(
+                    "interface '{name}' enum storage and range must match its members"
+                ));
+            }
+        }
+    }
+
     fn param_control_validation_error(
         &self,
         param: &crate::Param,
@@ -4154,23 +4251,15 @@ impl Validator<'_> {
     ) -> Option<String> {
         use crate::{ParamScale, ScalarType, ScalarValue, Type};
 
-        if let Some(Type::Array { element, .. }) = self.program.types.get(param.ty.index()) {
-            let crate::ConstantValue::Aggregate(defaults) = &param.default else {
-                return Some("requires array defaults".to_owned());
+        let (ty, defaults) =
+            if let Some(Type::Array { element, .. }) = self.program.types.get(param.ty.index()) {
+                let crate::ConstantValue::Aggregate(defaults) = &param.default else {
+                    return Some("requires array defaults".to_owned());
+                };
+                (*element, defaults.as_slice())
+            } else {
+                (param.ty, std::slice::from_ref(&param.default))
             };
-            return defaults.iter().find_map(|default| {
-                self.param_control_validation_error(
-                    &crate::Param {
-                        ty: *element,
-                        default: default.clone(),
-                        name: param.name.clone(),
-                        range: param.range,
-                        control: param.control.clone(),
-                    },
-                    range,
-                )
-            });
-        }
 
         if param
             .control
@@ -4180,9 +4269,20 @@ impl Validator<'_> {
         {
             return Some("unit must not contain a NUL character".to_owned());
         }
-        let Some(Type::Scalar(ty)) = self.program.types.get(param.ty.index()) else {
+        let Some(Type::Scalar(ty)) = self.program.types.get(ty.index()) else {
             return Some("requires a scalar parameter".to_owned());
         };
+        if let Some(enumeration) = &param.enumeration {
+            if param.control.scale != ParamScale::Linear
+                || param.control.curve.is_some()
+                || param.control.unit.is_some()
+                || param.control.step != Some(ScalarValue::I32(1))
+                || param.control.step_count
+                    != enumeration.members.len().checked_sub(1).map(|n| n as u32)
+            {
+                return Some("enum control domain must match its members".to_owned());
+            }
+        }
         if let (ScalarValue::I64(min), ScalarValue::I64(max)) = (range.min, range.max) {
             let exact_limit = i128::from(crate::MAX_EXACT_HOST_CONTROL_INTEGER);
             let width = i128::from(max) - i128::from(min);
@@ -4197,7 +4297,13 @@ impl Validator<'_> {
         }
         let min = range.min.as_f64();
         let max = range.max.as_f64();
-        if min >= max {
+        if min >= max
+            && !(min == max
+                && param
+                    .enumeration
+                    .as_ref()
+                    .is_some_and(|e| e.members.len() == 1))
+        {
             return Some("range requires min < max".to_owned());
         }
         if param.control.curve.is_some_and(|curve| !curve.is_finite()) {
@@ -4232,84 +4338,95 @@ impl Validator<'_> {
         if step.ty() != *ty {
             return Some("step does not match the parameter scalar type".to_owned());
         }
-        if step_count == 0 {
+        if step_count == 0
+            && !param
+                .enumeration
+                .as_ref()
+                .is_some_and(|e| e.members.len() == 1)
+        {
             return Some("step_count must be greater than zero".to_owned());
         }
 
-        let default = match &param.default {
-            crate::ConstantValue::Scalar(value) => *value,
-            crate::ConstantValue::Aggregate(_) => {
-                return Some("requires a scalar default".to_owned())
+        for default in defaults {
+            let default = match default {
+                crate::ConstantValue::Scalar(value) => *value,
+                crate::ConstantValue::Aggregate(_) => {
+                    return Some("requires a scalar default".to_owned());
+                }
+            };
+            match (range.min, range.max, default, step) {
+                (
+                    ScalarValue::I32(min),
+                    ScalarValue::I32(max),
+                    ScalarValue::I32(default),
+                    ScalarValue::I32(step),
+                ) => {
+                    if step <= 0 {
+                        return Some("step must be greater than zero".to_owned());
+                    }
+                    let width = i64::from(max) - i64::from(min);
+                    let step = i64::from(step);
+                    if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
+                        return Some("step_count does not match the range and step".to_owned());
+                    }
+                    if (i64::from(default) - i64::from(min)) % step != 0 {
+                        return Some("default is not on the step grid".to_owned());
+                    }
+                }
+                (
+                    ScalarValue::I64(min),
+                    ScalarValue::I64(max),
+                    ScalarValue::I64(default),
+                    ScalarValue::I64(step),
+                ) => {
+                    let width = i128::from(max) - i128::from(min);
+                    if step <= 0 {
+                        return Some("step must be greater than zero".to_owned());
+                    }
+                    let step = i128::from(step);
+                    if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
+                        return Some("step_count does not match the range and step".to_owned());
+                    }
+                    if (i128::from(default) - i128::from(min)) % step != 0 {
+                        return Some("default is not on the step grid".to_owned());
+                    }
+                }
+                (
+                    ScalarValue::F32(min),
+                    ScalarValue::F32(max),
+                    ScalarValue::F32(default),
+                    ScalarValue::F32(step),
+                ) => {
+                    if let Some(error) = validate_float_param_control_grid(
+                        ScalarType::F32,
+                        min as f64,
+                        max as f64,
+                        default as f64,
+                        step as f64,
+                        step_count,
+                    ) {
+                        return Some(error);
+                    }
+                }
+                (
+                    ScalarValue::F64(min),
+                    ScalarValue::F64(max),
+                    ScalarValue::F64(default),
+                    ScalarValue::F64(step),
+                ) => {
+                    if let Some(error) = validate_float_param_control_grid(
+                        ScalarType::F64,
+                        min,
+                        max,
+                        default,
+                        step,
+                        step_count,
+                    ) {
+                        return Some(error);
+                    }
+                }
+                _ => return Some("step requires a numeric scalar parameter".to_owned()),
             }
-        };
-        match (range.min, range.max, default, step) {
-            (
-                ScalarValue::I32(min),
-                ScalarValue::I32(max),
-                ScalarValue::I32(default),
-                ScalarValue::I32(step),
-            ) => {
-                if step <= 0 {
-                    return Some("step must be greater than zero".to_owned());
-                }
-                let width = i64::from(max) - i64::from(min);
-                let step = i64::from(step);
-                if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
-                    return Some("step_count does not match the range and step".to_owned());
-                }
-                if (i64::from(default) - i64::from(min)) % step != 0 {
-                    return Some("default is not on the step grid".to_owned());
-                }
-            }
-            (
-                ScalarValue::I64(min),
-                ScalarValue::I64(max),
-                ScalarValue::I64(default),
-                ScalarValue::I64(step),
-            ) => {
-                let width = i128::from(max) - i128::from(min);
-                if step <= 0 {
-                    return Some("step must be greater than zero".to_owned());
-                }
-                let step = i128::from(step);
-                if width % step != 0 || u32::try_from(width / step).ok() != Some(step_count) {
-                    return Some("step_count does not match the range and step".to_owned());
-                }
-                if (i128::from(default) - i128::from(min)) % step != 0 {
-                    return Some("default is not on the step grid".to_owned());
-                }
-            }
-            (
-                ScalarValue::F32(min),
-                ScalarValue::F32(max),
-                ScalarValue::F32(default),
-                ScalarValue::F32(step),
-            ) => {
-                return validate_float_param_control_grid(
-                    ScalarType::F32,
-                    min as f64,
-                    max as f64,
-                    default as f64,
-                    step as f64,
-                    step_count,
-                );
-            }
-            (
-                ScalarValue::F64(min),
-                ScalarValue::F64(max),
-                ScalarValue::F64(default),
-                ScalarValue::F64(step),
-            ) => {
-                return validate_float_param_control_grid(
-                    ScalarType::F64,
-                    min,
-                    max,
-                    default,
-                    step,
-                    step_count,
-                );
-            }
-            _ => return Some("step requires a numeric scalar parameter".to_owned()),
         }
         None
     }
@@ -4486,7 +4603,10 @@ impl Validator<'_> {
             }
             *seen = true;
             match &self.program.types[ty.index()] {
-                Type::Slice { .. } | Type::Buffer { .. } | Type::BufferSpan { .. } => return true,
+                Type::Slice { .. }
+                | Type::Buffer { .. }
+                | Type::BufferSpan { .. }
+                | Type::BufferMap { .. } => return true,
                 Type::Tuple(elements) => pending.extend(elements.iter().copied()),
                 Type::Array { element, .. } => pending.push(*element),
                 Type::Struct(structure) => {

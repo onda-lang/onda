@@ -1,6 +1,8 @@
 use super::*;
 
+mod buffer_maps;
 mod control_flow;
+mod reference_alignment;
 mod structured_data;
 
 use onda_frontend::parse_program;
@@ -30,7 +32,7 @@ fn validate_test_buffer_abi(
     frames: &[i32],
     channels: &[i32],
     sample_rates: &[f32],
-) -> Result<(), Diagnostic> {
+) -> Result<(), RuntimeError> {
     validate_buffer_abi(
         program,
         BufferDescriptorTables::new(pointers, frames, channels, sample_rates),
@@ -118,7 +120,7 @@ trait CheckedHostCalls {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-    ) -> Result<u32, Diagnostic>;
+    ) -> Result<u32, RuntimeError>;
 
     #[allow(clippy::too_many_arguments)]
     fn test_trigger_event_by_index(
@@ -165,6 +167,8 @@ impl CheckedHostCalls for MirJitProgram {
                 None,
             )
         }
+        .map_err(Diagnostic::from)
+        .and_then(crate::check_execution_status)
     }
 
     fn test_process_checked_with_status(
@@ -180,9 +184,9 @@ impl CheckedHostCalls for MirJitProgram {
         buffer_frames: &[i32],
         buffer_channels: &[i32],
         buffer_sample_rates: &[f32],
-    ) -> Result<u32, Diagnostic> {
+    ) -> Result<u32, RuntimeError> {
         unsafe {
-            self.process_checked_with_status(
+            self.process_checked(
                 state,
                 params,
                 start_frame,
@@ -223,6 +227,8 @@ impl CheckedHostCalls for MirJitProgram {
                 None,
             )
         }
+        .map_err(Diagnostic::from)
+        .and_then(crate::check_execution_status)
     }
 }
 
@@ -379,12 +385,12 @@ fn checked_process_rejects_out_of_block_segments_and_unknown_flags() {
             &metadata_f32,
         )
     };
-    assert!(run(9, 0, 0).unwrap_err().message.contains("exceeds"));
-    assert!(run(7, 2, 0).unwrap_err().message.contains("exceeds"));
+    assert!(run(9, 0, 0).unwrap_err().message.contains("exceed"));
+    assert!(run(7, 2, 0).unwrap_err().message.contains("exceed"));
     assert!(run(0, 0, 4)
         .unwrap_err()
         .message
-        .contains("outside BEGIN_BLOCK/END_BLOCK"));
+        .contains("unknown process flags"));
 }
 
 #[test]
@@ -420,13 +426,13 @@ fn checked_process_rejects_null_and_misaligned_audio_channels() {
     assert!(run(&null_inputs, &valid_outputs)
         .unwrap_err()
         .message
-        .contains("input channel 0 (`in1`) pointer is null"));
+        .contains("input 0 is not bound"));
 
     let null_outputs = [std::ptr::null_mut()];
     assert!(run(&valid_inputs, &null_outputs)
         .unwrap_err()
         .message
-        .contains("output channel 0 (`out1`) pointer is null"));
+        .contains("output 0 is not bound"));
 
     let mut aligned_storage = [0_u32; 9];
     let misaligned_outputs = [aligned_storage.as_mut_ptr().cast::<u8>().wrapping_add(1)];
@@ -1616,7 +1622,7 @@ sample:
     execution.next_sequence = 3;
     unsafe {
         native
-            .process_checked_with_status(
+            .process_checked(
                 &mut state,
                 &params,
                 usize::MAX,
@@ -1648,7 +1654,7 @@ sample:
     execution.next_sequence = 3;
     unsafe {
         native
-            .initialize_state_in_place_checked_with_status(
+            .initialize_state_in_place_checked(
                 &[],
                 &mut state,
                 crate::InitMode::Full,
@@ -2299,17 +2305,17 @@ sample:
     let pointers = [pointer];
     let overflow = validate_test_buffer_abi(&mir, &pointers, &[i32::MAX], &[2], &[48_000.0])
         .expect_err("wrapping buffer element count must be rejected");
-    assert!(overflow.message.contains("exceeds i32"));
+    assert_eq!(overflow, RuntimeError::SizeOverflow);
 
     let byte_overflow =
         validate_test_buffer_abi(&mir, &pointers, &[i32::MAX / 8 + 1], &[1], &[48_000.0])
             .expect_err("f64 byte extent must fit i32 even when element count does");
-    assert!(byte_overflow.message.contains("byte extent"));
+    assert_eq!(byte_overflow, RuntimeError::SizeOverflow);
 
     for sample_rate in [0.0, -1.0, f32::NAN, f32::INFINITY] {
         let error = validate_test_buffer_abi(&mir, &pointers, &[1], &[1], &[sample_rate])
             .expect_err("invalid sample rate metadata must be rejected");
-        assert!(error.message.contains("finite positive sample rate"));
+        assert_eq!(error, RuntimeError::InvalidSampleRate);
     }
 }
 
@@ -2756,26 +2762,25 @@ sample:
     for (pointer, frames, channels) in [(null, 0, 0), (pointer, 0, 0), (pointer, 1, 0)] {
         let error = validate_test_buffer_abi(&mir, &[pointer], &[frames], &[channels], &[48_000.0])
             .expect_err("raw processor ABI requires every descriptor to be prepared");
-        assert!(error.message.contains("requires positive dimensions"));
+        assert!(matches!(error, RuntimeError::InvalidShape { .. }));
     }
 
     let error = validate_test_buffer_abi(&mir, &[null], &[0], &[0], &[f32::NAN])
         .expect_err("invalid sample-rate metadata must be rejected");
-    assert!(error.message.contains("finite positive sample rate"));
+    assert_eq!(error, RuntimeError::InvalidSampleRate);
 
     let error = validate_test_buffer_abi(&mir, &[pointer], &[1], &[2], &[48_000.0])
         .expect_err("non-empty bindings must honor declared channel constraints");
-    assert!(
-        error.message.contains("requires 1 channels"),
-        "{}",
-        error.message
-    );
+    assert!(matches!(error, RuntimeError::InvalidShape { .. }));
 
     let mut aligned_storage = [0_u32; 2];
     let misaligned = aligned_storage.as_mut_ptr().cast::<u8>().wrapping_add(1);
     let error = validate_test_buffer_abi(&mir, &[misaligned], &[1], &[1], &[48_000.0])
         .expect_err("non-empty bindings must honor scalar alignment");
-    assert!(error.message.contains("requires 4-byte alignment"));
+    assert!(matches!(
+        error,
+        RuntimeError::Misaligned { alignment: 4, .. }
+    ));
 }
 
 #[test]
@@ -3446,6 +3451,7 @@ fn aot_snapshot_manifest_maps_persistent_segments_only() {
         },
     ];
     mir.interface.control_outputs.push(onda_mir::ControlOutput {
+        enumeration: None,
         name: "meter".to_owned(),
         ty: f64_ty,
         mirror: onda_mir::StateId::new(1),

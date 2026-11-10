@@ -251,8 +251,11 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             }))
         }
         Request::RunSources { path } => {
-            serde_json::to_value(onda_run::run_source_graph(Path::new(&path)))
-                .map_err(|error| format!("failed to encode source graph: {error}"))
+            serde_json::to_value(onda_run::run_source_graph_with_overlays(
+                Path::new(&path),
+                &session.analysis().overlay_map(),
+            ))
+            .map_err(|error| format!("failed to encode source graph: {error}"))
         }
         Request::RunMetadata { path } => (|| {
             let options = session.config().run;
@@ -272,7 +275,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 onda_daemon::InitialBufferBinding::from_asset(name, asset, path)
             });
             // Metadata queries must not register or replace an active run.
-            let run = onda_daemon::RunSession::build_with_inputs_and_initial_buffers(
+            let run = onda_daemon::RunSession::prepare_with_inputs_and_initial_buffers(
                 session.analysis(),
                 &project.entry,
                 options,
@@ -771,6 +774,57 @@ mod tests {
     }
 
     #[test]
+    fn run_sources_uses_open_documents_without_treating_their_text_as_disk_hashes() {
+        let dir = fs::canonicalize(mk_temp_dir("run_sources_overlays")).unwrap();
+        let main = dir.join("main.onda");
+        let child = dir.join("child.on");
+        let leaf = dir.join("leaf.on");
+        write_file(&main, "sample:\n  out1 = 0.0\n");
+        write_file(&child, "def read():\n  return 1.0\n");
+        write_file(&leaf, "def leaf():\n  return 2.0\n");
+        let mut session = DaemonSession::default();
+        session.open_document(
+            &main,
+            DocumentVersion(1),
+            "include \"child.on\"\nsample:\n  out1 = read()\n",
+        );
+        session.open_document(
+            &child,
+            DocumentVersion(1),
+            "include \"leaf.on\"\ndef read():\n  return leaf()\n",
+        );
+        let discover = |session: &mut DaemonSession| {
+            let response = handle_request(
+                session,
+                RequestEnvelope {
+                    id: Some(1),
+                    request: Request::RunSources {
+                        path: display_path(&main),
+                    },
+                },
+            );
+            assert!(response.ok);
+            response.result.unwrap()
+        };
+        let graph = discover(&mut session);
+        assert_eq!(graph["complete"], true);
+        for path in [&main, &child, &leaf] {
+            assert!(graph["files"].as_array().unwrap().contains(&json!(path)));
+        }
+        let hashes = graph["contentHashes"].as_object().unwrap();
+        assert!(!hashes.contains_key(main.to_str().unwrap()));
+        assert!(!hashes.contains_key(child.to_str().unwrap()));
+        assert_eq!(hashes[leaf.to_str().unwrap()].as_str().unwrap().len(), 64);
+
+        session.close_document(&child);
+        let graph = discover(&mut session);
+        assert!(!graph["files"].as_array().unwrap().contains(&json!(leaf)));
+        assert!(graph["contentHashes"][child.to_str().unwrap()].is_string());
+        assert!(session.run(&main).is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn failed_metadata_reports_the_consumed_sources() {
         let dir = mk_temp_dir("failed_metadata_sources");
         let main = dir.join("main.onda");
@@ -1008,10 +1062,10 @@ mod tests {
             json!({ "command": "run_metadata", "path": path }),
         );
         assert_eq!(metadata["params"][0]["defaultRepr"], "1");
-        assert_eq!(metadata["buffers"][0]["loadedFrames"], Value::Null);
+        assert_eq!(metadata["buffers"][0]["loadedSamples"], Value::Null);
         let run = session.run(&main).expect("active run retained");
         assert_eq!(run.snapshot_state_bytes().unwrap(), snapshot);
-        assert_eq!(run.buffer_info()[0].loaded_frames, Some(1));
+        assert_eq!(run.buffer_info()[0].loaded_samples, Some(1));
         let after = request(
             &mut session,
             json!({ "command": "run_render", "path": path }),

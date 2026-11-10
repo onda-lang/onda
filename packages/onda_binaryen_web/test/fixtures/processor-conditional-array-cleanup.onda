@@ -1,0 +1,41 @@
+proc Voice:
+  buffers:
+    result: f32
+  init:
+    before: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before)
+    result[0] += 10.0
+proc Bank:
+  buffers:
+    result: f32
+  init:
+    voices: Voice[2] = Voice(result = result)
+def step(voice) -> f32:
+  return voice() + voice()
+def exercise(source: Voice[2], enabled: bool) -> f32:
+  if enabled:
+    copies: Voice[2] = source
+    step(copies[0])
+  return 0.0
+def nested(source: Bank[2], enabled: bool) -> f32:
+  if enabled:
+    copies: Bank[2] = source
+    owner = copies[1]
+    step(owner.voices[1])
+  return 0.0
+buffers:
+  result: f32
+init:
+  voices: Voice[2] = Voice(result = result)
+  banks: Bank[2] = Bank(result = result)
+  frame: i32 = 0
+sample:
+  exercise(voices, frame % 2 == 0)
+  nested(banks, frame % 2 != 0)
+  out1 = result[0]
+  original = voices[0]
+  out2 = f32(original.before)
+  frame += 1

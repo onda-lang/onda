@@ -1,4 +1,5 @@
 use super::*;
+use crate::ScalarTypeRef;
 
 pub(super) fn parse_stmt_list_pair(
     stmt_list_pair: Pair<'_, Rule>,
@@ -428,64 +429,31 @@ pub(super) fn parse_const_decl(pair: Pair<'_, Rule>) -> Result<ConstDecl, Vec<Di
 }
 
 fn parse_const_type(pair: Pair<'_, Rule>) -> Result<ConstType, Vec<Diagnostic>> {
-    if pair.as_rule() != Rule::const_type {
-        return Err(vec![syntax_at_pair(
+    let scalar = |pair: Pair<'_, Rule>| match pair.as_rule() {
+        Rule::type_name => parse_primitive_type(pair.as_str())
+            .map(ScalarTypeRef::Primitive)
+            .map_err(|error| vec![error]),
+        Rule::named_type => Ok(ScalarTypeRef::Named(pair.as_str().trim().to_owned())),
+        _ => Err(vec![syntax_at_pair(
             &pair,
-            "internal parser error: expected const type",
-        )]);
-    }
-    let loc = stmt_loc_from_pair(&pair);
-    let mut inner = pair.into_inner();
-    let Some(actual) = inner.next() else {
-        return Err(vec![syntax_at_loc(loc.as_ref(), "missing const type")]);
+            "expected a primitive or enum type",
+        )]),
     };
+    let actual = pair.into_inner().next().expect("constant type");
     match actual.as_rule() {
-        Rule::type_name => Ok(ConstType::Scalar(
-            parse_primitive_type(actual.as_str()).map_err(|d| vec![d])?,
-        )),
-        Rule::fn_typed_array_param => {
-            let Some(elem_pair) = actual.into_inner().next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing const array element type",
-                )]);
-            };
-            if elem_pair.as_rule() != Rule::type_name {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "const array element type must be primitive",
-                )]);
-            }
-            Ok(ConstType::Slice {
-                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
+        Rule::type_name | Rule::named_type => Ok(ConstType::Scalar(scalar(actual)?)),
+        Rule::fn_typed_array_param | Rule::array_type => {
+            let mut parts = actual.into_inner();
+            let elem = scalar(parts.next().expect("constant element type"))?;
+            Ok(match parts.next() {
+                Some(size) => ConstType::Array {
+                    elem,
+                    size: parse_expr_inner(size),
+                },
+                None => ConstType::Slice { elem },
             })
         }
-        Rule::array_type => {
-            let mut inner = actual.into_inner();
-            let Some(elem_pair) = inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing const array element type",
-                )]);
-            };
-            let Some(size_pair) = inner.next() else {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "missing const array size",
-                )]);
-            };
-            if elem_pair.as_rule() != Rule::type_name {
-                return Err(vec![syntax_at_loc(
-                    loc.as_ref(),
-                    "const array element type must be primitive",
-                )]);
-            }
-            Ok(ConstType::Array {
-                elem: parse_primitive_type(elem_pair.as_str()).map_err(|d| vec![d])?,
-                size: parse_expr_inner(size_pair),
-            })
-        }
-        _ => Err(vec![syntax_at_loc(loc.as_ref(), "unsupported const type")]),
+        _ => Err(vec![syntax_at_pair(&actual, "unsupported constant type")]),
     }
 }
 
@@ -576,6 +544,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr: parse_expr(expr_pair)?,
                     })
                 }
@@ -611,6 +580,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr,
                     })
                 }
@@ -640,6 +610,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                         generic_decl_ty: None,
                                         is_typed_decl: true,
                                         typed_decl_ty_loc,
+                                        param_write_lowered: false,
                                         expr: other,
                                     });
                                 }
@@ -656,6 +627,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr: Expr::ArrayCtor {
                             loc,
                             spec,
@@ -696,6 +668,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                                 generic_decl_ty: None,
                                 is_typed_decl: true,
                                 typed_decl_ty_loc,
+                                param_write_lowered: false,
                                 expr,
                             });
                         }
@@ -708,16 +681,12 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: Some(declared_type),
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr,
                     })
                 }
                 Rule::tuple_type => {
-                    let elems: Result<Vec<PrimitiveType>, Vec<Diagnostic>> = ty_pair
-                        .into_inner()
-                        .filter(|p| p.as_rule() == Rule::type_name)
-                        .map(|p| parse_primitive_type(p.as_str()).map_err(|d| vec![d]))
-                        .collect();
-                    let tuple_ty = DeclType::Tuple(elems?);
+                    let tuple_ty = DeclType::Tuple(parse_tuple_type(ty_pair)?);
                     let Some(expr_pair) = expr_pair else {
                         return Err(vec![syntax_at_loc(
                             loc.as_ref(),
@@ -732,6 +701,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                         generic_decl_ty: None,
                         is_typed_decl: true,
                         typed_decl_ty_loc,
+                        param_write_lowered: false,
                         expr: parse_expr(expr_pair)?,
                     })
                 }
@@ -782,6 +752,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 generic_decl_ty: None,
                 is_typed_decl: has_range,
                 typed_decl_ty_loc: Span::ZERO,
+                param_write_lowered: false,
                 expr,
             })
         }
@@ -848,6 +819,7 @@ pub(super) fn parse_assign_stmt(pair: Pair<'_, Rule>) -> Result<Stmt, Vec<Diagno
                 generic_decl_ty: None,
                 is_typed_decl: false,
                 typed_decl_ty_loc: Span::ZERO,
+                param_write_lowered: false,
                 expr: parse_expr(expr_pair)?,
             })
         }
@@ -1454,6 +1426,10 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
                             expr: Expr::var(field_pair.as_str().to_owned())
                                 .with_loc(stmt_loc_from_pair(&field_pair)),
                         },
+                        CallArg {
+                            name: Some(PROC_CACHED_FIELD_ARG.to_owned()),
+                            expr: Expr::bool(true),
+                        },
                     ],
                 }
             }
@@ -1629,6 +1605,29 @@ pub(super) fn parse_primary_expr(pair: Pair<'_, Rule>) -> Expr {
     }
 }
 
+pub(super) fn parse_generic_type_arg_list(
+    pair: Pair<'_, Rule>,
+) -> Result<Vec<CallTypeArg>, Vec<Diagnostic>> {
+    pair.into_inner()
+        .filter(|arg| arg.as_rule() == Rule::generic_type_arg)
+        .map(|arg| {
+            let inner = arg.into_inner().next().expect("generic type argument");
+            match inner.as_rule() {
+                Rule::type_name => parse_primitive_type(inner.as_str())
+                    .map(CallTypeArg::Primitive)
+                    .map_err(|error| vec![error]),
+                Rule::ident | Rule::namespace_ref => {
+                    Ok(CallTypeArg::Generic(inner.as_str().to_owned()))
+                }
+                _ => Err(vec![syntax_at_pair(
+                    &inner,
+                    "expected a scalar type argument",
+                )]),
+            }
+        })
+        .collect()
+}
+
 pub(super) fn parse_call_expr_parts(
     pair: Pair<'_, Rule>,
 ) -> (String, Vec<CallTypeArg>, Vec<CallArg>) {
@@ -1644,31 +1643,9 @@ pub(super) fn parse_call_expr_parts(
     for item in inner {
         match item.as_rule() {
             Rule::generic_type_arg_list => {
-                for ty in item.into_inner() {
-                    let mut push_arg = |pair: Pair<'_, Rule>| match pair.as_rule() {
-                        Rule::type_name => {
-                            type_args.push(CallTypeArg::Primitive(
-                                parse_primitive_type(pair.as_str()).expect(
-                                    "generic_type_arg_list type_name should parse to primitive",
-                                ),
-                            ));
-                        }
-                        Rule::ident => {
-                            type_args.push(CallTypeArg::Generic(pair.as_str().to_owned()));
-                        }
-                        _ => {}
-                    };
-                    match ty.as_rule() {
-                        Rule::generic_type_arg => {
-                            let mut inner = ty.into_inner();
-                            if let Some(inner_pair) = inner.next() {
-                                push_arg(inner_pair);
-                            }
-                        }
-                        Rule::type_name | Rule::ident => push_arg(ty),
-                        _ => {}
-                    }
-                }
+                type_args.extend(
+                    parse_generic_type_arg_list(item).expect("parsed scalar type arguments"),
+                );
             }
             Rule::arg_list => {
                 for arg_pair in item.into_inner() {
@@ -1773,7 +1750,7 @@ fn parse_namespace_call_target(pair: Pair<'_, Rule>) -> (String, Vec<CallArg>, V
             type_args.push(CallTypeArg::Primitive(prim));
             continue;
         }
-        if is_simple_ident(sym) {
+        if is_simple_ident(sym) || parse_namespace_ref_text_ast(sym).is_ok() {
             type_args.push(CallTypeArg::Generic(sym.clone()));
             continue;
         }
@@ -1898,35 +1875,7 @@ fn parse_named_type_ref(
                     name = Some(pair_symbol_text(&item));
                 }
             }
-            Rule::generic_type_arg_list => {
-                for ty in item.into_inner() {
-                    let push_arg = |arg_pair: Pair<'_, Rule>,
-                                    out: &mut Vec<CallTypeArg>|
-                     -> Result<(), Vec<Diagnostic>> {
-                        match arg_pair.as_rule() {
-                            Rule::type_name => out.push(CallTypeArg::Primitive(
-                                parse_primitive_type(arg_pair.as_str()).map_err(|d| vec![d])?,
-                            )),
-                            Rule::ident => {
-                                out.push(CallTypeArg::Generic(arg_pair.as_str().to_owned()))
-                            }
-                            _ => {}
-                        }
-                        Ok(())
-                    };
-                    match ty.as_rule() {
-                        Rule::generic_type_arg => {
-                            if let Some(inner) = ty.into_inner().next() {
-                                push_arg(inner, &mut type_args)?;
-                            }
-                        }
-                        Rule::type_name | Rule::ident => {
-                            push_arg(ty, &mut type_args)?;
-                        }
-                        _ => {}
-                    }
-                }
-            }
+            Rule::generic_type_arg_list => type_args.extend(parse_generic_type_arg_list(item)?),
             _ => {}
         }
     }

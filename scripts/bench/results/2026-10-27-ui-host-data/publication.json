@@ -1,0 +1,86 @@
+{
+  "metric": "microseconds per RunUi::message including input Value clone, no rendering or JSON parsing",
+  "rounds": 7,
+  "rows": [
+    {
+      "controls": 64,
+      "publication": "full_state_for_status",
+      "median_us": 76.79384
+    },
+    {
+      "controls": 64,
+      "publication": "partial_status",
+      "median_us": 0.22633599999999998
+    },
+    {
+      "controls": 64,
+      "publication": "single_value",
+      "median_us": 0.25434799999999996
+    },
+    {
+      "controls": 512,
+      "publication": "full_state_for_status",
+      "median_us": 570.737216
+    },
+    {
+      "controls": 512,
+      "publication": "partial_status",
+      "median_us": 0.22856800000000002
+    },
+    {
+      "controls": 512,
+      "publication": "single_value",
+      "median_us": 0.259118
+    },
+    {
+      "controls": 4096,
+      "publication": "full_state_for_status",
+      "median_us": 5185.61143
+    },
+    {
+      "controls": 4096,
+      "publication": "partial_status",
+      "median_us": 0.23282000000000003
+    },
+    {
+      "controls": 4096,
+      "publication": "single_value",
+      "median_us": 0.250322
+    }
+  ],
+  "affinity_cpu": 0,
+  "affinity_allowed_before": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ]
+}

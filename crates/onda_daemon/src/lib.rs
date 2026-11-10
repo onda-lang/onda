@@ -156,11 +156,33 @@ impl DaemonSession {
             inputs,
             initial_buffers,
         )?;
+        Ok(self.insert_run(normalized, run))
+    }
+
+    /// Expose a compiled run for control restoration without executing `init`.
+    pub fn prepare_run_with_options_inputs_and_initial_buffers(
+        &mut self,
+        path: impl AsRef<Path>,
+        options: RunOptions,
+        inputs: &CompileInputs,
+        initial_buffers: impl IntoIterator<Item = InitialBufferBinding>,
+    ) -> Result<&RunSession, RunBuildError> {
+        let normalized = normalize_session_path(path.as_ref());
+        let run = RunSession::prepare_with_inputs_and_initial_buffers(
+            &self.analysis,
+            &normalized,
+            options,
+            inputs,
+            initial_buffers,
+        )?;
+        Ok(self.insert_run(normalized, run))
+    }
+
+    fn insert_run(&mut self, normalized: PathBuf, run: RunSession) -> &RunSession {
         self.runs.insert(normalized.clone(), run);
-        Ok(self
-            .runs
+        self.runs
             .get(&normalized)
-            .expect("run inserted into session"))
+            .expect("run inserted into session")
     }
 
     pub fn rebuild_run(&mut self, path: impl AsRef<Path>) -> Result<&RunSession, RunBuildError> {
@@ -698,7 +720,7 @@ mod tests {
         assert_eq!(buffer_info.len(), 2);
         assert_eq!(buffer_info[0].name, "src");
         assert!(buffer_info[0].loaded_path.is_none());
-        assert_eq!(buffer_info[0].loaded_frames, None);
+        assert_eq!(buffer_info[0].loaded_samples, None);
         assert_eq!(buffer_info[0].loaded_channels, None);
         assert_eq!(buffer_info[0].loaded_sample_rate_hz, None);
 
@@ -713,7 +735,7 @@ mod tests {
             .bind_buffer_wav_path("src", &wav)
             .expect("wav buffer bind should succeed");
         let loaded = &session.run(&main).expect("active run").buffer_info()[0];
-        assert_eq!(loaded.loaded_frames, Some(4));
+        assert_eq!(loaded.loaded_samples, Some(4));
         assert_eq!(loaded.loaded_channels, Some(1));
         assert_eq!(loaded.loaded_sample_rate_hz, Some(48_000.0));
         let waveform = loaded.waveform.as_ref().expect("loaded waveform preview");
@@ -920,7 +942,10 @@ mod tests {
             .expect("active run")
             .bind_buffer_samples("src", vec![0.9], 1, 48_000.0)
             .expect_err("mono data must not replace a static stereo binding");
-        assert!(error.message.contains("expects 2 channels"), "{error:?}");
+        assert!(
+            error.message.contains("invalid shape for buffer 0"),
+            "{error:?}"
+        );
 
         let run = session.run(&main).expect("active run");
         assert_eq!(run.buffer_info()[0].loaded_channels, Some(2));

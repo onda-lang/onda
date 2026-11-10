@@ -8,6 +8,7 @@ use crate::builtins::{
     is_builtin_buffer_write_function_name, is_float_type, is_internal_buffer_2d_fn,
     parse_array_len_instance_base, parse_buffer_bound_instance_base,
     parse_buffer_chans_instance_base, parse_buffer_samplerate_instance_base,
+    parse_buffer_samples_instance_base,
 };
 use crate::decl_symbols::{
     declared_buffer_info, declared_symbol_scalar_type, has_declared_buffer_symbol_info,
@@ -16,6 +17,10 @@ use crate::decl_symbols::{
 use crate::def_semantics::{can_implicitly_assign, merge_numeric_types};
 use crate::expr_analysis::{has_lexical_root_binding, has_scalar_value_binding};
 use crate::internal_names::PROC_INDEX_CALL_SENTINEL;
+use crate::proc_call_support::named_call_var_arg;
+use crate::proc_state_rewrite::{
+    PROC_FIELD_SENTINEL_ARG, PROC_FIELD_SENTINEL_PREFIX, PROC_INDEX_BASE_ARG,
+};
 use crate::{
     is_builtin_array_like_receiver_with_resolver, resolve_flattened_struct_array_leaf_type,
     resolve_struct_field_decl, split_field_path, LocalAliasTypes, LocalArrayAliasInfo,
@@ -278,7 +283,7 @@ pub(crate) fn adapt_contextual_numeric_type(
     contextual: PrimitiveType,
     concrete: PrimitiveType,
 ) -> PrimitiveType {
-    if contextual == PrimitiveType::Bool || concrete == PrimitiveType::Bool {
+    if !contextual.is_numeric() || !concrete.is_numeric() {
         contextual
     } else if is_float_type(contextual) && !is_float_type(concrete) {
         PrimitiveType::F32
@@ -354,9 +359,9 @@ pub(crate) fn merge_numeric_types_without_diagnostics(
     lhs: PrimitiveType,
     rhs: PrimitiveType,
 ) -> Option<PrimitiveType> {
-    use PrimitiveType::{Bool, F32, F64, I32, I64};
+    use PrimitiveType::{Bool, Enum, F32, F64, I32, I64};
     match (lhs, rhs) {
-        (Bool, _) | (_, Bool) => None,
+        (Bool, _) | (_, Bool) | (Enum(_), _) | (_, Enum(_)) => None,
         (F64, _) | (_, F64) => Some(F64),
         (F32, I64) | (I64, F32) => Some(F64),
         (F32, _) | (_, F32) => Some(F32),
@@ -373,7 +378,7 @@ pub(crate) fn intrinsic_result_type(
         BuiltinFn::Abs => adapted_arg_types
             .first()
             .copied()
-            .filter(|ty| *ty != PrimitiveType::Bool),
+            .filter(|ty| ty.is_numeric()),
         BuiltinFn::Min | BuiltinFn::Max => merge_numeric_types_without_diagnostics(
             *adapted_arg_types.first()?,
             *adapted_arg_types.get(1)?,
@@ -498,7 +503,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
         |expr: &Expr, children: &mut std::vec::Drain<'_, Option<PrimitiveType>>| {
             match expr {
                 Expr::Number { .. } => Some(PrimitiveType::F64),
-                Expr::Int { .. } => Some(PrimitiveType::I64),
+                Expr::Int { const_ty, .. } => Some(const_ty.unwrap_or(PrimitiveType::I64)),
                 Expr::Bool { .. } => Some(PrimitiveType::Bool),
                 Expr::ArrayLiteral { .. } => None,
                 Expr::Tuple { .. } => None,
@@ -700,7 +705,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                     match func {
                         BuiltinFn::Abs => {
                             let ty = arg_types.first().copied().unwrap_or(PrimitiveType::F32);
-                            if ty == PrimitiveType::Bool {
+                            if !ty.is_numeric() {
                                 errors.push(Diagnostic::semantic_span(
                             "builtin 'abs' requires numeric argument (bool is not supported)",
                             expr.loc(),
@@ -759,7 +764,7 @@ fn infer_scalar_expr_type_with_proc_arrays(
                         }
                         BuiltinFn::Pow => {
                             for ty in &arg_types {
-                                if *ty == PrimitiveType::Bool {
+                                if !ty.is_numeric() {
                                     errors.push(Diagnostic::semantic_span(
                                 "builtin 'pow' requires numeric arguments (bool is not supported)",
                                 expr.loc(),
@@ -790,6 +795,24 @@ fn infer_scalar_expr_type_with_proc_arrays(
                 Expr::UserCall { name, args, .. } => {
                     if declared_symbols.unresolved_types.contains(name) {
                         return None;
+                    }
+                    if name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX)
+                        == Some(PROC_INDEX_CALL_SENTINEL)
+                    {
+                        let base = named_call_var_arg(args, PROC_INDEX_BASE_ARG)?;
+                        if let Some(array) = proc_array_roots.get(base) {
+                            let field = named_call_var_arg(args, PROC_FIELD_SENTINEL_ARG)?;
+                            return match resolve_struct_field_decl(
+                                &array.proc_name,
+                                field,
+                                struct_defs,
+                            )?
+                            .ty
+                            {
+                                TypedFieldType::Scalar(ty) => Some(ty),
+                                _ => None,
+                            };
+                        }
                     }
                     if name == crate::proc_state_rewrite::STRUCT_ARRAY_FIELD_INDEX_SENTINEL {
                         let (base, _, field, field_index) =
@@ -849,6 +872,18 @@ fn infer_scalar_expr_type_with_proc_arrays(
                                 base,
                                 declared_symbols,
                             )))
+                        {
+                            return Some(PrimitiveType::I32);
+                        }
+                    }
+                    if let Some(base) = parse_buffer_samples_instance_base(name) {
+                        if !has_lexical_root_binding(
+                            base,
+                            locals,
+                            local_aliases,
+                            local_array_aliases,
+                            struct_instances,
+                        ) && is_buffer_receiver_symbol_for_builtin(base, declared_symbols)
                         {
                             return Some(PrimitiveType::I32);
                         }
@@ -1164,9 +1199,7 @@ pub(crate) fn can_assign_expr_to_type(
     // Const conversion checks the computed value's range in the interpreter.
     // Checking its numeric family does not require computing that value.
     if constants.constant_context || constants.constant_expression(expr) {
-        return src != PrimitiveType::Bool
-            && dst != PrimitiveType::Bool
-            && (is_float_type(dst) || !is_float_type(src));
+        return src.is_numeric() && dst.is_numeric() && (is_float_type(dst) || !is_float_type(src));
     }
     false
 }

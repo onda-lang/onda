@@ -1,3 +1,4 @@
+import { enumMemberCount } from "./enum-metadata.js";
 import { canonicalF32Number, PayloadPlan } from "./payload.js";
 export { canonicalF32Number, PayloadPlan, EVENT_INPUT_SIZE_BYTES, PROCESSOR_EXECUTION_INPUT_REJECTED, writeEventInput } from "./payload.js";
 import "./param-control.js";
@@ -6,7 +7,7 @@ const PARAM_CONTROL = globalThis.__ONDA_PARAM_CONTROL_V2__;
 
 export const PROCESSOR_ARTIFACT_FORMAT = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 6;
+export const PROCESSOR_ARTIFACT_FORMAT_VERSION = 7;
 export const PROCESSOR_ABI_VERSION = 7;
 export const PROCESSOR_EXECUTION_OK = 0;
 export const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE = 1;
@@ -406,6 +407,15 @@ function validateDelegateMetadata(value, index, path) {
 }
 
 function validateIoMetadata(value, path, isParameter) {
+  try {
+    const count = enumMemberCount(value?.enumeration);
+    if (count !== null && (value.scalar !== "i32"
+      || (isParameter && (value.range_min_repr === null || value.param_control === null))
+      || (value.range_min_repr !== null
+        && (value.range_min_repr !== "0" || value.range_max_repr !== String(count - 1))))) {
+      throw new TypeError("enum storage and range must match its members");
+    }
+  } catch (error) { throw new OndaArtifactError(`${path}: ${error.message}`); }
   requireString(value?.name, `${path}.name`);
   requireString(value?.type_repr, `${path}.type_repr`);
   requireScalar(value?.scalar, `${path}.scalar`);
@@ -465,7 +475,7 @@ function validateParamControlMetadata(value, path) {
   requireNullableFinite(value.curve, `${path}.curve`);
   requireNullableString(value.unit, `${path}.unit`);
   requireNullableString(value.step_repr, `${path}.step_repr`);
-  requireNullableInteger(value.step_count, `${path}.step_count`, 1);
+  requireNullableInteger(value.step_count, `${path}.step_count`, 0);
   if (value.step_count !== null && value.step_count > 0xffff_ffff) {
     throw new OndaArtifactError(`${path}.step_count must fit u32`);
   }
@@ -636,9 +646,6 @@ function validateStateMetadata(value, path) {
   if (range === undefined || range === null) return;
   if (value.scalar !== "i32" && value.scalar !== "i64") {
     throw new OndaArtifactError(`${path}.integer_range requires i32 or i64 state`);
-  }
-  if (value.array_len !== 1) {
-    throw new OndaArtifactError(`${path}.integer_range requires scalar state`);
   }
   if (range.mode !== "clamp" && range.mode !== "wrap") {
     throw new OndaArtifactError(`${path}.integer_range.mode must be 'clamp' or 'wrap'`);

@@ -23,6 +23,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 npm run build --prefix $compilerPackage
+npm run build:gpu-ui --prefix $repoRoot
+if ($LASTEXITCODE -ne 0) { throw "GPU UI build failed" }
 
 Remove-Item $compilerOut, $webAudioOut -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $demoDir "onda-webaudio.js"), (Join-Path $demoDir "onda-wasm-processor.js") -Force -ErrorAction SilentlyContinue
@@ -32,9 +34,11 @@ Copy-Item (Join-Path $compilerPackage "dist") (Join-Path $compilerOut "dist") -R
 Copy-Item $binaryenJs (Join-Path $compilerOut "dist\backend\binaryen.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $compilerOut "src\processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $compilerOut "src\param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\enum-metadata.js") (Join-Path $compilerOut "src\enum-metadata.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $compilerOut "src\payload.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $compilerOut "dist\backend\processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $compilerOut "dist\backend\param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\enum-metadata.js") (Join-Path $compilerOut "dist\backend\enum-metadata.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $compilerOut "dist\backend\payload.js") -Force
 $compilerSource = Get-Content (Join-Path $compilerPackage "src\index.js") -Raw
 $compilerSource.Replace('from "#onda-frontend-loader"', 'from "./frontend-browser.js"').Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
@@ -45,21 +49,23 @@ $backendSource.Replace('from "binaryen"', 'from "./binaryen.js"') |
 $backendArtifactSource = Get-Content (Join-Path $compilerPackage "dist\backend\artifact.js") -Raw
 $backendArtifactSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $compilerOut "dist\backend\artifact.js") -NoNewline
+Copy-Item (Join-Path $webAudioPackage "src\runtime-status.js") (Join-Path $webAudioOut "runtime-status.js") -Force
+Copy-Item (Join-Path $webAudioPackage "src\execution-status-ring.js") (Join-Path $webAudioOut "execution-status-ring.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\worklet.js") (Join-Path $webAudioOut "worklet.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\processor-constants.js") (Join-Path $webAudioOut "processor-constants.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\param-metadata.js") (Join-Path $webAudioOut "param-metadata.js") -Force
 Copy-Item (Join-Path $webAudioPackage "src\execution-output-ring.js") (Join-Path $webAudioOut "execution-output-ring.js") -Force
-Copy-Item (Join-Path $repoRoot "ui\run\run.html") (Join-Path $demoDir "run.html") -Force
-Copy-Item (Join-Path $repoRoot "ui\run\buffers.js") (Join-Path $demoDir "buffers.js") -Force
-Copy-Item (Join-Path $repoRoot "ui\number-input.js") (Join-Path $demoDir "number-input.js") -Force
-Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $demoDir "param-control.js") -Force
-Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $demoDir "payload.js") -Force
 Copy-Item (Join-Path $abiPackage "src\index.js") (Join-Path $webAudioOut "processor-abi.js") -Force
 Copy-Item (Join-Path $abiPackage "src\param-control.js") (Join-Path $webAudioOut "param-control.js") -Force
+Copy-Item (Join-Path $abiPackage "src\enum-metadata.js") (Join-Path $webAudioOut "enum-metadata.js") -Force
 Copy-Item (Join-Path $abiPackage "src\payload.js") (Join-Path $webAudioOut "payload.js") -Force
 $webAudioSource = Get-Content (Join-Path $webAudioPackage "src\index.js") -Raw
 $webAudioSource.Replace('from "@onda-lang/processor-abi"', 'from "./processor-abi.js"') |
     Set-Content (Join-Path $webAudioOut "index.js") -NoNewline
+node (Join-Path $repoRoot "scripts\verify-webaudio-stage.mjs") (Join-Path $webAudioOut "index.js") (Join-Path $webAudioOut "worklet.js")
+if ($LASTEXITCODE -ne 0) { throw "Web Audio staging verification failed" }
+node (Join-Path $repoRoot "scripts\stage-gpu-ui.mjs") (Join-Path $demoDir "gpu")
+if ($LASTEXITCODE -ne 0) { throw "GPU UI staging failed" }
 node (Join-Path $repoRoot "scripts\bundle-web-playground.mjs") (Join-Path $demoDir "playground.js") (Join-Path $compilerOut "src\worker.js")
 
 Write-Host "Staged @onda-lang/wasm-compiler in: $compilerOut"

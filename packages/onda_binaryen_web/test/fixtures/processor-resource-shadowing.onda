@@ -1,0 +1,16 @@
+proc Reader:
+  buffers:
+    source: f32
+  init:
+    picks: i32[2] = [1, 0]
+  def select() -> f32:
+    source: f32 = 2.0
+    return f32(picks[0]) + source
+  sample:
+    out1 = select()
+buffers:
+  clip: f32
+init:
+  reader = Reader(source = clip)
+sample:
+  out1 = reader()

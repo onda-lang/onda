@@ -2,6 +2,7 @@
 //! Selection does not execute const calls or predict runtime control flow.
 use super::*;
 use crate::compile_context::{CallContexts, CompileContext};
+use crate::processor_views::ProcessorBoundary;
 
 type FunctionKey = (usize, CompileContext);
 
@@ -12,26 +13,41 @@ pub(super) struct MaterializedRuntime {
 }
 
 pub(super) fn materialize_reachable_typed_defs(
-    mut roots: Vec<(&mut Vec<Stmt>, AnalysisOptions)>,
-    defs: Vec<TypedFunction>,
+    mut roots: Vec<(&mut Vec<Stmt>, AnalysisOptions, ProcessorBoundary)>,
+    mut defs: Vec<TypedFunction>,
     artifacts: &SemanticConstArtifacts,
     contexts: CallContexts<'_>,
     errors: &mut Vec<Diagnostic>,
     defaults: &super::runtime_defaults::RuntimeDefaults<'_>,
+    processor_views: &mut crate::processor_views::ProcessorViewCatalog,
 ) -> MaterializedRuntime {
+    processor_views.register_operation_uses(&defs);
     let indices = defs
         .iter()
         .enumerate()
         .map(|(index, def)| (def.name.clone(), index))
         .collect::<HashMap<_, _>>();
-    let mut catalog = defs.into_iter().map(Some).collect::<Vec<_>>();
-    let mut selected = std::collections::BTreeSet::<FunctionKey>::new();
-    let mut pending = Vec::new();
-    let mut expanded = HashSet::new();
-    for (body, options) in &mut roots {
+    for (body, _, _) in &mut roots {
         for stmt in &mut **body {
             stmt.visit_exprs_mut(|expr| defaults.expand(expr, errors));
         }
+    }
+    let mut expanded = prune_inactive_scalar_post_hooks(
+        &roots,
+        &mut defs,
+        &indices,
+        processor_views,
+        defaults,
+        errors,
+    );
+    let mut catalog = defs.into_iter().map(Some).collect::<Vec<_>>();
+    // Checked processor dependencies are shared by every compile context of a
+    // source specialization. Keep this cache local to the frozen view metadata.
+    let mut processor_dependencies = vec![None; catalog.len()];
+    let mut selected = std::collections::BTreeSet::<FunctionKey>::new();
+    let mut pending = Vec::new();
+    let mut root_routes = Vec::new();
+    for (body, options, boundary) in &mut roots {
         select_calls(
             body,
             CompileContext::new(*options),
@@ -40,6 +56,16 @@ pub(super) fn materialize_reachable_typed_defs(
             &mut selected,
             &mut pending,
         );
+        for dependency in processor_views.root_operation_dependencies(body, *boundary) {
+            if let Some(&index) = indices.get(dependency) {
+                let context = CompileContext::new(*options);
+                let key = (index, contexts.callee(dependency, None, context));
+                if selected.insert(key) {
+                    pending.push(key);
+                }
+                root_routes.push((context, dependency.to_owned(), key));
+            }
+        }
     }
     while let Some((index, context)) = pending.pop() {
         let def = catalog[index].as_mut().unwrap();
@@ -56,6 +82,22 @@ pub(super) fn materialize_reachable_typed_defs(
             &mut selected,
             &mut pending,
         );
+        // Processor adapters and deferred resource helpers follow the same
+        // context selection as ordinary calls.
+        let dependencies = processor_dependencies[index].get_or_insert_with(|| {
+            processor_views
+                .function_dependencies(&def.name)
+                .into_iter()
+                .filter_map(|dependency| indices.get(dependency).copied())
+                .collect::<Vec<_>>()
+        });
+        for &target in dependencies.iter() {
+            let dependency = &catalog[target].as_ref().unwrap().name;
+            let key = (target, contexts.callee(dependency, None, context));
+            if selected.insert(key) {
+                pending.push(key);
+            }
+        }
     }
     let mut remaining = HashMap::<usize, usize>::new();
     for (index, _) in &selected {
@@ -82,6 +124,21 @@ pub(super) fn materialize_reachable_typed_defs(
             (source != &names[key]).then(|| (source.clone(), names[key].clone()))
         })
         .collect();
+    for &(index, context) in &selected {
+        for &target in processor_dependencies[index].as_ref().unwrap() {
+            let dependency = &catalog[target].as_ref().unwrap().name;
+            let target_context = contexts.callee(dependency, None, context);
+            processor_views.materialized_targets.insert(
+                (context, dependency.clone()),
+                names[&(target, target_context)].clone(),
+            );
+        }
+    }
+    for (context, source_target, key) in root_routes {
+        processor_views
+            .materialized_targets
+            .insert((context, source_target), names[&key].clone());
+    }
     let mut array_names = HashSet::new();
     let mut rewrite = |body: &mut [Stmt], context: CompileContext| {
         for stmt in body {
@@ -102,7 +159,7 @@ pub(super) fn materialize_reachable_typed_defs(
             });
         }
     };
-    for (body, options) in &mut roots {
+    for (body, options, _) in &mut roots {
         materialize_runtime_stmts(body, artifacts, *options, errors, *options);
         rewrite(body, CompileContext::new(*options));
     }
@@ -132,12 +189,133 @@ pub(super) fn materialize_reachable_typed_defs(
             def.name = names[&key].clone();
             def
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // Lifecycle queries during MIR lowering follow the actual executable bodies,
+    // including expanded defaults and pruned scalar completion edges.
+    processor_views.register_operation_uses(&defs);
     MaterializedRuntime {
         defs,
         aliases,
         const_arrays: artifacts.const_values.runtime_arrays(&array_names),
     }
+}
+
+/// A parent may finish a child activated through a borrowed helper. Those
+/// guarded post calls do not themselves activate children or demand their
+/// constants. Follow executable calls and view adapters first, then discard
+/// completion edges whose processor is never stepped.
+fn prune_inactive_scalar_post_hooks(
+    roots: &[(&mut Vec<Stmt>, AnalysisOptions, ProcessorBoundary)],
+    defs: &mut [TypedFunction],
+    indices: &HashMap<String, usize>,
+    views: &crate::processor_views::ProcessorViewCatalog,
+    defaults: &super::runtime_defaults::RuntimeDefaults<'_>,
+    errors: &mut Vec<Diagnostic>,
+) -> HashSet<usize> {
+    use crate::processor_views::ProcessorOperation;
+    if !views
+        .declarations()
+        .iter()
+        .any(|declaration| declaration.len.is_none() && declaration.active_field.is_some())
+    {
+        return HashSet::new();
+    }
+    let scalar_post = |name: &str| {
+        views.operation(name).is_some_and(|operation| {
+            operation.kind == ProcessorOperation::BlockPost
+                && operation
+                    .projection
+                    .edges
+                    .last()
+                    .is_some_and(|edge| edge.extent.is_none())
+        })
+    };
+    let mut pending = Vec::new();
+    let mut selected = HashSet::new();
+    let enqueue = |name: &str, pending: &mut Vec<usize>, selected: &mut HashSet<usize>| {
+        if let Some(&index) = indices.get(name) {
+            if selected.insert(index) {
+                pending.push(index);
+            }
+        }
+    };
+    let calls = |body: &[Stmt], pending: &mut Vec<usize>, selected: &mut HashSet<usize>| {
+        for statement in body {
+            statement.visit_exprs(|expression| {
+                for expression in expression.walk() {
+                    if let Expr::UserCall { name, .. } = expression {
+                        if !scalar_post(name) {
+                            enqueue(name, pending, selected);
+                        }
+                    }
+                }
+            });
+        }
+    };
+    for (body, _, boundary) in roots {
+        calls(body, &mut pending, &mut selected);
+        for dependency in views.root_operation_dependencies(body, *boundary) {
+            enqueue(dependency, &mut pending, &mut selected);
+        }
+    }
+    let mut expanded = HashSet::new();
+    while let Some(index) = pending.pop() {
+        let def = &mut defs[index];
+        for statement in &mut def.body {
+            statement.visit_exprs_mut(|expression| defaults.expand(expression, errors));
+        }
+        expanded.insert(index);
+        calls(&def.body, &mut pending, &mut selected);
+        for dependency in views.function_dependencies(&def.name) {
+            enqueue(dependency, &mut pending, &mut selected);
+        }
+        if let Some(operation) = views.operation(&def.name).filter(|operation| {
+            matches!(
+                operation.kind,
+                ProcessorOperation::Step | ProcessorOperation::CallOutput(_)
+            ) && operation
+                .projection
+                .edges
+                .last()
+                .is_some_and(|edge| edge.extent.is_none())
+        }) {
+            for kind in [ProcessorOperation::BlockPre, ProcessorOperation::BlockPost] {
+                if let Some(target) = views.operation_target(&operation.projection, &kind) {
+                    enqueue(target, &mut pending, &mut selected);
+                }
+            }
+        }
+    }
+    for def in defs {
+        for statement in &mut def.body {
+            statement.visit_statements_mut(|statement| {
+                let Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } = statement
+                else {
+                    return;
+                };
+                let [Stmt::Expr {
+                    expr: Expr::UserCall { name, .. },
+                    ..
+                }] = then_branch.as_slice()
+                else {
+                    return;
+                };
+                if else_branch.is_empty()
+                    && scalar_post(name)
+                    && !indices
+                        .get(name)
+                        .is_some_and(|index| selected.contains(index))
+                {
+                    then_branch.clear();
+                }
+            });
+        }
+    }
+    expanded
 }
 
 fn select_calls(

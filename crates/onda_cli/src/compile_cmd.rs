@@ -31,7 +31,6 @@ pub(crate) struct CompileRequest<'a> {
     pub list_consts: bool,
     pub show_meta: bool,
     pub fast_math: bool,
-    pub math: onda_codegen_llvm::FloatMathPolicy,
     pub target: TargetConfig,
 }
 
@@ -48,7 +47,6 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         list_consts,
         show_meta,
         fast_math,
-        math,
         target,
     } = request;
     let project_input = crate::project_cmd::resolve_entry(input)?;
@@ -114,7 +112,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         format!("MIR lowering failed:\n{details}")
     })?;
     let codegen_options = MirTargetOptions {
-        math,
+        math: Default::default(),
         fast_math,
         target,
     };
@@ -237,7 +235,7 @@ struct CliDeclaredIo {
 
 fn primitive_type_bytes(ty: PrimitiveType) -> usize {
     match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }
@@ -245,13 +243,14 @@ fn primitive_type_bytes(ty: PrimitiveType) -> usize {
 
 fn declared_type_repr(elem: PrimitiveType, len: usize) -> String {
     if len == 1 {
-        primitive_type_name(elem).to_owned()
+        primitive_type_name(elem).into_owned()
     } else {
         format!("{}[{len}]", primitive_type_name(elem))
     }
 }
 
 fn build_declared_ports(
+    typed: &TypedProgram,
     flat: &[String],
     types: &HashMap<String, PrimitiveType>,
     arrays: &HashMap<String, TypedArrayInfo>,
@@ -265,7 +264,7 @@ fn build_declared_ports(
     while slot < flat.len() {
         if let Some((name, info)) = arrays_by_offset.get(&slot) {
             out.push(CliDeclaredIo {
-                name: (*name).clone(),
+                name: typed.interface_name(name).to_owned(),
                 elem_ty: info.elem_ty,
                 array_len: info.len,
                 offset: slot,
@@ -273,10 +272,10 @@ fn build_declared_ports(
             slot += info.len;
             continue;
         }
-        let name = flat[slot].clone();
-        let ty = *types.get(&name).unwrap_or(&PrimitiveType::F32);
+        let name = &flat[slot];
+        let ty = *types.get(name).unwrap_or(&PrimitiveType::F32);
         out.push(CliDeclaredIo {
-            name,
+            name: typed.interface_name(name).to_owned(),
             elem_ty: ty,
             array_len: 1,
             offset: slot,
@@ -297,7 +296,7 @@ fn build_declared_params(typed: &TypedProgram) -> Vec<CliDeclaredIo> {
     while slot < typed.params.len() {
         if let Some((name, info)) = arrays_by_offset.get(&slot) {
             out.push(CliDeclaredIo {
-                name: (*name).clone(),
+                name: typed.interface_name(name).to_owned(),
                 elem_ty: info.elem_ty,
                 array_len: info.len,
                 offset: slot,
@@ -307,7 +306,7 @@ fn build_declared_params(typed: &TypedProgram) -> Vec<CliDeclaredIo> {
         }
         let p = &typed.params[slot];
         out.push(CliDeclaredIo {
-            name: p.name.clone(),
+            name: typed.interface_name(&p.name).to_owned(),
             elem_ty: p.ty,
             array_len: 1,
             offset: slot,
@@ -334,8 +333,8 @@ fn print_declared_table(label: &str, entries: &[CliDeclaredIo]) {
 }
 
 fn print_program_meta(typed: &TypedProgram) {
-    let ins = build_declared_ports(&typed.ins, &typed.in_types, &typed.in_arrays);
-    let outs = build_declared_ports(&typed.outs, &typed.out_types, &typed.out_arrays);
+    let ins = build_declared_ports(typed, &typed.ins, &typed.in_types, &typed.in_arrays);
+    let outs = build_declared_ports(typed, &typed.outs, &typed.out_types, &typed.out_arrays);
     let params = build_declared_params(typed);
     print_declared_table("ins", &ins);
     print_declared_table("outs", &outs);
@@ -360,23 +359,26 @@ fn print_compile_constants(descriptors: &[CompileConstDescriptor]) {
         println!(
             "{}: {} = {}",
             descriptor.name,
-            compile_const_kind_name(descriptor.kind, &descriptor.value),
+            compile_const_kind_name(descriptor),
             compile_const_value_repr(&descriptor.value)
         );
     }
 }
 
-fn compile_const_kind_name(kind: CompileConstKind, value: &ConstValue) -> String {
-    match (kind, value) {
-        (CompileConstKind::Scalar, ConstValue::Scalar(value)) => {
-            primitive_type_name(value.primitive_type()).to_owned()
-        }
-        (CompileConstKind::FixedArray, ConstValue::Array { elem_ty, len, .. }) => {
-            format!("{}[{len}]", primitive_type_name(*elem_ty))
-        }
-        (CompileConstKind::Array, ConstValue::Array { elem_ty, .. }) => {
-            format!("{}[]", primitive_type_name(*elem_ty))
-        }
+fn compile_const_kind_name(descriptor: &CompileConstDescriptor) -> String {
+    let primitive = match &descriptor.value {
+        ConstValue::Scalar(value) => value.primitive_type(),
+        ConstValue::Array { elem_ty, .. } => *elem_ty,
+    };
+    let name = descriptor
+        .enumeration
+        .as_ref()
+        .map(|metadata| metadata.name.clone())
+        .unwrap_or_else(|| primitive_type_name(primitive.storage_type()).into_owned());
+    match (&descriptor.kind, &descriptor.value) {
+        (CompileConstKind::Scalar, ConstValue::Scalar(_)) => name,
+        (CompileConstKind::FixedArray, ConstValue::Array { len, .. }) => format!("{name}[{len}]"),
+        (CompileConstKind::Array, ConstValue::Array { .. }) => format!("{name}[]"),
         _ => unreachable!("compile constant kind and value are produced together"),
     }
 }
@@ -400,6 +402,7 @@ fn typed_const_value_repr(value: TypedConstValue) -> String {
     match value {
         TypedConstValue::F32(value) => format!("f32({value:?})"),
         TypedConstValue::F64(value) => format!("{value:?}"),
+        TypedConstValue::Enum { ordinal, .. } => ordinal.to_string(),
         TypedConstValue::I32(value) => value.to_string(),
         TypedConstValue::I64(value) => format!("i64({value})"),
         TypedConstValue::Bool(value) => value.to_string(),

@@ -32,7 +32,7 @@ pub(super) unsafe fn tensor_view_type(module: &ModuleEmitter<'_>) -> LLVMTypeRef
 }
 
 pub(super) unsafe fn target_is_little_endian(module: &ModuleEmitter<'_>) -> bool {
-    *LLVMGetDataLayoutStr(module.module) != b'E' as i8
+    *LLVMGetDataLayoutStr(module.module).cast::<u8>() != b'E'
 }
 
 pub(super) unsafe fn emit_view_entry(

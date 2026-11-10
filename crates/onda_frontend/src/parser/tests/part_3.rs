@@ -844,52 +844,50 @@ fn rejects_duplicate_delegates_across_singular_and_plural_forms() {
 }
 
 #[test]
-fn top_level_main_wraps_the_existing_program_grammar() {
+fn top_level_main_is_an_ordinary_processor_with_control_metadata() {
     let source = r#"
-def identity(value: f32):
-  return value
-
+config const Channels = 2
 proc Main:
-  config const Channels = 2
-
-  kins:
+  params:
     gain = 0.5 {0.0, 1.0, curve = -4.0, unit = "x"}
-
+    private internal = 1.0
   outs Channels
-
-  namespace Nested:
-    proc Main:
-      sample:
-        out1 = 0.0
-
+  init:
+    state = 0.0
+  def read():
+    return state
   sample:
-    out1 = identity(gain)
-    out2 = identity(gain)
+    out1 = read() * gain
 "#;
+    let program = parse_program(source).expect("Main should parse as a processor");
+    let main = program.blocks.iter().find_map(|block| match block {
+        Block::Proc(proc) if proc.name == "Main" => Some(proc),
+        _ => None,
+    }).expect("Main processor");
+    assert_eq!(main.local_defs.len(), 1);
+    assert_eq!(main.params[0].control.unit.as_deref(), Some("x"));
+    assert!(main.params[1].private);
+    assert!(!program.blocks.iter().any(|block| matches!(block, Block::Sample(_))));
+}
 
-    let program = parse_program(source).expect("top-level Main should parse");
-    assert!(!program
-        .blocks
-        .iter()
-        .any(|block| matches!(block, Block::Proc(proc) if proc.name == "Main")));
-    assert!(program.blocks.iter().any(
-        |block| matches!(block, Block::Const(decl) if decl.name == "Channels" && decl.configurable)
-    ));
-    assert!(program.blocks.iter().any(|block| {
-        matches!(block, Block::Params(params)
-            if params.deferred_prefix == "kin"
-                && params.decls[0].control.unit.as_deref() == Some("x"))
-    }));
-    assert!(program
-        .blocks
-        .iter()
-        .any(|block| matches!(block, Block::Sample(_))));
-    assert!(program.blocks.iter().any(|block| {
-        matches!(block, Block::Namespace(namespace)
-            if namespace.items.iter().any(
-                |item| matches!(item, NamespaceItem::Proc(proc) if proc.name == "Main")
-            ))
-    }));
+#[test]
+fn main_uses_the_ordinary_processor_body_grammar() {
+    for section in ["const X = 1", "kins 1", "struct S:\n    value: f32", "namespace N:\n    const X = 1"] {
+        assert!(parse_program(&format!("proc Main:\n  {section}\n")).is_err(), "{section}");
+    }
+}
+
+#[test]
+fn included_main_retains_its_processor_scope() {
+    let root = PathBuf::from("/workspace");
+    let entry = root.join("main.onda");
+    let mut sources = std::collections::HashMap::new();
+    sources.insert(entry.clone(), "include \"processor.onda\"\n".to_owned());
+    sources.insert(root.join("processor.onda"), "proc Main:\n  init:\n    state = 1.0\n  def read():\n    return state\n  sample:\n    out1 = read()\n".to_owned());
+    let program = super::parse_program_file_from_virtual_sources(&root, &entry, &sources)
+        .expect("included Main");
+    assert!(program.blocks.iter().any(|block| matches!(block, Block::Proc(proc) if proc.name == "Main" && proc.local_defs.len() == 1)));
+    assert!(!program.blocks.iter().any(|block| matches!(block, Block::Init(_) | Block::Sample(_))));
 }
 
 #[test]
@@ -1040,9 +1038,9 @@ fn processor_and_proc_are_equivalent_declaration_keywords() {
         assert!(program.blocks.iter().any(|block| matches!(block,
             Block::Namespace(namespace) if namespace.items.iter().any(|item|
                 matches!(item, NamespaceItem::Proc(proc) if proc.name == "Voice")))));
-        assert!(!program.blocks.iter().any(|block| matches!(block,
-            Block::Proc(proc) if proc.name == "Main")));
-        assert!(program.blocks.iter().any(|block| matches!(block, Block::Sample(_))));
+        assert!(program.blocks.iter().any(|block| matches!(block,
+            Block::Proc(proc) if proc.name == "Main" && proc.has_sample_block)));
+        assert!(!program.blocks.iter().any(|block| matches!(block, Block::Sample(_))));
     }
 }
 

@@ -13,14 +13,36 @@ use onda_frontend::ast::{FnReturnScalarType, FnReturnType};
 mod proc_specialization;
 pub(crate) use proc_specialization::*;
 
-pub(crate) fn primitive_sig_code_for_specialization(ty: PrimitiveType) -> &'static str {
+pub(crate) fn primitive_sig_code_for_specialization(
+    ty: PrimitiveType,
+) -> std::borrow::Cow<'static, str> {
     match ty {
-        PrimitiveType::F32 => "f32",
-        PrimitiveType::F64 => "f64",
-        PrimitiveType::I32 => "i32",
-        PrimitiveType::I64 => "i64",
-        PrimitiveType::Bool => "bool",
+        PrimitiveType::Enum(ty) => format!("enum{}x{}", ty.id, ty.count).into(),
+        _ => ty.name(),
     }
+}
+
+/// Concrete scalar spellings retained inside named generic type references.
+/// The reserved enum spelling carries both identity and bounds across passes.
+pub(crate) fn concrete_type_argument_name(ty: PrimitiveType) -> std::borrow::Cow<'static, str> {
+    match ty {
+        PrimitiveType::Enum(_) => {
+            format!("__onda_{}", primitive_sig_code_for_specialization(ty)).into()
+        }
+        _ => ty.name(),
+    }
+}
+
+fn parse_specialization_scalar(code: &str) -> Option<PrimitiveType> {
+    if let Some(ty) = PrimitiveType::from_name(code) {
+        return Some(ty);
+    }
+    let (id, count) = code.strip_prefix("enum")?.split_once('x')?;
+    let ty = EnumType {
+        id: id.parse().ok()?,
+        count: count.parse().ok()?,
+    };
+    (ty.count > 0 && ty.count <= i32::MAX as u32).then_some(PrimitiveType::Enum(ty))
 }
 
 pub(crate) fn specialized_struct_name(base: &str, type_args: &[PrimitiveType]) -> String {
@@ -50,7 +72,7 @@ pub(crate) fn resolve_explicit_call_type_args(
                         diag,
                         errors,
                         format!(
-                            "{context}: 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported"
+                            "{context}: 'bool' is not allowed as a generic type argument; numeric types (f32, f64, i32, i64) and enums are supported"
                         ),
                     );
                     return None;
@@ -553,6 +575,16 @@ impl Default for GenericInferenceLocals {
 }
 
 impl GenericInferenceLocals {
+    pub(crate) fn bind_constants(
+        &mut self,
+        scalars: &HashMap<String, PrimitiveType>,
+        arrays: &HashMap<String, TypedArrayInfo>,
+        scope: Option<&std::rc::Rc<crate::pipeline::ConstScope>>,
+        options: AnalysisOptions,
+    ) {
+        self.types.bind_constants(scalars, arrays, scope, options);
+    }
+
     pub(crate) fn with_facts(facts: Arc<GenericInferenceFacts>) -> Self {
         Self {
             facts,
@@ -628,11 +660,13 @@ pub(crate) fn add_decl_type_to_generic_inference_locals(
                 .or_insert_with(|| struct_name.clone());
         }
         Some(DeclType::Tuple(elements)) => {
-            locals
-                .types
-                .tuple_elem_types
-                .entry(name.to_owned())
-                .or_insert_with(|| elements.clone());
+            if let Some(elements) = ScalarTypeRef::primitives(elements) {
+                locals
+                    .types
+                    .tuple_elem_types
+                    .entry(name.to_owned())
+                    .or_insert(elements);
+            }
         }
         None => {
             locals
@@ -668,7 +702,11 @@ pub(crate) fn generic_inference_seed_for_top_level(
     let mut locals = GenericInferenceLocals::with_facts(facts);
     for block in blocks {
         match block {
-            Block::Const(_) => {}
+            Block::Const(decl) => {
+                if let Some(ConstType::Scalar(ScalarTypeRef::Primitive(ty))) = &decl.ty {
+                    locals.types.scalar_types.insert(decl.name.clone(), *ty);
+                }
+            }
             Block::Ins(ports) | Block::Outs(ports) | Block::KOuts(ports) => {
                 for port in ports {
                     add_decl_type_to_generic_inference_locals(
@@ -853,9 +891,9 @@ fn bind_event_param_type(types: &mut CallTypeEnv, name: &str, ty: &EventParamTyp
             types.scalar_types.insert(name.to_owned(), *ty);
         }
         EventParamType::Tuple(elem_types) => {
-            types
-                .tuple_elem_types
-                .insert(name.to_owned(), elem_types.clone());
+            if let Some(elements) = ScalarTypeRef::primitives(elem_types) {
+                types.tuple_elem_types.insert(name.to_owned(), elements);
+            }
         }
         EventParamType::Array { elem, size } => {
             types.array_types.insert(
@@ -888,25 +926,19 @@ fn bind_event_param_type(types: &mut CallTypeEnv, name: &str, ty: &EventParamTyp
 }
 
 fn parse_primitive_type_arg_token(token: &str) -> Option<PrimitiveType> {
-    match token {
-        "f32" => Some(PrimitiveType::F32),
-        "f64" => Some(PrimitiveType::F64),
-        "i32" => Some(PrimitiveType::I32),
-        "i64" => Some(PrimitiveType::I64),
-        "bool" => Some(PrimitiveType::Bool),
-        _ => None,
+    if let Some(code) = token.strip_prefix("__onda_") {
+        parse_specialization_scalar(code)
+    } else {
+        PrimitiveType::from_name(token)
     }
 }
 
 fn is_simple_ident_token(token: &str) -> bool {
     let mut chars = token.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    chars
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn split_trailing_angle_group(text: &str) -> Option<(String, String)> {
@@ -937,7 +969,9 @@ fn split_trailing_angle_group(text: &str) -> Option<(String, String)> {
     None
 }
 
-fn parse_array_struct_elem_with_type_args(text: &str) -> Option<(String, Vec<CallTypeArg>)> {
+pub(crate) fn parse_array_struct_elem_with_type_args(
+    text: &str,
+) -> Option<(String, Vec<CallTypeArg>)> {
     let (base, args_text) = split_trailing_angle_group(text)?;
     let mut args = Vec::<CallTypeArg>::new();
     for raw in args_text.split(',') {
@@ -947,10 +981,14 @@ fn parse_array_struct_elem_with_type_args(text: &str) -> Option<(String, Vec<Cal
         }
         if let Some(prim) = parse_primitive_type_arg_token(token) {
             args.push(CallTypeArg::Primitive(prim));
-        } else if is_simple_ident_token(token) {
+        } else if is_simple_ident_token(token)
+            || onda_frontend::parse_namespace_ref_text_ast(token).is_ok()
+        {
             args.push(CallTypeArg::Generic(token.to_owned()));
         } else {
-            return None;
+            let args =
+                onda_frontend::parse_type_arguments_text_ast(&format!("<{args_text}>")).ok()?;
+            return Some((base, args));
         }
     }
     Some((base, args))
@@ -1002,8 +1040,8 @@ fn specialize_generic_type_name(
             let args = resolved
                 .iter()
                 .map(|arg| match arg {
-                    CallTypeArg::Primitive(ty) => ty.name(),
-                    CallTypeArg::Generic(name) => name.as_str(),
+                    CallTypeArg::Primitive(ty) => concrete_type_argument_name(*ty),
+                    CallTypeArg::Generic(name) => name.as_str().into(),
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -1066,7 +1104,7 @@ fn specialize_fn_param_type(
     errors: &mut Vec<Diagnostic>,
 ) -> FnParamType {
     let specialize_name = |name: &str, errors: &mut Vec<Diagnostic>| {
-        specialize_generic_type_name(name, scope, diag, errors)
+        specialize_generic_type_name(name, scope, diag.clone(), errors)
             .unwrap_or_else(|| SpecializedTypeName::Named(name.to_owned()))
     };
     match ty {
@@ -1111,22 +1149,27 @@ fn specialize_fn_param_type(
             },
         },
         FnParamType::BareBuffer => FnParamType::BareBuffer,
-        FnParamType::Tuple(elements) => FnParamType::Tuple(elements.clone()),
+        FnParamType::Tuple(elements) => FnParamType::Tuple(
+            elements
+                .iter()
+                .map(|ty| specialize_scalar_type_ref(ty, scope, diag.clone(), errors))
+                .collect(),
+        ),
     }
 }
 
-fn specialize_fn_return_scalar_type(
-    ty: &FnReturnScalarType,
+fn specialize_scalar_type_ref(
+    ty: &ScalarTypeRef,
     scope: TypeSpecializationScope<'_>,
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
-) -> FnReturnScalarType {
+) -> ScalarTypeRef {
     match ty {
-        FnReturnScalarType::Primitive(ty) => FnReturnScalarType::Primitive(*ty),
-        FnReturnScalarType::Named(name) => {
+        ScalarTypeRef::Primitive(ty) => ScalarTypeRef::Primitive(*ty),
+        ScalarTypeRef::Named(name) => {
             match specialize_generic_type_name(name, scope, diag, errors) {
-                Some(SpecializedTypeName::Primitive(ty)) => FnReturnScalarType::Primitive(ty),
-                Some(SpecializedTypeName::Named(name)) => FnReturnScalarType::Named(name),
+                Some(SpecializedTypeName::Primitive(ty)) => ScalarTypeRef::Primitive(ty),
+                Some(SpecializedTypeName::Named(name)) => ScalarTypeRef::Named(name),
                 None => ty.clone(),
             }
         }
@@ -1139,8 +1182,7 @@ fn specialize_fn_return_type(
     diag: DiagCtx,
     errors: &mut Vec<Diagnostic>,
 ) -> FnReturnType {
-    let mut specialize_scalar =
-        |ty| specialize_fn_return_scalar_type(ty, scope, diag.clone(), errors);
+    let mut specialize_scalar = |ty| specialize_scalar_type_ref(ty, scope, diag.clone(), errors);
     match ty {
         FnReturnType::Scalar(ty) => FnReturnType::Scalar(specialize_scalar(ty)),
         FnReturnType::Array { elem, size } => FnReturnType::Array {
@@ -1238,7 +1280,7 @@ fn specialize_decl_type_in_scope(
     errors: &mut Vec<Diagnostic>,
 ) -> DeclType {
     let specialize_name = |name: &str, errors: &mut Vec<Diagnostic>| {
-        specialize_generic_type_name(name, scope, diag, errors)
+        specialize_generic_type_name(name, scope, diag.clone(), errors)
             .unwrap_or_else(|| SpecializedTypeName::Named(name.to_owned()))
     };
     match ty {
@@ -1268,7 +1310,12 @@ fn specialize_decl_type_in_scope(
             elem: *elem,
             size: size.clone(),
         },
-        DeclType::Tuple(elements) => DeclType::Tuple(elements.clone()),
+        DeclType::Tuple(elements) => DeclType::Tuple(
+            elements
+                .iter()
+                .map(|ty| specialize_scalar_type_ref(ty, scope, diag.clone(), errors))
+                .collect(),
+        ),
     }
 }
 
@@ -1696,7 +1743,7 @@ fn named_specialization_type_args(
     let signature = actual_name.strip_prefix(&format!("{expected_base}.__gen__"))?;
     signature
         .split('_')
-        .map(parse_primitive_type_arg_token)
+        .map(parse_specialization_scalar)
         .collect()
 }
 
@@ -1782,7 +1829,7 @@ pub(crate) fn source_named_type_name(name: &str) -> String {
     };
     let args = type_args
         .iter()
-        .map(|ty| ty.name())
+        .map(|ty| concrete_type_argument_name(*ty))
         .collect::<Vec<_>>()
         .join(", ");
     format!("{base}<{args}>")
@@ -2179,7 +2226,7 @@ pub(crate) fn validate_deferred_generic_structs(
                     DiagCtx::new(&loc),
                     errors,
                     format!(
-                        "struct constructor '{}': 'bool' is not allowed as a generic type argument; only numeric types (f32, f64, i32, i64) are supported",
+                        "struct constructor '{}': 'bool' is not allowed as a generic type argument; numeric types (f32, f64, i32, i64) and enums are supported",
                         name
                     ),
                 ),
@@ -2292,18 +2339,10 @@ impl DeferredGenericStructs {
 
 fn parse_specialized_struct_name_ref(name: &str) -> Option<(String, Vec<PrimitiveType>)> {
     let (base, sig) = name.split_once(".__gen__")?;
-    let mut type_args = Vec::<PrimitiveType>::new();
-    for raw in sig.split('_') {
-        let ty = match raw {
-            "f32" => PrimitiveType::F32,
-            "f64" => PrimitiveType::F64,
-            "i32" => PrimitiveType::I32,
-            "i64" => PrimitiveType::I64,
-            "bool" => PrimitiveType::Bool,
-            _ => return None,
-        };
-        type_args.push(ty);
-    }
+    let type_args = sig
+        .split('_')
+        .map(parse_specialization_scalar)
+        .collect::<Option<Vec<_>>>()?;
     Some((base.to_owned(), type_args))
 }
 

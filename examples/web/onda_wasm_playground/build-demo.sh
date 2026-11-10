@@ -66,6 +66,7 @@ if [[ "$skip_build" == "1" ]]; then
   ' "$compiler_package"
 else
   npm run build --prefix "$compiler_package"
+  npm run build:gpu-ui --prefix "$repo_root"
 fi
 
 rm -rf "$compiler_out" "$webaudio_out"
@@ -76,9 +77,11 @@ cp -R "$compiler_package/dist" "$compiler_out/dist"
 cp "$binaryen_js" "$compiler_out/dist/backend/binaryen.js"
 cp "$abi_package/src/index.js" "$compiler_out/src/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$compiler_out/src/param-control.js"
+cp "$abi_package/src/enum-metadata.js" "$compiler_out/src/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$compiler_out/src/payload.js"
 cp "$abi_package/src/index.js" "$compiler_out/dist/backend/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$compiler_out/dist/backend/param-control.js"
+cp "$abi_package/src/enum-metadata.js" "$compiler_out/dist/backend/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$compiler_out/dist/backend/payload.js"
 sed \
   -e 's/from "#onda-frontend-loader"/from ".\/frontend-browser.js"/' \
@@ -88,22 +91,22 @@ sed 's/from "binaryen"/from ".\/binaryen.js"/' \
   "$compiler_package/dist/backend/index.js" > "$compiler_out/dist/backend/index.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$compiler_package/dist/backend/artifact.js" > "$compiler_out/dist/backend/artifact.js"
+cp "$webaudio_package/src/runtime-status.js" "$webaudio_out/runtime-status.js"
+cp "$webaudio_package/src/execution-status-ring.js" "$webaudio_out/execution-status-ring.js"
 cp "$webaudio_package/src/worklet.js" "$webaudio_out/worklet.js"
 cp "$webaudio_package/src/processor-constants.js" \
   "$webaudio_out/processor-constants.js"
 cp "$webaudio_package/src/param-metadata.js" "$webaudio_out/param-metadata.js"
 cp "$webaudio_package/src/execution-output-ring.js" \
   "$webaudio_out/execution-output-ring.js"
-cp "$repo_root/ui/run/run.html" "$demo_dir/run.html"
-cp "$repo_root/ui/run/buffers.js" "$demo_dir/buffers.js"
-cp "$repo_root/ui/number-input.js" "$demo_dir/number-input.js"
-cp "$abi_package/src/param-control.js" "$demo_dir/param-control.js"
-cp "$abi_package/src/payload.js" "$demo_dir/payload.js"
 cp "$abi_package/src/index.js" "$webaudio_out/processor-abi.js"
 cp "$abi_package/src/param-control.js" "$webaudio_out/param-control.js"
+cp "$abi_package/src/enum-metadata.js" "$webaudio_out/enum-metadata.js"
 cp "$abi_package/src/payload.js" "$webaudio_out/payload.js"
 sed 's/from "@onda-lang\/processor-abi"/from ".\/processor-abi.js"/' \
   "$webaudio_package/src/index.js" > "$webaudio_out/index.js"
+node "$repo_root/scripts/verify-webaudio-stage.mjs" "$webaudio_out/index.js" "$webaudio_out/worklet.js"
+node "$repo_root/scripts/stage-gpu-ui.mjs" "$demo_dir/gpu"
 node "$repo_root/scripts/bundle-web-playground.mjs" "$demo_dir/playground.js" \
   "$compiler_out/src/worker.js"
 

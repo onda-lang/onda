@@ -1,48 +1,48 @@
-# Browser playground UI
+# Browser playground development
 
 Shared browser IDE for the website `/playground/` route and the standalone
-[Wasm playground](../../examples/web/onda_wasm_playground/README.md).
+[Wasm playground](../../examples/web/onda_wasm_playground/README.md). Use the
+example guide for setup and end-user workflows; this file describes integration.
 
-## Implementation
+## Module ownership
 
-- `live.js` coordinates compilation, the editor, run view, and Web Audio.
-- `editor.js` and `lsp-client.js` provide the CodeMirror editor and Wasm LSP client.
-- `editor-font-size.js` manages editor font preferences.
-- `layout.css` owns the shared layout; hosts supply colors and branding.
-- `run-view-host.js` adapts the [shared run view](../run/README.md) to the browser.
-- `audio-activation.js` handles trusted audio-enabling gestures in both documents.
-- `browser-buffers.js`, `microphone.js`, and `midi.js` handle browser audio and MIDI input.
-- `param-smoothing.js` preserves smoothing preferences across recompiles.
-- `examples.js`, `project-archive.js`, and `share.js` load and share projects.
-- `default.onda` supplies the initial program.
+| Modules | Responsibility |
+| --- | --- |
+| `live.js` | Compilation, project lifecycle, editor/run-view coordination, and Web Audio. |
+| `editor.js`, `lsp-client.js`, `editor-selection.js`, `editor-font-size.js` | CodeMirror, Wasm LSP, selection rendering, and font preferences. |
+| `new-file.js`, `project-menu.js`, `examples.js`, `project-archive.js`, `share.js` | Project files, menus, loading, export, and sharing. |
+| `run-view-host.js` | State/command adapter for the [GPU canvas](../gpu/README.md), readiness, logs, and saved presentation. |
+| `browser-scope.js`, `meter-worklet.js` | Visibility-driven waveform capture and 30 Hz peak/visualization publication. |
+| `audio-activation.js`, `browser-buffers.js`, `microphone.js`, `midi.js`, `param-smoothing.js` | Trusted audio activation, external buffers, input devices, and smoothing preferences. |
+| `layout.css`, `default.onda` | Shared layout and initial source. |
 
-Hosts provide the DOM and `globalThis.__ONDA_PLAYGROUND_ASSETS__`.
+Hosts supply the DOM and `globalThis.__ONDA_PLAYGROUND_ASSETS__`.
 [bundle-web-playground.mjs](../../scripts/bundle-web-playground.mjs) bundles
-`live.js` and emits `playground.css`; hosts load both outputs.
+`live.js` and emits `playground.css`; both hosts load those outputs.
 
-## Behavior
+## Integration invariants
 
-Ctrl/Command+S or Ctrl/Command+Enter plays; Ctrl/Command+. stops. Ctrl/Command+click
-follows definitions, including into read-only standard-library tabs. Closing a
-project tab deletes its file; closing a standard-library tab dismisses the view.
+- Compilation and LSP work run in a module worker. Play creates a fresh processor
+  and reuses the artifact only when source and compile settings are unchanged.
+- Settings changes sample rate, block size, or Fast Math through recompilation,
+  retaining playback intent. All three compile choices persist locally. Theme
+  belongs to the enclosing page; the run view follows it and hides its theme button.
+- The run view stays behind loading feedback until its current state is rendered.
+  Initialization failures remain visible and iframe reload retries the renderer.
+- Autoplay recovery uses trusted gestures from both documents. Stop cancels pending
+  playback; later ordinary interaction must not restart it.
+- Project sources, settings, presentation, and schema-matched event arguments
+  persist locally. Selected buffer files are session-only; Share includes sources
+  and main/active files, while project ZIP export includes bound buffers.
+- Meter peaks drive one visualization stream; waveform analysers are connected
+  only while needed. OSQ1 packets reuse storage and contain at most 512 min/max
+  columns per channel. Hidden pages disable both captures.
+- Authored print collection requires cross-origin isolation. Audio, controls, and
+  scope work without it. Microphone access is requested only for programs with
+  audio inputs, and one stream is reused across recompiles.
 
-The loaded project starts automatically when the compiler is ready. If the browser
-blocks autoplay, a click, tap, or key press anywhere in the playground, including
-the embedded controls, enables audio. The prompt clears when audio starts. Stop
-cancels pending playback; ordinary interactions leave a stopped project stopped.
-
-The project persists in local storage. Play creates a fresh processor and reuses
-the compiled artifact when sources and compile settings are unchanged.
-Sample Rate and Block Size are local compile preferences. Changing a compile
-setting recompiles and restarts the project; the settings persist across page reloads.
-**New project** stops playback and replaces the project with an empty `main.onda`.
-Programs with audio inputs request microphone permission and reuse the stream
-across recompiles.
-
-**Share** puts project sources and the main and active files in the URL fragment.
-Compile settings and selected buffer data stay local.
-Bind a WAV or `.ondabuffer` by dropping it onto the corresponding buffer card
-or using its Bind/Replace button.
+The [host API](../../docs/ui-api.md) owns state, command, and iframe-envelope
+contracts. The [Web API](../../docs/web-api.md) owns compiler and AudioWorklet APIs.
 
 ## Tests
 
@@ -50,14 +50,9 @@ From the repository root:
 
 ```sh
 npm run test:playground
-npm run test:run-view
 ```
 
-The playground suite runs in Node.js 22+ and checks audio gesture handling without
-opening an audio device. The run-view suite uses Firefox and also checks both
-playground hosts' layouts.
-
-Browser autoplay policy is checked manually: with autoplay blocked, click, tap,
-or press a key in the editor or embedded controls to enable audio. Stop must
-cancel pending playback without enabling audio. With autoplay allowed, audio
-should start when the compiler is ready.
+The Node.js 22+ suite does not open an audio device. For real Chrome canvas and
+compiler/AudioWorklet tests, follow the build/staging steps in
+[GPU UI verification](../gpu/README.md#verification). Both browser hosts have
+WebGPU and WebGL2 cases; hardware-only cases can be skipped explicitly.

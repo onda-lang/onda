@@ -5,17 +5,15 @@ use std::time::Duration;
 
 use onda_codegen_llvm::TargetOptLevel;
 use onda_daemon::{
-    DaemonConfig, DaemonSession, InitialBufferBinding, RunOptions, RunPrintBatch,
-    INTERACTIVE_PARAM_SMOOTHING_SECONDS,
+    DaemonConfig, DaemonSession, RunOptions, RunPrintBatch, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
-use onda_project::ProjectLimits;
 use onda_run::{
     format_run_param_info, play_run_realtime, PlaybackLaunch, ProjectBufferBinding, RunHostOptions,
 };
 use onda_semantics::AnalysisOptions;
 
 use super::diag_print::{format_diagnostics, format_run_build_error, format_single_diagnostic};
-use super::{daemon_stdio, DaemonCommand, RunCommand, RunHostKind};
+use super::{daemon_stdio, DaemonCommand, RunCommand};
 
 pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
     match cmd {
@@ -29,6 +27,7 @@ pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
 }
 
 pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
+    onda_realtime::configure_current_thread_audio_fp_mode();
     match cmd {
         RunCommand::Play {
             input,
@@ -43,6 +42,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             control_json,
+            start_paused,
             report_sources,
             param_sets,
             buffer_bindings,
@@ -83,6 +83,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 fast_math,
                 show_meta,
                 control_json,
+                start_paused,
                 param_sets,
                 buffer_bindings,
                 project_buffer_bindings: project
@@ -148,13 +149,11 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             fast_math,
             show_meta,
             theme,
-            host,
         } => {
             let onda_bin = env::current_exe()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "onda".to_owned());
-            run_run_host(
-                host,
+            onda_gpu::run(
                 input.as_deref(),
                 RunHostOptions {
                     sample_rate_hz,
@@ -173,39 +172,6 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             )
         }
     }
-}
-
-fn run_run_host(
-    host: RunHostKind,
-    input: Option<&Path>,
-    options: RunHostOptions,
-) -> Result<(), String> {
-    match resolve_run_host_kind(host) {
-        RunHostKind::Egui => onda_egui::run_run_egui(input, options),
-        RunHostKind::Webview => run_webview_run(input, options),
-        RunHostKind::Auto => unreachable!("run host should be resolved before launch"),
-    }
-}
-
-fn resolve_run_host_kind(host: RunHostKind) -> RunHostKind {
-    match host {
-        RunHostKind::Auto => default_run_host_kind(),
-        other => other,
-    }
-}
-
-fn default_run_host_kind() -> RunHostKind {
-    RunHostKind::Egui
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn run_webview_run(input: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
-    onda_webview::run_run_window(input, options)
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn run_webview_run(_input: Option<&Path>, _options: RunHostOptions) -> Result<(), String> {
-    Err("webview run host is unavailable on this platform/build".to_owned())
 }
 
 fn run_daemon_diagnose(
@@ -289,32 +255,19 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
     };
     let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));
 
-    let mut initial_buffers =
-        Vec::with_capacity(project_buffer_bindings.len() + buffer_bindings.len());
-    initial_buffers.extend(
-        project_buffer_bindings
-            .iter()
-            .map(|(name, asset, loaded_path)| {
-                InitialBufferBinding::from_asset(name.clone(), asset.clone(), loaded_path.clone())
-            }),
-    );
-    for (name, path) in buffer_bindings {
-        initial_buffers.push(
-            InitialBufferBinding::load_file(name.clone(), path, ProjectLimits::default()).map_err(
-                |error| format!("failed to load buffer asset '{}': {error}", path.display()),
-            )?,
-        );
-    }
+    let initial_buffers = crate::project_cmd::load_initial_buffers(
+        project_buffer_bindings.iter().cloned(),
+        buffer_bindings,
+    )?;
 
     session
-        .start_run_with_options_inputs_and_initial_buffers(
+        .prepare_run_with_options_inputs_and_initial_buffers(
             input,
             run_options,
             compile_inputs,
             initial_buffers,
         )
         .map_err(|err| format_run_build_error("daemon run start failed", &err))?;
-    write_run_prints(&mut session, input)?;
 
     if show_meta {
         let info = session
@@ -333,6 +286,13 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
             .set_param(name, *value)
             .map_err(|diag| format_single_diagnostic("daemon run param failed", &diag))?;
     }
+
+    let initialization = session
+        .run_mut(input)
+        .expect("run should be prepared before initialization")
+        .restart();
+    write_run_prints(&mut session, input)?;
+    initialization.map_err(|diag| format_single_diagnostic("daemon run start failed", &diag))?;
 
     let out_channels = session
         .run(input)

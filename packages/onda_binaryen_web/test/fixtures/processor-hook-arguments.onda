@@ -1,0 +1,31 @@
+proc Voice:
+  ins:
+    value: f32
+  delegate fired()
+  block:
+    fired()
+    sample:
+      out1 = value
+def step(voice, value: f32) -> f32:
+  return voice(value)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    count: i32 = 0
+  when voices[0].fired():
+    count += 10
+  sample:
+    out1 = voices[0](f32(count))
+init:
+  voices: Voice[2] = Voice()
+  bank = Bank()
+  direct_count: i32 = 0
+  forwarded_count: i32 = 0
+when voices[0].fired():
+  direct_count += 10
+when voices[1].fired():
+  forwarded_count += 10
+sample:
+  out1 = voices[0](f32(direct_count))
+  out2 = step(voices[1], f32(forwarded_count))
+  out3 = bank()

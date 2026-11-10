@@ -126,7 +126,7 @@ fn process_interleaved(
         out_buffers.push(bytes);
     }
 
-    process_checked(instance, frames, onda_runtime::ExecutionOutput::none())?;
+    onda_runtime::process_checked_segment(instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none()).map_err(Diagnostic::from).and_then(onda_codegen_llvm::check_execution_status)?;
 
     for (idx, desc) in out_descs.iter().copied().enumerate() {
         let bytes = &out_buffers[idx];
@@ -239,7 +239,7 @@ fn primitive_type_from_text(text: &str) -> Result<PrimitiveType, Diagnostic> {
 
 fn primitive_type_bytes_local(ty: PrimitiveType) -> usize {
     match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }
@@ -265,7 +265,7 @@ fn encode_f32_as_primitive(
             out.copy_from_slice(&(value as f64).to_ne_bytes());
             Ok(())
         }
-        PrimitiveType::I32 => {
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => {
             let out: &mut [u8; 4] = dst
                 .try_into()
                 .map_err(|_| Diagnostic::runtime("invalid i32 destination width", 0, 0))?;
@@ -303,7 +303,7 @@ fn decode_primitive_as_f32(ty: PrimitiveType, src: &[u8]) -> Result<f32, Diagnos
                 .map_err(|_| Diagnostic::runtime("invalid f64 source width", 0, 0))?;
             Ok(f64::from_ne_bytes(arr) as f32)
         }
-        PrimitiveType::I32 => {
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => {
             let arr: [u8; 4] = src
                 .try_into()
                 .map_err(|_| Diagnostic::runtime("invalid i32 source width", 0, 0))?;

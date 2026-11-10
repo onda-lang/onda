@@ -1,5 +1,4 @@
-pub const PROC_INDEX_BUFFER_SELECT_SENTINEL: &str =
-    crate::proc_state_rewrite::PROC_INDEX_BUFFER_SELECT_SENTINEL;
+pub const PROCESSOR_RESOURCE_SELECT: &str = "__onda_processor_resource_select";
 pub const PROC_INDEX_CALL_SENTINEL: &str = crate::proc_state_rewrite::PROC_INDEX_CALL_SENTINEL;
 pub const PROC_INDEX_BASE_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_BASE_ARG;
 pub const PROC_INDEX_EXPR_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_EXPR_ARG;
@@ -57,6 +56,14 @@ pub fn runtime_proc_array_active_symbol(array_base: &str) -> String {
         "__onda_proc_block_active_{}",
         collision_safe_runtime_symbol_component(array_base)
     )
+}
+
+pub(crate) const PROC_COORDINATE_PARAM_PREFIX: &str = "__onda_proc_coordinate_";
+
+pub(crate) fn proc_coordinate_parameter_index(name: &str) -> Option<usize> {
+    name.strip_prefix(PROC_COORDINATE_PARAM_PREFIX)?
+        .parse()
+        .ok()
 }
 
 pub fn runtime_buffer_alias_selector_symbol(alias: &str) -> String {

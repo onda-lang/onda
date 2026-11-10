@@ -256,7 +256,7 @@ fn init_restores_resettable_runtime_state() {
         assert_near(*sample, 0.5, 1e-6);
     }
 
-    init_checked(&mut instance, InitMode::PreservePinned).expect("init should succeed");
+    init_checked(&mut instance, InitMode::PreservePinned, onda_runtime::ExecutionOutput::none()).expect("init should succeed");
 
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
@@ -355,14 +355,10 @@ fn event_payload_mismatch_returns_runtime_error() {
 
     let (mut instance, _, _) = compile_instance(EVENT_SCALAR_UPDATE_EXAMPLE, frames);
 
-    let err = trigger_event_by_index_checked(&mut instance, 0, &[], onda_runtime::ExecutionOutput::none())
-        .expect_err("payload mismatch should return runtime error");
+    let status = trigger_event_by_index_checked(&mut instance, 0, &[], onda_runtime::ExecutionOutput::none())
+        .expect("payload mismatch should return runtime error");
 
-    assert!(
-        err.message.contains("event input rejected"),
-        "expected event-input rejection, got '{}'",
-        err.message
-    );
+    assert_eq!(status, onda_runtime::PROCESSOR_EXECUTION_INPUT_REJECTED);
 }
 
 #[test]
@@ -1486,19 +1482,15 @@ fn top_level_slice_event_truncated_payload_returns_runtime_error() {
 
     payload.extend_from_slice(&0.75_f32.to_ne_bytes());
 
-    let err = trigger_event_by_index_checked(
+    let status = trigger_event_by_index_checked(
         &mut instance,
         event_idx,
         &payload,
         onda_runtime::ExecutionOutput::none(),
     )
-    .expect_err("truncated slice payload should fail");
+    .expect("truncated slice payload should fail");
 
-    assert!(
-        err.message.contains("payload"),
-        "expected payload-related runtime error, got {:?}",
-        err
-    );
+    assert_eq!(status, onda_runtime::PROCESSOR_EXECUTION_INPUT_REJECTED);
 }
 
 #[test]
@@ -3511,7 +3503,12 @@ sample:
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3616,7 +3613,12 @@ sample:
 
     process_interleaved(&mut instance, &[], &mut out_b, frames).expect("process should succeed");
 
-    assert_near(out_b[0], 1110.0, 1e-6);
+    // Cached outputs change when the selected voice runs again.
+    assert_near(out_b[0], 1100.0, 1e-6);
+
+    let mut out_c = vec![0.0_f32; frames];
+    process_interleaved(&mut instance, &[], &mut out_c, frames).expect("process should succeed");
+    assert_near(out_c[0], 2110.0, 1e-6);
 }
 
 #[test]
@@ -3899,18 +3901,7 @@ sample {
     )
     .expect("jit lowering");
 
-    let mut instance = create_instance_initialized(
-        jit,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-
-            frames_per_block: 64,
-
-            in_channels: 0,
-
-            out_channels: 1,
-        },
-    )
+    let mut instance = (|| -> Result<_, onda_frontend::Diagnostic> { let mut instance = onda_runtime::create_instance(jit, None)?; onda_codegen_llvm::check_execution_status(onda_runtime::init_checked(&mut instance, onda_runtime::InitMode::Full, onda_runtime::ExecutionOutput::none())?)?; Ok(instance) })()
     .expect("instance");
 
     let mut output = vec![0.0_f32; 64];

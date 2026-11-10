@@ -73,9 +73,21 @@ use regular files and directories for editable, watched inputs.
 onda run examples/basic/sine.onda
 ```
 
-The native egui host is the default. Pass `--webview` to select the webview host. Common options select the sample rate, block size, audio devices, and color theme.
+The native host uses the shared GPU interface. Common options select the sample rate, block size, audio devices, and color theme.
 
-Programs that declare the canonical `note_on` event get a piano at the bottom of either run UI.
+Native run hosts support `f32`, `f64`, `i32`, `i64`, and `bool` input/output ports,
+including fixed arrays. Processing uses each port's declared type. The host audio
+stream uses `f32`: integer inputs truncate toward zero and saturate, with NaN
+becoming zero; boolean inputs test nonzero, including NaN. Outputs convert
+numerically to `f32`, with booleans becoming zero or one. Events and delegates
+retain their declared precision independently of the audio stream.
+
+Click a numeric value to type, or drag it horizontally. Knobs drag vertically;
+sliders follow their tracks. Shift-drag adjusts finely, double-click restores a
+default, Enter commits text, and Escape cancels. Section headers collapse controls;
+layouts and scrolling are retained by the host.
+
+Programs that declare the canonical `note_on` event get a piano at the bottom of the run view.
 The MIDI selector defaults to **Computer Keyboard**, using
 `A W S E D F T G Y H U J K O L P`; the piano remains playable with a pointer or touch when another
 input is selected. Linux, macOS, and Windows builds also list physical MIDI inputs. The online
@@ -148,7 +160,10 @@ tokens. Incomplete `when` bodies retain their handler and owner scopes for seman
 
 ### VS Code
 
-The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run File** for launching the webview run interface inside the editor.
+The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) bundles the native compiler,
+registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run**
+for opening the shared GPU run interface inside the editor. An external compiler
+can be selected in the extension settings.
 
 ### Neovim
 
@@ -167,7 +182,10 @@ Use the pre-built shared and static libraries or build them from source with:
 cargo build -p onda_api --release
 ```
 
-The pre-built macOS release libraries are not signed.
+The pre-built macOS release binaries are not signed with an Apple Developer ID and are not
+notarized. Windows release binaries are not code-signed (Authenticode). See the
+[installation guide]({{ '/docs/getting-started/' | relative_url }}#install-a-precompiled-release)
+for information about macOS approval and Windows SmartScreen warnings.
 
 CMake hosts can consume either library without reproducing platform-specific
 link requirements:

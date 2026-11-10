@@ -83,6 +83,10 @@ The returned instance provides:
 - `sendLspMessage(message)` and `setLspAnalysisOptions(options?)` for the embedded language server.
 - `dispose()`, an idempotent terminal release of compiler and worker resources.
 
+Enum configuration inspection returns optional `enumeration` metadata on `OndaCompileConstDescriptor`.
+Its `element` is `i32`; scalar values and `Int32Array` selections use ordinary integer configuration
+transport and are clamped to the member range during compilation.
+
 Compile options accept `sampleRate`, `blockSize`, typed compile-constant overrides, and `codegen`.
 Workspaces may carry `constants` in project-manifest form (numbers, booleans, decimal strings for
 `i64`, and primitive arrays). These are project defaults; explicit `options.constants` take
@@ -99,8 +103,7 @@ code-generation failures throw `OndaCompileError`, whose `diagnostics`, `sourceF
 failure in the MIR-to-Wasm backend.
 
 `MIR_SCHEMA_VERSION` is the schema accepted by the bundled backend. `ONDA_VERSION` is the compiler
-version. `createDefaultImports()` returns the imports required by current generated modules; it is
-currently an empty object because artifacts are self-contained.
+version. Artifacts are self-contained; instantiate them with an empty import object (`{}`).
 
 The `@onda-lang/wasm-compiler/artifact` subpath re-exports the complete
 `@onda-lang/processor-abi` surface without loading the compiler. The
@@ -186,8 +189,8 @@ or an already-decoded object. The function is synchronous and returns an
 the producer owns semantic, type, bounds, and resource proofs.
 
 `OndaBinaryenOptions` controls the same backend policies exposed through compiler `codegen`.
-`SUPPORTED_MIR_SCHEMA_VERSION` identifies the required producer schema. `createDefaultImports()`
-returns an empty object for current self-contained artifacts. Backend failures throw
+`SUPPORTED_MIR_SCHEMA_VERSION` identifies the required producer schema. Instantiate self-contained
+artifacts with `{}` imports. Backend failures throw
 `OndaBinaryenError`.
 
 The package root re-exports the common artifact validation and file helpers. The
@@ -195,6 +198,12 @@ The package root re-exports the common artifact validation and file helpers. The
 `@onda-lang/processor-abi` module without loading Binaryen.
 
 ## `@onda-lang/webaudio`
+
+Audio ports retain their declared scalar types in Wasm. At the Web Audio `f32`
+boundary, integer inputs truncate toward zero and saturate (NaN becomes zero),
+and boolean inputs use nonzero comparison, including NaN. Outputs convert
+numerically to `f32`; booleans become zero or one. Event/delegate payloads retain
+their schema-defined types and precision independently of audio conversion.
 
 ### Construction
 
@@ -216,7 +225,8 @@ Print and delegate delivery uses a bounded `SharedArrayBuffer` ring and requires
 isolation in browsers; ordinary audio processing remains available when shared memory is absent.
 Low-level callers that manually pair the returned node options with `OndaAudioProcessor` must pass
 the artifact metadata as the adapter constructor's second argument and
-`processorOptions.executionOutputRing` as its fourth argument. Event encoding and numeric
+`processorOptions.executionOutputRing` as its fourth argument and
+`processorOptions.executionStatusRing` as its fifth argument. Event encoding and numeric
 unknown-index classification require that metadata.
 
 `paramSmoothingSeconds` is an optional **host** setting on `OndaAudioProcessorOptions`, defaulting
@@ -277,6 +287,34 @@ status `2` preserves it. These generated failures use `OndaExecutionError`, whos
 processor and silences subsequent callbacks. `onExecutionError(listener)` receives its typed
 `OndaExecutionError`; requested init and event failures remain on their promise rejection path and
 are not reported twice.
+Worklet validation failures use `OndaRuntimeError` with a numeric `code` from `ONDA_RUNTIME_ERROR`
+and an `operation`. Rejected input leaves the instance usable; invalid output/storage and unexpected
+execution failures invalidate it and silence subsequent callbacks until full initialization or
+snapshot restoration succeeds. Unexpected engine exceptions also follow this recovery path.
+Compiler diagnostics remain unchanged.
+
+The worklet reports generated failures and host validation failures as numeric statuses, without
+constructing errors or formatting text. A separate bounded shared-memory status ring carries
+execution failures and command acknowledgements independently of the lossy print/delegate ring.
+The adapter drains diagnostics before reporting a status, constructs errors on the main thread,
+and bounds in-flight control requests to reserve capacity for replies and render failures.
+Without `Atomics.waitAsync`, control replies wake the adapter through the port instead of waiting
+for a polling interval; asynchronous render failures are polled. Transport overflow is terminal:
+processing stops, the adapter closes, and every pending or queued request rejects. Recreate the
+processor after this error. Status monitoring remains active without print/delegate listeners.
+
+Without shared memory, the same numeric protocol uses a reused MessagePort packet; browser
+structured cloning can allocate. This is not a blanket JavaScript allocation-free guarantee:
+incoming control messages, control wakeups without `Atomics.waitAsync`, BigInt conversion,
+snapshots, buffer/control-output reads, and engine
+exceptions can allocate. The normal f32 rendering and shared-memory status publication paths use
+prepared storage. Public promises and `onExecutionError` continue delivering errors on the main
+thread; requested failures are not also sent to that listener.
+
+The browser API exposes no thread FP-mode setter. WebAssembly uses the engine's specified
+[floating-point semantics](https://webassembly.github.io/spec/core/exec/numerics.html#floating-point-operations),
+including subnormal arithmetic; native x86 FTZ/DAZ setup does not apply to browser execution.
+
 The raw `@onda-lang/processor-abi` package exposes `PROCESSOR_BEGIN_BLOCK`,
 `PROCESSOR_END_BLOCK`, and `PROCESSOR_FULL_BLOCK` for native and direct WebAssembly hosts that use
 segmented processing. Web Audio schedules render quanta internally and has no segmented-process
@@ -309,6 +347,7 @@ OndaDelegateParamMetadata
 OndaEventMetadata
 OndaEventParamMetadata
 OndaIntegrationProfile
+OndaEnumMetadata
 OndaIoMetadata
 OndaLogSiteMetadata
 OndaParamControlMetadata
@@ -396,7 +435,6 @@ PROCESSOR_INIT_PRESERVE_PINNED
 PROCESSOR_SNAPSHOT_FORMAT_VERSION
 SUPPORTED_MIR_SCHEMA_VERSION
 compileTrustedMir
-createDefaultImports
 createProcessorArtifactFiles
 loadProcessorArtifactFiles
 parseProcessorMetadata
@@ -463,7 +501,6 @@ PROCESSOR_INIT_PRESERVE_PINNED
 PROCESSOR_SNAPSHOT_FORMAT_VERSION
 WorkerCompilerOptions
 createCompiler
-createDefaultImports
 createProcessorArtifactFiles
 loadProcessorArtifactFiles
 parseProcessorMetadata
@@ -479,12 +516,14 @@ validateProcessorModule
 ONDA_AUDIO_WORKLET_PROCESSOR_NAME
 ONDA_INIT_FULL
 ONDA_INIT_PRESERVE_PINNED
+ONDA_RUNTIME_ERROR
 OndaAudioProcessor
 OndaAudioProcessorOptions
 OndaAudioPrintBatch
 OndaAudioPrintListener
 OndaExecutionError
 OndaExecutionErrorListener
+OndaRuntimeError
 OndaInitMode
 OndaParamDomain
 OndaPreparedParamControl

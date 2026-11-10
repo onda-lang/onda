@@ -9,3 +9,7 @@ execution-output-ring.js
 sample-player.mir.msgpack
 sample-player.onda.json
 sample-player.wasm
+runtime-status.js
+execution-status-ring.js
+processor-constants.js
+enum-metadata.js

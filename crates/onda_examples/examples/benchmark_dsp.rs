@@ -10,8 +10,8 @@ use onda_frontend::{
     load_program_file, stdlib_module_names, stdlib_module_source, PrimitiveType, SourceManifest,
 };
 use onda_runtime::{
-    bind_input, bind_output, create_instance, init_checked, prepare_unchecked_process,
-    process_unchecked, ExecutionOutput, InitMode, InstanceConfig,
+    bind_input, bind_output, create_instance, init_checked, prepare_process, process_unchecked,
+    ExecutionOutput, InitMode,
 };
 use onda_semantics::{analyze_with_options, lower_program_to_validated_mir, AnalysisOptions};
 use serde::Deserialize;
@@ -190,7 +190,9 @@ impl Port {
         let data = match self.ty {
             PrimitiveType::F32 => x.to_le_bytes().to_vec(),
             PrimitiveType::F64 => f64::from(x).to_le_bytes().to_vec(),
-            PrimitiveType::I32 => ((x * 64.0) as i32).to_le_bytes().to_vec(),
+            PrimitiveType::I32 | PrimitiveType::Enum(_) => {
+                ((x * 64.0) as i32).to_le_bytes().to_vec()
+            }
             PrimitiveType::I64 => ((x * 64.0) as i64).to_le_bytes().to_vec(),
             PrimitiveType::Bool => vec![u8::from(x > 0.0)],
         };
@@ -212,7 +214,7 @@ impl Port {
                 f64::from(f32::from_le_bytes(b.try_into().expect("scalar width")))
             }
             PrimitiveType::F64 => f64::from_le_bytes(b.try_into().expect("scalar width")),
-            PrimitiveType::I32 => {
+            PrimitiveType::I32 | PrimitiveType::Enum(_) => {
                 f64::from(i32::from_le_bytes(b.try_into().expect("scalar width")))
             }
             PrimitiveType::I64 => i64::from_le_bytes(b.try_into().expect("scalar width")) as f64,
@@ -224,7 +226,7 @@ impl Port {
 fn width(ty: PrimitiveType) -> usize {
     match ty {
         PrimitiveType::Bool => 1,
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
     }
 }
@@ -243,6 +245,7 @@ fn capture(outputs: &[Port], buffer: &mut Vec<u8>, bound: Option<f64>) -> Result
 }
 
 fn main() -> Result<()> {
+    onda_realtime::configure_current_thread_audio_fp_mode();
     if cfg!(target_endian = "big") {
         return Err("benchmark port snapshots currently require a little-endian host".into());
     }
@@ -400,16 +403,7 @@ fn main() -> Result<()> {
         .iter()
         .map(|p| format!("{:?}", p.ty).to_ascii_lowercase())
         .collect();
-    let mut instance = create_instance(
-        program,
-        InstanceConfig {
-            sample_rate: config.sample_rate,
-            frames_per_block: config.block_size,
-            in_channels: inputs.len(),
-            out_channels: outputs.len(),
-        },
-    )
-    .map_err(|e| format!("instance: {e:?}"))?;
+    let mut instance = create_instance(program, None).map_err(|e| format!("instance: {e:?}"))?;
     for (channel, port) in inputs.iter().enumerate() {
         unsafe {
             bind_input(
@@ -434,9 +428,16 @@ fn main() -> Result<()> {
         .map_err(|e| format!("output: {e:?}"))?;
     }
     let started = Instant::now();
-    init_checked(&mut instance, InitMode::Full).map_err(|e| format!("init: {e:?}"))?;
+    init_checked(
+        &mut instance,
+        InitMode::Full,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .map_err(onda_frontend::Diagnostic::from)
+    .and_then(onda_codegen_llvm::check_execution_status)
+    .map_err(|e| format!("init: {e:?}"))?;
     let init_ms = started.elapsed().as_secs_f64() * 1000.0;
-    prepare_unchecked_process(&mut instance).map_err(|e| format!("prepare: {e:?}"))?;
+    prepare_process(&instance).map_err(|e| format!("prepare: {e:?}"))?;
     let mut process = || -> Result<()> {
         let status = unsafe { process_unchecked(&mut instance, ExecutionOutput::none()) }
             .map_err(|e| format!("process: {e:?}"))?;

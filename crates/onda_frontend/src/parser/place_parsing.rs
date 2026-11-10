@@ -176,6 +176,7 @@ fn internal_assign(name: String, expr: Expr) -> Stmt {
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Span::ZERO,
+        param_write_lowered: false,
         expr,
     }
 }
@@ -218,6 +219,7 @@ fn finish_assignment(
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Span::ZERO,
+        param_write_lowered: false,
         expr: rhs,
     });
     Ok(())
@@ -288,6 +290,10 @@ fn target_read(target: &AssignTarget, loc: Span) -> Result<Expr, Vec<Diagnostic>
                         CallArg {
                             name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
                             expr: Expr::var(field.clone()),
+                        },
+                        CallArg {
+                            name: Some(PROC_CACHED_FIELD_ARG.to_owned()),
+                            expr: Expr::bool(true),
                         },
                     ],
                 )

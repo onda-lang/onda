@@ -12,7 +12,7 @@ use onda_frontend::{
     INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
 
-pub fn primitive_type_name(ty: PrimitiveType) -> &'static str {
+pub fn primitive_type_name(ty: PrimitiveType) -> std::borrow::Cow<'static, str> {
     ty.name()
 }
 
@@ -97,6 +97,7 @@ fn format_block(block: &Block, indent: usize, out: &mut String) {
         Block::NamespaceAlias(alias) => format_namespace_alias(alias, indent, out),
         Block::Use(use_decl) => format_use_decl(use_decl, indent, out),
         Block::Proc(proc) => format_proc(proc, indent, out),
+        Block::Enum(def) => format_enum(def, indent, out),
         Block::Struct(def) => format_struct(def, indent, out),
         Block::Def(def) => format_def(def, indent, out),
         Block::Init(init) => format_init_block("init", init, indent, out),
@@ -151,6 +152,7 @@ fn format_namespace_item(item: &onda_frontend::NamespaceItem, indent: usize, out
         onda_frontend::NamespaceItem::Const(decl) => {
             push_line(out, indent, &format_const_decl(decl));
         }
+        onda_frontend::NamespaceItem::Enum(def) => format_enum(def, indent, out),
         onda_frontend::NamespaceItem::Struct(def) => format_struct(def, indent, out),
         onda_frontend::NamespaceItem::Def(def) => format_def(def, indent, out),
         onda_frontend::NamespaceItem::Proc(proc) => format_proc(proc, indent, out),
@@ -547,7 +549,12 @@ pub fn format_struct_header(def: &StructDef) -> String {
 }
 
 pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
-    let mut text = format!("{}: {}", field.name, format_field_type(&field.ty));
+    let inferred = field.ty_loc.is_zero() && field.default.is_some();
+    let mut text = if inferred {
+        field.name.clone()
+    } else {
+        format!("{}: {}", field.name, format_field_type(&field.ty))
+    };
     if let Some(default) = &field.default {
         if let Some((value, range)) = format_binding_range_initializer(default) {
             let has_implicit_default = matches!(
@@ -555,7 +562,7 @@ pub fn format_struct_field(field: &onda_frontend::StructField) -> String {
                 Expr::Call { args, .. }
                     if matches!(args.as_slice(), [Expr::Int { value: 0, .. }, _, _])
             );
-            if !has_implicit_default {
+            if !has_implicit_default || inferred {
                 text.push_str(" = ");
                 text.push_str(&value);
             }
@@ -811,7 +818,7 @@ fn format_stmt_with_prefix(stmt: &Stmt, indent: usize, out: &mut String, prefix:
             let mut text = format!("for {var}");
             if *var_ty != PrimitiveType::I32 {
                 text.push_str(": ");
-                text.push_str(primitive_type_name(*var_ty));
+                text.push_str(&primitive_type_name(*var_ty));
             }
             if let Some(step) = step {
                 text.push_str(" @ ");
@@ -998,7 +1005,7 @@ fn expr_precedence(expr: &Expr) -> u8 {
 
 fn format_call_type_arg(arg: &CallTypeArg) -> String {
     match arg {
-        CallTypeArg::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+        CallTypeArg::Primitive(ty) => primitive_type_name(*ty).into_owned(),
         CallTypeArg::Generic(name) => name.clone(),
     }
 }
@@ -1009,10 +1016,10 @@ pub fn format_decl_type(ty: &DeclType) -> String {
             "{}[]",
             match element {
                 ArrayElemType::Primitive(ty) => primitive_type_name(*ty),
-                ArrayElemType::Struct(name) => name,
+                ArrayElemType::Struct(name) => name.as_str().into(),
             }
         ),
-        DeclType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
+        DeclType::Scalar(ty) => primitive_type_name(*ty).into_owned(),
         DeclType::Generic(name) => name.clone(),
         DeclType::ArrayGeneric { elem, size } => format!("{elem}[{}]", format_expr(size)),
         DeclType::Array { elem, size } => {
@@ -1022,7 +1029,7 @@ pub fn format_decl_type(ty: &DeclType) -> String {
             "({})",
             elems
                 .iter()
-                .map(|t| primitive_type_name(*t).to_owned())
+                .map(format_fn_return_scalar_type)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -1031,24 +1038,28 @@ pub fn format_decl_type(ty: &DeclType) -> String {
 
 fn format_const_type(ty: &ConstType) -> String {
     match ty {
-        ConstType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
+        ConstType::Scalar(ty) => format_fn_return_scalar_type(ty),
         ConstType::Array { elem, size } => {
-            format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
+            format!(
+                "{}[{}]",
+                format_fn_return_scalar_type(elem),
+                format_expr(size)
+            )
         }
-        ConstType::Slice { elem } => format!("{}[]", primitive_type_name(*elem)),
+        ConstType::Slice { elem } => format!("{}[]", format_fn_return_scalar_type(elem)),
     }
 }
 
 fn format_field_type(ty: &FieldType) -> String {
     match ty {
-        FieldType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
+        FieldType::Scalar(ty) => primitive_type_name(*ty).into_owned(),
         FieldType::Generic(name) => name.clone(),
         FieldType::Array(spec) => format_array_type_spec(spec),
         FieldType::Tuple(elem_tys) => {
             let elems: Vec<String> = elem_tys
                 .iter()
                 .map(|ty| match ty {
-                    ScalarTypeRef::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+                    ScalarTypeRef::Primitive(ty) => primitive_type_name(*ty).into_owned(),
                     ScalarTypeRef::Named(name) => name.clone(),
                 })
                 .collect();
@@ -1059,7 +1070,7 @@ fn format_field_type(ty: &FieldType) -> String {
 
 fn format_array_type_spec(spec: &ArrayTypeSpec) -> String {
     let elem = match &spec.elem {
-        ArrayElemType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+        ArrayElemType::Primitive(ty) => primitive_type_name(*ty).into_owned(),
         ArrayElemType::Struct(name) => name.clone(),
     };
     format!("{elem}[{}]", format_expr(spec.size.as_ref()))
@@ -1067,7 +1078,7 @@ fn format_array_type_spec(spec: &ArrayTypeSpec) -> String {
 
 pub fn format_fn_param_type(ty: &FnParamType) -> String {
     match ty {
-        FnParamType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+        FnParamType::Primitive(ty) => primitive_type_name(*ty).into_owned(),
         FnParamType::Struct(name) => name.clone(),
         FnParamType::Buffer(ty) => format_buffer_type(ty),
         FnParamType::BufferArray { buffer, len } => {
@@ -1082,7 +1093,7 @@ pub fn format_fn_param_type(ty: &FnParamType) -> String {
             size,
         } => {
             let type_str = if let Some(prim) = elem {
-                primitive_type_name(*prim).to_owned()
+                primitive_type_name(*prim).into_owned()
             } else if let Some(g) = generic_name {
                 g.clone()
             } else {
@@ -1094,7 +1105,7 @@ pub fn format_fn_param_type(ty: &FnParamType) -> String {
         FnParamType::Tuple(elems) => {
             let inner = elems
                 .iter()
-                .map(|p| primitive_type_name(*p))
+                .map(format_fn_return_scalar_type)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({inner})")
@@ -1104,7 +1115,7 @@ pub fn format_fn_param_type(ty: &FnParamType) -> String {
 
 fn format_fn_return_scalar_type(ty: &FnReturnScalarType) -> String {
     match ty {
-        FnReturnScalarType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+        FnReturnScalarType::Primitive(ty) => primitive_type_name(*ty).into_owned(),
         FnReturnScalarType::Named(name) => name.clone(),
     }
 }
@@ -1136,7 +1147,7 @@ pub fn format_buffer_type(ty: &BufferType) -> String {
 
 fn format_buffer_inner(ty: &BufferType) -> String {
     let elem = match &ty.elem {
-        BufferElemType::Primitive(ty) => primitive_type_name(*ty).to_owned(),
+        BufferElemType::Primitive(ty) => primitive_type_name(*ty).into_owned(),
         BufferElemType::Generic(name) => name.clone(),
     };
     let channels = match &ty.channels {
@@ -1174,11 +1185,11 @@ pub fn format_event_param_type(ty: &EventParamType) -> String {
             "({})",
             types
                 .iter()
-                .map(|ty| primitive_type_name(*ty))
+                .map(format_fn_return_scalar_type)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        EventParamType::Scalar(ty) => primitive_type_name(*ty).to_owned(),
+        EventParamType::Scalar(ty) => primitive_type_name(*ty).into_owned(),
         EventParamType::GenericScalar { name } => name.clone(),
         EventParamType::Array { elem, size } => {
             format!("{}[{}]", primitive_type_name(*elem), format_expr(size))
@@ -1201,14 +1212,26 @@ pub fn format_port_decl(port: &PortDecl) -> String {
         text.push_str(" = ");
         text.push_str(&format_expr(default));
     }
-    if let Some(range) = &port.range {
+    if port.range.is_some() || port.smoothing.is_some() {
         text.push(' ');
         text.push('{');
-        if let Some(min) = &range.min {
-            text.push_str(&format_expr(min));
-            text.push_str(", ");
+        if let Some(range) = &port.range {
+            if let Some(min) = &range.min {
+                text.push_str(&format_expr(min));
+                text.push_str(", ");
+            }
+            text.push_str(&format_expr(&range.max));
         }
-        text.push_str(&format_expr(&range.max));
+        if let Some(smoothing) = &port.smoothing {
+            if port.range.is_some() {
+                text.push_str(", ");
+            }
+            text.push_str(match smoothing.kind {
+                onda_frontend::InputSmoothingKind::Ramp => "ramp = ",
+                onda_frontend::InputSmoothingKind::Lag => "lag = ",
+            });
+            text.push_str(&format_expr(&smoothing.time_s));
+        }
         text.push('}');
     }
     text
@@ -1333,8 +1356,34 @@ fn push_line(out: &mut String, indent: usize, line: &str) {
     out.push('\n');
 }
 
+pub(crate) fn format_enum(def: &onda_frontend::EnumDef, indent: usize, out: &mut String) {
+    push_line(out, indent, &format!("enum {}:", def.name));
+    for member in &def.members {
+        let mut line = member.name.clone();
+        if let Some(label) = &member.label {
+            line.push_str(" {label = ");
+            line.push_str(&format_quoted_text(label));
+            line.push('}');
+        }
+        push_line(out, indent + 1, &line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn input_smoothing_attributes_round_trip() {
+        for source in [
+            "ins:\n  cutoff = 440.0 {20, 20000, ramp = 0.02}\nsample:\n  out1 = cutoff\n",
+            "proc Voice<T>:\n  ins<T>:\n    values: T[2] = [0.0, 1.0] {lag = 0.05}\n  sample:\n    out1 = values[0]\n",
+        ] {
+            let parsed = onda_frontend::parse_program(source).unwrap();
+            let formatted = super::format_program(&parsed);
+            assert!(formatted.contains(if source.contains("ramp") { "ramp = 0.02" } else { "lag = 0.05" }));
+            let reparsed = onda_frontend::parse_program(&formatted).unwrap();
+            assert_eq!(super::format_program(&reparsed), formatted);
+        }
+    }
     #[test]
     fn formats_long_parameter_default_without_recursion() {
         let expression = std::iter::repeat_n("1.0", 15_000)
@@ -1576,7 +1625,7 @@ proc Worker:
 
     #[test]
     fn formatting_preserves_ranged_struct_fields() {
-        let source = "struct Cursor:\n  index: i32 {8, wrap}\n  explicit: i32 = 0 {8}\n  offset: i32 = 2 {8}\n";
+        let source = "struct Cursor:\n  index: i32 {8, wrap}\n  explicit: i32 = 0 {8}\n  offset: i32 = 2 {8}\n  inferred = 0 {8, wrap}\n";
         let program = parse_program(source).expect("ranged struct field should parse");
         let formatted = format_program(&program);
 
@@ -1586,6 +1635,10 @@ proc Worker:
         );
         assert!(formatted.contains("  explicit: i32 {8}\n"), "{formatted}");
         assert!(formatted.contains("  offset: i32 = 2 {8}\n"), "{formatted}");
+        assert!(
+            formatted.contains("  inferred = 0 {8, wrap}\n"),
+            "{formatted}"
+        );
         let reparsed = parse_program(&formatted).expect("formatted struct field should parse");
         assert_eq!(format_program(&reparsed), formatted);
     }
@@ -1612,5 +1665,22 @@ proc Worker:
         assert!(formatted.contains("print(\"voice\\n\\\"phase\\\"\", index, phase, true)\n"));
         let reparsed = parse_program(&formatted).expect("formatted print should remain parseable");
         assert_eq!(format_program(&reparsed), formatted);
+    }
+
+    #[test]
+    fn enum_formatting_preserves_member_order_and_escaped_labels() {
+        let source =
+            r#"namespace DSP { enum Mode { LowPass; BandPass {label = "Band \"pass\""} } }"#;
+        let source = format!("{source}\nconst Default: DSP::Mode = DSP::Mode::LowPass\nstruct Settings:\n  mode = Default\ndef identity(pair: (DSP::Mode, i32)) -> (DSP::Mode, i32):\n  local: (DSP::Mode, i32) = pair\n  return local\ndelegate changed(pair: (DSP::Mode, i32))\nevent configure(pair: (DSP::Mode, i32)):\n  changed(identity(pair))\n");
+        let formatted = format_program(&parse_program(&source).unwrap());
+        assert!(formatted.contains("mode = Default\n"));
+        assert!(formatted.contains("const Default: DSP::Mode"));
+        assert!(formatted.contains("local: (DSP::Mode, i32) = pair"));
+        assert!(formatted.contains("enum Mode:"));
+        assert!(formatted.contains(r#"BandPass {label = "Band \"pass\""}"#));
+        assert_eq!(
+            format_program(&parse_program(&formatted).unwrap()),
+            formatted
+        );
     }
 }

@@ -7,6 +7,7 @@ struct ParsedNamedDecl {
     ty_loc: Span,
     default: Option<Expr>,
     range: Option<DeclRange>,
+    smoothing: Option<crate::InputSmoothing>,
     control: ParamControl,
     bind: Option<String>,
 }
@@ -34,6 +35,7 @@ fn parse_port_decl_pair(
         ty_loc: parsed.ty_loc,
         default: parsed.default,
         range: parsed.range,
+        smoothing: parsed.smoothing,
     })
 }
 
@@ -99,7 +101,11 @@ fn parse_named_decl(
                 parsed.ty_loc = ty_loc;
             }
             Rule::expr => parsed.default = Some(parse_expr_inner(item)),
-            Rule::decl_range => parsed.range = Some(parse_decl_range_pair(item)?),
+            Rule::port_domain => {
+                let (range, smoothing) = parse_port_domain_pair(item)?;
+                parsed.range = range;
+                parsed.smoothing = smoothing;
+            }
             Rule::param_domain => {
                 let (range, control) = parse_param_domain_pair(item)?;
                 parsed.range = Some(range);
@@ -136,6 +142,12 @@ fn validate_decl_defaults_and_ranges(
         return Err(vec![syntax_at_loc(
             loc,
             format!("{block_name} declarations do not support ranges"),
+        )]);
+    }
+    if parsed.smoothing.is_some() {
+        return Err(vec![syntax_at_loc(
+            loc,
+            format!("{block_name} declarations do not support input smoothing"),
         )]);
     }
     Ok(())
@@ -1398,7 +1410,7 @@ pub(super) fn merge_inferred_numeric_type(
 ) -> Option<PrimitiveType> {
     use PrimitiveType::*;
     match (a, b) {
-        (Bool, _) | (_, Bool) => None,
+        (Bool, _) | (_, Bool) | (Enum(_), _) | (_, Enum(_)) => None,
         (F64, _) | (_, F64) => Some(F64),
         (F32, _) | (_, F32) => Some(F32),
         (I64, _) | (_, I64) => Some(I64),
@@ -1515,5 +1527,43 @@ pub(super) fn parse_fn_param_decl(
         ty,
         ty_loc,
         default,
+    })
+}
+
+pub(super) fn parse_enum_block(pair: Pair<'_, Rule>) -> Result<EnumDef, Vec<Diagnostic>> {
+    let loc = stmt_loc_from_pair(&pair);
+    let mut items = pair.into_inner();
+    let name = items.next().expect("enum name").as_str().to_owned();
+    let mut members = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for list in items {
+        for member in list.into_inner() {
+            let loc = stmt_loc_from_pair(&member);
+            let mut parts = member.into_inner();
+            let name = parts.next().expect("enum member name").as_str().to_owned();
+            if !names.insert(name.clone()) {
+                return Err(vec![syntax_at_loc(
+                    loc.as_ref(),
+                    format!("duplicate enum member '{name}'"),
+                )]);
+            }
+            let label = parts
+                .next()
+                .map(|part| parse_quoted_text(&part))
+                .transpose()?;
+            members.push(EnumMember { loc, name, label });
+        }
+    }
+    if members.is_empty() {
+        return Err(vec![syntax_at_loc(
+            loc.as_ref(),
+            "an enum requires at least one member",
+        )]);
+    }
+    Ok(EnumDef {
+        loc,
+        name,
+        members,
+        resolved: None,
     })
 }

@@ -14,15 +14,15 @@ fn instance(source: &str) -> Instance {
     .unwrap();
     let program =
         jit_program_from_optimized_mir(lower_program_to_optimized_mir(&typed).unwrap()).unwrap();
-    create_instance_initialized(
-        program,
-        InstanceConfig {
-            sample_rate: 48_000.0,
-            frames_per_block: 4,
-            in_channels: 0,
-            out_channels: 1,
-        },
-    )
+    (|| -> Result<_, onda_frontend::Diagnostic> {
+        let mut instance = onda_runtime::create_instance(program, None)?;
+        onda_codegen_llvm::check_execution_status(onda_runtime::init_checked(
+            &mut instance,
+            onda_runtime::InitMode::Full,
+            onda_runtime::ExecutionOutput::none(),
+        )?)?;
+        Ok(instance)
+    })()
     .unwrap()
 }
 
@@ -43,11 +43,25 @@ sample:
 
     set_param_element_plain_f64(&mut instance, 0, 0, 9.0).unwrap();
     set_param_element_normalized(&mut instance, 0, 1, 0.5).unwrap();
-    process_checked(&mut instance, 4, ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     assert_eq!(output, [24.0; 4]);
 
     set_param_element_by_index(&mut instance, 0, 0, &3.0_f32.to_ne_bytes()).unwrap();
-    process_checked(&mut instance, 4, ExecutionOutput::none()).unwrap();
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        4,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
     assert_eq!(output, [23.0; 4]);
     assert!(set_param_element_plain_f64(&mut instance, 0, 2, 1.0).is_err());
     assert!(set_param_element_normalized(&mut instance, 0, 2, 1.0).is_err());

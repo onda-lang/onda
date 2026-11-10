@@ -1,7 +1,7 @@
 use super::*;
 use crate::def_semantics::call_types::{
-    infer_array_arg_type, infer_struct_expr_type, update_call_type_env_after_assign, CallArrayType,
-    CallTypeContext, CallTypeEnv,
+    infer_array_arg_type, infer_struct_expr_type, observe_call_type_bindings,
+    update_call_type_env_after_assign, CallArrayType, CallTypeContext, CallTypeEnv,
 };
 use crate::internal_names::runtime_buffer_alias_selector_symbol;
 
@@ -368,6 +368,12 @@ pub(crate) fn register_scope_state<'a>(
             );
             data
         } else {
+            if matches!(
+                stmt,
+                Stmt::If { .. } | Stmt::For { .. } | Stmt::While { .. }
+            ) {
+                observe_call_type_bindings(std::slice::from_ref(stmt), &mut types, context);
+            }
             false
         };
         if !data_binding {
@@ -481,7 +487,10 @@ fn register_scope_stmt_state(
                         declared_symbols,
                     );
                     let declared_tuple_types = decl_ty.as_ref().and_then(DeclType::tuple);
-                    if let Some(types) = declared_tuple_types.or(inferred_tuple_types.as_deref()) {
+                    if let Some(types) = declared_tuple_types
+                        .as_deref()
+                        .or(inferred_tuple_types.as_deref())
+                    {
                         register_tuple_state(state_scalars, state_tuples, name, types);
                         registered_tuples.insert(name.clone(), target_loc.as_ref().into());
                         return;
@@ -596,6 +605,7 @@ pub(crate) fn normalize_numbered_port_decls(
         .into_iter()
         .map(|name| {
             explicit_map.get(&name).cloned().unwrap_or(PortDecl {
+                smoothing: None,
                 loc: Default::default(),
                 name,
                 output_timing: None,

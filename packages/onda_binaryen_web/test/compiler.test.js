@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import binaryen from "binaryen";
 import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
@@ -18,7 +19,6 @@ import {
   PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
   compileTrustedMir,
   createProcessorArtifactFiles,
-  createDefaultImports,
   loadProcessorArtifactFiles,
   parseProcessorMetadata,
   validateProcessorArtifact,
@@ -483,7 +483,7 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
 
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   let heap = Number(__heap_base.value);
@@ -721,7 +721,7 @@ test("passes an addressable slice element to a reference parameter", async () =>
   assert.equal(WebAssembly.validate(artifact.wasm), true);
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const params = Number(__heap_base.value);
@@ -1264,6 +1264,135 @@ test("omits failure propagation after non-failing helper calls", () => {
   assert.equal(failureReads.length, 1);
 });
 
+test("propagates checked buffer construction failures before caller effects", async () => {
+  for (const collectionKind of ["buffer_span", "buffer_map"]) {
+    for (const referenceKind of ["interface", "parameter", "local"]) {
+      for (const optimize of [false, true]) {
+        const mir = executableMir();
+        const collectionType = mir.types.length;
+        const bufferType = collectionType + 1;
+        mir.types.push(
+          type(collectionKind, { element: "f32", channels: "mono", access: "read_write", len: 2 }),
+          type("buffer", { element: "f32", channels: "mono", access: "read_write" }),
+        );
+        mir.interface.buffers = [0, 1].map((slot) => ({
+          name: `clips[${slot}]`, element: "f32", channels: "mono", access: "read_write",
+        }));
+        mir.buffer_maps = [{ buffers: [1, 0] }];
+        const collection = collectionKind === "buffer_map"
+          ? { kind: "mapped_interface", data: { map: 0, start: 0, len: 2 } }
+          : { kind: "interface", data: { first: 0, len: 2 } };
+        mir.functions[1].body.statements = [
+          statement("call", { results: [], function: 2, args: [{ kind: "buffer_span", data: collection }] }),
+          assign(place("state", 0), { kind: "use", data: constant("f32", 77) }),
+        ];
+        const selector = constant("i32", 2);
+        const source = referenceKind === "interface"
+          ? { kind: "buffer", data: { kind: "array_element", data: { first: 0, len: 2, selector, bounds: "checked" } } }
+          : { kind: "buffer_param", data: referenceKind === "parameter"
+            ? { kind: "array_element", data: { span: 0, selector, bounds: "checked" } }
+            : { kind: "local_element", data: { collection: 0, selector, bounds: "checked" } } };
+        mir.functions.push({
+          name: "select_buffer",
+          kind: { kind: "user" },
+          attributes: attributes("source", "never"),
+          params: [{ name: "clips", ty: collectionType, mode: "value" }],
+          results: [],
+          locals: [{ name: null, ty: collectionType }, { name: null, ty: bufferType }],
+          body: { statements: [
+            assign(place("local", 0), { kind: "make_buffer", data: {
+              ty: collectionType, source: { kind: "buffer_span", data: { kind: "parameter", data: { span: 0, start: 0, len: 2 } } },
+            } }),
+            assign(place("local", 1), { kind: "make_buffer", data: { ty: bufferType, source } }),
+          ] },
+          source: unknownSource,
+        });
+        const artifact = compileMir(mir, { optimize });
+        const { instance } = await WebAssembly.instantiate(artifact.wasm);
+        const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+        const state = Number(__heap_base.value);
+        assert.equal(onda_processor_init(0, state, 1, 0, 0, 0, 0, 0), 0);
+        assert.equal(
+          callProcess(onda_process, 0, 0, 0, 0, 0, 0, state, 0, 0, 0, 0),
+          PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE,
+          `${collectionKind}, ${referenceKind}, optimize=${optimize}`,
+        );
+        assert.equal(new DataView(memory.buffer).getFloat32(state, true), 0);
+      }
+    }
+  }
+});
+
+test("constant channel metadata retains checked selection failures", async () => {
+  for (const optimize of [false, true]) {
+    for (const channels of ["mono", { static: 2 }]) {
+      for (const selector of [-1, 0, 2]) {
+        for (const padding of [0, 1001]) {
+          const mir = JSON.parse(readFileSync(new URL("./fixtures/mir/checked-buffer-channels.json", import.meta.url), "utf8"));
+          mir.types[3].data.channels = channels;
+          for (const buffer of mir.interface.buffers) buffer.channels = channels;
+          mir.functions[2].body.statements[1].kind.data.value.data.data.selector = constant("i32", selector);
+          for (let index = 0; index < padding; index += 1) {
+            mir.functions[2].params.push({ name: `padding${index}`, ty: 2, mode: "value" });
+            mir.functions[1].body.statements[0].kind.data.args.push({ kind: "value", data: constant("i32", index) });
+          }
+          const artifact = compileMir(mir, { optimize });
+          const { instance } = await WebAssembly.instantiate(artifact.wasm);
+          const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+          const state = Number(__heap_base.value);
+          assert.equal(onda_processor_init(0, state, 1, 0, 0, 0, 0, 0), 0);
+          assert.equal(callProcess(onda_process, 0, 0, 0, 0, 0, 0, state, 0, 0, 0, 0),
+            selector === 0 ? 0 : PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE);
+          assert.equal(new DataView(memory.buffer).getFloat32(state, true), selector === 0 ? 77 : 0);
+        }
+      }
+    }
+  }
+});
+
+test("legalizes wide mixed signatures without depending on inlining", async () => {
+  for (const optimize of [false, true]) {
+    const mir = executableMir();
+    const scalars = ["i32", "i64", "f32", "f64"];
+    const typeIds = scalars.map((scalar) => {
+      let id = mir.types.findIndex((type) => type.kind === "scalar" && type.data === scalar);
+      if (id < 0) { id = mir.types.length; mir.types.push(type("scalar", scalar)); }
+      return id;
+    });
+    const width = 1100;
+    const params = Array.from({ length: width }, (_, index) => ({
+      name: `p${index}`, ty: typeIds[index % 4], mode: "value",
+    }));
+    params.push({ name: "destination", ty: 0, mode: "read_write_reference" });
+    mir.functions[1].body.statements = [statement("call", {
+      results: [], function: 2,
+      args: [...Array.from({ length: width }, (_, index) => ({
+        kind: "value", data: constant(scalars[index % 4], scalars[index % 4] === "i64" ? String(index) : index),
+      })), { kind: "place", data: place("state", 0) }],
+    })];
+    mir.functions.push({
+      name: "wide", kind: { kind: "user" }, attributes: attributes("source", "never"), params, results: [],
+      locals: [...typeIds.map((ty) => ({ name: null, ty })), { name: "sum", ty: 0 }, { name: "converted", ty: 0 }],
+      body: { statements: [
+        assign(place("local", 4), { kind: "use", data: constant("f32", 0) }),
+        ...[1, 2, 3, 1096, 1097, 1098, 1099].flatMap((index) => [
+          assign(place("local", index % 4), { kind: "load", data: place("parameter", index) }),
+          assign(place("local", 5), { kind: "cast", data: { value: local(index % 4), to: "f32" } }),
+          assign(place("local", 4), { kind: "binary", data: { op: "add", lhs: local(4), rhs: local(5) } }),
+        ]),
+        assign(place("parameter", width), { kind: "use", data: local(4) }),
+      ] }, source: unknownSource,
+    });
+    const artifact = compileMir(mir, { optimize });
+    const { instance } = await WebAssembly.instantiate(artifact.wasm);
+    const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+    const state = Number(__heap_base.value);
+    assert.equal(onda_processor_init(0, state, 1, 0, 0, 0, 0, 0), 0);
+    assert.equal(callProcess(onda_process, 0, 0, 0, 0, 0, 0, state, 0, 0, 0, 0), 0);
+    assert.equal(new DataView(memory.buffer).getFloat32(state, true), 4396);
+  }
+});
+
 test("propagates checked fixed-array failures through helper calls", async () => {
   const mir = executableMir();
   const arrayType = mir.types.length;
@@ -1655,7 +1784,7 @@ test("preserves current-schema i64 and non-finite constants exactly", async () =
   const artifact = compileMir(mir);
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const view = new DataView(instance.exports.memory.buffer);
   assert.equal(view.getBigInt64(1024, true), -(1n << 63n));
@@ -3206,7 +3335,7 @@ test("loads the current audio output frame through explicit MIR", async () => {
   const artifact = compileMir(mir);
   const { instance } = await WebAssembly.instantiate(
     artifact.wasm,
-    createDefaultImports(),
+    {},
   );
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   let heap = Number(__heap_base.value);
@@ -3561,6 +3690,203 @@ test("refreshes hoisted forwarded descriptors for every process call", async () 
   assert.equal(view.getFloat32(output, true), 43);
 });
 
+function mappedBufferCollectionMir() {
+  const mir = forwardedBufferCollectionMir();
+  const mappedType = mir.functions[2].params[1].ty;
+  mir.types[mappedType].kind = "buffer_map";
+  mir.types[mappedType].data.len = 3;
+  const childType = mir.types.length;
+  mir.types.push(type("buffer_map", { ...mir.types[mappedType].data, len: 2 }));
+  mir.interface.buffers.splice(1, 0, {
+    name: "unrelated", element: "i32", channels: "mono", access: "read_only",
+  });
+  mir.buffer_maps = [{ buffers: [2, 2, 0] }];
+  const thenBlock = mir.functions[1].body.statements[4].kind.data.body.statements[1].kind.data.then_block;
+  thenBlock.statements[0].kind.data.args[1].data = {
+    kind: "mapped_interface", data: { map: 0, start: 0, len: 3 },
+  };
+  const child = structuredClone(mir.functions[2]);
+  child.name = "read_mapped_subview";
+  child.params[1].ty = childType;
+  mir.functions.push(child);
+  mir.functions[2].body.statements = [
+    statement("call", {
+      results: [2], function: 3,
+      args: [
+        { kind: "place", data: place("parameter", 0) },
+        { kind: "buffer_span", data: { kind: "parameter", data: { span: 1, start: 1, len: 2 } } },
+        { kind: "value", data: local(1) },
+      ],
+    }),
+    statement("return", { values: [local(2)] }),
+  ];
+  mir.functions[2].body.statements.unshift(assign(place("local", 1), {
+    kind: "load", data: place("parameter", 2),
+  }));
+  return mir;
+}
+
+function localResourceDescriptorMir() {
+  const mir = mappedBufferCollectionMir();
+  const child = mir.functions[3];
+  const collectionType = child.params[1].ty;
+  const bufferType = mir.types.length;
+  mir.types.push(type("buffer", { element: "f32", channels: "dynamic", access: "read_write" }));
+  const collection = child.locals.length;
+  const buffer = collection + 1;
+  child.locals.push({ name: null, ty: collectionType }, { name: null, ty: bufferType });
+  const read = child.body.statements[2].kind.data.value.data;
+  const selection = read.parameter;
+  read.parameter = { kind: "local", data: buffer };
+  child.body.statements.splice(2, 0,
+    assign(place("local", collection), { kind: "make_buffer", data: {
+      ty: collectionType, source: { kind: "buffer_span", data: { kind: "parameter", data: { span: 1, start: 0, len: 2 } } },
+    } }),
+    assign(place("local", buffer), { kind: "make_buffer", data: {
+      ty: bufferType, source: { kind: "buffer_param", data: { kind: "local_element", data: {
+        collection, selector: selection.data.selector, bounds: "clamp",
+      } } },
+    } }),
+  );
+  return mir;
+}
+
+function localResourceSliceMir(channel = null) {
+  const mir = localResourceDescriptorMir();
+  const child = mir.functions[3];
+  const sliceType = mir.types.length;
+  mir.types.push(type("slice", { element: "f32", access: "read_only" }));
+  const slice = child.locals.length;
+  child.locals.push({ name: null, ty: sliceType });
+  const source = child.body.statements[3].kind.data.value.data.source;
+  child.body.statements.splice(3, 2,
+    assign(place("local", slice), { kind: "make_slice", data: {
+      source: { kind: "buffer_param", data: { parameter: source.data, channel } },
+      start: constant("i32", 0), len: constant("i32", 1),
+      bounds: "clamp", access: "read_only",
+    } }),
+    assign(place("local", 2), { kind: "slice_load", data: {
+      slice: local(slice), index: constant("i32", 0), bounds: "checked",
+    } }),
+  );
+  return mir;
+}
+
+test("mapped resource subviews keep symbolic identities and refresh host bindings", async () => {
+  for (const fixture of [mappedBufferCollectionMir, localResourceDescriptorMir,
+    localResourceSliceMir, () => localResourceSliceMir(constant("i32", 0))]) {
+  for (const optimize of [false, true]) {
+    const artifact = compileMir(fixture(), { optimize });
+    const { instance } = await WebAssembly.instantiate(artifact.wasm);
+    const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+    let heap = Number(__heap_base.value);
+    const allocate = (size) => { const address = heap; heap += Math.max(size, 8); return address; };
+    const params = allocate(16);
+    const state = allocate(artifact.metadata.runtime.state_size_bytes);
+    const outputs = allocate(4);
+    const buffers = allocate(12);
+    const frames = allocate(12);
+    const channels = allocate(12);
+    const sampleRates = allocate(12);
+    const first = allocate(4);
+    const second = allocate(4);
+    const output = allocate(4);
+    const view = new DataView(memory.buffer);
+    view.setUint32(outputs, output, true);
+    for (let id = 0; id < 3; id += 1) {
+      view.setUint32(buffers + id * 4, first, true);
+      view.setInt32(frames + id * 4, 1, true);
+      view.setInt32(channels + id * 4, 1, true);
+      view.setFloat32(sampleRates + id * 4, 48_000, true);
+    }
+    view.setFloat32(first, 21, true);
+    view.setFloat32(second, 43, true);
+    onda_processor_init(params, state, 1, 0, 0, 0, 0, 0);
+    const run = () => callProcess(onda_process, 0, outputs, 0, 1, 0, params, state,
+      buffers, frames, channels, sampleRates);
+    run();
+    assert.equal(view.getFloat32(output, true), 21);
+    view.setUint32(buffers, second, true);
+    run();
+    assert.equal(view.getFloat32(output, true), 43);
+  }
+  }
+});
+
+test("mapped resource effects exclude unrelated interface descriptors", () => {
+  const mir = mappedBufferCollectionMir();
+  mir.functions[3].body.statements.splice(2, 0, statement("buffer_param_store", {
+    parameter: { kind: "array_element", data: { span: 1, selector: constant("i32", 1), bounds: "clamp" } },
+    channel: null, index: constant("i32", 0), value: constant("f32", 9), bounds: "clamp",
+  }));
+  assert.deepEqual(compileMir(mir).metadata.metadata.buffers.map((buffer) => buffer.may_write),
+    [true, false, false]);
+});
+
+test("large dynamic resource windows retain precise write origins", () => {
+  const len = 4096;
+  for (const mapped of [false, true]) {
+    const mir = executableMir();
+    const collectionType = mir.types.length;
+    const windowType = collectionType + 1;
+    for (const width of [len, len / 2]) mir.types.push(type(mapped ? "buffer_map" : "buffer_span", {
+      element: "f32", channels: "mono", access: "read_write", len: width,
+    }));
+    mir.interface.buffers = Array.from({ length: len }, (_, index) => ({
+      name: `buffer${index}`, element: "f32", channels: "mono", access: "read_write",
+    }));
+    mir.buffer_maps = [{ buffers: Array.from({ length: len }, (_, index) => len - 1 - index) }];
+    mir.functions[1].body.statements = [statement("call", { results: [], function: 2, args: [
+      { kind: "buffer_span", data: mapped
+        ? { kind: "mapped_interface", data: { map: 0, start: 0, len } }
+        : { kind: "interface", data: { first: 0, len } } },
+      { kind: "value", data: constant("i32", 0) },
+    ] })];
+    mir.functions.push({
+      name: "window", kind: { kind: "user" }, attributes: attributes("source", "never"),
+      params: [{ name: "buffers", ty: collectionType, mode: "value" }, { name: "start", ty: 2, mode: "value" }],
+      results: [], locals: [{ name: null, ty: collectionType }, { name: null, ty: windowType }, { name: null, ty: 2 }],
+      body: { statements: [
+        assign(place("local", 2), { kind: "load", data: place("parameter", 1) }),
+        assign(place("local", 0), { kind: "load", data: place("parameter", 0) }),
+        assign(place("local", 1), { kind: "make_buffer", data: { ty: windowType, source: {
+          kind: "buffer_span", data: { kind: "local", data: { collection: 0, start: local(2), len: len / 2, bounds: "clamp" } },
+        } } }),
+        statement("buffer_param_store", {
+          parameter: { kind: "local_element", data: { collection: 1, selector: constant("i32", 0), bounds: "clamp" } },
+          channel: null, index: constant("i32", 0), value: constant("f32", 1), bounds: "clamp",
+        }),
+      ] }, source: unknownSource,
+    });
+    const artifact = compileMir(mir, { optimize: false });
+    assert.deepEqual(artifact.metadata.metadata.buffers.map((buffer) => buffer.may_write),
+      Array.from({ length: len }, (_, index) => mapped ? index >= len / 2 - 1 : index <= len / 2));
+  }
+});
+
+test("local resource descriptors retain reachable write identities", () => {
+  const mir = localResourceDescriptorMir();
+  const child = mir.functions[3];
+  child.body.statements.splice(-1, 0, statement("buffer_param_store", {
+    parameter: { kind: "local", data: child.locals.length - 1 }, channel: null,
+    index: constant("i32", 0), value: constant("f32", 9), bounds: "clamp",
+  }));
+  assert.deepEqual(compileMir(mir).metadata.metadata.buffers.map((buffer) => buffer.may_write), [true, false, true]);
+});
+
+test("rejects invalid mapped resources, windows and permissions", () => {
+  for (const mutate of [
+    (mir) => { mir.buffer_maps[0].buffers[2] = 99; },
+    (mir) => { mir.buffer_maps[0].buffers[2] = 1; },
+    (mir) => { mir.interface.buffers[0].access = "read_only"; },
+    (mir) => { mir.functions[2].body.statements[1].kind.data.args[1].data.data.start = 2; },
+  ]) {
+    const mir = mappedBufferCollectionMir();
+    mutate(mir);
+    assert.throws(() => compileMir(mir), OndaBinaryenError);
+  }
+});
+
 test("keeps forwarded varying buffer descriptors inside sample loops", () => {
   const artifact = compileMir(forwardedBufferCollectionMir(true), {
     emitText: true,
@@ -3826,7 +4152,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
     access: "read_write",
   });
   mir.functions[1].locals.push(
-    { name: "$buffer_len", ty: 2 },
+    { name: "$buffer_samples", ty: 2 },
     { name: "$buffer_channels", ty: 2 },
     { name: "$metadata_f32", ty: 0 },
     { name: "$buffer_bound", ty: 1 },
@@ -3844,7 +4170,7 @@ test("loads, stores, and queries externally bound buffers", async () => {
         bounds: "clamp",
       },
     }),
-    assign(place("local", 6), { kind: "buffer_len", data: 0 }),
+    assign(place("local", 6), { kind: "buffer_samples", data: 0 }),
     assign(place("local", 3), {
       kind: "cast",
       data: { value: local(6), to: "f32" },

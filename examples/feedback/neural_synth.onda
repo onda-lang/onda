@@ -36,8 +36,8 @@ init:
   filters: std::filter::Svf[Neurons]
   motion: std::osc::Sine[Neurons]
   excitation = std::osc::Saw()
-  dc_l = std::filter::OnePole(mode = std::filter::mode::ONE_POLE_HIGHPASS, cutoff = 10.0)
-  dc_r = std::filter::OnePole(mode = std::filter::mode::ONE_POLE_HIGHPASS, cutoff = 10.0)
+  dc_l = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass, cutoff = 10.0)
+  dc_r = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass, cutoff = 10.0)
   rng = std::random::Rng()
   rng.seed(90731)
 
@@ -54,7 +54,7 @@ init:
     connections[n].excitation = rng.bipolar()
     connections[n].bias_weight = rng.bipolar()
     neuron[n] = rng.bipolar() * 0.01
-    filters[n].mode = std::filter::mode::SVF_BANDPASS
+    filters[n].mode = std::filter::SvfMode::BandPass
     motion[n].reset(f32(n) / Neurons)
 
 block:

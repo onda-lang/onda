@@ -27,6 +27,7 @@ pub(super) fn parse_namespace_decl_ast(
         match item.as_rule() {
             Rule::assert_block => items.push(NamespaceItem::Assert(parse_assert_decl(item)?)),
             Rule::const_block => items.push(NamespaceItem::Const(parse_const_decl(item)?)),
+            Rule::enum_block => items.push(NamespaceItem::Enum(parse_enum_block(item)?)),
             Rule::struct_block => items.push(NamespaceItem::Struct(parse_struct_block(item)?)),
             Rule::def_block => items.push(NamespaceItem::Def(parse_def_block(item)?)),
             Rule::proc_block => items.push(NamespaceItem::Proc(parse_proc_block(item)?)),

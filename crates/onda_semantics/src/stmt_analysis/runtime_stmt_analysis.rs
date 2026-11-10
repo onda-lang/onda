@@ -1,5 +1,6 @@
 use super::*;
 use crate::expr_analysis::has_scalar_value_binding;
+use crate::proc_call_support::proc_array_alias_from_expr;
 
 pub(crate) fn runtime_symbol_root(name: &str) -> &str {
     name.split('.').next().unwrap_or(name)
@@ -66,15 +67,13 @@ fn is_proc_event_stmt_call(
     expr: &Expr,
     nested_proc_instances: &HashMap<String, ProcNestedState>,
     proc_array_roots: &HashMap<String, ProcNestedArrayState>,
-    proc_event_names: &HashSet<String>,
+    fn_signatures: &HashMap<String, FnSignature>,
 ) -> bool {
     let Expr::UserCall { name, args, .. } = expr else {
         return false;
     };
-    if proc_event_names.contains(name)
-        && args.first().is_some_and(|arg| {
-            matches!(&arg.expr, Expr::Index { base, .. } if proc_array_roots.contains_key(base))
-        })
+    if !fn_signatures.contains_key(name)
+        && crate::expr_validation::has_indexed_proc_receiver(args, proc_array_roots)
     {
         return true;
     }
@@ -832,7 +831,7 @@ fn analyze_flow_stmt(
                     &expr,
                     nested_proc_instances,
                     proc_array_roots,
-                    common.proc_event_names,
+                    common.fn_signatures,
                 ) {
                     if let Expr::UserCall { args, .. } = &expr {
                         for arg in args {
@@ -1812,6 +1811,11 @@ fn analyze_flow_assignment(
                 validate_fixed_data_expr(expr, scope_expr_env!(), errors);
                 match data {
                     DataType::Struct(struct_name) => {
+                        if let Some(alias) =
+                            proc_array_alias_from_expr(expr, proc_array_roots, local_proc_aliases)
+                        {
+                            local_proc_aliases.insert(name.clone(), alias);
+                        }
                         if add_struct_element_alias_bindings(
                             name,
                             &struct_name,
@@ -2384,7 +2388,7 @@ fn analyze_flow_assignment(
                     proc_array_roots,
                     errors,
                 )
-                .map_or_else(|| "non-struct".to_owned(), |ty| ty.name().to_owned());
+                .map_or_else(|| "non-struct".to_owned(), |ty| ty.name().into_owned());
                 if policy == ScopePolicy::Event {
                     if let Expr::Var { name: source, .. } = expr {
                         if param_names.contains(source) {
@@ -2515,7 +2519,7 @@ fn analyze_flow_assignment(
                     name,
                     &expr_for_validation,
                     tuple_types,
-                    declared_tuple_types,
+                    declared_tuple_types.as_deref(),
                     existing_tuple_types.as_deref(),
                     registered_state_tuples
                         .get(name)
@@ -2530,7 +2534,9 @@ fn analyze_flow_assignment(
                     set_tracked_tuple_types(tuple_vars, local_aliases, name, &target_types);
                     known_scalars.insert(name.clone());
                 }
-                *assignment_type = Some(DeclType::Tuple(target_types));
+                *assignment_type = Some(DeclType::Tuple(
+                    target_types.into_iter().map(Into::into).collect(),
+                ));
                 return;
             }
             if existing_tuple_types.is_some() {
@@ -2671,7 +2677,9 @@ fn analyze_flow_assignment(
                     .entry(target_name.to_owned())
                     .or_insert(target_ty);
             }
-            *assignment_type = Some(DeclType::Tuple(target_types));
+            *assignment_type = Some(DeclType::Tuple(
+                target_types.into_iter().map(Into::into).collect(),
+            ));
         }
         AssignTarget::IndexedMember { .. } => unreachable!("indexed member target was flattened"),
     }

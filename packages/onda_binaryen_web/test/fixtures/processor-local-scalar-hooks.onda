@@ -1,0 +1,25 @@
+proc Voice:
+  init:
+    before: i32 = 0
+  block:
+    before += 1
+    sample:
+      out1 = f32(before)
+def step(voice) -> f32:
+  return voice() + voice()
+def direct(source: Voice) -> f32:
+  copy: Voice = source
+  return copy() + copy()
+def forwarded(source: Voice) -> f32:
+  copy: Voice = source
+  return step(copy)
+init:
+  voice = Voice()
+sample:
+  out1 = direct(voice)
+  out2 = forwarded(voice)
+  copy: Voice = voice
+  alias = copy
+  out3 = copy() + alias()
+  out4 = step(alias)
+  out5 = f32(voice.before)

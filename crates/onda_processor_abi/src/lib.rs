@@ -12,7 +12,7 @@ pub mod payload;
 
 pub const PROCESSOR_ARTIFACT_FORMAT: &str = "onda-processor";
 // Synchronized from format-versions.json; do not edit these copies directly.
-pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 6;
+pub const PROCESSOR_ARTIFACT_FORMAT_VERSION: u32 = 7;
 pub const PROCESSOR_ABI_VERSION: u32 = 7;
 pub const PROCESSOR_EXECUTION_OK: u32 = 0;
 pub const PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE: u32 = 1;
@@ -350,8 +350,36 @@ pub struct LogSiteMetadata {
     pub payload_size_bytes: usize,
 }
 
+/// A fieldless nominal enum. The member index is its signed i32 wire value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumMetadata {
+    pub name: String,
+    pub members: Vec<EnumMemberMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumMemberMetadata {
+    pub name: String,
+    pub label: String,
+}
+
+impl EnumMetadata {
+    pub fn is_valid(&self) -> bool {
+        let mut names = std::collections::HashSet::new();
+        !self.name.is_empty()
+            && !self.members.is_empty()
+            && self.members.len() <= i32::MAX as usize
+            && self
+                .members
+                .iter()
+                .all(|member| !member.name.is_empty() && names.insert(&member.name))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IoMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<EnumMetadata>,
     pub name: String,
     pub type_repr: String,
     pub scalar: String,
@@ -487,7 +515,7 @@ mod tests {
     #[test]
     fn shared_web_descriptor_fixture_round_trips_through_rust_schema() {
         let json = include_str!(
-            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v6.json"
+            "../../../packages/onda_processor_abi/test/fixtures/processor-descriptor-v7.json"
         );
         let descriptor: ProcessorDescriptor =
             serde_json::from_str(json).expect("shared descriptor should deserialize");

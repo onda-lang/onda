@@ -2,12 +2,15 @@ use onda_frontend::PrimitiveType;
 use onda_mir::ScalarValue;
 
 pub(crate) fn primitive_type_name(ty: PrimitiveType) -> &'static str {
-    ty.name()
+    match ty.storage_type().name() {
+        std::borrow::Cow::Borrowed(name) => name,
+        _ => unreachable!("storage types are primitive"),
+    }
 }
 
 pub(crate) fn primitive_type_bytes(ty: PrimitiveType) -> usize {
-    match ty {
-        PrimitiveType::F32 | PrimitiveType::I32 => 4,
+    match ty.storage_type() {
+        PrimitiveType::F32 | PrimitiveType::I32 | PrimitiveType::Enum(_) => 4,
         PrimitiveType::F64 | PrimitiveType::I64 => 8,
         PrimitiveType::Bool => 1,
     }
@@ -36,7 +39,8 @@ pub(crate) fn append_scalar_value_bytes(
             }
         };
     }
-    match (ty, value) {
+    match (ty.storage_type(), value) {
+        (PrimitiveType::Enum(_), _) => unreachable!("erased enum"),
         (PrimitiveType::F32, ScalarValue::F32(v)) => append!(v),
         (PrimitiveType::F64, ScalarValue::F64(v)) => append!(v),
         (PrimitiveType::I32, ScalarValue::I32(v)) => append!(v),

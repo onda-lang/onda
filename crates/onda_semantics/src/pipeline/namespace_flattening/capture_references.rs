@@ -87,7 +87,8 @@ fn decl_type_names(ty: &DeclType, visit: &mut Visitor<'_>) {
             elem: reference, ..
         } => named_type(reference, visit),
         DeclType::Slice(elem) => element(elem, visit),
-        DeclType::Array { .. } | DeclType::Scalar(_) | DeclType::Tuple(_) => {}
+        DeclType::Tuple(types) => types.iter().for_each(|ty| scalar(ty, visit)),
+        DeclType::Array { .. } | DeclType::Scalar(_) => {}
     }
 }
 
@@ -120,10 +121,8 @@ fn fn_param_type(ty: &FnParamType, visit: &mut Visitor<'_>) {
         FnParamType::Buffer(ty) | FnParamType::BufferArray { buffer: ty, .. } => {
             buffer_type(ty, visit)
         }
-        FnParamType::Primitive(_)
-        | FnParamType::Array(_)
-        | FnParamType::BareBuffer
-        | FnParamType::Tuple(_) => {}
+        FnParamType::Tuple(types) => types.iter().for_each(|ty| scalar(ty, visit)),
+        FnParamType::Primitive(_) | FnParamType::Array(_) | FnParamType::BareBuffer => {}
     }
 }
 
@@ -185,8 +184,8 @@ fn event_params(params: &[EventParamDecl], visit: &mut Visitor<'_>) {
                 named_type(elem, visit);
                 visit_expression(size, visit);
             }
-            EventParamType::Tuple(_) | EventParamType::Scalar(_) | EventParamType::Slice { .. } => {
-            }
+            EventParamType::Tuple(types) => types.iter().for_each(|ty| scalar(ty, visit)),
+            EventParamType::Scalar(_) | EventParamType::Slice { .. } => {}
         }
         optional(param.default.as_ref(), visit);
     }
@@ -230,6 +229,9 @@ fn processor(proc: &ProcessorDef, visit: &mut Visitor<'_>) {
             }
             optional(port.default.as_ref(), visit);
             range(port.range.as_ref(), visit);
+            if let Some(smoothing) = &port.smoothing {
+                visit_expression(&smoothing.time_s, visit);
+            }
         }
         for param in &proc.params {
             if let Some(ty) = &param.ty {
@@ -343,6 +345,6 @@ pub(super) fn visit_item(item: &NamespaceItem, visit: &mut Visitor<'_>) {
             );
             segments_args(&use_decl.target, visit);
         }
-        NamespaceItem::Namespace(_) => {}
+        NamespaceItem::Enum(_) | NamespaceItem::Namespace(_) => {}
     }
 }

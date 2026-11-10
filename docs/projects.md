@@ -190,8 +190,8 @@ shell argument such as `--buffer 'piano[1]=replacement.ondabuffer'`.
 
 ## GUI workflows
 
-The egui and webview run hosts expose one **Open Onda source or project** importer accepting `.onda`
-and `.ondaproject` files. Dropping either input onto the window works as well.
+The standalone run window opens `.onda`, `.on`, and `.ondaproject` files through
+its source picker or a file drop.
 
 While an editable project is open, the native run host watches the selected manifest and its
 file-backed buffer assets in addition to the entry and transitive non-standard-library sources.

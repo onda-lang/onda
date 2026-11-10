@@ -352,7 +352,7 @@ fn check_audio_underflow(flush: bool) {
 #[test]
 fn audio_fp_mode_preserves_normal_math_and_controls_subnormal_arithmetic() {
     let parent_control = fp_control();
-    // Production configuration is thread-local and once-only. A dedicated thread
+    // Production configuration is thread-local. A dedicated thread
     // exercises the real API without leaking its mode into other tests.
     std::thread::spawn(|| {
         let gradual = fp_control();
@@ -364,9 +364,9 @@ fn audio_fp_mode_preserves_normal_math_and_controls_subnormal_arithmetic() {
         #[cfg(target_arch = "x86_64")]
         assert_eq!(audio & ((1 << 6) | (1 << 15)), (1 << 6) | (1 << 15));
         #[cfg(target_arch = "aarch64")]
-        assert_eq!(audio, gradual);
+        assert_eq!(audio, gradual | (1 << 24));
         check_references(true);
-        check_audio_underflow(cfg!(target_arch = "x86_64"));
+        check_audio_underflow(true);
         assert_eq!(
             fp_control(),
             audio,

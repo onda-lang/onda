@@ -38,11 +38,93 @@ pub(crate) fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, 
         "--version" | "-v" => Ok(Command::Version),
         "project" => parse_project_args(args),
         "compile" => parse_compile_args(args),
+        "bench" => parse_bench_args(args),
         "lsp" => parse_lsp_args(args),
         "run" => parse_run_args(args),
         "daemon" => parse_daemon_args(args),
         _ => Err(format!("unknown command '{cmd}'\n{}", usage())),
     }
+}
+
+fn parse_bench_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let input = args
+        .next()
+        .ok_or_else(|| format!("bench requires an input source or project\n\n{}", usage()))?;
+    if matches!(input.as_str(), "--help" | "-h") {
+        return Ok(Command::Help);
+    }
+    if input.starts_with('-') {
+        return Err("bench requires an input source or project before options".to_owned());
+    }
+    let mut options = crate::bench_cmd::BenchOptions::new(PathBuf::from(input));
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--fast-math" => {
+                options.fast_math = true;
+                continue;
+            }
+            "--meta" => {
+                options.show_meta = true;
+                continue;
+            }
+            "--json" => {
+                options.json = true;
+                continue;
+            }
+            "--help" | "-h" => return Ok(Command::Help),
+            _ => {}
+        }
+        let (option, inline) = arg
+            .split_once('=')
+            .map_or((arg.as_str(), None), |(option, value)| {
+                (option, Some(value))
+            });
+        let mut value = || {
+            inline
+                .map(str::to_owned)
+                .or_else(|| args.next())
+                .ok_or_else(|| format!("{option} requires a value"))
+        };
+        match option {
+            "--runs" | "-n" => options.runs = parse_bench_count(option, &value()?, false)?,
+            "--blocks" => options.blocks = parse_bench_count(option, &value()?, false)?,
+            "--warmup-blocks" => {
+                options.warmup_blocks = parse_bench_count(option, &value()?, true)?;
+            }
+            "--sample-rate" | "--sr" => {
+                options.sample_rate_hz = parse_sample_rate_hz(&value()?)?;
+            }
+            "--block-size" | "-b" => options.block_samples = parse_block_samples(&value()?)?,
+            "--opt-level" => options.opt_level = parse_target_opt_level(&value()?)?,
+            "--set" => options.param_sets.push(parse_param_setting(&value()?)?),
+            "--buffer" => options
+                .buffer_bindings
+                .push(parse_buffer_binding(&value()?)?),
+            _ => {
+                return Err(format!(
+                    "unknown option '{arg}' for onda bench\n\n{}",
+                    usage()
+                ))
+            }
+        }
+    }
+    options.validate()?;
+    Ok(Command::Bench(options))
+}
+
+fn parse_bench_count(option: &str, value: &str, allow_zero: bool) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|count| allow_zero || *count > 0)
+        .ok_or_else(|| {
+            let expected = if allow_zero {
+                "non-negative"
+            } else {
+                "positive"
+            };
+            format!("invalid {option} value '{value}', expected a {expected} integer")
+        })
 }
 
 fn parse_project_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -171,7 +253,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut list_consts = false;
     let mut show_meta = false;
     let mut fast_math = false;
-    let mut math = onda_codegen_llvm::FloatMathPolicy::default();
     let mut target_spec_path = None::<PathBuf>;
     let mut target_triple_override = None::<String>;
     let mut target_cpu_override = None::<TargetCpu>;
@@ -232,9 +313,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
-            "--fp-reassociate" => math.reassociate = true,
-            "--fp-contract" => math.contract = true,
-            "--fp-no-signed-zeros" => math.no_signed_zeros = true,
             "--target-triple" => {
                 let Some(value) = args.next() else {
                     return Err("--target-triple requires a target triple".to_owned());
@@ -422,7 +500,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         list_consts,
         show_meta,
         fast_math,
-        math,
         target,
     })
 }
@@ -599,8 +676,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut midi_input_device = None;
     let mut fast_math = false;
     let mut show_meta = false;
-    let mut theme = RunThemeMode::Auto;
-    let mut host = RunHostKind::Auto;
+    let mut theme = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -648,11 +724,10 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             }
             "--theme" => {
                 let Some(value) = args.next() else {
-                    return Err("--theme requires one of: auto, dark, light".to_owned());
+                    return Err("--theme requires one of: dark, light".to_owned());
                 };
-                theme = parse_run_theme_mode(&value)?;
+                theme = Some(parse_run_theme_mode(&value)?);
             }
-            "--webview" => host = RunHostKind::Webview,
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
@@ -682,7 +757,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 midi_input_device = Some(arg["--midi-input-device=".len()..].to_owned());
             }
             _ if arg.starts_with("--theme=") => {
-                theme = parse_run_theme_mode(&arg["--theme=".len()..])?;
+                theme = Some(parse_run_theme_mode(&arg["--theme=".len()..])?);
             }
             _ if arg.starts_with('-') => {
                 return Err(format!("unknown option '{arg}'\n\n{}", usage()));
@@ -704,17 +779,15 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         fast_math,
         show_meta,
         theme,
-        host,
     })
 }
 
 fn parse_run_theme_mode(value: &str) -> Result<RunThemeMode, String> {
     match value {
-        "auto" => Ok(RunThemeMode::Auto),
         "dark" => Ok(RunThemeMode::Dark),
         "light" => Ok(RunThemeMode::Light),
         _ => Err(format!(
-            "invalid --theme value '{value}'; expected auto, dark, or light"
+            "invalid --theme value '{value}'; expected dark or light"
         )),
     }
 }
@@ -735,6 +808,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut fast_math = false;
     let mut show_meta = false;
     let mut control_json = false;
+    let mut start_paused = false;
     let mut report_sources = false;
     let mut param_sets = Vec::new();
     let mut buffer_bindings = Vec::new();
@@ -814,6 +888,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--control-json" => control_json = true,
+            "--start-paused" => start_paused = true,
             "--report-sources" => report_sources = true,
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--dur=") => {
@@ -860,6 +935,9 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     if report_sources && !control_json {
         return Err("--report-sources requires --control-json".to_owned());
     }
+    if start_paused && !control_json {
+        return Err("--start-paused requires --control-json".to_owned());
+    }
 
     Ok(RunCommand::Play {
         input: PathBuf::from(input),
@@ -878,6 +956,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         fast_math,
         show_meta,
         control_json,
+        start_paused,
         report_sources,
         param_sets,
         buffer_bindings,

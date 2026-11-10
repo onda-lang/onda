@@ -49,6 +49,9 @@ impl<'a> Formatter<'a> {
         }
 
         self.format_interface();
+        for (index, map) in self.program.buffer_maps.iter().enumerate() {
+            self.line(format_args!("buffer_map @bmap{index} = {:?}", map.buffers));
+        }
 
         for (index, slot) in self.program.state.iter().enumerate() {
             let integer_range = format_integer_range(slot.integer_range);
@@ -460,6 +463,17 @@ impl<'a> Formatter<'a> {
                 format_channels(*channels),
                 format_access(*access)
             ),
+            Type::BufferMap {
+                element,
+                channels,
+                access,
+                len,
+            } => format!(
+                "buffer_map<{}, {}, {}, {len}>",
+                element.name(),
+                format_channels(*channels),
+                format_access(*access)
+            ),
         }
     }
 
@@ -537,6 +551,11 @@ fn format_place(place: &Place) -> String {
 
 fn format_rvalue(value: &Rvalue) -> String {
     match value {
+        Rvalue::MakeBuffer { source, ty } => format!(
+            "make_buffer {} as {}",
+            format_call_argument(source),
+            type_id(*ty)
+        ),
         Rvalue::Use(value) => format_value(*value),
         Rvalue::Load(place) => format!("load {}", format_place(place)),
         Rvalue::InitAll => "init_all".to_owned(),
@@ -632,7 +651,7 @@ fn format_rvalue(value: &Rvalue) -> String {
             format_value(*index),
             format_bounds(*bounds)
         ),
-        Rvalue::BufferLen(buffer) => format!("buffer_len {}", format_buffer_ref(*buffer)),
+        Rvalue::BufferSamples(buffer) => format!("buffer_samples {}", format_buffer_ref(*buffer)),
         Rvalue::BufferChannels(buffer) => {
             format!("buffer_channels {}", format_buffer_ref(*buffer))
         }
@@ -642,7 +661,9 @@ fn format_rvalue(value: &Rvalue) -> String {
         Rvalue::BufferIsBound(buffer) => {
             format!("buffer_is_bound {}", format_buffer_ref(*buffer))
         }
-        Rvalue::BufferParamLen(id) => format!("buffer_len {}", format_buffer_param_ref(*id)),
+        Rvalue::BufferParamSamples(id) => {
+            format!("buffer_samples {}", format_buffer_param_ref(*id))
+        }
         Rvalue::BufferParamChannels(id) => {
             format!("buffer_channels {}", format_buffer_param_ref(*id))
         }
@@ -748,6 +769,20 @@ fn format_call_argument(argument: &CallArgument) -> String {
         CallArgument::Buffer(buffer) => format_buffer_ref(*buffer),
         CallArgument::BufferParam(parameter) => format_buffer_param_ref(*parameter),
         CallArgument::BufferSpan(span) => match span {
+            crate::BufferSpanRef::Local {
+                collection,
+                start,
+                len,
+                bounds,
+            } => format!(
+                "@buffer_local_span(local={}, start={}, len={len}) {}",
+                collection.raw(),
+                format_value(*start),
+                format_bounds(*bounds)
+            ),
+            crate::BufferSpanRef::MappedInterface { map, start, len } => {
+                format!("@buffer_map(map={}, start={start}, len={len})", map.raw())
+            }
             crate::BufferSpanRef::Interface { first, len } => {
                 format!("@buffer_span(first={}, len={len})", first.raw())
             }
@@ -785,6 +820,17 @@ fn format_buffer_ref(buffer: BufferRef) -> String {
 
 fn format_buffer_param_ref(buffer: crate::BufferParamRef) -> String {
     match buffer {
+        crate::BufferParamRef::Local(local) => format!("%{}", local.raw()),
+        crate::BufferParamRef::LocalElement {
+            collection,
+            selector,
+            bounds,
+        } => format!(
+            "%{}[{}] {}",
+            collection.raw(),
+            format_value(selector),
+            format_bounds(bounds)
+        ),
         crate::BufferParamRef::Direct(parameter) => format!("@param{}", parameter.raw()),
         crate::BufferParamRef::ArrayElement {
             span,
@@ -985,12 +1031,12 @@ mod tests {
         let expected = format!("mir {}\n", MIR_SCHEMA_VERSION)
             + concat!(
                 "config sample_rate=48000.0 block_size=64\n",
-            "source @file0 \"quoted\\\"path.onda\"\n",
-            "type @t0 = f32\n",
-            "type @t1 = i32\n",
-            "entry init=@fn0 process=@fn1\n",
-            "fn @fn0 \"init\" init origin=source inline=auto () -> () {\n",
-            "}\n",
+                "source @file0 \"quoted\\\"path.onda\"\n",
+                "type @t0 = f32\n",
+                "type @t1 = i32\n",
+                "entry init=@fn0 process=@fn1\n",
+                "fn @fn0 \"init\" init origin=source inline=auto () -> () {\n",
+                "}\n",
                 "fn @fn1 \"process\" process origin=source inline=auto (@p0 \"start_frame\": @t1 value, @p1 \"frames\": @t1 value, @p2 \"flags\": @t1 value) -> () {\n",
                 "}\n",
             );

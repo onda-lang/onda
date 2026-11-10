@@ -246,6 +246,7 @@ pub(crate) fn validate_owner_callable_bindings(program: &Program, errors: &mut V
             Block::Def(def) => ("function", def.name.as_str()),
             Block::Proc(proc) => ("processor", proc.name.as_str()),
             Block::Struct(def) => ("struct", def.name.as_str()),
+            Block::Enum(def) => ("enum", def.name.as_str()),
             _ => continue,
         };
         let (namespace, name) = symbol_parts(full_name);
@@ -383,6 +384,7 @@ pub(crate) fn validate_owner_callable_bindings(program: &Program, errors: &mut V
             | Block::Assert(_)
             | Block::Namespace(_)
             | Block::NamespaceAlias(_)
+            | Block::Enum(_)
             | Block::Use(_)
             | Block::Graph(_) => {}
         }

@@ -3,15 +3,14 @@ COMMENT = _{ "#" ~ (!"\n" ~ ANY)* }
 NEWLINE = _{ "\n" }
 
 program = { SOI ~ NEWLINE* ~ block* ~ EOI }
-block = _{ main_block | program_item }
-main_block = { proc_kw ~ "Main" ~ !ident_char ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ program_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
-program_item = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | proc_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
+block = _{ program_item }
+program_item = _{ ins_block | outs_block | kouts_block | params_block | kins_block | config_const_block | const_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | proc_block | enum_block | struct_block | def_block | namespace_block | namespace_alias_decl | use_decl | init_block | block_exec_block | sample_block | graph_block }
 
 namespace_block = { "namespace" ~ namespace_decl_head ~ NEWLINE* ~ "{" ~ NEWLINE* ~ namespace_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 namespace_alias_decl = { "namespace" ~ ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ namespace_any_ref ~ NEWLINE* }
 use_pub = { "pub" }
 use_decl = { use_pub? ~ "use" ~ namespace_any_ref ~ (NEWLINE* ~ "as" ~ NEWLINE* ~ ident)? ~ NEWLINE* }
-namespace_item = _{ assert_block | const_block | struct_block | def_block | proc_block | namespace_block | namespace_alias_decl | use_decl }
+namespace_item = _{ assert_block | const_block | enum_block | struct_block | def_block | proc_block | namespace_block | namespace_alias_decl | use_decl }
 namespace_decl_head = { namespace_name ~ namespace_param_list? }
 namespace_name = @{ ident ~ ("::" ~ ident)* }
 namespace_param_list = { "<" ~ NEWLINE* ~ namespace_param_decl ~ (comma_sep ~ namespace_param_decl)* ~ NEWLINE* ~ ">" }
@@ -87,13 +86,16 @@ task_list = { task_decl ~ (stmt_sep+ ~ task_decl)* ~ stmt_sep* }
 task_decl = { ident ~ NEWLINE* ~ "(" ~ NEWLINE* ~ ")" ~ NEWLINE* ~ stmt_block }
 proc_block = { proc_kw ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ proc_item* ~ NEWLINE* ~ "}" ~ NEWLINE* }
 proc_item = _{ ins_block | outs_block | kouts_block | proc_params_block | events_block | event_block | delegates_block | delegate_block | when_block | tasks_block | task_block | buffers_block | init_block | block_exec_block | sample_block | graph_block | def_block }
+enum_block = { "enum" ~ ident ~ NEWLINE* ~ "{" ~ NEWLINE* ~ enum_member_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
+enum_member_list = { enum_member ~ (field_sep+ ~ enum_member)* ~ list_end_sep* }
+enum_member = { ident ~ ("{" ~ NEWLINE* ~ "label" ~ "=" ~ quoted_text ~ NEWLINE* ~ "}")? }
 struct_block = { "struct" ~ ident ~ generic_param_list? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ field_list? ~ NEWLINE* ~ struct_method_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 def_block = { (const_kw ~ NEWLINE*)? ~ "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block ~ NEWLINE* }
 assert_block = { "assert" ~ NEWLINE* ~ "(" ~ NEWLINE* ~ expr ~ NEWLINE* ~ ")" ~ NEWLINE* }
 const_block = { const_decl ~ NEWLINE* }
 config_const_block = { config_kw ~ NEWLINE* ~ const_decl ~ NEWLINE* }
 const_decl = { const_kw ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ const_type)? ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
-const_type = { fn_typed_array_param | array_type | type_name }
+const_type = { fn_typed_array_param | array_type | type_name | named_type }
 init_block = { "init" ~ section_default_decl_type? ~ NEWLINE* ~ "{" ~ NEWLINE* ~ stmt_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_block = { "block" ~ NEWLINE* ~ "{" ~ NEWLINE* ~ block_exec_list? ~ NEWLINE* ~ "}" ~ NEWLINE* }
 block_exec_list = { block_exec_item ~ (stmt_sep+ ~ block_exec_item)* ~ stmt_sep* }
@@ -139,21 +141,23 @@ section_default_buffer_type = { "<" ~ NEWLINE* ~ buffer_inner ~ NEWLINE* ~ ">" }
 
 port_list = { port_decl ~ (list_sep+ ~ port_decl)* ~ list_end_sep* }
 decl_type = { array_type | tuple_type | type_name | namespace_ref | qualified_ident }
-tuple_type = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ NEWLINE* ~ ")" }
-decl_range = { "{" ~ NEWLINE* ~ expr ~ (comma_sep ~ expr)? ~ NEWLINE* ~ "}" }
+tuple_type = { "(" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)+ ~ NEWLINE* ~ ")" }
 quoted_text = @{ "\"" ~ (("\\" ~ ("\"" | "\\" | "n" | "r" | "t")) | (!("\"" | "\\" | NEWLINE) ~ ANY))* ~ "\"" }
 param_unit = @{ quoted_text }
 param_domain_value = _{ param_unit | expr }
 param_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ param_domain_value }
 param_domain_item = { param_domain_named | param_unit | expr }
 param_domain = { "{" ~ NEWLINE* ~ param_domain_item ~ (comma_sep ~ param_domain_item)* ~ NEWLINE* ~ "}" }
-port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? }
+port_domain_named = { ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr }
+port_domain_item = { port_domain_named | expr }
+port_domain = { "{" ~ NEWLINE* ~ port_domain_item ~ (comma_sep ~ port_domain_item)* ~ NEWLINE* ~ "}" }
+port_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ port_domain? }
 param_list = { param_decl ~ (list_sep+ ~ param_decl)* ~ list_end_sep* }
 proc_param_list = { proc_param_decl ~ (list_sep+ ~ proc_param_decl)* ~ list_end_sep* }
 param_private = @{ "private" ~ (" " | "\t" | "\r")+ ~ &(ASCII_ALPHA | "_") }
 param_bind = { "=>" ~ ident }
 param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
-proc_param_decl = { param_private? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ decl_range? ~ param_bind? }
+proc_param_decl = { param_private? ~ ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ decl_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? ~ param_domain? ~ param_bind? }
 buffer_list = { buffer_decl ~ (list_sep+ ~ buffer_decl)* ~ list_end_sep* }
 buffer_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ buffer_decl_type)? ~ (NEWLINE* ~ buffer_count)? }
 buffer_decl_type = { buffer_type | buffer_inner }
@@ -167,25 +171,22 @@ field_decl = {
   | (ident ~ NEWLINE* ~ "=" ~ NEWLINE* ~ expr ~ (NEWLINE* ~ binding_range)?)
   | (ident ~ &field_sep)
 }
-field_type = { array_type | field_tuple_type | type_name | named_type }
-field_tuple_type = { "(" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)+ ~ NEWLINE* ~ ")" }
+field_type = { array_type | tuple_type | type_name | named_type }
 array_type = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 type_name = { "f32" | "f64" | "i32" | "i64" | "bool" }
 generic_param_list = { "<" ~ NEWLINE* ~ ident ~ (comma_sep ~ ident)* ~ NEWLINE* ~ ">" }
 generic_type_arg_list = { "<" ~ NEWLINE* ~ generic_type_arg ~ (comma_sep ~ generic_type_arg)* ~ NEWLINE* ~ ">" }
-generic_type_arg = { type_name | ident }
+generic_type_arg = { type_name | namespace_ref | ident }
 fn_param_list = { fn_param_decl ~ (comma_sep ~ fn_param_decl)* }
 fn_typed_array_param = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ "]" }
 fn_sized_array_param = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
 fn_untyped_array_param = { "[" ~ NEWLINE* ~ "]" }
 fn_bare_buffer = { "buffer" }
-fn_tuple_param = { "(" ~ NEWLINE* ~ type_name ~ (comma_sep ~ type_name)+ ~ NEWLINE* ~ ")" }
-fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_sized_array_param | fn_bare_buffer | fn_tuple_param | type_name | named_type }
+fn_param_type = { fn_typed_array_param | fn_untyped_array_param | buffer_type | fn_sized_array_param | fn_bare_buffer | tuple_type | type_name | named_type }
 fn_return_arrow = { "->" }
 fn_return_scalar_type = { type_name | named_type }
 fn_return_array_type = { (type_name | named_type) ~ "[" ~ NEWLINE* ~ expr ~ NEWLINE* ~ "]" }
-fn_return_tuple_type = { "(" ~ NEWLINE* ~ fn_return_scalar_type ~ (comma_sep ~ fn_return_scalar_type)+ ~ NEWLINE* ~ ")" }
-fn_return_type = { fn_return_tuple_type | fn_return_array_type | fn_return_scalar_type }
+fn_return_type = { tuple_type | fn_return_array_type | fn_return_scalar_type }
 fn_param_decl = { ident ~ (NEWLINE* ~ ":" ~ NEWLINE* ~ fn_param_type)? ~ (NEWLINE* ~ "=" ~ NEWLINE* ~ expr)? }
 struct_method_list = { struct_method_decl ~ (NEWLINE* ~ struct_method_decl)* ~ NEWLINE* }
 struct_method_decl = { "def" ~ ident ~ generic_param_list? ~ "(" ~ NEWLINE* ~ fn_param_list? ~ NEWLINE* ~ ")" ~ (NEWLINE* ~ fn_return_arrow ~ NEWLINE* ~ fn_return_type)? ~ NEWLINE* ~ stmt_block }
@@ -296,7 +297,7 @@ keyword = _{
     | "tasks" | "task" | "await" | "yield"
     | "delegates" | "delegate" | "when"
     | "use" | "as" | "pub" | "private" | "pin" | "config"
-    | "true" | "false"
+    | "true" | "false" | "enum"
   ) ~ !ident_char
 }
 ident = @{ !"__onda_" ~ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }

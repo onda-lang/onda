@@ -1,0 +1,81 @@
+proc Voice:
+  delegate fired(value: i32)
+  init:
+    value: i32 = 0
+  sample:
+    value += 1
+    fired(value)
+    out1 = f32(value)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    total: i32 = 0
+  when voices[0].fired(value):
+    total += value
+  sample:
+    out1 = f32(total)
+def exercise(left: Bank, right: Bank, choose: bool) -> f32:
+  if choose:
+    a0 = left.voices[0]
+    b0 = right.voices[0]
+  else:
+    a0 = right.voices[0]
+    b0 = left.voices[0]
+  if choose:
+    a1 = a0
+    b1 = b0
+  else:
+    a1 = b0
+    b1 = a0
+  if choose:
+    a2 = a1
+    b2 = b1
+  else:
+    a2 = b1
+    b2 = a1
+  if choose:
+    a3 = a2
+    b3 = b2
+  else:
+    a3 = b2
+    b3 = a2
+  if choose:
+    a4 = a3
+    b4 = b3
+  else:
+    a4 = b3
+    b4 = a3
+  if choose:
+    a5 = a4
+    b5 = b4
+  else:
+    a5 = b4
+    b5 = a4
+  if choose:
+    a6 = a5
+    b6 = b5
+  else:
+    a6 = b5
+    b6 = a5
+  if choose:
+    a7 = a6
+    b7 = b6
+  else:
+    a7 = b6
+    b7 = a6
+  if choose:
+    a8 = a7
+    b8 = b7
+  else:
+    a8 = b7
+    b8 = a7
+  return a8()
+init:
+  left = Bank()
+  right = Bank()
+  choose = true
+sample:
+  out1 = exercise(left, right, choose)
+  out2 = f32(left.total)
+  out3 = f32(right.total)
+  choose = !choose

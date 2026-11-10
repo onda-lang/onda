@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-27",
+  "purpose": "Validation after importing the four selected host/data improvements; CPU kernel timings do not measure end-to-end UI speedup.",
+  "affinity_cpu": 0,
+  "source_sha256": {
+    "crates/onda_run/src/playback/scope_capture.rs": "96766022bee07ee4b0da8e01d49c3fea3c564f3e4ba893e72a0e582e3a048163",
+    "crates/onda_run/src/controller_events.rs": "1b9145d229731b9ea941b95b09dd2862e15c00a71979f8b95e0d7265a0afb3e6",
+    "crates/onda_run/src/lib.rs": "74748918dd32a89b5c50c0db7249cd1fe52d044f49de6e5b567519f23c27a3ec",
+    "crates/onda_gpu/src/lib.rs": "b2c24bc1eac3016cad54f0264488aac8484ae15ef60c3dc4b896a763e9c1673d",
+    "crates/onda_gpu/src/commands.rs": "7d87efba1c5c68cdd8a402e643cc5375b3909e5500c78f852651efea08404830",
+    "ui/playground/run-view-host.js": "75778d742d98128649cef5be1db57688ea280619ef6b3a9aa6aaac60ce315fdf"
+  },
+  "harness_sha256": "d56b57de7a5ec785f73056b9b9d132c2b5d4de5bea0f718932ca2f829ab94fe3",
+  "methodology": [
+    "Production ScopeCapture module included directly, with its atomic visibility gate and uncontended try_lock; previous writer kernel extracted in the prior experiment.",
+    "4096-frame capacity, 512-frame blocks, seven rounds, variant order alternated; medians of per-round averages.",
+    "Pinned to CPU 0, no concurrent build or benchmark. No CPU governor/turbo isolation.",
+    "Disabled path measured with the same blocks; no ring lock or copy occurs.",
+    "Real-child cadence uses controller callbacks and deadlines, 33 ms interval, 348 columns, three seconds visible and 1.2 seconds hidden. Audio amplitude is 1e-8."
+  ],
+  "validation": [
+    "Rust controller, GPU, UI, scope, egui and webview library tests; both display-dependent tests also passed on isolated Xvfb.",
+    "cargo clippy -p onda_run -p onda_gpu --all-targets -- -D warnings",
+    "Browser unit suite, GPU canvas browser suite, and both real web editors.",
+    "VS Code full unit suite, additional GPU value-patch regression, and real extension host with real playback, hide/show and source reload.",
+    "VS Code full unit suite (180 tests) and real extension host with real playback, hide/show and source reload."
+  ],
+  "reproduce": [
+    "cargo build --release -p onda_scope",
+    "rustc --edition=2021 -O -A dead_code scripts/bench/results/2026-10-27-ui-host-data/capture.rs -L dependency=target/release/deps --extern onda_scope=target/release/libonda_scope.rlib -o /tmp/onda-host-capture",
+    "taskset -c 0 /tmp/onda-host-capture",
+    "cargo build --release -p onda_cli",
+    "ONDA_SCOPE_INTERVAL_MS=33 ONDA_SCOPE_COLUMNS=348 ONDA_SCOPE_SECONDS=3 ONDA_SCOPE_MIN_HZ=28 cargo run --release -p onda_run --example scope_cadence -- target/release/onda"
+  ]
+}

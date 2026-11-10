@@ -1,3 +1,5 @@
+outs 64
+
 params:
   freq = 440.0 {20, 10000, scale = log}
 

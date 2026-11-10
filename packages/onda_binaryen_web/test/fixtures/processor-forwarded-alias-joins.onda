@@ -1,0 +1,44 @@
+struct Selection:
+  index: i32
+  calls: i32
+def pick(selection: Selection) -> i32:
+  selection.calls += 1
+  return selection.index
+proc Voice:
+  delegate fired(value: i32)
+  init:
+    value: i32 = 0
+  sample:
+    value += 1
+    fired(value)
+    out1 = f32(value)
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    total: i32 = 0
+  when voices[0].fired(value):
+    total += value
+  sample:
+    out1 = f32(total)
+def exercise(left: Bank, right: Bank, choose: bool, selection: Selection) -> f32:
+  selection.index = 0
+  first = left.voices[pick(selection)]
+  forwarded = first
+  selection.index = 1
+  if choose:
+    selected = forwarded
+  else:
+    selected = right.voices[0]
+  return selected()
+init:
+  left = Bank()
+  right = Bank()
+  selection = Selection(0, 0)
+  choose = true
+sample:
+  selection.calls = 0
+  out1 = exercise(left, right, choose, selection)
+  out2 = left()
+  out3 = right()
+  out4 = f32(selection.calls)
+  choose = !choose

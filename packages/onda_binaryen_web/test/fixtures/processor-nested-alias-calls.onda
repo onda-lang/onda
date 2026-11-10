@@ -1,0 +1,57 @@
+proc Voice:
+  ins:
+    signal: f32
+  init:
+    count = 0
+  event increment(value: i32):
+    count += value
+  sample:
+    count += 1
+    out1 = signal + f32(count)
+
+proc Bank:
+  init:
+    voices: Voice[2] = Voice()
+    scalar = Voice()
+
+proc Rack:
+  init:
+    banks: Bank[2] = Bank()
+    row = 0
+  sample:
+    bank = banks[row]
+    voice = bank.voices[row]
+    scalar = bank.scalar
+    forwarded = voice
+    row = 1 - row
+    voice.increment(2)
+    scalar.increment(3)
+    value = forwarded(10.0)
+    out1 = value
+    out2 = scalar(20.0)
+    out3 = voice.out1
+
+proc BlockRack:
+  init:
+    banks: Bank[2] = Bank()
+    row = 0
+  block:
+    bank = banks[row]
+    voice = bank.voices[row]
+    scalar = bank.scalar
+    forwarded = voice
+    row = 1 - row
+    sample:
+      voice.increment(2)
+      scalar.increment(3)
+      value = forwarded(10.0)
+      out1 = value
+      out2 = scalar(20.0)
+      out3 = voice.out1
+
+init:
+  rack = Rack()
+  block_rack = BlockRack()
+sample:
+  out1, out2, out3 = rack()
+  out4, out5, out6 = block_rack()

@@ -28,13 +28,14 @@ enum ProcCallArgKind {
     Unknown,
 }
 
-fn proc_named_arg_is_internal(name: Option<&str>) -> bool {
+pub(super) fn proc_named_arg_is_internal(name: Option<&str>) -> bool {
     matches!(
         name,
         Some(PROC_INDEX_BASE_ARG)
             | Some(PROC_INDEX_EXPR_ARG)
             | Some(PROC_INDEX_UNCHECKED_ARG)
             | Some(PROC_FIELD_SENTINEL_ARG)
+            | Some(PROC_CACHED_FIELD_ARG)
     )
 }
 
@@ -224,6 +225,7 @@ fn proc_named_arg_assignment_stmt(
         generic_decl_ty: None,
         is_typed_decl: false,
         typed_decl_ty_loc: Default::default(),
+        param_write_lowered: false,
         expr,
     }
 }
@@ -251,7 +253,7 @@ fn proc_named_arg_call_target_from_parts(
     name: &str,
     args: &[CallArg],
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<ProcNamedArgCallTarget> {
@@ -294,11 +296,12 @@ fn proc_named_arg_call_target_from_parts(
         "processor indexed call",
         errors,
     )?;
-    let resolved_slot = try_constant_index_i64(&index_expr).and_then(|raw_idx| {
-        if raw_idx < 0 || raw_idx >= slots.len() as i64 {
+    let resolved_slot = slots.known_len().and_then(|len| {
+        let raw_idx = try_constant_index_i64(&index_expr)?;
+        if raw_idx < 0 || raw_idx >= len as i64 {
             None
         } else {
-            slots.get(raw_idx as usize).cloned()
+            slots.binding(raw_idx as usize).cloned()
         }
     });
     Some(ProcNamedArgCallTarget {
@@ -310,6 +313,38 @@ fn proc_named_arg_call_target_from_parts(
             access,
         },
         api: proc_api.get(&proc_name).cloned().unwrap_or(api),
+    })
+}
+
+pub(super) fn has_named_proc_param_calls(
+    expression: &Expr,
+    proc_vars: &HashMap<String, ProcCallInstance>,
+    proc_array_slots: &ProcArrayDeclarations,
+    proc_api: &HashMap<String, ProcApi>,
+) -> bool {
+    expression.walk().any(|node| {
+        let Expr::UserCall { name, args, .. } = node else {
+            return false;
+        };
+        args.iter().any(|arg| arg.name.is_some())
+            && proc_named_arg_call_target_from_parts(
+                name,
+                args,
+                proc_vars,
+                proc_array_slots,
+                proc_api,
+                &mut Vec::new(),
+            )
+            .is_some_and(|target| {
+                args.iter().any(|arg| {
+                    matches!(
+                        proc_call_arg_kind(&target.api, arg.name.as_deref()),
+                        ProcCallArgKind::Param
+                            | ProcCallArgKind::PrivateParam
+                            | ProcCallArgKind::Ambiguous
+                    )
+                })
+            })
     })
 }
 
@@ -370,425 +405,360 @@ fn proc_index_base_and_expr_from_args(
     Some((array_base, index_expr, access))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lower_named_proc_param_calls_in_expr(
-    expr: &mut Expr,
-    proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-    proc_api: &HashMap<String, ProcApi>,
-    aliases: &ProcArrayAliases,
-    prelude: &mut Vec<Stmt>,
-    temp_counter: &mut usize,
-    replace_call_with_temp: bool,
-    errors: &mut Vec<Diagnostic>,
+/// Visits this statement's operands in evaluation order, without entering child
+/// scopes. The flag captures a root whose value must precede later operands.
+pub(super) fn visit_statement_operands_mut(
+    stmt: &mut Stmt,
+    mut visit: impl FnMut(&mut Expr, bool),
 ) {
-    match expr {
-        Expr::Index { index, .. } => lower_named_proc_param_calls_in_expr(
-            index,
-            proc_vars,
-            proc_array_slots,
-            proc_api,
-            aliases,
-            prelude,
-            temp_counter,
-            true,
-            errors,
-        ),
-        Expr::Slice {
-            selector,
-            channel,
-            start,
-            end,
-            ..
+    match stmt {
+        Stmt::Assign { target, expr, .. } => {
+            target.visit_selectors_mut(|selector| visit(selector, true));
+            visit(expr, false);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => visit(expr, false),
+        Stmt::Print { values, .. } => values.iter_mut().for_each(|value| visit(value, true)),
+        Stmt::If { cond, .. } | Stmt::While { cond, .. } => visit(cond, false),
+        Stmt::For {
+            start, end, step, ..
         } => {
-            for coordinate in [selector, channel, start, end].into_iter().flatten() {
-                lower_named_proc_param_calls_in_expr(
-                    coordinate,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    prelude,
-                    temp_counter,
-                    true,
-                    errors,
-                );
+            visit(start, true);
+            visit(end, true);
+            if let Some(step) = step {
+                visit(step, true);
             }
         }
-        Expr::ArrayCtor { spec, init, .. } => {
-            lower_named_proc_param_calls_in_expr(
-                &mut spec.size,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                prelude,
-                temp_counter,
-                true,
-                errors,
-            );
-            if let Some(values) = init {
-                for value in values {
-                    lower_named_proc_param_calls_in_expr(
-                        value,
-                        proc_vars,
-                        proc_array_slots,
-                        proc_api,
-                        aliases,
-                        prelude,
-                        temp_counter,
-                        true,
-                        errors,
-                    );
-                }
-            }
-        }
-        Expr::Logical { .. } => {
-            reject_named_proc_param_calls_in_expr(
-                expr,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                "logical expressions",
-                errors,
-            );
-        }
-        Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
-            lower_named_proc_param_calls_in_expr(
-                lhs,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                prelude,
-                temp_counter,
-                true,
-                errors,
-            );
-            lower_named_proc_param_calls_in_expr(
-                rhs,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                prelude,
-                temp_counter,
-                true,
-                errors,
-            );
-        }
-        Expr::Call { args, .. } => {
-            for arg in args {
-                lower_named_proc_param_calls_in_expr(
-                    arg,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    prelude,
-                    temp_counter,
-                    true,
-                    errors,
-                );
-            }
-        }
-        Expr::UserCall { .. } => lower_named_proc_param_call_expr(
-            expr,
-            proc_vars,
-            proc_array_slots,
-            proc_api,
-            aliases,
-            prelude,
-            temp_counter,
-            replace_call_with_temp,
-            errors,
-        ),
-        Expr::Cast { expr: inner, .. }
-        | Expr::UnaryNot { expr: inner, .. }
-        | Expr::UnaryBitNot { expr: inner, .. } => lower_named_proc_param_calls_in_expr(
-            inner,
-            proc_vars,
-            proc_array_slots,
-            proc_api,
-            aliases,
-            prelude,
-            temp_counter,
-            true,
-            errors,
-        ),
-        Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
-            for value in values {
-                lower_named_proc_param_calls_in_expr(
-                    value,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    prelude,
-                    temp_counter,
-                    true,
-                    errors,
-                );
-            }
-        }
-        Expr::Var { .. } | Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_named_proc_param_call_expr(
-    expr: &mut Expr,
+pub(super) fn lower_named_proc_param_calls_in_statement(
+    stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &ProcArrayAliases,
-    prelude: &mut Vec<Stmt>,
     temp_counter: &mut usize,
-    replace_call_with_temp: bool,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
-) {
-    rewrite_proc_alias_call_sites_in_expr(expr, aliases);
-
-    let Expr::UserCall { name, args, .. } = expr else {
-        return;
-    };
-    // Proc-array slots are known here, so classify receiver syntax before the
-    // named-argument pass can interpret the internal receiver marker.
-    canonicalize_indexed_proc_receiver_call(name, args, |base| {
-        resolve_proc_array_base_key(base, proc_array_slots).is_some()
+) -> Vec<Stmt> {
+    let mut prelude = Vec::new();
+    if let Stmt::While { cond, .. } = stmt {
+        rewrite_proc_alias_call_sites_in_expr(cond, aliases, proc_vars, proc_array_slots);
+        reject_named_proc_param_calls_in_expr(
+            cond,
+            proc_vars,
+            proc_array_slots,
+            proc_api,
+            "while conditions",
+            errors,
+        );
+        return prelude;
+    }
+    let mut capture_values = false;
+    visit_statement_operands_mut(stmt, |expr, _| {
+        rewrite_proc_alias_call_sites_in_expr(expr, aliases, proc_vars, proc_array_slots);
+        capture_values |= has_named_proc_param_calls(expr, proc_vars, proc_array_slots, proc_api);
     });
-
-    let Some(mut target) = proc_named_arg_call_target_from_parts(
-        name,
-        args,
-        proc_vars,
-        proc_array_slots,
-        proc_api,
-        errors,
-    ) else {
-        for arg in args {
-            lower_named_proc_param_calls_in_expr(
-                &mut arg.expr,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                prelude,
-                temp_counter,
-                true,
-                errors,
-            );
-        }
-        return;
-    };
-
-    // Dynamic proc-array receivers feed the proc step/call itself, optional
-    // block hooks, active-slot bookkeeping, and buffer selection. Snapshot the
-    // source index before any of those rewrites so an effectful index expression
-    // is evaluated exactly once regardless of how many ABI consumers it has.
-    normalize_indexed_receiver_for_named_proc_args(
-        &mut target,
-        args,
+    let mut lowerer = NamedProcParamLowerer {
         proc_vars,
         proc_array_slots,
         proc_api,
         aliases,
-        prelude,
+        prelude: &mut prelude,
         temp_counter,
+        capture_values,
+        constants,
         errors,
-    );
+    };
+    visit_statement_operands_mut(stmt, |expr, capture| lowerer.lower_expr(expr, capture));
+    prelude
+}
 
-    let has_named_param_arg = args.iter().any(|arg| {
-        matches!(
-            proc_call_arg_kind(&target.api, arg.name.as_deref()),
-            ProcCallArgKind::Param | ProcCallArgKind::PrivateParam | ProcCallArgKind::Ambiguous
-        )
-    });
-    if !has_named_param_arg {
-        for arg in args {
-            lower_named_proc_param_calls_in_expr(
-                &mut arg.expr,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                prelude,
-                temp_counter,
-                true,
-                errors,
-            );
-        }
-        if replace_call_with_temp {
-            let temp_name = proc_named_arg_result_temp_name(temp_counter);
-            prelude.push(assign_temp_stmt(temp_name.clone(), expr.clone()));
-            *expr = Expr::var(temp_name);
-        }
-        return;
-    }
+struct NamedProcParamLowerer<'a> {
+    proc_vars: &'a HashMap<String, ProcCallInstance>,
+    proc_array_slots: &'a ProcArrayDeclarations,
+    proc_api: &'a HashMap<String, ProcApi>,
+    aliases: &'a ProcArrayAliases,
+    prelude: &'a mut Vec<Stmt>,
+    temp_counter: &'a mut usize,
+    capture_values: bool,
+    constants: &'a DeclaredSymbolMap,
+    errors: &'a mut Vec<Diagnostic>,
+}
 
-    let internal_arg_indices = proc_named_arg_internal_indices(name, args);
-    let mut lowered_args = Vec::<CallArg>::with_capacity(args.len());
-    let mut seen_param_args = HashSet::<String>::new();
-    for (arg_idx, mut arg) in std::mem::take(args).into_iter().enumerate() {
-        let arg_is_internal = internal_arg_indices.contains(&arg_idx)
-            || proc_named_arg_is_internal(arg.name.as_deref());
-        let arg_kind = if arg_is_internal {
-            ProcCallArgKind::Internal
-        } else {
-            proc_call_arg_kind(&target.api, arg.name.as_deref())
-        };
-        if !arg_is_internal {
-            lower_named_proc_param_calls_in_expr(
-                &mut arg.expr,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                prelude,
-                temp_counter,
-                true,
-                errors,
-            );
+impl NamedProcParamLowerer<'_> {
+    fn lower_expr(&mut self, expr: &mut Expr, replace_call_with_temp: bool) {
+        // Constants stay in their original numeric context. This is a metadata
+        // query: it neither evaluates const calls nor demands array payloads.
+        if self.capture_values && self.constants.constant_expression(expr) {
+            return;
         }
-
-        match arg_kind {
-            ProcCallArgKind::Param => {
-                let arg_name = arg.name.clone().unwrap_or_default();
-                if !seen_param_args.insert(arg_name.clone()) {
-                    push_semantic(
-                        DiagCtx::new(arg.expr.loc()),
-                        errors,
-                        format!(
-                            "processor call '{}(...)': duplicate named argument '{}'",
-                            target.display_name, arg_name
-                        ),
-                    );
-                    continue;
-                }
-                let Some(slots) = proc_named_param_slots(&target.api, &arg_name, false) else {
-                    continue;
-                };
-                for (slot_idx, slot) in slots.iter().enumerate() {
-                    let mut value = proc_named_arg_array_slot_expr(
-                        &arg.expr,
-                        slot_idx,
-                        slots.len(),
-                        &target.display_name,
-                        &arg_name,
-                        errors,
-                    );
-                    if let Some(range) = slot.range {
-                        value = cast_expr_to_primitive(clamp_expr_to_range(value, range), slot.ty);
-                    }
-                    prelude.push(proc_named_arg_assignment_stmt(
-                        &target.receiver,
-                        &slot.name,
-                        value,
-                    ));
+        match expr {
+            Expr::Index { index, .. } => self.lower_expr(index, true),
+            Expr::Slice {
+                selector,
+                channel,
+                start,
+                end,
+                ..
+            } => {
+                for coordinate in [selector, channel, start, end].into_iter().flatten() {
+                    self.lower_expr(coordinate, true);
                 }
             }
-            ProcCallArgKind::Ambiguous => {
-                let arg_name = arg.name.clone().unwrap_or_default();
-                push_semantic(
+            Expr::ArrayCtor { spec, init, .. } => {
+                self.lower_expr(&mut spec.size, true);
+                if let Some(values) = init {
+                    for value in values {
+                        self.lower_expr(value, true);
+                    }
+                }
+            }
+            Expr::Logical { .. } => {
+                reject_named_proc_param_calls_in_expr(
+                    expr,
+                    self.proc_vars,
+                    self.proc_array_slots,
+                    self.proc_api,
+                    "logical expressions",
+                    self.errors,
+                );
+            }
+            Expr::Compare { lhs, rhs, .. } | Expr::Binary { lhs, rhs, .. } => {
+                self.lower_expr(lhs, true);
+                self.lower_expr(rhs, true);
+            }
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    self.lower_expr(arg, true);
+                }
+            }
+            Expr::UserCall { .. } => {
+                self.lower_call(expr, replace_call_with_temp);
+                return;
+            }
+            Expr::Cast { expr: inner, .. }
+            | Expr::UnaryNot { expr: inner, .. }
+            | Expr::UnaryBitNot { expr: inner, .. } => self.lower_expr(inner, true),
+            Expr::ArrayLiteral { values, .. } | Expr::Tuple { values, .. } => {
+                for value in values {
+                    self.lower_expr(value, true);
+                }
+            }
+            Expr::Var { .. } | Expr::Number { .. } | Expr::Int { .. } | Expr::Bool { .. } => {}
+        }
+        // A later lifted parameter store may change an earlier read, or run before
+        // an earlier checked operation. Capture each runtime operand in source order.
+        if self.capture_values && replace_call_with_temp {
+            self.capture_value(expr);
+        }
+    }
+
+    fn lower_call(&mut self, expr: &mut Expr, replace_call_with_temp: bool) {
+        rewrite_proc_alias_call_sites_in_expr(
+            expr,
+            self.aliases,
+            self.proc_vars,
+            self.proc_array_slots,
+        );
+
+        let Expr::UserCall { name, args, .. } = expr else {
+            return;
+        };
+        // Proc-array slots are known here, so classify receiver syntax before the
+        // named-argument pass can interpret the internal receiver marker.
+        canonicalize_indexed_proc_receiver_call(name, args, |base| {
+            resolve_proc_array_base_key(base, self.proc_array_slots).is_some()
+        });
+
+        let Some(mut target) = proc_named_arg_call_target_from_parts(
+            name,
+            args,
+            self.proc_vars,
+            self.proc_array_slots,
+            self.proc_api,
+            self.errors,
+        ) else {
+            for arg in args {
+                if proc_named_arg_is_internal(arg.name.as_deref()) {
+                    continue;
+                }
+                self.lower_expr(&mut arg.expr, true);
+            }
+            if self.capture_values && replace_call_with_temp {
+                self.capture_value(expr);
+            }
+            return;
+        };
+
+        // Dynamic proc-array receivers feed the proc step/call itself, optional
+        // block hooks, active-slot bookkeeping, and buffer selection. Snapshot the
+        // source index before any of those rewrites so an effectful index expression
+        // is evaluated exactly once regardless of how many ABI consumers it has.
+        self.normalize_receiver(&mut target, args);
+
+        let has_named_param_arg = args.iter().any(|arg| {
+            matches!(
+                proc_call_arg_kind(&target.api, arg.name.as_deref()),
+                ProcCallArgKind::Param | ProcCallArgKind::PrivateParam | ProcCallArgKind::Ambiguous
+            )
+        });
+        if !has_named_param_arg {
+            for arg in args {
+                if proc_named_arg_is_internal(arg.name.as_deref()) {
+                    continue;
+                }
+                self.lower_expr(&mut arg.expr, true);
+            }
+            if replace_call_with_temp {
+                self.capture_value(expr);
+            }
+            return;
+        }
+
+        let internal_arg_indices = proc_named_arg_internal_indices(name, args);
+        let mut lowered_args = Vec::<CallArg>::with_capacity(args.len());
+        let mut seen_param_args = HashSet::<String>::new();
+        for (arg_idx, mut arg) in std::mem::take(args).into_iter().enumerate() {
+            let arg_is_internal = internal_arg_indices.contains(&arg_idx)
+                || proc_named_arg_is_internal(arg.name.as_deref());
+            let arg_kind = if arg_is_internal {
+                ProcCallArgKind::Internal
+            } else {
+                proc_call_arg_kind(&target.api, arg.name.as_deref())
+            };
+            if !arg_is_internal {
+                self.lower_expr(&mut arg.expr, true);
+            }
+
+            match arg_kind {
+                ProcCallArgKind::Param => {
+                    let arg_name = arg.name.clone().unwrap_or_default();
+                    if !seen_param_args.insert(arg_name.clone()) {
+                        push_semantic(
+                            DiagCtx::new(arg.expr.loc()),
+                            self.errors,
+                            format!(
+                                "processor call '{}(...)': duplicate named argument '{}'",
+                                target.display_name, arg_name
+                            ),
+                        );
+                        continue;
+                    }
+                    let Some(slots) = proc_named_param_slots(&target.api, &arg_name, false) else {
+                        continue;
+                    };
+                    for (slot_idx, slot) in slots.iter().enumerate() {
+                        let mut value = proc_named_arg_array_slot_expr(
+                            &arg.expr,
+                            slot_idx,
+                            slots.len(),
+                            &target.display_name,
+                            &arg_name,
+                            self.errors,
+                        );
+                        if let Some(range) = slot.range {
+                            value =
+                                cast_expr_to_primitive(clamp_expr_to_range(value, range), slot.ty);
+                        }
+                        self.prelude.push(proc_named_arg_assignment_stmt(
+                            &target.receiver,
+                            &slot.name,
+                            value,
+                        ));
+                    }
+                }
+                ProcCallArgKind::Ambiguous => {
+                    let arg_name = arg.name.clone().unwrap_or_default();
+                    push_semantic(
                     DiagCtx::new(arg.expr.loc()),
-                    errors,
+                    self.errors,
                     format!(
                         "processor call '{}(...)' named argument '{}' matches both an input and a param",
                         target.display_name, arg_name
                     ),
                 );
-                lowered_args.push(arg);
-            }
-            ProcCallArgKind::PrivateParam => {
-                let arg_name = arg.name.clone().unwrap_or_default();
-                push_semantic(
+                    lowered_args.push(arg);
+                }
+                ProcCallArgKind::PrivateParam => {
+                    let arg_name = arg.name.clone().unwrap_or_default();
+                    push_semantic(
                     DiagCtx::new(arg.expr.loc()),
-                    errors,
+                    self.errors,
                     format!(
                         "processor call '{}(...)' named argument '{}' is private and cannot be used as a live param argument; pass it to the constructor or builtin init(...), or expose an event",
                         target.display_name, arg_name
                     ),
                 );
-                lowered_args.push(arg);
+                    lowered_args.push(arg);
+                }
+                ProcCallArgKind::Input | ProcCallArgKind::Unknown => {
+                    let temp_name = proc_named_arg_temp_name(self.temp_counter);
+                    self.prelude
+                        .push(assign_temp_stmt(temp_name.clone(), arg.expr));
+                    arg.expr = Expr::var(temp_name);
+                    lowered_args.push(arg);
+                }
+                ProcCallArgKind::Internal => lowered_args.push(arg),
             }
-            ProcCallArgKind::Input | ProcCallArgKind::Unknown => {
-                let temp_name = proc_named_arg_temp_name(temp_counter);
-                prelude.push(assign_temp_stmt(temp_name.clone(), arg.expr));
-                arg.expr = Expr::var(temp_name);
-                lowered_args.push(arg);
-            }
-            ProcCallArgKind::Internal => lowered_args.push(arg),
+        }
+        *args = lowered_args;
+
+        if replace_call_with_temp {
+            self.capture_value(expr);
         }
     }
-    *args = lowered_args;
 
-    if replace_call_with_temp {
-        let temp_name = proc_named_arg_result_temp_name(temp_counter);
-        prelude.push(assign_temp_stmt(temp_name.clone(), expr.clone()));
-        *expr = Expr::var(temp_name);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn normalize_indexed_receiver_for_named_proc_args(
-    target: &mut ProcNamedArgCallTarget,
-    args: &mut [CallArg],
-    proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
-    proc_api: &HashMap<String, ProcApi>,
-    aliases: &ProcArrayAliases,
-    prelude: &mut Vec<Stmt>,
-    temp_counter: &mut usize,
-    errors: &mut Vec<Diagnostic>,
-) {
-    let ProcNamedArgReceiver::Indexed {
-        index,
-        resolved_slot,
-        ..
-    } = &mut target.receiver
-    else {
-        return;
-    };
-    if resolved_slot.is_some() {
-        return;
+    fn capture_value(&mut self, expr: &mut Expr) {
+        let name = proc_named_arg_result_temp_name(self.temp_counter);
+        self.prelude
+            .push(assign_temp_stmt(name.clone(), expr.clone()));
+        *expr = Expr::var(name);
     }
 
-    lower_named_proc_param_calls_in_expr(
-        index,
-        proc_vars,
-        proc_array_slots,
-        proc_api,
-        aliases,
-        prelude,
-        temp_counter,
-        true,
-        errors,
-    );
-    let temp_name = proc_named_arg_temp_name(temp_counter);
-    prelude.push(assign_temp_stmt(temp_name.clone(), index.clone()));
-    *index = Expr::var(temp_name.clone());
-    for arg in &mut *args {
-        if arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG) {
-            arg.expr = Expr::var(temp_name.clone());
+    fn normalize_receiver(&mut self, target: &mut ProcNamedArgCallTarget, args: &mut [CallArg]) {
+        let ProcNamedArgReceiver::Indexed {
+            index,
+            resolved_slot,
+            ..
+        } = &mut target.receiver
+        else {
+            return;
+        };
+        if resolved_slot.is_some() {
             return;
         }
-    }
-    let mut positional_seen = 0usize;
-    for arg in &mut *args {
-        if arg.name.is_none() {
-            if positional_seen == 1 {
+
+        self.lower_expr(index, true);
+        let temp_name = proc_named_arg_temp_name(self.temp_counter);
+        self.prelude
+            .push(assign_temp_stmt(temp_name.clone(), index.clone()));
+        *index = Expr::var(temp_name.clone());
+        for arg in &mut *args {
+            if arg.name.as_deref() == Some(PROC_INDEX_EXPR_ARG) {
                 arg.expr = Expr::var(temp_name.clone());
                 return;
             }
-            positional_seen += 1;
+        }
+        let mut positional_seen = 0usize;
+        for arg in &mut *args {
+            if arg.name.is_none() {
+                if positional_seen == 1 {
+                    arg.expr = Expr::var(temp_name.clone());
+                    return;
+                }
+                positional_seen += 1;
+            }
         }
     }
 }
 
-fn reject_named_proc_param_calls_in_expr(
+pub(super) fn reject_named_proc_param_calls_in_expr(
     expr: &Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     context: &str,
     errors: &mut Vec<Diagnostic>,
@@ -942,176 +912,58 @@ fn reject_named_proc_param_calls_in_expr(
 fn lower_named_proc_param_calls_in_stmt(
     stmt: &mut Stmt,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut ProcArrayAliases,
     temp_counter: &mut usize,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
-    let mut prelude = Vec::<Stmt>::new();
+    let prelude = lower_named_proc_param_calls_in_statement(
+        stmt,
+        proc_vars,
+        proc_array_slots,
+        proc_api,
+        aliases,
+        temp_counter,
+        constants,
+        errors,
+    );
     match stmt {
         Stmt::Assign { target, expr, .. } => {
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
-            lower_named_proc_param_calls_in_expr(
-                expr,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                &mut prelude,
-                temp_counter,
-                false,
-                errors,
-            );
             update_proc_array_aliases_from_assignment(target, expr, proc_array_slots, aliases);
         }
-        Stmt::Expr { expr, .. } | Stmt::Return { expr, .. } => {
-            rewrite_proc_alias_calls_in_expr(expr, aliases);
-            lower_named_proc_param_calls_in_expr(
-                expr,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                &mut prelude,
-                temp_counter,
-                false,
-                errors,
-            );
-        }
-        Stmt::Print { values, .. } => {
-            for value in values {
-                rewrite_proc_alias_calls_in_expr(value, aliases);
-                lower_named_proc_param_calls_in_expr(
-                    value,
-                    proc_vars,
-                    proc_array_slots,
-                    proc_api,
-                    aliases,
-                    &mut prelude,
-                    temp_counter,
-                    false,
-                    errors,
-                );
-            }
-        }
         Stmt::If {
-            cond,
             then_branch,
             else_branch,
             ..
         } => {
-            rewrite_proc_alias_calls_in_expr(cond, aliases);
-            lower_named_proc_param_calls_in_expr(
-                cond,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                &mut prelude,
-                temp_counter,
-                false,
-                errors,
-            );
-            let mut then_aliases = aliases.clone();
-            lower_named_proc_param_calls_in_stmts_with_aliases(
-                then_branch,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                &mut then_aliases,
-                temp_counter,
-                errors,
-            );
-            let mut else_aliases = aliases.clone();
-            lower_named_proc_param_calls_in_stmts_with_aliases(
-                else_branch,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                &mut else_aliases,
-                temp_counter,
-                errors,
-            );
-        }
-        Stmt::For {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            rewrite_proc_alias_calls_in_expr(start, aliases);
-            rewrite_proc_alias_calls_in_expr(end, aliases);
-            lower_named_proc_param_calls_in_expr(
-                start,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                &mut prelude,
-                temp_counter,
-                false,
-                errors,
-            );
-            lower_named_proc_param_calls_in_expr(
-                end,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                aliases,
-                &mut prelude,
-                temp_counter,
-                false,
-                errors,
-            );
-            if let Some(step_expr) = step {
-                rewrite_proc_alias_calls_in_expr(step_expr, aliases);
-                lower_named_proc_param_calls_in_expr(
-                    step_expr,
+            for branch in [then_branch, else_branch] {
+                lower_named_proc_param_calls_in_stmts_with_aliases(
+                    branch,
                     proc_vars,
                     proc_array_slots,
                     proc_api,
-                    aliases,
-                    &mut prelude,
+                    &mut aliases.clone(),
                     temp_counter,
-                    false,
+                    constants,
                     errors,
                 );
             }
-            let mut body_aliases = aliases.clone();
+        }
+        Stmt::For { body, .. } | Stmt::While { body, .. } => {
             lower_named_proc_param_calls_in_stmts_with_aliases(
                 body,
                 proc_vars,
                 proc_array_slots,
                 proc_api,
-                &mut body_aliases,
+                &mut aliases.clone(),
                 temp_counter,
+                constants,
                 errors,
             );
         }
-        Stmt::While { cond, body, .. } => {
-            rewrite_proc_alias_calls_in_expr(cond, aliases);
-            reject_named_proc_param_calls_in_expr(
-                cond,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                "while conditions",
-                errors,
-            );
-            let mut body_aliases = aliases.clone();
-            lower_named_proc_param_calls_in_stmts_with_aliases(
-                body,
-                proc_vars,
-                proc_array_slots,
-                proc_api,
-                &mut body_aliases,
-                temp_counter,
-                errors,
-            );
-        }
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        _ => {}
     }
     prelude
 }
@@ -1119,7 +971,7 @@ fn lower_named_proc_param_calls_in_stmt(
 pub(super) fn update_proc_array_aliases_from_assignment(
     target: &AssignTarget,
     expr: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     aliases: &mut ProcArrayAliases,
 ) {
     let AssignTarget::Var(name) = target else {
@@ -1134,7 +986,7 @@ pub(super) fn update_proc_array_aliases_from_assignment(
 
 pub(super) fn proc_array_alias_from_index_expr(
     expr: &Expr,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
 ) -> Option<ProcArrayAliasInfo> {
     let source = indexed_read_source(expr)?;
     let array_base = resolve_proc_array_base_key(source.base, proc_array_slots)?;
@@ -1149,10 +1001,11 @@ pub(super) fn proc_array_alias_from_index_expr(
 fn lower_named_proc_param_calls_in_stmts_with_aliases(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     aliases: &mut ProcArrayAliases,
     temp_counter: &mut usize,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
     let mut rewritten = Vec::<Stmt>::with_capacity(stmts.len());
@@ -1164,6 +1017,7 @@ fn lower_named_proc_param_calls_in_stmts_with_aliases(
             proc_api,
             aliases,
             temp_counter,
+            constants,
             errors,
         );
         rewritten.extend(prelude);
@@ -1175,10 +1029,12 @@ fn lower_named_proc_param_calls_in_stmts_with_aliases(
 pub(crate) fn lower_named_proc_param_calls_in_stmts(
     stmts: &mut Vec<Stmt>,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
+    constants: &DeclaredSymbolMap,
     errors: &mut Vec<Diagnostic>,
 ) {
+    crate::proc_call_support::capture_proc_alias_selectors(stmts, proc_array_slots);
     let mut aliases = ProcArrayAliases::new();
     let mut temp_counter = 0usize;
     lower_named_proc_param_calls_in_stmts_with_aliases(
@@ -1188,6 +1044,7 @@ pub(crate) fn lower_named_proc_param_calls_in_stmts(
         proc_api,
         &mut aliases,
         &mut temp_counter,
+        constants,
         errors,
     );
 }
@@ -1284,6 +1141,11 @@ pub(crate) fn expand_proc_port_specs(
     const_arrays: &HashMap<String, TypedArrayInfo>,
     errors: &mut Vec<Diagnostic>,
 ) -> ExpandedProcPortSpecs {
+    if kind == "input" {
+        for port in ports {
+            validate_audio_port_type(port, errors);
+        }
+    }
     let params = ports
         .iter()
         .map(|port| ParamDecl {
@@ -1442,6 +1304,7 @@ fn expand_proc_value_specs(
                 );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_scalar: true,
                     slots: vec![ProcParamSlotSpec {
                         name: param.name.clone(),
                         private: param.private,
@@ -1533,6 +1396,7 @@ fn expand_proc_value_specs(
                 field_array_slots.insert(param.name.clone(), slot_names);
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_scalar: false,
                     slots,
                 });
             }
@@ -1617,6 +1481,7 @@ fn expand_proc_value_specs(
                 );
                 specs.push(ProcParamSpec {
                     name: param.name.clone(),
+                    is_scalar: false,
                     slots,
                 });
             }
@@ -1626,7 +1491,7 @@ fn expand_proc_value_specs(
     (specs, field_array_slots)
 }
 
-pub(crate) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
+pub(crate) fn proc_buffer_fn_param_type(spec: &TypedBufferDecl) -> FnParamType {
     let channels = match spec.channels {
         TypedBufferChannels::Mono => BufferChannels::Mono,
         TypedBufferChannels::Dynamic => BufferChannels::Dynamic,
@@ -1649,7 +1514,7 @@ pub(crate) fn proc_buffer_fn_param_type(spec: &ProcBufferSpec) -> FnParamType {
 pub(crate) fn rewrite_proc_calls_in_expr(
     expr: &mut Expr,
     proc_vars: &HashMap<String, ProcCallInstance>,
-    proc_array_slots: &HashMap<String, Vec<String>>,
+    proc_array_slots: &ProcArrayDeclarations,
     proc_api: &HashMap<String, ProcApi>,
     errors: &mut Vec<Diagnostic>,
 ) {
@@ -1767,9 +1632,6 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     return;
                 };
                 match index_target {
-                    ProcIndexResolution::Slot(resolved_slot) => {
-                        *name = resolved_slot;
-                    }
                     ProcIndexResolution::Dynamic {
                         array_base,
                         index_expr,
@@ -1819,7 +1681,8 @@ pub(crate) fn rewrite_proc_calls_in_expr(
             }
 
             if let Some(proc_var_raw) = name.strip_prefix(PROC_FIELD_SENTINEL_PREFIX) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
+                let cached = crate::proc_call_support::has_cached_proc_field_marker(args);
+                let mut dynamic_index = None::<(String, Expr, ProcArrayDeclaration, IndexAccess)>;
                 let proc_var = if proc_var_raw == PROC_INDEX_CALL_SENTINEL {
                     if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
@@ -1833,7 +1696,6 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         return;
                     };
                     match index_target {
-                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
                         ProcIndexResolution::Dynamic {
                             array_base,
                             index_expr,
@@ -1915,6 +1777,34 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     ) else {
                         return;
                     };
+                    if cached {
+                        // Keep the element selection attached to its complete
+                        // view. A borrowed slice need not expose flat columns
+                        // as separately declared array symbols.
+                        args.insert(
+                            field_pos,
+                            CallArg {
+                                name: Some(PROC_FIELD_SENTINEL_ARG.to_owned()),
+                                expr: Expr::var(&api.outputs.names[out_idx]),
+                            },
+                        );
+                        args.push(CallArg {
+                            name: Some(PROC_INDEX_BASE_ARG.to_owned()),
+                            expr: Expr::var(array_base),
+                        });
+                        args.push(CallArg {
+                            name: Some(PROC_INDEX_EXPR_ARG.to_owned()),
+                            expr: index_expr,
+                        });
+                        if access == IndexAccess::Unchecked {
+                            args.push(CallArg {
+                                name: Some(PROC_INDEX_UNCHECKED_ARG.to_owned()),
+                                expr: Expr::int(1),
+                            });
+                        }
+                        return;
+                    }
+                    args.retain(|argument| argument.name.as_deref() != Some(PROC_CACHED_FIELD_ARG));
                     let rewritten = build_dynamic_proc_array_dispatch_args(
                         args,
                         &api,
@@ -1956,7 +1846,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                     errors,
                 ) {
                     ProcParamFieldRead::Readable(param) => {
-                        *expr = Expr::var(format!("{proc_var}.{}", param.name));
+                        *expr = proc_instance_field_expr(&proc_var, &param.name, proc_array_slots);
                         return;
                     }
                     ProcParamFieldRead::Rejected => return,
@@ -1971,6 +1861,15 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                 ) else {
                     return;
                 };
+                if cached {
+                    *expr = proc_instance_field_expr(
+                        &proc_var,
+                        &api.outputs.names[out_idx],
+                        proc_array_slots,
+                    );
+                    return;
+                }
+                args.retain(|argument| argument.name.as_deref() != Some(PROC_CACHED_FIELD_ARG));
                 let mut rewritten = Vec::<CallArg>::with_capacity(args.len() + 1);
                 rewritten.push(CallArg {
                     name: None,
@@ -2026,7 +1925,7 @@ pub(crate) fn rewrite_proc_calls_in_expr(
             }
 
             if let Some((base_raw, event_name)) = split_dot_path(name) {
-                let mut dynamic_index = None::<(String, Expr, Vec<String>, IndexAccess)>;
+                let mut dynamic_index = None::<(String, Expr, ProcArrayDeclaration, IndexAccess)>;
                 let base = if base_raw == PROC_INDEX_CALL_SENTINEL {
                     if !can_resolve_proc_index_base(args, proc_array_slots) {
                         return;
@@ -2040,7 +1939,6 @@ pub(crate) fn rewrite_proc_calls_in_expr(
                         return;
                     };
                     match index_target {
-                        ProcIndexResolution::Slot(resolved_slot) => resolved_slot,
                         ProcIndexResolution::Dynamic {
                             array_base,
                             index_expr,

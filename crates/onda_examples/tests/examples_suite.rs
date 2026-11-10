@@ -9,11 +9,9 @@ use onda_codegen_llvm::{
 use onda_frontend::{parse_program, parse_program_file, Diagnostic, PrimitiveType};
 use onda_runtime::{
     bind_buffer as bind_buffer_raw, bind_input as bind_input_raw, bind_output as bind_output_raw,
-    create_instance_initialized, init_checked, prepare_unchecked_process, process_checked,
-    process_checked_segment, process_unchecked, process_unchecked_segment, set_param_by_index,
-    trigger_event_by_index_checked, validate_bindings, validate_buffers, validate_outputs,
-    InitMode, Instance, InstanceConfig, PROCESSOR_BEGIN_BLOCK, PROCESSOR_END_BLOCK,
-    PROCESSOR_FULL_BLOCK,
+    init_checked, prepare_process, process_checked_segment, process_unchecked,
+    process_unchecked_segment, set_param_by_index, trigger_event_by_index_checked, InitMode,
+    Instance, PROCESSOR_BEGIN_BLOCK, PROCESSOR_END_BLOCK, PROCESSOR_FULL_BLOCK,
 };
 use onda_semantics::{analyze, analyze_with_options, AnalysisOptions};
 include!("examples_suite/fixtures.rs");
@@ -32,7 +30,7 @@ fn bind_input(
     index: usize,
     ptr: *const u8,
     bytes: usize,
-) -> Result<(), Diagnostic> {
+) -> Result<(), onda_runtime::RuntimeError> {
     // Test buffers are owned by the calling scope and outlive processing.
     unsafe { bind_input_raw(instance, index, ptr, bytes) }
 }
@@ -42,7 +40,7 @@ fn bind_output(
     index: usize,
     ptr: *mut u8,
     bytes: usize,
-) -> Result<(), Diagnostic> {
+) -> Result<(), onda_runtime::RuntimeError> {
     // Test buffers are owned by the calling scope and outlive processing.
     unsafe { bind_output_raw(instance, index, ptr, bytes) }
 }
@@ -56,7 +54,7 @@ fn bind_buffer(
     channels: usize,
     sample_rate_hz: f32,
     elem_ty: PrimitiveType,
-) -> Result<(), Diagnostic> {
+) -> Result<(), onda_runtime::RuntimeError> {
     // Test buffers are owned by the calling scope and outlive processing.
     unsafe {
         bind_buffer_raw(
@@ -83,8 +81,16 @@ mod fft_accuracy;
 mod generic_defs;
 #[path = "examples_suite/language_core.rs"]
 mod language_core;
+#[path = "examples_suite/main_entry.rs"]
+mod main_entry;
 #[path = "examples_suite/proc_local_defs.rs"]
 mod proc_local_defs;
+#[path = "examples_suite/processor_buffer_payload.rs"]
+mod processor_buffer_payload;
+#[path = "examples_suite/processor_storage.rs"]
+mod processor_storage;
+#[path = "examples_suite/processor_views.rs"]
+mod processor_views;
 #[path = "examples_suite/slices_and_ports.rs"]
 mod slices_and_ports;
 #[path = "examples_suite/stdlib_dsp_regressions.rs"]
@@ -97,3 +103,6 @@ mod stdlib_reverb;
 mod stdlib_smoothing;
 #[path = "examples_suite/tuples.rs"]
 mod tuples;
+
+#[path = "examples_suite/buffer_metadata.rs"]
+mod buffer_metadata;

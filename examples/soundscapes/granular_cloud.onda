@@ -5,7 +5,7 @@ import std/pitch
 import std/random
 
 const GrainCount = 16
-const TapeFrames = i32(SR * 4)
+const TapeSamples = i32(SR * 4)
 const SourcePatternLength = 7
 const SourceNotes: i32[SourcePatternLength] = [45, 52, 57, 64, 55, 69, 60]
 
@@ -23,9 +23,9 @@ params:
   level = 1.0 {0.0, 1.0}
 
 init:
-  tape: f32[TapeFrames]
+  tape: f32[TapeSamples]
   write_index = 0
-  recorded_frames = 0
+  recorded_samples = 0
 
   grain_position: f32[GrainCount]
   grain_speed: f32[GrainCount]
@@ -73,16 +73,16 @@ sample:
 
   if !freeze:
     tape[write_index] = source + tape[write_index] * feedback
-    write_index = (write_index + 1) % TapeFrames
-    recorded_frames = min(recorded_frames + 1, TapeFrames)
+    write_index = (write_index + 1) % TapeSamples
+    recorded_samples = min(recorded_samples + 1, TapeSamples)
 
-  if spawn_clock <= 0 && recorded_frames > i32(SR * 0.12):
-    available = max(recorded_frames - 4, 1)
+  if spawn_clock <= 0 && recorded_samples > i32(SR * 0.12):
+    available = max(recorded_samples - 4, 1)
     history = (0.08 + rng.next() * scatter * 3.6) * SR
     history = min(history, available)
     position = write_index - history
     if position < 0.0:
-      position = position + TapeFrames
+      position = position + TapeSamples
 
     grain_position[next_grain] = position
     grain_speed[next_grain] = std::pitch::ratio_between(0.0, pitch) * rng.range(1.0 - pitch_jitter, 1.0 + pitch_jitter)
@@ -103,7 +103,7 @@ sample:
       gain_l, gain_r = std::levels::pan_3db(grain_pan[i])
       cloud_l = cloud_l + grain_signal * gain_l
       cloud_r = cloud_r + grain_signal * gain_r
-      grain_position[i] = wrap(grain_position[i] + grain_speed[i], 0.0, TapeFrames)
+      grain_position[i] = wrap(grain_position[i] + grain_speed[i], 0.0, TapeSamples)
       grain_age[i] = grain_age[i] + 1
 
   normalization = 1.0 / sqrt(max(density * grain_size, 1.0))

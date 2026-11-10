@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OndaAudioProcessor } from "@onda-lang/webaudio";
+import { OndaAudioProcessor, ONDA_RUNTIME_ERROR } from "@onda-lang/webaudio";
 import { BrowserParamSmoothing } from "./param-smoothing.js";
 
 function fixture() {
@@ -48,11 +48,11 @@ test("smoothing failures on the current processor are reported without losing th
   const host = fixture();
   host.preference.set(50);
   host.port.dispatchEvent(new MessageEvent("message", { data: {
-    type: "onda-error", requestId: host.messages[0].requestId, error: "update failed",
+    type: "onda-status", requestId: host.messages[0].requestId, operation: 5, status: ONDA_RUNTIME_ERROR.INVALID_SMOOTHING,
   } }));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(host.preference.milliseconds, 50);
-  assert.equal(host.errors[0].message, "update failed");
+  assert.equal(host.errors[0].code, ONDA_RUNTIME_ERROR.INVALID_SMOOTHING);
   host.close();
 });
 

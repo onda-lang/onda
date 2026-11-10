@@ -1,0 +1,26 @@
+def updated(value):
+  return value * 2.0
+
+proc Main:
+  params:
+    gain = 0.25 {0.0, 1.0, unit = "x"} => changed
+
+  init:
+    calls: i32 = 0
+    state = 0.0
+
+  def changed():
+    calls = calls + 1
+
+  delegate updated(value: f32)
+
+  event reset(gain: f32 = 2.0):
+    state = gain
+    updated(state)
+
+  block:
+    level = gain
+    sample:
+      state = state + level
+      out1 = state
+      out2 = calls

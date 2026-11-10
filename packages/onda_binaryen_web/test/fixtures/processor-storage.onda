@@ -1,0 +1,31 @@
+proc Voice:
+  init:
+    history: i32[3] = [1, 2, 3]
+  event seed(value: i32):
+    history[0] = value
+  sample:
+    previous = history[0]
+    history[0] = history[1]
+    history[1] = history[2]
+    history[2] = previous + 1
+    out1 = f32(previous)
+proc Bank:
+  init:
+    voices: Voice[128] = Voice()
+  event seed(index: i32, value: i32):
+    voices[index].seed(value)
+  sample:
+    out1 = voices[127]() + 10.0 * voices[0]()
+proc Rack:
+  init:
+    banks: Bank[2] = Bank()
+  event seed(bank: i32, voice: i32, value: i32):
+    banks[bank].seed(voice, value)
+  sample:
+    out1 = banks[0]() + 100.0 * banks[1]()
+init:
+  rack = Rack()
+event Seed(bank: i32, voice: i32, value: i32):
+  rack.seed(bank, voice, value)
+sample:
+  out1 = rack()

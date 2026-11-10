@@ -1,0 +1,25 @@
+proc Voice:
+  ins:
+    signal: f32
+  params:
+    gain = 1.0 {0.0, 4.0} => update
+  init:
+    updates = 0
+  def update():
+    updates += 1
+  sample:
+    out1 = signal * gain + f32(updates) * 100.0
+
+proc Bank:
+  init:
+    voice = Voice()
+
+proc Main:
+  init:
+    bank = Bank()
+  sample:
+    selected = bank.voice
+    value = selected(2.0, gain = 3.0)
+    selected(signal = 3.0, gain = 9.0)
+    out1 = value
+    out2 = selected.out1

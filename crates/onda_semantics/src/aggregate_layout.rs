@@ -10,11 +10,6 @@ pub(crate) const MAX_AGGREGATE_NESTING: usize = 256;
 /// Bounds the recursive shapes materialized across the program. Fixed array
 /// extents remain tensor axes and therefore do not increase this count.
 pub(crate) const MAX_AGGREGATE_LAYOUT_NODES: usize = 1 << 16;
-/// Bounds the canonical storage and ABI slots produced by any one aggregate.
-/// Array extents remain inside one tensor slot; only distinct leaf tensors
-/// count toward this limit. Half of the function ABI budget lets a maximum-
-/// width aggregate be both an input and a result of one helper.
-pub(crate) const MAX_AGGREGATE_LAYOUT_LEAVES: usize = onda_mir::MAX_FUNCTION_PARAMETER_COUNT / 2;
 
 /// Deterministic program-local identity for a resolved aggregate layout.
 ///
@@ -176,14 +171,18 @@ impl AggregateLayout {
 /// Backend-facing table of all aggregate layouts in a typed program.
 #[derive(Debug, Clone, Default)]
 pub struct AggregateLayoutTable {
+    enums: HashMap<u32, onda_processor_abi::EnumMetadata>,
     layouts: Vec<AggregateLayout>,
     ids_by_struct_name: HashMap<String, AggregateLayoutId>,
 }
 
 impl AggregateLayoutTable {
-    pub fn build(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
+    pub fn build(
+        structs: &[TypedStruct],
+        enums: &[crate::EnumDef],
+    ) -> Result<Self, Vec<AggregateLayoutError>> {
         validate_aggregate_structure(structs).map_err(|error| vec![error])?;
-        LayoutBuilder::new(structs)?.build()
+        LayoutBuilder::new(structs, enums)?.build()
     }
 
     pub(crate) fn populate_message_defaults<'a>(
@@ -215,6 +214,10 @@ impl AggregateLayoutTable {
                 );
             }
         }
+    }
+
+    pub(crate) fn payload_scalar(&self, ty: PrimitiveType) -> PayloadType {
+        crate::enum_support::payload_scalar(ty, &self.enums)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -253,11 +256,6 @@ pub enum AggregateLayoutError {
         count: usize,
     },
     LayoutsTooLarge {
-        struct_name: String,
-        count: usize,
-        maximum: usize,
-    },
-    LayoutTooWide {
         struct_name: String,
         count: usize,
         maximum: usize,
@@ -307,14 +305,6 @@ impl fmt::Display for AggregateLayoutError {
             } => write!(
                 f,
                 "aggregate layouts exceed the limit of {maximum} expanded shape nodes while planning '{struct_name}' ({count} required)"
-            ),
-            Self::LayoutTooWide {
-                struct_name,
-                count,
-                maximum,
-            } => write!(
-                f,
-                "aggregate '{struct_name}' lowers to {count} canonical leaf tensors, exceeding the limit of {maximum}"
             ),
             Self::DuplicateField {
                 struct_name,
@@ -463,40 +453,25 @@ pub(crate) fn validate_aggregate_structure(
     }
 
     let mut shape_nodes = vec![0usize; structs.len()];
-    let mut leaf_tensors = vec![0usize; structs.len()];
     let mut total_nodes = 0usize;
     for &current in topological.iter().rev() {
         let mut node_count = 1usize;
-        let mut leaf_count = 0usize;
         for field in aggregate_fields(&structs[current]) {
-            let nested_metrics = |name: Option<&str>| {
+            let nested_nodes = |name: Option<&str>| {
                 name.and_then(|name| indices.get(name))
-                    .map_or((1, 1), |index| (shape_nodes[*index], leaf_tensors[*index]))
+                    .map_or(1, |index| shape_nodes[*index])
             };
-            let (field_nodes, field_leaves) = match &field.ty {
-                TypedFieldType::Scalar(_) => (1, 1),
-                TypedFieldType::Tuple(elements) => {
-                    (1usize.saturating_add(elements.len()), elements.len())
-                }
-                TypedFieldType::Struct => nested_metrics(field.struct_name.as_deref()),
+            let field_nodes = match &field.ty {
+                TypedFieldType::Scalar(_) => 1,
+                TypedFieldType::Tuple(elements) => 1usize.saturating_add(elements.len()),
+                TypedFieldType::Struct => nested_nodes(field.struct_name.as_deref()),
                 TypedFieldType::Array(_) => {
-                    let (element_nodes, element_leaves) =
-                        nested_metrics(field.array_elem_struct.as_deref());
-                    (1usize.saturating_add(element_nodes), element_leaves)
+                    1usize.saturating_add(nested_nodes(field.array_elem_struct.as_deref()))
                 }
             };
             node_count = node_count.saturating_add(field_nodes);
-            leaf_count = leaf_count.saturating_add(field_leaves);
-        }
-        if leaf_count > MAX_AGGREGATE_LAYOUT_LEAVES {
-            return Err(AggregateLayoutError::LayoutTooWide {
-                struct_name: structs[current].name.clone(),
-                count: leaf_count,
-                maximum: MAX_AGGREGATE_LAYOUT_LEAVES,
-            });
         }
         shape_nodes[current] = node_count;
-        leaf_tensors[current] = leaf_count;
         total_nodes = total_nodes.saturating_add(node_count);
         if total_nodes > MAX_AGGREGATE_LAYOUT_NODES {
             return Err(AggregateLayoutError::LayoutsTooLarge {
@@ -516,6 +491,8 @@ enum VisitState {
 }
 
 struct LayoutBuilder {
+    enum_types: HashMap<String, onda_frontend::EnumType>,
+    enums: HashMap<u32, onda_processor_abi::EnumMetadata>,
     definitions: HashMap<String, TypedStruct>,
     ids: HashMap<String, AggregateLayoutId>,
     sorted_names: Vec<String>,
@@ -525,7 +502,10 @@ struct LayoutBuilder {
 }
 
 impl LayoutBuilder {
-    fn new(structs: &[TypedStruct]) -> Result<Self, Vec<AggregateLayoutError>> {
+    fn new(
+        structs: &[TypedStruct],
+        enums: &[crate::EnumDef],
+    ) -> Result<Self, Vec<AggregateLayoutError>> {
         if u32::try_from(structs.len()).is_err() {
             return Err(vec![AggregateLayoutError::TooManyLayouts {
                 count: structs.len(),
@@ -562,6 +542,17 @@ impl LayoutBuilder {
             .collect();
 
         Ok(Self {
+            enum_types: enums
+                .iter()
+                .filter_map(|def| def.resolved.map(|ty| (def.name.clone(), ty)))
+                .collect(),
+            enums: enums
+                .iter()
+                .filter_map(|def| {
+                    def.resolved
+                        .map(|ty| (ty.id, crate::enum_support::metadata(def)))
+                })
+                .collect(),
             definitions,
             ids,
             sorted_names,
@@ -592,6 +583,7 @@ impl LayoutBuilder {
             })
             .collect();
         Ok(AggregateLayoutTable {
+            enums: self.enums,
             layouts,
             ids_by_struct_name: self.ids,
         })
@@ -698,7 +690,10 @@ impl LayoutBuilder {
             let mut leaf = self.scalar_leaf(
                 path,
                 tensor.path,
-                primitive_encoding(tensor.encoding),
+                tensor.enumeration.map_or_else(
+                    || primitive_encoding(tensor.encoding),
+                    |enumeration| PrimitiveType::Enum(self.enum_types[&enumeration.name]),
+                ),
                 tensor.shape,
                 definition,
             )?;
@@ -720,26 +715,32 @@ impl LayoutBuilder {
         owner: &TypedStruct,
         field: &TypedStructField,
     ) -> Result<PayloadType, AggregateLayoutError> {
-        let scalar = |ty| PayloadType::Scalar {
-            encoding: scalar_encoding(ty),
-            integer_range: field.integer_range.map(|range| {
-                let scalar = match range.ty {
-                    PrimitiveType::I32 => "i32",
-                    PrimitiveType::I64 => "i64",
-                    _ => unreachable!("integer domain"),
-                };
-                onda_processor_abi::IntegerRangeMetadata {
-                    min: onda_processor_abi::IntegerRangeEndpoint {
-                        scalar: scalar.to_owned(),
-                        value: range.min.to_string(),
-                    },
-                    max: onda_processor_abi::IntegerRangeEndpoint {
-                        scalar: scalar.to_owned(),
-                        value: range.max.to_string(),
-                    },
-                    mode: if range.wrap { "wrap" } else { "clamp" }.to_owned(),
-                }
-            }),
+        let scalar = |ty| {
+            let mut scalar = crate::enum_support::payload_scalar(ty, &self.enums);
+            let PayloadType::Scalar { integer_range, .. } = &mut scalar else {
+                unreachable!()
+            };
+            *integer_range = integer_range.take().or_else(|| {
+                field.integer_range.map(|range| {
+                    let scalar = match range.ty {
+                        PrimitiveType::I32 => "i32",
+                        PrimitiveType::I64 => "i64",
+                        _ => unreachable!("integer domain"),
+                    };
+                    onda_processor_abi::IntegerRangeMetadata {
+                        min: onda_processor_abi::IntegerRangeEndpoint {
+                            scalar: scalar.to_owned(),
+                            value: range.min.to_string(),
+                        },
+                        max: onda_processor_abi::IntegerRangeEndpoint {
+                            scalar: scalar.to_owned(),
+                            value: range.max.to_string(),
+                        },
+                        mode: if range.wrap { "wrap" } else { "clamp" }.to_owned(),
+                    }
+                })
+            });
+            scalar
         };
         match &field.ty {
             TypedFieldType::Scalar(ty) => {
@@ -901,7 +902,7 @@ pub(crate) fn scalar_encoding(ty: PrimitiveType) -> ScalarEncoding {
     match ty {
         PrimitiveType::F32 => ScalarEncoding::F32,
         PrimitiveType::F64 => ScalarEncoding::F64,
-        PrimitiveType::I32 => ScalarEncoding::I32,
+        PrimitiveType::I32 | PrimitiveType::Enum(_) => ScalarEncoding::I32,
         PrimitiveType::I64 => ScalarEncoding::I64,
         PrimitiveType::Bool => ScalarEncoding::Bool,
     }
@@ -968,8 +969,8 @@ mod tests {
             name: "Alpha".to_owned(),
             fields: vec![scalar_field("value", PrimitiveType::F64)],
         };
-        let forward = AggregateLayoutTable::build(&[zed.clone(), alpha.clone()]).unwrap();
-        let reverse = AggregateLayoutTable::build(&[alpha, zed]).unwrap();
+        let forward = AggregateLayoutTable::build(&[zed.clone(), alpha.clone()], &[]).unwrap();
+        let reverse = AggregateLayoutTable::build(&[alpha, zed], &[]).unwrap();
 
         assert_eq!(
             forward.id_for_struct("Alpha"),
@@ -986,7 +987,7 @@ mod tests {
             name: "Direct".to_owned(),
             fields: vec![struct_field("next", "Direct")],
         };
-        let direct_error = AggregateLayoutTable::build(&[direct]).unwrap_err();
+        let direct_error = AggregateLayoutTable::build(&[direct], &[]).unwrap_err();
         assert!(matches!(
             &direct_error[0],
             AggregateLayoutError::RecursiveAggregate { cycle }
@@ -1001,7 +1002,7 @@ mod tests {
             name: "B".to_owned(),
             fields: vec![struct_array_field("as", "A", 3)],
         };
-        let errors = AggregateLayoutTable::build(&[a, b]).unwrap_err();
+        let errors = AggregateLayoutTable::build(&[a, b], &[]).unwrap_err();
         assert!(errors.iter().any(|error| matches!(
             error,
             AggregateLayoutError::RecursiveAggregate { cycle }
@@ -1034,13 +1035,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_wide_layout_before_materializing_canonical_leaves() {
+    fn accepts_wide_nested_layouts() {
         let mut structs = vec![TypedStruct {
             name: "S0".to_owned(),
             fields: vec![scalar_field("value", PrimitiveType::F32)],
         }];
-        let mut leaves = 1usize;
-        for level in 1.. {
+        for level in 1..=10 {
             let nested = format!("S{}", level - 1);
             structs.push(TypedStruct {
                 name: format!("S{level}"),
@@ -1049,21 +1049,12 @@ mod tests {
                     struct_field("right", &nested),
                 ],
             });
-            leaves *= 2;
-            if leaves > MAX_AGGREGATE_LAYOUT_LEAVES {
-                break;
-            }
         }
 
-        assert!(validate_aggregate_structure(&structs[..structs.len() - 1]).is_ok());
-        assert!(matches!(
-            validate_aggregate_structure(&structs),
-            Err(AggregateLayoutError::LayoutTooWide {
-                count,
-                maximum: MAX_AGGREGATE_LAYOUT_LEAVES,
-                ..
-            }) if count == leaves
-        ));
+        let layouts = AggregateLayoutTable::build(&structs, &[]).unwrap();
+        let widest = layouts.layout_for_struct("S10").unwrap();
+        assert_eq!(widest.leaves.len(), 1024);
+        assert_eq!(widest.scalar_width, 1024);
     }
 
     #[test]
@@ -1072,13 +1063,13 @@ mod tests {
             name: "Leaf".to_owned(),
             fields: vec![scalar_field("value", PrimitiveType::F32)],
         };
-        let extent = MAX_AGGREGATE_LAYOUT_LEAVES * 4;
+        let extent = 2048;
         let batch = TypedStruct {
             name: "Batch".to_owned(),
             fields: vec![struct_array_field("items", "Leaf", extent)],
         };
 
-        let layouts = AggregateLayoutTable::build(&[leaf, batch]).unwrap();
+        let layouts = AggregateLayoutTable::build(&[leaf, batch], &[]).unwrap();
         let batch = layouts.layout_for_struct("Batch").unwrap();
         assert_eq!(batch.leaves.len(), 1);
         assert_eq!(batch.scalar_width, extent);
@@ -1086,7 +1077,7 @@ mod tests {
 
     #[test]
     fn rejects_excessive_total_layout_shape_before_materializing() {
-        let fields = (0..MAX_AGGREGATE_LAYOUT_LEAVES)
+        let fields = (0..512)
             .map(|index| scalar_field(&format!("field{index}"), PrimitiveType::F32))
             .collect::<Vec<_>>();
         let nodes_per_layout = fields.len() + 1;
@@ -1122,7 +1113,7 @@ mod tests {
             name: "Outer".to_owned(),
             fields: vec![struct_array_field("inners", "Inner", usize::MAX)],
         };
-        let errors = AggregateLayoutTable::build(&[leaf, inner, outer]).unwrap_err();
+        let errors = AggregateLayoutTable::build(&[leaf, inner, outer], &[]).unwrap_err();
         assert!(errors.iter().any(|error| matches!(
             error,
             AggregateLayoutError::SizeOverflow {

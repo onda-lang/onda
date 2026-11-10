@@ -2,7 +2,7 @@
 
 This example sends `f32, Point[], i32, Point[]` through the zero-copy C event-view API in two ways:
 
-- metadata-driven: enumerate `onda_event_tensor_info` records and use the checked call;
+- metadata-driven: enumerate `onda_payload_tensor_info` records and use the checked call;
 - statically known: declare views directly in schema order and use the unchecked call.
 
 Both variants pass six contiguous SoA tensors. Their dispatch paths neither read nor write the

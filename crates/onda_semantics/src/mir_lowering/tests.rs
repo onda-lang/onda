@@ -3167,7 +3167,7 @@ sample:
     let dump = format_program(&mir);
     assert!(dump.contains("load_buffer_param @param0"));
     assert!(dump.contains("store_buffer_param @param0"));
-    assert!(dump.contains("buffer_len @param0"));
+    assert!(dump.contains("buffer_samples @param0"));
     assert!(dump.contains("buffer_channels @param0"));
     assert!(dump.contains("buffer_sample_rate @param0"));
     assert!(dump.contains("buffer_is_bound @param0"));
@@ -4144,7 +4144,7 @@ sample:
     let dump = format_program(&mir);
     assert!(dump.contains("load_buffer @buffer0"));
     assert!(dump.contains("store_buffer @buffer0"));
-    assert!(dump.contains("buffer_len @buffer0"));
+    assert!(dump.contains("buffer_samples @buffer0"));
     assert!(dump.contains("buffer_channels @buffer0"));
     assert!(dump.contains("buffer_sample_rate @buffer0"));
     assert!(dump.contains("buffer_is_bound @buffer0"));
@@ -4326,7 +4326,7 @@ sample:
         .iter()
         .any(|state| state.name == "__onda_buffer_alias_selector_selected"));
     let dump = format_program(&mir);
-    assert!(dump.contains("buffer_len @buffer_array(first=0, len=2)"));
+    assert!(dump.contains("buffer_samples @buffer_array(first=0, len=2)"));
     assert!(dump.contains("buffer_is_bound @buffer_array(first=0, len=2)"));
     assert!(dump.contains("load_buffer @buffer_array(first=0, len=2)"));
     assert!(dump.contains("store_buffer @buffer_array(first=0, len=2)"));
@@ -4405,7 +4405,7 @@ sample:
     let step = formatted_function(&dump, "Reader.__onda_proc_step");
     assert!(step.contains("load_buffer_param @buffer_param_span"));
     let block_pre = formatted_function(&dump, "Reader.__onda_proc_block_pre");
-    assert!(block_pre.contains("buffer_len @buffer_param_span"));
+    assert!(block_pre.contains("buffer_samples @buffer_param_span"));
     assert!(block_pre.contains("buffer_is_bound @buffer_param_span"));
 }
 

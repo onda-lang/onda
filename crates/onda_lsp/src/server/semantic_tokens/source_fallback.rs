@@ -941,11 +941,13 @@ pub(super) fn collect_source_declaration_symbols(source: &str, scope: &mut Seman
         if trimmed.starts_with("proc ")
             || trimmed.starts_with("processor ")
             || trimmed.starts_with("struct ")
+            || trimmed.starts_with("enum ")
         {
             let after_kw = trimmed
                 .strip_prefix("processor ")
                 .or_else(|| trimmed.strip_prefix("proc "))
                 .or_else(|| trimmed.strip_prefix("struct "))
+                .or_else(|| trimmed.strip_prefix("enum "))
                 .unwrap_or_default();
             if let Some(name) = extract_leading_ident(after_kw.trim_start()) {
                 scope.types.insert(name.to_owned());

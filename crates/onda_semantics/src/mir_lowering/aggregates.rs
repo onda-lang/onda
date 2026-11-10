@@ -1,71 +1,6 @@
 use super::*;
 
 impl<'a> FunctionLowerer<'a> {
-    pub(super) fn lower_nested_proc_element_alias(
-        &mut self,
-        alias: &str,
-        base: &str,
-        index: &Expr,
-        access: IndexAccess,
-        block: &mut MirBlock,
-        statement_location: SourceLoc,
-    ) -> Result<bool, MirLoweringError> {
-        let Some((owner, array)) = self.nested_proc_array_source_any(base) else {
-            return Ok(false);
-        };
-        if self.bindings.contains_key(alias) || self.nested_proc_aliases.contains_key(alias) {
-            return Err(self.error(
-                format!(
-                    "nested processor element alias '{alias}' conflicts with an existing binding"
-                ),
-                statement_location,
-            ));
-        }
-        if array.slots.is_empty() || array.slots.len() > i32::MAX as usize {
-            return Err(self.error(
-                format!(
-                    "nested processor array '{}.{}' has an invalid semantic length {}",
-                    array.owner_struct,
-                    array.field_name,
-                    array.slots.len()
-                ),
-                statement_location,
-            ));
-        }
-        let raw_index = self.lower_expr(index, block)?;
-        let raw_index = self.coerce(raw_index, PrimitiveType::I32, block, index.loc())?;
-        let normalized = self.materialize_index_to_length(
-            raw_index.value,
-            Value::Constant(ScalarValue::I32(array.slots.len() as i32)),
-            access,
-            block,
-            statement_location.clone(),
-        );
-        let shapes = self.struct_field_shapes(&array.proc_name, statement_location.clone())?;
-        let alternatives = array
-            .slots
-            .iter()
-            .map(|slot| {
-                self.nested_proc_slot_call_arguments(
-                    &owner,
-                    slot,
-                    &shapes,
-                    block,
-                    statement_location.clone(),
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.nested_proc_aliases.insert(
-            alias.to_owned(),
-            NestedProcElementAlias {
-                struct_name: array.proc_name,
-                index: normalized,
-                alternatives,
-            },
-        );
-        Ok(true)
-    }
-
     pub(super) fn lower_struct_array_element_alias(
         &mut self,
         alias: &str,
@@ -126,14 +61,7 @@ impl<'a> FunctionLowerer<'a> {
             .runtime_globals_for_unbound(base)
             .is_some_and(|globals| globals.array_struct_roots.contains_key(base));
         if !has_direct_source {
-            return self.lower_nested_proc_element_alias(
-                alias,
-                base,
-                index,
-                source.access,
-                block,
-                statement_location,
-            );
+            return Ok(false);
         }
 
         let (struct_name, length, parameter_fields, runtime_root) =
@@ -141,6 +69,7 @@ impl<'a> FunctionLowerer<'a> {
                 struct_name,
                 length,
                 fields,
+                ..
             }) = self.bindings.get(base).cloned()
             {
                 let length = if source.access == IndexAccess::Clamp {
@@ -199,6 +128,7 @@ impl<'a> FunctionLowerer<'a> {
             match existing {
                 Binding::StructView {
                     struct_name: existing,
+                    ..
                 } if existing == &struct_name => {}
                 _ => {
                     return Err(self.error(
@@ -217,12 +147,18 @@ impl<'a> FunctionLowerer<'a> {
             length,
             source.access,
             block,
-            statement_location,
+            statement_location.clone(),
         );
 
+        let processor = self.selected_processor_view(
+            base,
+            Value::Local(normalized),
+            block,
+            statement_location,
+        )?;
         let shapes = self.struct_field_shapes(&struct_name, expression.loc())?;
         let mut selected_field = false;
-        for shape in shapes {
+        for (field_index, shape) in shapes.into_iter().enumerate() {
             let scalar = matches!(shape, StructFieldShape::Scalar { .. });
             let (field_name, element, width) = match shape {
                 StructFieldShape::Scalar { name, ty } => (name, ty, 1),
@@ -234,8 +170,8 @@ impl<'a> FunctionLowerer<'a> {
             selected_field = true;
             let slice = if let Some(fields) = &parameter_fields {
                 let (_, local, actual_element) = fields
-                    .iter()
-                    .find(|(candidate, _, _)| *candidate == field_name)
+                    .get(field_index)
+                    .filter(|(candidate, _, _)| *candidate == field_name)
                     .ok_or_else(|| {
                         self.error(
                             format!(
@@ -380,6 +316,7 @@ impl<'a> FunctionLowerer<'a> {
                     format!("{alias}.{}", field.name),
                     Binding::StructView {
                         struct_name: nested_struct.clone(),
+                        processor: None,
                     },
                 );
             }
@@ -414,14 +351,20 @@ impl<'a> FunctionLowerer<'a> {
             self.bindings.insert(
                 binding_name,
                 Binding::StructArrayParameter {
+                    processor: None,
                     struct_name: embedded.struct_name,
                     length: StructArrayLength::Fixed(embedded.len),
                     fields,
                 },
             );
         }
-        self.bindings
-            .insert(alias.to_owned(), Binding::StructView { struct_name });
+        self.bindings.insert(
+            alias.to_owned(),
+            Binding::StructView {
+                struct_name,
+                processor,
+            },
+        );
         Ok(true)
     }
 
@@ -867,9 +810,8 @@ impl<'a> FunctionLowerer<'a> {
         }
 
         let source_types = values.iter().map(|value| value.ty).collect::<Vec<_>>();
-        let target_types = declared_ty
-            .and_then(onda_frontend::DeclType::tuple)
-            .unwrap_or(&source_types);
+        let declared_types = declared_ty.and_then(onda_frontend::DeclType::tuple);
+        let target_types = declared_types.as_deref().unwrap_or(&source_types);
         if values.len() != target_types.len() {
             return Err(self.error(
                 format!(

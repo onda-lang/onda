@@ -181,7 +181,7 @@ pub(crate) fn typed_slice_alias_info(
     };
     if actual.as_ref() != Some(element) {
         let element_name = |element: &ArrayElemType| match element {
-            ArrayElemType::Primitive(ty) => ty.name().to_owned(),
+            ArrayElemType::Primitive(ty) => ty.name().into_owned(),
             ArrayElemType::Struct(name) => name.clone(),
         };
         let actual = actual.as_ref().map_or_else(

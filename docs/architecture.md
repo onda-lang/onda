@@ -20,17 +20,18 @@ measurement procedures and dated results.
 | `onda_codegen_llvm` | LLVM lowering and ORC JIT backend, plus AOT IR/object emission and metadata extraction. |
 | `onda_processor_abi` | Compiler-free shared processor descriptor schema and ABI version constants. |
 | `onda_compiler_web` | Filesystem-free browser compiler: in-memory source/projects plus embedded stdlib to validated current-schema MIR MessagePack or JSON. |
-| `onda_realtime` | Backend-independent realtime thread policy, including one-time x86 FTZ/DAZ setup. |
+| `onda_realtime` | Backend-independent realtime thread policy, including explicit x86 FTZ/DAZ and ARM64 FZ setup. |
 | `onda_host_protocol` | Canonical host-owned MIDI and transport event catalog shared by native tooling and browser hosts. |
 | `onda_runtime` | Runtime instance model and processing APIs (process / segment / reset). |
 | `onda_api` | C ABI surface exposed through `include/onda.h`. |
 | `onda_cpal` | Minimal CPAL/PipeWire backend: device discovery, RT callbacks, sample conversion, and SPSC transport. |
 | `onda_daemon` | Stateful session engine: in-memory analysis overlays and live run sessions. |
 | `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
+| `onda_scope` | Bounded min/max scope envelopes, display budgets, and a shared compact binary codec. |
 | `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and shared source formatting. |
-| `onda_cli` | `onda` binary: argument parsing and `compile`/`run`/`daemon`/`lsp` command dispatch. |
-| `onda_egui` | Native egui run host (default `onda run` UI). |
-| `onda_webview` | Native webview run host (opt-in via `--webview`). |
+| `onda_cli` | `onda` binary: argument parsing and `compile`/`bench`/`run`/`daemon`/`lsp` command dispatch. |
+| `onda_ui` | Host-independent Rust/wgpu run screen, interaction, text, shaders, Wasm canvas, and optional C interface. |
+| `onda_gpu` | Native winit adapter for the shared run screen, used by `onda run`. |
 | `onda_examples` | Example `.onda` programs and `.ondaproject` showcases surfaced through `examples/`. |
 
 Non-crate directories of note:
@@ -212,6 +213,15 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     differences without duplicating typing, assignment, or control-flow semantics.
   - `index_access.rs` — canonical source indexing access modes and unsafe receiver-call rewriting.
   - `port_coercion.rs` — port and parameter coercion.
+  - `input_smoothing.rs` — validates input `ramp`/`lag` attributes and lowers positive
+    durations to ordinary specialized stdlib instances, with default-value resets and
+    sample-entry caches. Zero durations create no instances or state. Proc lowering
+    refreshes input value parameters before each step; top-level MIR lowering installs
+    the generated caches over the read-only input surface, including dynamic array reads.
+  - `enum_support.rs` — enum display metadata and shared ordinal/storage domains. Enum identities remain
+    nominal scalar types through checking and specialization; executable MIR uses `i32`.
+  - `pipeline/namespace_flattening/{enums,type_rewriting}.rs` — enum registration, member constants, and
+    named type resolution across namespaces, aliases, templates, and executable declarations.
   - `declaration_coercion.rs` — struct field, param, and buffer coercion.
   - `namespacing.rs` — namespace, `use`, and qualified-path resolution.
   - `io_state_helpers.rs` — input/output/state surface helpers.
@@ -233,10 +243,58 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     each `await`. Reset invalidates only the program counter, leaving frame initialization to the
     next start.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
+    `declarations` shares normalized ports, parameters and buffers across nominal and physical
+    shape planning, child-surface checks, nested call signatures and delegate validation. Whole
+    input defaults remain available alongside expanded slots, and buffer metadata uses the
+    ordinary typed buffer declaration. It also owns shared processor init-scope setup.
+    `logical_types` describes source processor fields before
+    physical flattening. `view_catalog`
+    registers declared projections, generated operations and ordered resource captures;
+    `storage_projections` supplies exact typed storage plans to `proc_storage`. Uniform arrays
+    retain one declaration and constructor binding, with counted initialization and lifecycle loops.
+    `projection_callbacks` composes enclosing callback handlers, and `projection_resources` shares
+    the ordered capture plan between signatures and calls.
+    `resource_recipes` interns root selection recipes independently of buffer identities. Helpers
+    forward the base collections and resolve selectors in the declaration's scope at the selected
+    operation, sharing the same recipe path as inherited child resources. Calls in these recipes
+    use ordinary dependency selection and compile-context materialization.
+    MIR `processor_resource_recipes` discovers an operation's inherited dependencies before
+    preparing each owner frame once in declaration order, preserving shared binding identity
+    and selector effects inside the selected branch.
+    `mir_lowering/processor_elements` keeps explicit owned-array element sources as deferred
+    resource environments. Selecting a copied row uses the same ordered recipe planner;
+    copying its storage does not evaluate selectors or copy host descriptor pointers.
+    Deferred expressions participate in the ordinary overload and monomorphization fixed point
+    in their declaration scope. Dependency selection uses the shared recipe lookup for root and
+    inherited bindings, so selector helpers retain each operation's compile context.
+  - `processor_views.rs` — complete processor shapes and capture recipes used by call inference,
+    specialization and MIR. Shapes contain declared projections and resource layouts; physical root
+    instances and captured coordinates are values. Specialization and compile-context materialization
+    retain the required shared owner adapters without constructing fake source calls.
+    Materialized storage views are registered by function and binding after source checking,
+    so later projection checks preserve owner access without inferring it from generated names.
+    Lexical resource captures record the owner declaration ordinal and actual parameter at signature
+    generation, including task resume helpers. Lowering consumes that metadata without recovering
+    ownership from parameter names; lexical bindings retain their normal shadowing rules.
   - `processor_lowering/graph_lowering/` — graph inference/planning/emission/resolution/rewriting/surface/topology/validation/orchestration.
+- `processor_lowering/entry_adapter.rs` — automatic construction and host-interface
+  projection of an ordinary `Main` proc. Delegate exports are prepared before
+  delegate lowering; other bindings use resolved proc shapes. Parameter refresh
+  is scheduled before automatic block-pre hooks. Host controls stay separate
+  from mutable proc state. The adapter emits ordinary construction, positional
+  input calls, and stores; proc lowering owns execution rules, including input
+  clamping and oversampling. Generated entry ownership preserves authored-state
+  metadata. `TypedProgram::interface_name` supplies authored names to native
+  project validation, CLI metadata, and MIR descriptors while executable module
+  bindings retain their own scope. MIR and backends see the ordinary lowered
+  program.
 - `proc_call_rewrite.rs`, `proc_call_rewrite/call_arguments.rs`, `proc_call_support.rs`,
   `proc_resolution.rs`, `proc_state_rewrite.rs` — proc call lowering, named-argument and call-surface
   expansion, aliasing, and state symbol rewriting.
+  Assignments retain whether their processor parameter semantics have been lowered. Constructor
+  and builtin-init stores defer hooks to post-init; stores with scheduled hooks remain raw through
+  owner rewriting, cloning, and specialization. Lexical projection lowering handles only pending
+  writes, sharing the ordinary range and access checks without duplicating hook execution.
 - `internal_names.rs` — internal symbol naming.
 - `mir_lowering.rs` — transactional semantic-to-MIR lowering; owns executable storage/resources,
   events, functions, aggregate/reference shapes, recursive processor arrays, oversampling, and the
@@ -259,6 +317,18 @@ scheduling, and reusable proofs in one place while allowing target-specific code
     reads so unused arrays and length-only views do not allocate snapshots.
   - `mir_lowering/audio_outputs.rs` — per-sample audio-output cache initialization and single ordered
     commit, kept separate as the optimization-facing output transaction boundary.
+  - `mir_lowering/processor_lifecycle.rs` — lifecycle-slot references reconstructed from captured
+    processor roots and coordinates, including activation through selected-instance helper calls
+    and block-boundary completion when a borrowed child's parent is not stepped. Scalar children
+    share a single activation slot across their direct, borrowed, and enclosing parent hooks.
+    A selected post operation completes active descendants before entering its owner's post body
+    or task guard, including descendants borrowed through an inactive intermediate owner.
+    Scalar root hooks use the existing BEGIN/END scheduler; dependency propagation follows
+    forwarding and aliases back to owning storage, without adding activation checks to sample calls.
+    Retained owned processor copies carry their resource environments separately from their new
+    storage roots and participate in the same boundary scheduling as constructor-owned roots.
+    Local cleanup initializes captured coordinates and choice tags to neutral values at entry;
+    declaration guards still keep untaken resource recipes and physical references unevaluated.
   - `mir_lowering/tests.rs` — complete-program lowering regression coverage.
 
 ### `onda_mir` (`crates/onda_mir/src`)
@@ -269,15 +339,19 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `call_graph.rs` — iterative call-graph traversal and dependency worklists.
 - `analysis.rs` — backend-neutral call-transitive effects, reference access direction, and integer
   range facts.
+  `analysis/resource_aliases` retains collection windows as a symbolic graph and translates
+  demanded slot intervals through it, preserving precise resource identity without per-slot
+  provenance expansion for dynamic windows.
 - `memory.rs` — storage origins across slice definitions, reference arguments, and returns.
 - `loops.rs`, `loops/facts.rs` — counted-loop recognition and reusable per-function facts for
   pointwise audio, memory independence and native loop-cost queries.
 - `format.rs` — deterministic human-readable dumps for diagnostics and golden tests.
 - `validate.rs` — structural/type validation and explicit trusted-producer provenance for unchecked
   bounds and proven-safe slice-copy overlap.
-- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion,loop_distribution}.rs` — backend-neutral
+- `passes.rs`, `passes/{bounds_proofs,cse,state_promotion,loop_distribution,loop_peeling}.rs` — backend-neutral
   canonicalization, integer-range-based bounds proofs, conservative scalar CSE, bounded
-  alias-safe scalar-state promotion, cleanup, and selective ordered-reduction distribution.
+  alias-safe scalar-state promotion, dead-value/parameter cleanup, and backend-selected loop
+  distribution and first-iteration peeling with proven remainder-predicate folding.
 - `json.rs`, `messagepack.rs` — inspectable and compact transports over the same versioned schema.
 - The production contract is documented in the [MIR reference](mir.md).
 
@@ -308,7 +382,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   The native test API uses the same path.
 
 ### `onda_realtime` (`crates/onda_realtime/src`)
-- `lib.rs` — allocation-free, once-per-thread audio floating-point policy shared by runtime hosts.
+- `lib.rs` — allocation-free, idempotent audio floating-point setup for executing host threads.
 
 ### `onda_host_protocol` (`crates/onda_host_protocol`)
 
@@ -325,9 +399,10 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   by native and WebAssembly integrations.
 
 ### `onda_runtime` (`crates/onda_runtime/src`)
-- `lib.rs` — runtime instance model, `process_checked` / `process_unchecked` / segment variants,
-  reset, event dispatch, and public validated parameter-domain discovery/conversion through
-  `Instance::param_domain`.
+- `lib.rs` — instance lifecycle, canonical status-returning execution, snapshots and output batches.
+- `bindings.rs` — eager binding validation and pointer-table updates; process readiness checks.
+- `parameters.rs` — exact parameter writes, numeric controls and held control-output reads.
+- `tests/` and integration tests — lifecycle, binding, allocation/deallocation and execution parity.
 
 ### `onda_api` (`crates/onda_api/src`)
 - `lib.rs`, `metadata.rs` — C ABI surface (single-source, direct filesystem source/project input,
@@ -337,6 +412,12 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   snapshot metadata and syntax-aware reference rewriting; create/process/destroy; bind/set;
   metadata queries; event trigger; state snapshot/restore).
 
+- `value_info.rs` — immutable program-owned value, buffer and message records with cached enum JSON.
+- `payload_layout.rs` — borrowed message plans and tensor descriptors plus allocation-free C layout
+  queries from logical lengths or packed bytes, sharing the processor ABI's checked traversal for
+  both events and delegates.
+- `source_info.rs` — borrowed source graph, project buffer and materialization records.
+
 ### `onda_cpal` (`crates/onda_cpal/src`)
 - `lib.rs` — CPAL 0.18/PipeWire device discovery and stream setup, allocation-free input/output callbacks, FP-mode setup, and lock-free SPSC sample transport.
 
@@ -345,6 +426,16 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - Analysis sessions and document overlays are re-exported from `onda_semantics::AnalysisSession`.
 - `run_session.rs` — live JIT instance lifecycle, validated initial and replacement buffer binding,
   param updates, and `render_block`.
+  Prepared runs expose metadata and accept validated controls and buffer bindings without executing
+  authored initialization. `restart` initializes with the complete restored state; processing and
+  events reject uninitialized instances. Playback with `--start-paused` and daemon metadata queries
+  use this preparation path. Running buffer replacements continue to rebuild and initialize.
+  `run_session/audio_ports` owns naturally aligned storage of each declared primitive type and
+  allocation-free conversion to/from the host's interleaved `f32` audio stream. Integer inputs
+  use saturating truncation and boolean inputs use nonzero comparison; events retain their
+  independent schema-driven payload encoding and precision.
+  `prepare_processing` provides exclusively borrowed prepared processor calls without host
+  rendering or output collection for benchmarking.
   `PreparedRunBuffer` owns validated samples and precomputed waveform data; replacement
   returns retired instance/storage ownership for reclamation outside the render producer.
 - `run_session/param_smoothing.rs` — host-owned linear ramps for continuous float controls.
@@ -357,9 +448,14 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 
 ### `onda_run` (`crates/onda_run/src`)
 - `child_session.rs` — playback child lifetime, readiness messages, and bounded UTF-8 diagnostics.
+- `controller_startup.rs` — native child restoration barrier. Children start paused; validated
+  control and buffer acknowledgements complete before `play` initializes and processes. Failed
+  restoration terminates preparation so retrying restores the complete state again.
 - `control_client.rs` — controller-side JSON control connection and requests.
 - `playback/control_reader.rs` — byte framing that retains partial requests across socket timeouts.
 - `param_value_json.rs` — lossless scalar control transport, including decimal strings for `i64`.
+- `event_value_json.rs` — recursive event/delegate JSON transport, preserving exact `i64`
+  strings and special floating-point values, including negative zero.
 - `lib.rs` — run controller wiring real-time audio to a daemon run session, with one revisioned raw
   filesystem watcher for the entry, transitive non-stdlib sources, project manifest/entry/assets,
   unresolved recovery paths, path-targeted snapshot validation, and disk fallback for partial
@@ -372,7 +468,9 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `source_graph.rs` — frontend dependency discovery for editor reloads, sharing native Run’s
   source manifest and project recovery paths, including incomplete graphs. Graphs carry SHA-256
   hashes of captured documents and project files so editors can validate the discovery-to-watch
-  gap; playback and metadata replies, including failed builds, report the exact
+  gap. Daemon `run_sources` resolves open-document overlays for language clients; overlay paths
+  remain watchable without claiming their in-memory contents are disk hashes.
+  Playback and metadata replies, including failed builds, report the exact
   compiled source manifest and hashes of the manifest/asset bytes actually loaded. The frontend
   retains rejected UTF-8 bytes and failed reads so failure fingerprints never reread restored files.
   Playback reports these
@@ -385,6 +483,12 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   null hashes, while paths rejected before reading remain watchable without a content hash.
   Failed graphs retain previous dependencies until a complete graph replaces them.
 - `playback.rs` — preallocated render producer and optional `--control-json` TCP control server; delegates the device callbacks and SPSC transport to `onda_cpal`.
+  The listener polls for connections, but accepted client sockets explicitly use blocking
+  reads with a bounded timeout. This prevents platforms that inherit nonblocking listener
+  flags from spinning on idle control connections, including while playback is paused.
+  Input/output queues are allocated after compilation, using the program's channel counts
+  because channel mapping happens at the device callback. Their capacity is measured in
+  complete program-channel frames; many-output patches retain the same render-ahead budget.
   Events use bounded reusable storage, inline MIDI payloads, and borrowed iterator dispatch.
   `playback/output_worker.rs` transfers a fixed pool of packed output buffers to a consumer that
   decodes delegates and formats prints. Saturation drops output with explicit occurrence counters;
@@ -393,7 +497,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   waveform preparation, and retired-storage reclamation. Per-buffer revisions reject
   loads superseded by a later bind or clear. Control clients remain responsive during
   loading; the render producer commits prepared storage between blocks. Replacement
-  still rebuilds and initializes the instance at commit, since init may access other
+  rebuilds and initializes an already running instance at commit, since init may access other
   writable buffers. File contents are owned snapshots after loading; later path changes
   cannot invalidate their memory, and project asset watching retains its reload policy.
 
@@ -416,61 +520,78 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `main.rs`, `main_tests.rs` — binary entry and integration tests.
 - `args.rs` — CLI argument parsing.
 - `compile_cmd.rs` — `onda compile` (check / IR / obj / `--dump-graph` / cross-target).
+- `bench_cmd.rs` — `onda bench`: repeated prepared native processor calls with untimed setup/warmup,
+  shared project/buffer/parameter handling, and text or JSON timing reports.
 - `run_cmd.rs` — `onda run` / `run play` / `run render` dispatch.
 - `daemon_stdio.rs` — `onda daemon stdio` JSON transport.
 - `diag_print.rs` — terminal diagnostic rendering.
 
-### `onda_egui` (`crates/onda_egui/src`)
-- `lib.rs` — native egui run host, controller integration, parameter/buffer editors, and theme.
-- `buffer_drop.rs`, `buffer_drop/x11.rs` — buffer-card drop targeting and native drag coordinates.
-  Linux observes XDND coordinates through Xlib's event converter while preserving winit's
-  original events; core pointer queries can remain stale during Wayland-to-XWayland drags.
-- `run_view.rs` — loaded run panels and docked MIDI keyboard, compact source and transport header, device selectors, and section orchestration.
-- `number_input.rs` — shared native number widget with owned editing drafts, parameter-domain-scaled horizontal drags, and exact integer arithmetic.
-- `input_controls.rs` — optional host-owned Input Controls section and scalar editor rendering
-  shared with Params. `InputControlSection::show` returns value, layout, smoothing, and reset
-  actions for the host to apply; an empty list renders no section. Stock Onda leaves it unused.
+### Shared GPU run screen (`crates/onda_ui`, `crates/onda_gpu`, `crates/onda_scope`, `ui/gpu`)
 
-### `onda_webview` (`crates/onda_webview/src`)
-- `lib.rs` — webview run host, using `onda_run::RunController` for child processes and control transport.
+All run hosts use `onda_ui`; hosts retain audio, compilation, files, clipboard,
+persistence, and event-loop ownership. The [UI host API](ui-api.md) defines the
+embedding contract. [GPU UI development](../ui/gpu/README.md) owns build, staging,
+and validation instructions.
 
-### Host-provided input controls
+| Module | Responsibility |
+| --- | --- |
+| `onda_ui::RunUi` | Screen state, host messages/commands, and coordination of editing, interaction, and presentation. |
+| `onda_ui::{interaction, editing}` | Pointer/touch ownership, focus, menus, MIDI notes, drafts, selection, and composition. |
+| `onda_ui::{layout, panels, controls, scrollbar}` | Visible scene construction, cached structural layout, and viewport geometry. |
+| `onda_ui::scheduling` | Advance timed state without drawing and combine internal deadlines into one optional host wakeup. |
+| `onda_ui::FramePacer` | Optional host-owned cadence arithmetic, shared by Rust, C, and Wasm hosts. Caller-supplied rate and timestamps; no timers, retry policy, or render enforcement. |
+| `onda_ui::Renderer` | Instanced WGSL shapes, cached glyphon text, scope traces, and meter buffers; accepts a host-owned wgpu device. |
+| `onda_ui::{surface, ffi, web}` | Surface presentation and optional C/Wasm adapters. |
+| `onda_gpu` | Standalone winit window/input and `onda_run::RunController` adapter. |
+| `onda_scope` | Bounded peak capture, min/max envelopes, and the shared OSQ1 codec. |
+| `ui/gpu` | Browser canvas scheduling, native textarea input, and host bridges. |
 
-The shared `ui/run/run.html` accepts an optional `inputControls` collection separately
-from `params` and displays it above Params when populated. Hosts decide which inputs belong
-in this collection; the compiler and runtime retain one uniform input model. Stock native
-and browser hosts supply no controls, so the section remains hidden.
+Scene and shaped-text revisions are independent of waveform and meter data.
+Visible rows are culled and clipped; structural control/event layout survives
+value, hover, and scroll updates. Name indexes keep control value patches and
+event preservation linear. Numeric domain conversion comes from
+`onda_mir::ParamDomain`. Primary
+fonts are bundled; script fallbacks load only when visible text needs them.
 
-Each entry uses the scalar parameter presentation fields (`name`, optional `label`,
-`type`, `scalar`, `value`, `default`, `rangeMin`, `rangeMax`, and `scale`). An entry with
-`enabled: false` displays **External input** and disables its editors. Equal finite range
-endpoints render a read-only constant. Values describe the stored host control, not a
-live measurement of an external signal. Names identify entries within each bank.
+Interaction owners release notes and end host gestures before source/schema
+replacement or suspension. A settled scene resolves hidden drafts: valid text
+commits, invalid or unfinished composition cancels, and focus is released. Hosts
+drain commands and refresh native text state after rendering as well as input.
+Asynchronous metadata uses the API's schema-readiness barrier; saved event values
+require matching ordered argument names, shapes, and defaults.
 
-The section emits `setInputControl` with `name`, plain `value`, and `commit`, plus
-`resetInputControls`, `setInputControlLayout` with `layout` (`sliders` or `knobs`), and
-`setInputControlSmoothing` with `milliseconds`. Hosts apply these independently of Params.
-Layout updates use `inputControlLayout`; hosts enable the smoothing editor with
-`supportsInputControlSmoothing`, `inputControlSmoothingMs`, and
-`inputControlSmoothingDefaultMs`. Section folds follow the existing `viewState` protocol;
-values and processing settings remain host-owned. Both banks share their scalar editors
-and preserve numeric drafts through independent value updates.
+Capture follows meter and waveform visibility independently and stops for hidden
+views. Stock hosts target one 30 Hz visualization stream with a 1,024-frame
+waveform window. Meter-only capture uses per-channel peak atomics and skips the
+waveform ring. Envelopes retain extrema in two-physical-pixel buckets, capped at
+512 columns and 64 channels; identical data retains its revision.
 
-Hosts can update existing bindings with `{ type: "parameterValues", state: {
-params: [{ name, value }], inputControls: [{ name, value }] } }`. Values are in
-plain units; either bank may be omitted. These messages preserve focused drafts
-and active gestures and do not render other sections. Names must belong to the
-most recently published schema; unknown names are ignored. Schema, layout, and
-editability changes use ordinary `state` messages.
-The browser host publishes parameter edits and resets through `parameterValues`.
-The native webview host uses the same message when a publication changes only
-parameter values; any schema or other host-state change publishes full state.
+Standalone and VS Code request bounded scope envelopes over the playback socket.
+Request identity prevents late replies from replacing newer capture/session
+state. Plugin snapshots cross the C boundary as floats and use the shared reducer.
+Browser editors use an AudioWorklet peak clock and attach per-channel analysers
+only while a waveform is visible; reusable OSQ1 bytes cross the iframe/Wasm
+boundary without JSON sample arrays.
 
-`ui/run/buffers.js` retains cards while their descriptions and editability are
-unchanged. When those inputs change, it builds the complete replacement off-DOM
-and commits it before measuring waveform canvases, keeping partial layouts from
-clamping the document's scroll position. Theme, resize, and section visibility
-changes redraw existing waveform canvases independently.
+The UI's `update()` advances timed state/layout without drawing; hosts drain
+commands and draw changed revisions. `wake_deadline()` combines internal timed
+work, and C/Wasm expose it as a relative millisecond delay. A wakeup may publish
+commands without changing pixels. Hosts choose their own frame cadence and
+coalesce input/state redraws independently of audio/data polling. Stock hosts
+explicitly choose 60 Hz through `FramePacer`. Native hosts prefer mailbox
+presentation through `PresentMode::MailboxOrFifo`; browser hosts use FIFO. Both are
+tear-free and use a maximum frame latency hint of two to allow CPU/GPU overlap.
+Surface capabilities and the resolved mode are exposed;
+unsupported explicit modes fail without changing the existing configuration.
+The native window sleeps until worker events, UI deadlines, capture deadlines,
+or source-watch maintenance require work. Browser frames coalesce pending values,
+visualization, and backing-store resize with `requestAnimationFrame`. Hosts suspend
+drawing when hidden. Color conversion follows the render target's color space.
+
+Host-provided `inputControls` use the same scalar editors as `params`, with
+independent layouts, smoothing, and Reset. Hosts decide which inputs belong in
+that bank and mark externally routed inputs read-only. Stock standalone and
+browser hosts leave it empty; the plugin supplies its control-input mappings.
 
 ## Practical navigation entrypoints
 
@@ -524,18 +645,18 @@ changes redraw existing waveform canvases independently.
   select LLVM's platform ABI and object representation without changing the logical Onda ABI.
 - Standard optimized LLVM pass pipeline (`default<O3>`-style) with host-target settings; MIR does not
   override LLVM's loop or SLP vectorization heuristics.
-- Native checked and prepared-unchecked processing install the shared audio-thread denormal policy;
-  on x86 this enables FTZ/DAZ once per thread before executing DSP.
+- Hosts own thread floating-point policy. The optional explicit helper establishes x86 FTZ/DAZ or ARM64 FZ on each
+  call; runtime execution never changes the host policy implicitly.
 - Compile-time block size per program/instance; no callback-time allocations for compiler-managed DSP state (all setup happens during instance creation/init).
 - Runtime init, events, and processing use prepared buffer descriptor tables; omitted slots are
-  prepared as neutral descriptors rather than blocking execution. Rebinding invalidates the tables,
-  and the next checked entry-point call observes the replacement without implicitly rerunning init.
+  prepared as neutral descriptors rather than blocking execution. Binding validates and updates affected slots immediately,
+  without implicitly rerunning init.
   Buffer-write metadata conservatively joins writes reachable from init, process, and exported
   events, including generated proc-init paths. Segment variants exist for hosts that split a logical
   block around sample-accurate events:
   - `process_checked_segment(instance, start_frame, frames, flags)`
-  - `prepare_unchecked_process(instance)` / `process_unchecked_segment(...)`
-  - unchecked preparation validates the current bindings; buffer references resolve directly
+  - `prepare_process(instance)` / `process_unchecked_segment(...)`
+  - readiness checks initialization and required audio bindings; buffer references resolve directly
     through those tables, so rebinding cannot leave pointer-bearing derived state stale.
   - native codegen snapshots each used direct buffer descriptor field once at process/event entry,
     exposes the validated primitive alignment on accesses, and marks external-buffer memory as
@@ -615,7 +736,9 @@ and invalidation in detail. The main opportunities exposed to backends are:
 - MIR storage origins preserve owned-object identities and possible contiguous element ranges through
   views and calls, including different views passed to the same helper. MIR folds common descriptor
   lengths and removes proven slice construction and window checks. Native lowering computes
-  reference alignment from the recorded element offsets; overlapping views keep the same identity.
+  reference alignment from exact element offsets or a proven common power-of-two offset divisor;
+  dynamic aligned windows retain that proof even when their exact ranges are unknown. Alignment
+  never implies disjointness; overlapping views keep the same identity.
   LLVM alias scopes share proven disjoint groups of accessed origins, avoiding a full complement
   list per state object. Overlapping unions refine those groups without discarding disjointness
   facts; mixed origins receive only negative alias facts. Pointwise audio proofs allow a native
@@ -643,6 +766,18 @@ and invalidation in detail. The main opportunities exposed to backends are:
   and coupled reductions prevent distribution. Unchanged programs are borrowed; changed programs
   are revalidated with fresh analysis facts. Binaryen retains the fused schedule while its array
   math remains scalar, avoiding the cost of an extra traversal without vector-math gains.
+- Native scheduling also separates the first iteration of large fixed counted loops when an
+  equality/inequality predicate distinguishes that iteration. Shared MIR summaries follow value
+  arguments through helpers, without relying on processor names, array capacities or reference
+  exclusivity. Peeling copies the original operations and increment in order, retaining failures,
+  aliases and synchronous effects; modified/escaped induction variables and early exits reject it.
+  The summaries guide profitability only. The counted-loop proof also folds equality/inequality
+  comparisons against the initial index within the remainder, following local copies only while
+  every incoming path preserves their identity. Function-wide escape facts exclude locals exposed
+  through views or references, including aliases created before a loop. Writes and call results
+  invalidate other copy facts; no loop-carried copy is assumed. The first iteration retains its original
+  comparisons. LLVM's ordinary inlining and dependence analysis decide whether the remaining loop
+  can vectorize. Binaryen keeps the original schedule.
 - The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
   `DecayEnv`, and `Pan3db` cache results only while their source parameters remain equal, with
   explicit validity state for initialization and recomputation at each changed assignment.
@@ -650,7 +785,8 @@ and invalidation in detail. The main opportunities exposed to backends are:
   compiler-wide promise to skip user parameter hooks; events, segments, and snapshots retain
   their ordinary semantics.
 - Native floating-point permissions independently control reassociation, contraction and ignoring
-  signed zero. They default off. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
+  signed zero internally. They default off; the CLI exposes only `--fast-math` to enable all
+  arithmetic relaxations. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
   x64 MSVC, use SLEEF VFABI mappings selected from resolved LLVM CPU features. After application
   optimization, the backend resolves newly introduced fixed-width vector `exp2` intrinsics using
   the same legal target variants, links only the used ISA/precision bitcode, internalizes helpers with
@@ -690,21 +826,12 @@ and invalidation in detail. The main opportunities exposed to backends are:
   provenance; no registry token is stored in GitHub. Each package's npm settings must authorize
   `onda-lang/onda` and `.github/workflows/release.yml` as its trusted publisher before relying on
   the tag job; newly reserved package names may need a one-time registry-owner bootstrap first.
-- `npm run build:website` builds the browser compiler, bundles its worker, and emits versioned,
-  content-addressed website assets. It also regenerates `docs/stdlib.md` from the standard-library
-  modules embedded in `onda_frontend`, so the repository and website share the same API reference.
-  The homepage opens its displayed example in `/playground/`
-  without loading the compiler itself; `/playground/` provides the full LSP-backed editor and
-  AudioWorklet host. The same build discovers every checked-in Onda example automatically and emits
-  it with its local source dependencies, so cookbook links open complete projects directly.
-  `website/stage.sh` refuses to stage stale or missing browser assets and writes the product version
-  into Jekyll data.
-- `bash ./examples/web/onda_wasm_playground/build-demo.sh --serve` builds/stages the compiler and pinned
-  Binaryen assets, then serves the editable playground. The PowerShell equivalent is
-  `.\examples\web\onda_wasm_playground\build-demo.ps1 -Serve`.
-- `bash ./examples/web/onda_wasm_aot_sample_player/build-demo.sh --serve` compiles the shared sample
-  player to MIR and Binaryen Wasm before serving a compiler-free page on port 8788. The PowerShell
-  equivalent is `.\examples\web\onda_wasm_aot_sample_player\build-demo.ps1 -Serve`.
+- `npm run build:website` builds the compiler/GPU bundles and versioned, content-addressed
+  website assets, regenerates `docs/stdlib.md`, and packages the example catalog with its
+  source dependencies. `website/stage.sh` verifies the staged assets and product version.
+  The [playground example](../examples/web/onda_wasm_playground/README.md) and
+  [AOT sample player](../examples/web/onda_wasm_aot_sample_player/README.md) own their
+  standalone build/serve instructions.
 - From `packages/onda_binaryen_web`, `npm test` runs backend/worklet fixtures, `npm run test:onda` runs
   real Onda source plus LLVM/Binaryen parity and the internal-Wasm FMA oracle, and `npm run test:parity`
   selects the differential renderer. `npm run test:corpus` continuously compiles the positive
@@ -721,17 +848,17 @@ and invalidation in detail. The main opportunities exposed to backends are:
   processor worklet. The Web Audio adapter precompiles processor modules outside the rendering
   thread, caches typed linear-memory views, bulk-copies full-block f32 audio, and locks host
   linear-memory allocation after construction; dynamic event storage is bounded and preallocated.
-  The playground now uses the compiler's multi-file project API and provides a native-style output
-  scope plus PCM/IEEE-float WAV loading for f32 external buffers. Top-level audio inputs lazily
-  connect one reusable microphone stream; projects without them never request media permission.
-  Current product limitations include restart/reset rather than seamless state-preserving hot swap
-  and no mutable buffer/control-output inspection. Software math helpers
-  are internal to generated Wasm, so the render path has no JavaScript math boundary, though native
-  LLVM may still execute them faster. The page recompiles against the actual `AudioContext` sample
-  rate before constructing a processor, while the adapter rejects mismatched AOT artifacts. The
-  current smoke endpoint proves compilation, but automated browser
-  AudioWorklet playback coverage remains future work. Non-local hosting needs a secure context
-  (normally HTTPS; localhost is exempt).
+  Numeric execution statuses use a separate bounded shared ring; the main-thread adapter bounds
+  in-flight control requests and constructs public errors. Without `Atomics.waitAsync`, control
+  replies wake the adapter through the port while render failures are polled. Status overflow closes
+  the adapter and rejects pending work; unexpected execution failures silence the worklet until
+  full init/restore recovery.
+  Browsers without shared memory use numeric port replies, which can incur cloning allocations.
+  Software math helpers stay inside generated Wasm. The playground compiles against the
+  actual `AudioContext` sample rate; the adapter rejects mismatched AOT artifacts.
+  [Playground integration](../ui/playground/README.md) owns browser lifecycle and capture
+  invariants; [GPU UI verification](../ui/gpu/README.md#verification) owns Chrome staging
+  and tests. User workflows and hosting limitations belong to the example guide.
 
 ## LLVM dependency strategy
 
@@ -757,3 +884,49 @@ all input before writing aligned workspace; synchronous internal forwarding borr
 Logical host encoding/decoding and workspace provisioning happen outside realtime execution.
 Typed nominal structs retain only their directly declared fields; semantic passes recursively walk
 those references when they need leaf paths rather than storing duplicated dotted descendants.
+Processor arrays follow the same layout at top level and inside other processors: each primitive
+field is one tensor whose axes include the enclosing array dimensions. Selecting an instance
+captures its coordinate once and borrows the corresponding scalar elements or history windows.
+Scalar read inference uses the declared field type for both source indexed selections and
+generated column projections, preserving that type through compound assignments and helpers.
+Shared child wrappers take the owner view and coordinates, so homogeneous runtime calls do not
+dispatch across every instance. The physical helper ABI remains one reference per live field,
+independent of array capacity; MIR retains per-field effects and backend parameter pruning.
+Processor slices retain their runtime length and a captured row offset alongside the complete
+view environment. Nested slices add offsets, and selecting a row rebases its lifecycle, resource
+and callback coordinates once. Owned copies rebase storage and lifecycle coordinates to zero while
+retaining a separate source-row offset for indexed resources. Identity resource-forwarding frames
+and explicit element selections are collapsed across successive owned copies. Their symbolic joins
+capture coordinates without evaluating resource recipes. Function- and sample-local copies activate
+on first use and complete before return or the end of a loop iteration; forwarding borrows that same
+lifecycle. Untaken declarations do not evaluate cleanup captures. Init- and block-retained copies
+keep their segmented block lifecycle. Operation dependencies use the ordinary lexical
+call-typing walker for boundaries and helper bodies, retaining both activation and completion hooks
+through runtime aliases, branch joins and bindings carried from block pre into sample.
+Scalar root hook requirements reuse the recursion check's callee-before-caller order,
+visiting each helper body once regardless of declaration order.
+Read-only parameter inference revisits only callers affected by changed callee permissions.
+The declaration and operation catalogs use indexed lookup with immutable definition keys;
+resource recipe rewrites do not invalidate those indexes.
+Borrowed scalar children and arrays share this logical view model, while scalar children may
+remain physically flattened. A view carries root storage, captured coordinates, lifecycle identity,
+resources and enclosing callback environments. Joins retain a flat set of distinct alternatives,
+one remapped selector and private binding metadata for captured local roots. Repeated joins reuse
+those alternatives rather than expanding nested selection trees. Calls and lifecycle completion share
+the selected-environment dispatch, reconstructing owners and resources inside the matching branch
+from persistent, parameter, or owned local storage. Writable
+references remain overlapping capabilities, with no exclusivity promise. MIR legalization uses
+ordinary references and direct calls, preserving live-field pruning and alignment facts.
+Heterogeneous bound buffers can still require resource selection. Their selection reuses the
+captured coordinate and resolves the current host binding rather than persisting native pointers.
+MIR `BufferMap` collections represent non-contiguous interface selections with an immutable table
+of symbolic resource identities. LLVM and Binaryen borrow that map alongside the current descriptor
+tables; forwarding and subviews copy a constant-size handle, and selection performs an indexed
+lookup without gathering descriptor tables. Ordinary buffers and contiguous `BufferSpan`
+collections retain their existing direct representation. Resource effects follow each mapped slot
+through calls and subviews, including repeated entries and unrelated interleaved interface types.
+When constructor bindings come from unrelated owner parameters, the view forwards those existing
+buffer or contiguous-span descriptors. A balanced branch selects one typed local descriptor before
+the child call. This finite choice needs no descriptor table construction during processing.
+Descriptor locals remain ephemeral: retained initialization aliases save selector values and
+reconstruct descriptors from current logical bindings after restore.
