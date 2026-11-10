@@ -85,8 +85,8 @@ jobs:
         run: |
           source ./scripts/use-llvm-env.sh --flavor prebuilt --version "$LLVM_VERSION"
           cargo test --workspace --exclude onda_ui
-          # The runner's Vulkan loader races between independent GPU tests:
-          # https://github.com/KhronosGroup/Vulkan-Loader/issues/1863
+          # Ubuntu's Vulkan loader (1.4.341) predates the upstream threading fix
+          # in 1.4.345: https://github.com/KhronosGroup/Vulkan-Loader/pull/1866
           cargo test -p onda_ui -- --test-threads=1
           cargo clippy --workspace --all-targets --no-deps -- -D warnings
           cargo build -p onda_cli
