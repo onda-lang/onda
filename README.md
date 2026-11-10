@@ -53,7 +53,14 @@ entry, static and shared C libraries, public headers, hosted and raw processor A
 language guide, standard-library reference, and examples. The Linux archive includes `install.sh`
 and `uninstall.sh` for a per-user CLI and desktop installation.
 
-The precompiled macOS binaries, including `Onda.app`, are not signed.
+Release signing status:
+
+- **macOS:** binaries, including `Onda.app`, are not signed with an Apple Developer ID and are not
+  notarized. macOS may require manual approval before opening them.
+- **Windows:** binaries are not code-signed (Authenticode). Windows may warn about
+  unrecognized downloads and it may trigger Microsoft Defender SmartScreen ("Windows protected your PC").
+
+See the [installation guide](docs/getting-started.md#install-a-precompiled-release) for approval steps.
 
 Tagged releases attach portable tarballs and publish the four public npm packages:
 `@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and `@onda-lang/wasm-compiler`.

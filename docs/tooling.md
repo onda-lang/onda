@@ -182,7 +182,10 @@ Use the pre-built shared and static libraries or build them from source with:
 cargo build -p onda_api --release
 ```
 
-The pre-built macOS release libraries are not signed.
+The pre-built macOS release binaries are not signed with an Apple Developer ID and are not
+notarized. Windows release binaries are not code-signed (Authenticode). See the
+[installation guide]({{ '/docs/getting-started/' | relative_url }}#install-a-precompiled-release)
+for information about macOS approval and Windows SmartScreen warnings.
 
 CMake hosts can consume either library without reproducing platform-specific
 link requirements:
