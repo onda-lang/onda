@@ -55,10 +55,6 @@ and `uninstall.sh` for a per-user CLI and desktop installation.
 
 The precompiled macOS binaries, including `Onda.app`, are not signed.
 
-Linux releases use a Debian 12 build baseline: glibc 2.36 and PipeWire 0.3.65.
-macOS arm64 binaries declare a minimum of macOS 11.0. Windows x64 releases use
-the Visual Studio 2022 toolchain and static MSVC runtime (`/MT`).
-
 Tagged releases attach portable tarballs and publish the four public npm packages:
 `@onda-lang/processor-abi`, `@onda-lang/binaryen-web`, `@onda-lang/webaudio`, and `@onda-lang/wasm-compiler`.
 
@@ -267,13 +263,6 @@ Already-compiled native processor objects do not require `libonda`: include
 entrypoints directly. The paired JSON descriptor supplies storage sizes, alignments, defaults, and
 interface layouts. See the native raw-object example for a complete link command.
 
-The `release.yml` workflow supports unpublished integration builds with
-`test_integrations=true`. Fresh SDK builds require compatible full `plugin_ref`
-and `vscode_ref` source commits. To reuse a completed SDK build, set `sdk_run_id`
-and its exact `sdk_source_ref`, plus the integration source refs to build; leave
-unneeded refs empty. VS Code builds the shared GPU UI from that same Onda commit.
-SDK provenance and checksums are verified; publication stays disabled.
-
 ## VST3 plugin
 
 The separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides
@@ -297,9 +286,3 @@ It provides:
 - `.onda` and `.on` filetype detection
 - builtin LSP through `onda lsp`
 - `:OndaRunFile` to launch the standalone run window
-
-## License
-
-Starting with the Onda 0.9.0 release, Onda-authored code in this repository is licensed
-under the [Apache License, Version 2.0](LICENSE). Third-party components retain their
-respective licenses.
