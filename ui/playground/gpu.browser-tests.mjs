@@ -1081,7 +1081,9 @@ for (const host of ["example", "website"]) {
     assert.deepEqual(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1'))"), { sampleRate: 44100, blockSize: 256, codegen: { fastMath: false } });
 
     assert.equal(await frame("probe.state.supportsThemeSelection"), false);
-    await click(g.width - 150, 270);
+    // Tab from Block size to Fast Math without depending on the toggle's position.
+    await key("Tab", "Tab");
+    await key("Enter", "Enter");
     await eventually(() => frame("probe.state.fastMath===true && probe.state.connected===true"), "Fast Math recompilation");
     assert.equal(await page.evaluate("JSON.parse(localStorage.getItem('onda.browser-ide.compile-options.v1')).codegen.fastMath"), true);
 
@@ -1092,11 +1094,15 @@ for (const host of ["example", "website"]) {
     const contexts = await page.evaluate("testAudioContexts.length");
     const previousGeneration = await frame("probe.state.engineGeneration");
     await section("settings");
-    await click(g.width - 150, 270);
+    // Reopening Settings focuses its header action; traverse the three settings.
+    await key("Tab", "Tab"); // Sample rate.
+    await key("Tab", "Tab"); // Block size.
+    await key("Tab", "Tab"); // Fast Math.
+    await key("Enter", "Enter");
     await eventually(() => frame(`probe.state.fastMath===false && probe.state.schemaReady===true && probe.state.engineGeneration!==${JSON.stringify(previousGeneration)}`), "paused Fast Math recompilation");
     assert.equal(await frame("probe.state.running"), false);
     assert.equal(await page.evaluate("testAudioContexts.length"), contexts, "paused recompilation must not create an audio context");
-    await click(g.width - 150, 270);
+    await key("Enter", "Enter");
     await eventually(() => frame("probe.state.fastMath===true && probe.state.schemaReady===true"), "restore Fast Math before playing");
     await key("Escape", "Escape");
     await click(g.stopX, g.stopY);
