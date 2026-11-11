@@ -260,13 +260,19 @@ html[data-theme="light"] .theme-logo-dark { display: none !important; }
   .page-toc { display: none; }
 }
 @media (max-width: 880px) {
-  .site-header { height: 3.625rem; }
+  .site-header { height: 3.625rem; transition: transform 180ms ease; }
+  .site-header-hidden { transform: translateY(-100%); }
+  .site-header:has(:focus-visible) { transform: none; }
   .icon-button { width: 2.75rem; height: 2.75rem; }
   .header-actions { margin-left: auto; }
   .menu-toggle { display: inline-block; }
   .main-nav { display: none; position: absolute; top: calc(3.625rem - 1px); left: 0; right: 0; padding: .8rem 1rem 1rem; flex-direction: column; align-items: stretch; gap: 0; background: var(--bg); border-bottom: 1px solid var(--line); }
   .main-nav.open { display: flex; }
   .main-nav a { padding: .5rem 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-header { transition: none; }
 }
 
 @media (max-width: 720px) {

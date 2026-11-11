@@ -37,6 +37,33 @@ import { highlightOnda } from "./onda-highlighter.js";
     menu.classList.toggle('open');
   });
 
+  const header = document.querySelector('.site-header');
+  if (header) {
+    const mobile = window.matchMedia('(max-width: 880px)');
+    let lastY = window.scrollY;
+    const showHeader = () => header.classList.remove('site-header-hidden');
+
+    window.addEventListener('scroll', () => {
+      // Clamp elastic overscroll so bouncing at either edge cannot reverse direction.
+      const maxY = Math.max(0, root.scrollHeight - window.innerHeight);
+      const y = Math.max(0, Math.min(window.scrollY, maxY));
+      if (!mobile.matches || y <= header.offsetHeight || menu?.classList.contains('open')) {
+        showHeader();
+      } else {
+        // Accumulate small movements, but ignore finger jitter before changing state.
+        if (Math.abs(y - lastY) < 6) return;
+        header.classList.toggle('site-header-hidden', y > lastY);
+      }
+      lastY = y;
+    }, { passive: true });
+
+    header.addEventListener('focusin', showHeader);
+    mobile.addEventListener('change', () => {
+      lastY = window.scrollY;
+      showHeader();
+    });
+  }
+
   document.querySelectorAll('code.language-onda').forEach(highlightOnda);
 
   document.querySelectorAll('.prose table').forEach((table) => {
