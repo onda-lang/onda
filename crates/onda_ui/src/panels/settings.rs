@@ -41,15 +41,17 @@ pub(crate) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         y += 44.0;
     }
     if ui.state["supportsFastMath"] == true {
-        s.button(
+        let label = "Fast Math";
+        let label_width = crate::fonts::proportional_width(label, 12.0, false)
+            .ceil()
+            .min((w - 36.0).max(0.0));
+        s.text_row(label, [x, y, label_width, 32.0], p);
+        s.toggle(
             ui,
-            if ui.state["fastMath"] == true {
-                "Fast Math: On"
-            } else {
-                "Fast Math: Off"
-            },
-            [x, y, w, 32.0],
             Target::FastMath,
+            [x + label_width + 12.0, y + 4.0, 24.0, 24.0],
+            ui.state["fastMath"] == true,
+            true,
             p,
         );
         y += 44.0;

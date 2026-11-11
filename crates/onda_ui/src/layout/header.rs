@@ -80,7 +80,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
     s.header_rect = [x, y, w, height];
     s.panel(s.header_rect, p.panel, p.border, 10.0);
     let actions = actions(ui);
-    let overflow = dense && !actions.is_empty();
+    let overflow = dense && actions.len() > 1;
     let scope = ui.scope_available();
     let scope_icon = !minimal && !ui.presentation.scope_pinned;
     let channels = ui.output_channels();
@@ -332,7 +332,7 @@ pub(super) fn build(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) -> f3
         s.hit(button, Target::Transport);
         bx += transport_width;
     }
-    if gap > 0.0 && !overflow {
+    if gap > 0.0 && !dense {
         s.shape(
             [bx + SEPARATOR_GAP, y + 10.0, SEPARATOR_WIDTH, height - 20.0],
             p.border,
