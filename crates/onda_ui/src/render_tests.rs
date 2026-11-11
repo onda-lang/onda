@@ -492,6 +492,70 @@ fn opening_settings_after_text_rendering_preserves_valid_gpu_bindings() {
 }
 
 #[test]
+fn scope_stroke_keeps_its_logical_width_across_display_scales() {
+    pollster::block_on(async {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut renderer = Renderer::new(&adapter, format).await.unwrap();
+        let palette = Palette::new(false);
+        for scale in [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0] {
+            let width = (768.0 * scale) as u32;
+            let height = (400.0 * scale) as u32;
+            let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("scope stroke scaling regression"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            for sample in [0.20, 0.24, 0.25, 0.253, 0.26, 0.27, 0.28, 0.30] {
+                let mut ui = RunUi::default();
+                ui.message(json!({"type":"state","state":{
+                    "path":"scope.onda","running":true,"outputChannels":1
+                }}));
+                ui.presentation.scope_pinned = false;
+                ui.interaction.scope_open = true;
+                ui.resize(768.0, 400.0, scale);
+                ui.set_scope_interleaved(1, &[sample; 1024]);
+                renderer
+                    .render(&mut ui, &view, width, height, scale)
+                    .unwrap();
+                let pixels = read_pixels(&renderer, &texture);
+                let [x, y, w, h] = ui.scene.scope_rect;
+                let column = ((x + w * 0.5) * scale) as u32;
+                // The positive constant signal lies above the center grid line
+                // and below the channel label. Sum coverage to include AA edges.
+                let top = ((y + 16.0) * scale).ceil() as u32;
+                let bottom = ((y + h * 0.5 - 4.0) * scale).floor() as u32;
+                let physical_width: f32 = (top..bottom)
+                    .map(|row| {
+                        let red = pixels[((row * width + column) * 4) as usize] as f32 / 255.0;
+                        ((red - palette.scope[0]) / (palette.accent[0] - palette.scope[0]))
+                            .clamp(0.0, 1.0)
+                    })
+                    .sum();
+                let logical_width = physical_width / scale;
+                // Allow for 8-bit readback quantization at the two AA edges.
+                assert!(
+                    (physical_width - 2.0 * scale).abs() < 0.03,
+                    "scale={scale}, sample={sample}: logical stroke width={logical_width}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn both_surface_formats_preserve_the_theme_and_use_one_scope_color() {
     pollster::block_on(async {
         let instance =

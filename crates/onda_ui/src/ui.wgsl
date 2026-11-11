@@ -7,7 +7,7 @@ struct Globals {
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 
-const SCOPE_STROKE_WIDTH: f32 = 2.; // Physical pixels.
+const SCOPE_STROKE_WIDTH: f32 = 2.; // Logical UI pixels.
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -60,7 +60,7 @@ fn position(p: vec2<f32>) -> vec4<f32> {
     let width = globals.scope.z / f32(columns);
     let bounds = -samples.yxwz*max(0.,height*.5-2.);
     let slope = max(abs(bounds.z-bounds.x),abs(bounds.w-bounds.y))/max(width,.001);
-    let pad = (SCOPE_STROKE_WIDTH*.5+1.)/globals.viewport.z*sqrt(1.+slope*slope);
+    let pad = (SCOPE_STROKE_WIDTH*.5+1./globals.viewport.z)*sqrt(1.+slope*slope);
     let t = (corner(vertex).x+1.)*.5;
     let lower = mix(bounds.x,bounds.z,t)-pad;
     let upper = mix(bounds.y,bounds.w,t)+pad;
@@ -105,10 +105,12 @@ fn linear(color:vec3<f32>)->vec3<f32> {
 @fragment fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     var distance: f32;
     var ring_distance = 0.;
+    var scope_edges = vec2(0.);
     if in.params.y == 3. {
         let low = mix(in.envelope.x,in.envelope.z,in.local.x);
         let high = mix(in.envelope.y,in.envelope.w,in.local.x);
-        distance = max(low-in.local.y,in.local.y-high)-SCOPE_STROKE_WIDTH*.5/globals.viewport.z;
+        scope_edges = vec2(low-in.local.y,in.local.y-high)-vec2(SCOPE_STROKE_WIDTH*.5);
+        distance = max(scope_edges.x,scope_edges.y);
     } else if in.params.y == 1. {
         let radius = in.half_size.x*25./29.;
         let sweep=4.71238898*clamp(in.params.z,0.,1.);
@@ -146,7 +148,14 @@ fn linear(color:vec3<f32>)->vec3<f32> {
     // radial distance so its centerline fold cannot cancel the AA gradient.
     let aa_distance = select(distance,ring_distance,in.params.y == 5.);
     let aa = max(fwidth(aa_distance),.001);
-    let coverage = 1.-smoothstep(-aa*.5,aa*.5,distance);
+    let scope_aa = max(fwidth(scope_edges),vec2(.001));
+    var coverage = 1.-smoothstep(-aa*.5,aa*.5,distance);
+    if in.params.y == 3. {
+        // Filter the unfolded edges separately so their gradients cannot cancel.
+        // Subtract both outside coverages to preserve subpixel stroke width.
+        let outside = clamp(vec2(.5)+scope_edges/scope_aa,vec2(0.),vec2(1.));
+        coverage = max(0.,1.-outside.x-outside.y);
+    }
     var rgb=in.color.rgb;
     if in.params.y==6. {
         let t=clamp((in.local.x/max(in.half_size.x,.001)+1.)*.5,0.,1.);
