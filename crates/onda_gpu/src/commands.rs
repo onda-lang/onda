@@ -57,6 +57,7 @@ impl App {
                 if let Some(controller) = self.controller.take() {
                     self.options = controller.options().clone();
                 }
+                self.options.overrides = Default::default();
                 self.path = None;
             }
             "setRunSettings" => {

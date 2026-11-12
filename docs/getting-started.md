@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install Onda, run your first audio patch, and render it to a WAV file.
+description: Install Onda and play your first audio patch.
 permalink: /docs/getting-started/
 section: learn
 eyebrow: Learn Onda
@@ -21,23 +21,21 @@ application.
 
 [Precompiled release packages](https://github.com/onda-lang/onda/releases/latest) are available for:
 
-- Linux x64
+- Linux x64 and arm64
 - macOS arm64
 - Windows x64
 
-Each package contains the `onda` executable, static and shared C libraries, `onda.h`, the language
-guide, and the examples. Download the archive for your platform and extract it. For portable use,
-add its `bin` directory to your `PATH`. SHA-256 checksums are published with each release.
+Download the archive for your platform and extract it. It includes the `onda` executable,
+documentation, and examples. Add its `bin` directory to your `PATH` to run `onda` from a terminal.
+SHA-256 checksums are published with each release.
 
-On Linux, run `./install.sh` from the extracted archive to copy `onda` to `~/.local/bin` and install
-the **Onda Run** desktop entry and icon for the current user. The generated desktop entry points to
-that stable executable location instead of the extracted archive. Run `./uninstall.sh` from the
-archive to remove those three installed files.
+On Linux, run `./install.sh` from the extracted archive to install the CLI in `~/.local/bin` and
+add **Onda Run** to your applications menu. Run `./uninstall.sh` from the archive to remove them.
 
 Launching `onda` without command-line arguments opens the Onda Run file picker. The macOS package
 also includes `Onda.app`, and Windows packages include a console-free `Onda.exe` launcher. Keep
-the Windows launcher in the extracted package and create a shortcut when moving it to the desktop
-or Start menu, because it launches the bundled `bin\onda.exe`.
+the Windows launcher in the extracted package. Create a shortcut if you want to launch it from the
+desktop or Start menu.
 
 The precompiled macOS binaries, including `Onda.app`, are not signed with an Apple Developer ID and
 are not notarized. If macOS blocks an app you trust, try opening it once, then go to
@@ -51,34 +49,11 @@ SmartScreen's **Windows protected your PC** dialog. To run `Onda.exe`, select
 **More info → Run anyway**, when offered. See
 [Microsoft's SmartScreen guidance](https://learn.microsoft.com/windows/apps/package-and-deploy/code-signing-options).
 
-Releases also contain portable npm tarballs for the WebAssembly compiler and Web Audio packages.
-
 Check the installation:
 
 ```bash
 onda --help
 ```
-
-## Use Onda in a DAW
-
-The [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) repository provides `OndaSynth`
-for instruments and `OndaFX` for effects.
-
-## Install the WebAssembly compiler
-
-Browser and Node.js applications can install the source-to-WebAssembly compiler from its release
-tarball or npm package:
-
-```bash
-npm install ./onda-lang-wasm-compiler-X.Y.Z.tgz
-npm install @onda-lang/wasm-compiler
-npx onda-wasm compile sine.onda --output sine.wasm
-```
-
-The command writes `sine.wasm` and its integrity-associated `sine.onda.json` processor descriptor.
-It is a build-time compiler and does not require LLVM, Rust, or a Wasm linker after installation.
-Applications compiling source in the browser can use the package's asynchronous JavaScript API and
-worker mode. `@onda-lang/webaudio` remains an optional playback host.
 
 ## Write your first patch
 
@@ -101,48 +76,22 @@ block:
       phase = phase - TWO_PI
 ```
 
-This small program exposes one host parameter, stores oscillator phase between samples, calculates the phase increment once per block, and produces one output per sample.
+The `freq` parameter controls the pitch. The program keeps track of oscillator phase between
+samples and produces a sine wave.
 
 ## Check and run it
 
-Compile the file to check its syntax and semantics:
-
-```bash
-onda compile sine.onda
-```
-
-Open the standalone run window:
+Open the standalone run window to play with the patch:
 
 ```bash
 onda run sine.onda
 ```
 
-The window uses Onda’s shared GPU interface.
+Adjust `freq` in the window to change the pitch. Saving edits to the file reloads the program.
 
-You can also run without the UI and set parameters from the command line:
+## Next steps
 
-```bash
-onda run play sine.onda --dur 3 --set freq=220
-```
-
-Programs with declared buffers can bind WAV files by name:
-
-```bash
-onda run play buffer_looper.onda --buffer src=sample.wav
-```
-
-Bindings are optional resources, not a prerequisite for starting the processor. An unbound buffer
-acts as a neutral one-frame buffer whose reads return zero and whose writes are discarded. Fixed
-buffer arrays bind by slot name, for example `--buffer 'bank[0]=kick.wav'`; other slots may remain
-unbound. The [language guide]({{ '/docs/language/' | relative_url }}#external-buffers) covers buffer
-declarations, selection, and indexing.
-
-## Render a WAV file
-
-Offline rendering uses the same run pipeline without opening an audio device:
-
-```bash
-onda run render sine.onda --output first.wav --dur 5 --set freq=330
-```
-
-The same optional `--buffer name=path` option is available for offline rendering.
+- [Examples]({{ '/docs/examples/' | relative_url }}) — try instruments, effects, and soundscapes.
+- [CLI and editor tools]({{ '/docs/tooling/' | relative_url }}) — choose audio devices, use MIDI and samples, set up an editor, or compile WebAssembly.
+- [Working with projects]({{ '/docs/projects/' | relative_url }}) — keep source files and assets together and share your programs.
+- [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin) — use `OndaSynth` for instruments and `OndaFX` for effects inside a DAW.

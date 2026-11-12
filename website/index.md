@@ -29,10 +29,10 @@ description: Expressive and performant JIT-compiled audio programming language
 
   <nav class="home-docs">
     <div class="doc-list">
-      <a href="{{ '/docs/getting-started/' | relative_url }}"><strong>Getting started</strong><span>Try Onda in your browser, install the CLI, run a program, and render audio</span></a>
+      <a href="{{ '/docs/getting-started/' | relative_url }}"><strong>Getting started</strong><span>Try Onda in your browser, install it locally, and play your first program</span></a>
       <a href="{{ '/docs/language/' | relative_url }}"><strong>Language guide</strong><span>Syntax and semantics from basic programs through processors, graphs, generics, and modules</span></a>
       <a href="{{ '/docs/examples/' | relative_url }}"><strong>Examples</strong><span>Musical instruments, effects, soundscapes, embedded-buffer projects, advanced DSP, and focused language references</span></a>
-      <a href="{{ '/docs/tooling/' | relative_url }}"><strong>CLI and editors</strong><span>Compilation, playback, rendering, language-server support, and embedding</span></a>
+      <a href="{{ '/docs/tooling/' | relative_url }}"><strong>CLI and editors</strong><span>Run programs, use audio and MIDI devices, and set up your editor</span></a>
       <a href="https://github.com/onda-lang/onda-plugin"><strong>VST3 plugins</strong><span>Run Onda instruments and effects in a DAW with OndaSynth and OndaFX</span></a>
     </div>
   </nav>

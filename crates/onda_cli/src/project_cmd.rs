@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use onda_frontend::Program;
 use onda_project::{
     resolve_project_input, resolve_project_input_with_file_digests, validate_buffer_asset_metadata,
     BufferAsset, FileReadDigests, ProjectInput, ProjectLimits,
 };
+use onda_run::resolve_compile_inputs;
 use onda_semantics::TypedProgram;
-use onda_semantics::{compile_inputs_from_literals, AnalysisOptions, CompileInputs};
+use onda_semantics::{AnalysisOptions, CompileInputs};
 
 pub(crate) fn resolve_entry(input: &Path) -> Result<ProjectInput, String> {
     resolve_project_input(input, ProjectLimits::default()).map_err(|error| error.to_string())
@@ -28,13 +28,17 @@ pub(crate) struct RunProjectError {
 
 pub(crate) fn load_initial_buffers(
     project_buffers: impl IntoIterator<Item = (String, BufferAsset, Option<PathBuf>)>,
-    overrides: &[(String, PathBuf)],
+    overrides: &[(String, Option<PathBuf>)],
 ) -> Result<Vec<onda_daemon::InitialBufferBinding>, String> {
     let mut buffers = project_buffers
         .into_iter()
         .map(|(name, asset, path)| onda_daemon::InitialBufferBinding::from_asset(name, asset, path))
         .collect::<Vec<_>>();
     for (name, path) in overrides {
+        let Some(path) = path else {
+            buffers.push(onda_daemon::InitialBufferBinding::cleared(name));
+            continue;
+        };
         buffers.push(
             onda_daemon::InitialBufferBinding::load_file(
                 name.clone(),
@@ -51,7 +55,8 @@ pub(crate) fn load_initial_buffers(
 
 pub(crate) fn resolve_run_project(
     input: &Path,
-    overrides: &[(String, PathBuf)],
+    buffer_overrides: &[(String, Option<PathBuf>)],
+    const_overrides: &[(String, String)],
     analysis_options: AnalysisOptions,
     report_sources: bool,
 ) -> Result<ResolvedRunProject, RunProjectError> {
@@ -65,24 +70,30 @@ pub(crate) fn resolve_run_project(
         )
         .map_err(|error| error.to_string())?;
         let entry = project.entry_path().to_path_buf();
-        let compile_inputs = match project.project() {
-            Some(project_file) if !project_file.manifest.constants.is_empty() => {
-                let loaded = onda_frontend::load_program_file(&entry).map_err(|error| {
-                    if report_sources {
-                        sources = *error.sources;
-                    }
-                    crate::diag_print::format_diagnostics("parse failed", &error.diagnostics)
-                })?;
+        let compile_inputs = if !const_overrides.is_empty()
+            || project
+                .project()
+                .is_some_and(|project| !project.manifest.constants.is_empty())
+        {
+            let loaded = onda_frontend::load_program_file(&entry).map_err(|error| {
                 if report_sources {
-                    sources = loaded.sources;
+                    sources = *error.sources;
                 }
-                project_compile_inputs(&project, &loaded.program, analysis_options)?
+                crate::diag_print::format_diagnostics("parse failed", &error.diagnostics)
+            })?;
+            if report_sources {
+                sources = loaded.sources;
             }
-            Some(_) | None => CompileInputs::default(),
+            resolve_compile_inputs(&project, &loaded.program, analysis_options, const_overrides)
+                .map_err(|diags| {
+                    crate::diag_print::format_diagnostics("invalid configuration constant", &diags)
+                })?
+        } else {
+            CompileInputs::default()
         };
         let buffers = match project.project() {
             Some(project_file) => {
-                let overridden = overrides
+                let overridden = buffer_overrides
                     .iter()
                     .map(|(name, _)| name.as_str())
                     .collect::<std::collections::BTreeSet<_>>();
@@ -114,26 +125,6 @@ pub(crate) fn resolve_run_project(
                 .map(|digests| onda_run::RunSourceGraph::from_failed_sources(&sources, digests)),
         }),
     }
-}
-
-pub(crate) fn project_compile_inputs(
-    project: &ProjectInput,
-    parsed: &Program,
-    analysis_options: AnalysisOptions,
-) -> Result<CompileInputs, String> {
-    let Some(project) = project.project() else {
-        return Ok(CompileInputs::default());
-    };
-    compile_inputs_from_literals(
-        parsed,
-        project
-            .manifest
-            .constants
-            .iter()
-            .map(|(name, value)| (name.clone(), value.onda_literal())),
-        analysis_options,
-    )
-    .map_err(|diags| crate::diag_print::format_diagnostics("invalid project constant", &diags))
 }
 
 pub(crate) fn validate_compile_project(

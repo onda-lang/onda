@@ -76,7 +76,7 @@ pub struct PlaybackLaunch {
     /// Compile and expose controls; defer initialization until a control `play` command.
     pub start_paused: bool,
     pub param_sets: Vec<(String, RunParamValue)>,
-    pub buffer_bindings: Vec<(String, PathBuf)>,
+    pub buffer_bindings: Vec<(String, Option<PathBuf>)>,
     pub project_buffer_bindings: Vec<ProjectBufferBinding>,
 }
 
@@ -865,6 +865,10 @@ fn spawn_run_render_thread(
                     }),
             );
             for (name, path) in &launch.buffer_bindings {
+                let Some(path) = path else {
+                    initial_buffers.push(InitialBufferBinding::cleared(name));
+                    continue;
+                };
                 initial_buffers.push(
                     InitialBufferBinding::load_file(name.clone(), path, ProjectLimits::default())
                         .map_err(|error| {

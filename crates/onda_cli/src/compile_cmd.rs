@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -8,7 +8,7 @@ use onda_codegen_llvm::{
 };
 use onda_frontend::{parse_program_file, PrimitiveType};
 use onda_semantics::{
-    analyze_with_options_and_inputs, compile_inputs_from_literals, inspect_compile_constants,
+    analyze_with_options_and_inputs, inspect_compile_constants,
     lower_graphs_for_inspection_with_options_and_inputs, lower_program_to_optimized_mir,
     AnalysisOptions, CompileConstDescriptor, CompileConstKind, ConstValue, TypedArrayInfo,
     TypedConstValue, TypedProgram,
@@ -57,20 +57,13 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         sample_rate: sample_rate_hz as f32,
         block_size: block_samples,
     };
-    let mut constant_literals = project_input
-        .project()
-        .map(|project| {
-            project
-                .manifest
-                .constants
-                .iter()
-                .map(|(name, value)| (name.clone(), value.onda_literal()))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
-    constant_literals.extend(const_overrides.iter().cloned());
-    let compile_inputs = compile_inputs_from_literals(&parsed, constant_literals, analysis_options)
-        .map_err(|diags| format_diagnostics("invalid configuration constant", &diags))?;
+    let compile_inputs = onda_run::resolve_compile_inputs(
+        &project_input,
+        &parsed,
+        analysis_options,
+        const_overrides,
+    )
+    .map_err(|diags| format_diagnostics("invalid configuration constant", &diags))?;
     if list_consts {
         if dump_graph
             || show_meta

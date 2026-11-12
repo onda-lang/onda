@@ -231,12 +231,12 @@ pub struct RunBuildError {
     pub sources: Box<onda_frontend::SourceManifest>,
 }
 
-/// An external buffer supplied before a run instance is initialized.
+/// A buffer binding or explicit clear applied before initialization.
 #[derive(Debug, Clone)]
 pub struct InitialBufferBinding {
-    pub name: String,
-    pub asset: BufferAsset,
-    pub loaded_path: Option<PathBuf>,
+    name: String,
+    asset: Option<BufferAsset>,
+    loaded_path: Option<PathBuf>,
 }
 
 impl InitialBufferBinding {
@@ -247,8 +247,16 @@ impl InitialBufferBinding {
     ) -> Self {
         Self {
             name: name.into(),
-            asset,
+            asset: Some(asset),
             loaded_path,
+        }
+    }
+
+    pub fn cleared(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            asset: None,
+            loaded_path: None,
         }
     }
 
@@ -463,23 +471,34 @@ impl RunSession {
             let mut buffer_bindings = std::iter::repeat_with(|| None)
                 .take(jit.buffer_count())
                 .collect::<Vec<_>>();
+            let mut assigned_buffers = vec![false; jit.buffer_count()];
             for binding in initial_buffers {
                 let binding_name = binding.name;
-                let (index, binding) = validated_buffer_binding(
-                    &jit,
-                    &binding_name,
-                    binding.asset,
-                    binding.loaded_path,
-                )
-                .map_err(|diag| vec![diag])?;
-                if buffer_bindings[index].is_some() {
+                let index = jit.buffer_index(&binding_name).ok_or_else(|| {
+                    vec![Diagnostic::runtime(
+                        format!("unknown buffer '{binding_name}'"),
+                        0,
+                        0,
+                    )]
+                })?;
+                if mem::replace(&mut assigned_buffers[index], true) {
                     return Err(vec![Diagnostic::runtime(
                         format!("buffer '{binding_name}' has more than one initial binding"),
                         0,
                         0,
                     )]);
                 }
-                buffer_bindings[index] = Some(binding);
+                if let Some(asset) = binding.asset {
+                    let binding = validated_buffer_binding(
+                        &jit,
+                        index,
+                        &binding_name,
+                        asset,
+                        binding.loaded_path,
+                    )
+                    .map_err(|diag| vec![diag])?;
+                    buffer_bindings[index] = Some(binding);
+                }
             }
             let param_values = HashMap::new();
             let param_smoothing = ParamSmoothing::new(&jit, options.param_smoothing_seconds)
@@ -1472,20 +1491,14 @@ fn encode_run_event<'a>(
 
 fn validated_buffer_binding(
     jit: &JitProgram,
+    index: usize,
     name: &str,
     asset: BufferAsset,
     loaded_path: Option<PathBuf>,
-) -> Result<(usize, RunBufferBinding), Diagnostic> {
-    let Some(index) = jit.buffer_index(name) else {
-        return Err(Diagnostic::runtime(
-            format!("unknown buffer '{name}'"),
-            0,
-            0,
-        ));
-    };
+) -> Result<RunBufferBinding, Diagnostic> {
     let prepared = PreparedRunBuffer::from_asset(asset, loaded_path)?;
     validate_buffer_element(jit, index, name, prepared.0.samples.element())?;
-    Ok((index, prepared.0))
+    Ok(prepared.0)
 }
 
 fn validate_buffer_element(

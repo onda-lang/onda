@@ -1,6 +1,6 @@
 ---
 title: Web API reference
-description: Compile, validate, load, and host Onda processors with the public JavaScript packages.
+description: Compile Onda programs and play them in browser applications with the public JavaScript packages.
 permalink: /docs/web-api/
 section: reference
 eyebrow: JavaScript and WebAssembly
@@ -8,48 +8,208 @@ eyebrow: JavaScript and WebAssembly
 
 # Web API reference
 
-Onda publishes four ECMAScript-module packages for browsers and Node.js:
+Use `@onda-lang/wasm-compiler` to compile Onda source in a browser or Node.js, and
+`@onda-lang/webaudio` to play the result through an `AudioContext`.
 
-| Package | Purpose |
+```bash
+npm install @onda-lang/wasm-compiler @onda-lang/webaudio
+```
+
+| Package | Use it to |
 | --- | --- |
-| `@onda-lang/wasm-compiler` | Compile Onda source, workspaces, and project images to complete WebAssembly processor artifacts. |
-| `@onda-lang/processor-abi` | Validate artifacts, inspect metadata, prepare parameter controls, and decode raw delegate and print output. |
-| `@onda-lang/binaryen-web` | Lower trusted, version-matched Onda MIR directly to a processor artifact. |
-| `@onda-lang/webaudio` | Host a complete processor artifact in an `AudioWorklet`. |
+| `@onda-lang/wasm-compiler` | Compile source files or projects to WebAssembly processor artifacts. |
+| `@onda-lang/webaudio` | Play an artifact, change parameters, send events, and save state. |
+| `@onda-lang/processor-abi` | Validate artifacts, inspect metadata, and build a custom host. |
+| `@onda-lang/binaryen-web` | Compile trusted Onda MIR when integrating a separate compiler frontend. |
 
-All packages are ESM-only. `@onda-lang/wasm-compiler` and `@onda-lang/binaryen-web` support modern
-browsers and Node.js 20 or newer. Web Audio construction requires a browser environment with
-`AudioWorklet`; the metadata and parameter helpers re-exported by `@onda-lang/webaudio` are ordinary
-synchronous JavaScript.
-
-Each published package contains this reference as `api.md`. TypeScript declarations are included
-at every exported module path.
+All packages use ECMAScript modules and include TypeScript declarations. The compiler packages
+support modern browsers and Node.js 20 or newer. Playback requires a browser with `AudioWorklet`.
+Each published package includes this reference as `api.md`.
 
 ## Compile source and start audio
 
+Create a compiler once and reuse it. Worker mode keeps compilation off the browser's main thread.
+Call `startAudio(source)` from a user action such as a Play button, passing the Onda source text:
+
 ```js
 import { createCompiler } from "@onda-lang/wasm-compiler";
-import {
-  createOndaAudioProcessorInitialized,
-} from "@onda-lang/webaudio";
+import { createOndaAudioProcessorInitialized } from "@onda-lang/webaudio";
 
-const compiler = await createCompiler();
-const { artifact } = await compiler.compileSource(source, {
-  sampleRate: audioContext.sampleRate,
+const compiler = await createCompiler({ worker: true });
+
+async function startAudio(source) {
+  const context = new AudioContext();
+  await context.resume();
+
+  const { artifact } = await compiler.compileSource(source, {
+    sampleRate: context.sampleRate,
+    blockSize: 512,
+  });
+  const processor = await createOndaAudioProcessorInitialized(context, artifact);
+  processor.node.connect(context.destination);
+  return { context, processor };
+}
+```
+
+Compile for the context's exact sample rate. The adapter rejects a mismatch, and the program must
+have at least one audio input or output. The initialized factory resolves only after successful
+initialization.
+
+Keep the returned processor and context so you can release them when playback ends:
+
+```js
+processor.close();
+processor.node.disconnect();
+await context.close();
+```
+
+Call `await compiler.dispose()` when you no longer need compilation. Closing a processor rejects pending
+requests and removes its listeners; it does not disconnect the caller-owned node or close the
+context.
+
+Your bundler must make the compiler worker and AudioWorklet modules available at runtime. Pass
+`workerUrl` to `createCompiler` or `workletUrl` to the audio factory if your deployment serves them
+from custom URLs. The [playground example](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground)
+shows a complete browser integration.
+
+## `@onda-lang/wasm-compiler`
+
+### `createCompiler(options?)`
+
+Returns an `OndaCompilerInstance`. With no options, compilation runs on the calling JavaScript
+thread. Pass `{ worker: true }` for a module worker. `workerUrl`, `frontendWasm`, and a custom
+`Worker` constructor are available for custom loading environments.
+
+| Task | Methods |
+| --- | --- |
+| Compile source | `compileSource(source, options?)`, `compileWorkspace(workspace, options?)` |
+| Inspect compile-time settings | `inspectSourceConstants`, `inspectWorkspaceConstants`, `inspectProjectImageConstants` |
+| Save or reopen portable projects | `createProjectImage`, `inspectProjectImage`, `loadProjectFiles`, `materializeProjectImage`, `compileProjectImage` |
+| Read or write typed assets | `encodeBufferAsset`, `decodeBufferAsset`, `decodeBufferFile` |
+| Query supported project formats | `projectCapabilities()` |
+| Integrate language-server features | `sendLspMessage`, `setLspAnalysisOptions` |
+| Release compiler resources | `dispose()` |
+
+### Multiple source files
+
+Supply an entry path and a map of source filenames to text. Imports and includes resolve from this
+map and the bundled standard library:
+
+```js
+const result = await compiler.compileWorkspace({
+  entry: "main.onda",
+  sources: {
+    "main.onda": mainSource,
+    "dsp/filter.onda": filterSource,
+  },
+}, {
+  sampleRate: 48000,
   blockSize: 512,
 });
+```
 
-const print = ({ text }) => console.debug(text);
-const processor = await createOndaAudioProcessorInitialized(
-  audioContext,
-  artifact,
-  {
-    params: { gain: 0.5 },
-    // A construction-time listener also receives prints emitted by init.
-    onPrint: print,
-  },
-);
-processor.node.connect(audioContext.destination);
+A successful result contains `artifact`, resolved `sourceFiles`, and `sourceGraph` when available.
+Use the source graph with `createProjectImage` to save a portable project with its buffer assets.
+See [Working with projects](https://onda-lang.org/docs/projects/) for the editable project format.
+
+### Compile options and diagnostics
+
+`sampleRate` defaults to 48000 and `blockSize` to 512. `constants` supplies overrides for declared
+compile-time settings. Values use booleans, numbers, `bigint` for `i64`, boolean arrays, and matching
+numeric typed arrays.
+Inspection methods return each constant's type, shape, and resolved value; enum descriptors also
+include member names and labels.
+
+A workspace may carry project defaults in `workspace.constants`, using the project file's JSON
+representation, including decimal strings for `i64`. Explicit `options.constants` override these
+defaults. Pass the workspace defaults to `createProjectImage` when exporting an edited project.
+
+`codegen` controls optimization level (`optimizeLevel`, 0–4), size optimization (`shrinkLevel`, 0–2),
+`fastMath`, `simd`, and optional WAT output (`emitText`). See
+[the TypeScript declarations](https://github.com/onda-lang/onda/blob/main/packages/onda_wasm_compiler/src/index.d.ts)
+for all options and method signatures.
+
+Catch `OndaCompileError` for source and project compilation failures. Its `diagnostics` provide
+messages and source locations. `sourceFiles` and `unresolvedSourceFiles` let editors retain file
+watches while a program is invalid. `OndaCompilerError` reports compiler setup or lifecycle errors;
+`OndaBinaryenError` reports a WebAssembly compilation failure.
+
+The `/artifact` module path exposes artifact helpers without loading the compiler. The `/worker`
+path is the worker's entry module and has no named exports.
+
+## `@onda-lang/webaudio`
+
+### Construction
+
+Use `createOndaAudioProcessorInitialized(context, artifact, options?)` for immediate playback.
+Use `createOndaAudioProcessor` when you need to change parameters before the first initialization,
+then call `processor.init(ONDA_INIT_FULL)` explicitly. Until initialization succeeds, the processor
+emits silence and rejects operations that require initialized state.
+
+| Option | Purpose |
+| --- | --- |
+| `params` | Initial plain parameter values. Names must match the program. |
+| `buffers` | Initial external-buffer bindings by name, array group, or slot order. |
+| `paramSmoothingSeconds` | Optional host parameter ramps; defaults to `0`. |
+| `eventPayloadCapacityBytes` | Reserved dynamic event capacity; defaults to 64 KiB. |
+| `delegateCapacityBytes`, `printCapacityBytes` | Output collection capacities; each defaults to 64 KiB. Zero disables that stream. |
+| `onPrint` | Initial print listener, including prints from initialization. |
+| `compiledModule` | Reuse a module prepared with `compileOndaProcessorModule`. |
+| `workletUrl` | Custom URL for the AudioWorklet module. |
+
+The factory registers the worklet and prepares the WebAssembly module before playback. Advanced
+hosts can use `registerOndaAudioWorklet`, `compileOndaProcessorModule`, and
+`ondaAudioWorkletNodeOptions` separately. See
+[the adapter declarations](https://github.com/onda-lang/onda/blob/main/packages/onda_webaudio/src/index.d.ts)
+for custom node options and constructors.
+
+### Parameters
+
+For a program with a `cutoff` parameter and an `offsets` array:
+
+```js
+await processor.setParam("cutoff", 440);
+await processor.setParamNormalized("cutoff", 0.5);
+await processor.setParamElement("offsets", 1, 12);
+await processor.resetParams();
+```
+
+Plain writes use the parameter's declared units. Normalized writes use its range and scale, clamp
+to the range, and snap stepped values. Whole arrays require an exact-length array. Indexed names
+such as `offsets[1]` also work with `setParam` and `setParamNormalized`. Use
+`setParamElementNormalized` for a normalized write to one array element.
+
+`paramSmoothingSeconds` applies finite linear ramps to continuous floating-point parameters.
+Integer, boolean, and stepped parameters update directly. Ramps update once per Onda compile block;
+they do not interpolate inside individual samples. Durations at most one block are bypassed.
+Change the duration live with `setParamSmoothingSeconds(seconds)`, using a finite, nonnegative value.
+Initial parameters, reinitialization, and `resetParams()` settle immediately. Ramps are not saved
+in processor snapshots.
+
+### Events and output
+
+`trigger(nameOrIndex, values?)` accepts an array in declaration order or an object keyed by parameter
+name. Structs are objects with their declared fields; tuples, fixed arrays, and slices are sequences.
+For an event with a `note` argument containing `frequency` and `velocity`:
+
+```js
+await processor.trigger("note_on", {
+  note: { frequency: 523.25, velocity: 0.7 },
+});
+```
+
+Missing event arguments use declared defaults. Fixed arrays must match their declared length.
+Supply `i64` values as `bigint`, exact safe integers, or decimal strings. Unknown names and negative
+indices are rejected; unknown nonnegative numeric indices are successful no-ops.
+
+`onPrint`, `onDelegates`, and `onExecutionError` return unsubscribe functions. Register `onPrint`
+in the factory options to include initialization output, or subscribe later for future calls:
+
+```js
+const stopPrints = processor.onPrint(({ text, overflowCount, transportDropCount }) => {
+  console.debug(text);
+  if (overflowCount || transportDropCount) console.warn("Some output was dropped");
+});
 
 const stopDelegates = processor.onDelegates(({ occurrences }) => {
   for (const occurrence of occurrences) {
@@ -58,281 +218,139 @@ const stopDelegates = processor.onDelegates(({ occurrences }) => {
 });
 ```
 
-Compilation is an offline operation and may allocate. Constructing the adapter compiles or accepts
-a reusable `WebAssembly.Module` before the audio node starts. Normal rendering uses preallocated
-storage. Delegate and print callbacks run on the main side after bounded worklet transport; they do
-not call JavaScript from generated DSP execution.
+Print and delegate delivery requires cross-origin isolation and `SharedArrayBuffer`; ordinary audio
+playback remains available without shared memory. Collection is active only while listeners are
+registered and capacity is nonzero. `overflowCount` counts records dropped by the processor;
+`transportDropCount` counts records lost during delivery to the main thread. A notification may
+report loss without carrying any occurrences.
 
-## `@onda-lang/wasm-compiler`
+Both listener types run on the main thread in call-local sequence order. They do not run inside
+DSP execution. Ordering starts again for each initialization, event, or process segment.
 
-### `createCompiler(options?)`
+### State and errors
 
-Creates an `OndaCompilerInstance`. With no options, compilation runs directly on the calling
-JavaScript thread. Pass `{ worker: true }` to run the frontend and backend in a module worker;
-`workerUrl`, `frontendWasm`, and a custom `Worker` constructor are optional integration hooks.
+| Operation | Purpose |
+| --- | --- |
+| `init(ONDA_INIT_FULL)` | Clear and initialize all processor state. |
+| `init(ONDA_INIT_PRESERVE_PINNED)` | Reinitialize while retaining pinned state. |
+| `snapshot()`, `restoreSnapshot(bytes)` | Save and restore persistent state. Restore does not deliver initialization prints or delegates. |
+| `readControlOutputs()` | Read held control-output values. |
+| `readBuffer(nameOrIndex)` | Read buffer contents. |
+| `close(reason?)` | Release adapter resources; subsequent operations fail. |
 
-The returned instance provides:
+Catch rejected parameter, initialization, and event promises. `OndaRuntimeError` exposes an
+`operation` and numeric `code` from `ONDA_RUNTIME_ERROR`. `OndaExecutionError` exposes an `operation`
+and generated execution `status`:
 
-- `compileSource(source, options?)` and `inspectSourceConstants(source, options?)`.
-- `compileWorkspace(workspace, options?)` and `inspectWorkspaceConstants(workspace, options?)`.
-- `compileProjectImage(bytes, options?)` and `inspectProjectImageConstants(bytes, options?)`.
-- `createProjectImage(sourceGraph, buffers?, constants?)`, `inspectProjectImage(bytes)`,
-  `loadProjectFiles(files, projectFilePath?)`, and `materializeProjectImage(bytes, names?)`.
-- `encodeBufferAsset(binding)`, `decodeBufferAsset(bytes)`, and `decodeBufferFile(bytes, path?)`.
-- `projectCapabilities()` for supported image, buffer, and standard-library versions.
-- `sendLspMessage(message)` and `setLspAnalysisOptions(options?)` for the embedded language server.
-- `dispose()`, an idempotent terminal release of compiler and worker resources.
+| Status | Meaning |
+| --- | --- |
+| `PROCESSOR_EXECUTION_OK` (`0`) | Execution succeeded. |
+| `PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE` (`1`) | State is invalidated; audio is silenced until full initialization or snapshot restoration succeeds. |
+| `PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`, events only) | The payload or workspace was rejected; state remains usable. |
 
-Enum configuration inspection returns optional `enumeration` metadata on `OndaCompileConstDescriptor`.
-Its `element` is `i32`; scalar values and `Int32Array` selections use ordinary integer configuration
-transport and are clamped to the member range during compilation.
+Use `onExecutionError` for asynchronous processing failures. Initialization and event failures reject
+their own promises and are not reported again to this listener. If the adapter closes, including
+a terminal control-transport failure, create a new processor. Print/delegate overflow is reported
+separately and does not by itself close the processor.
 
-Compile options accept `sampleRate`, `blockSize`, typed compile-constant overrides, and `codegen`.
-Workspaces may carry `constants` in project-manifest form (numbers, booleans, decimal strings for
-`i64`, and primitive arrays). These are project defaults; explicit `options.constants` take
-precedence. Pass the same defaults to `createProjectImage` when exporting an edited workspace.
-The sample rate defaults to 48000 Hz and the block size to 512 frames.
-Code generation can select optimization level `0..4`, shrink level `0..2`, strict or fast math,
-SIMD, loop-containing inlining, and optional WAT emission. A successful compilation returns an
-`OndaCompilationResult` containing the artifact, resolved source paths, and the exact source graph
-when one is available.
+Web Audio adapts its callbacks to Onda's compiled block size; you do not need a segmented-process
+method. Audio converts at Web Audio's `f32` boundary: integer inputs truncate and saturate (NaN
+becomes zero), boolean inputs use nonzero comparison, and outputs convert to `f32`. Event and
+delegate values retain their declared types and precision.
 
-Configuration and lifecycle failures throw `OndaCompilerError`. Authored-source, project, MIR, and
-code-generation failures throw `OndaCompileError`, whose `diagnostics`, `sourceFiles`, and
-`unresolvedSourceFiles` fields support editors and file watchers. `OndaBinaryenError` identifies a
-failure in the MIR-to-Wasm backend.
-
-`MIR_SCHEMA_VERSION` is the schema accepted by the bundled backend. `ONDA_VERSION` is the compiler
-version. Artifacts are self-contained; instantiate them with an empty import object (`{}`).
-
-The `@onda-lang/wasm-compiler/artifact` subpath re-exports the complete
-`@onda-lang/processor-abi` surface without loading the compiler. The
-`@onda-lang/wasm-compiler/worker` subpath is a side-effect-only module-worker entry and has no
-named exports.
+The `/worklet` module path registers the AudioWorklet processor and has no named exports.
 
 ## `@onda-lang/processor-abi`
 
-An `OndaProcessorArtifact` contains WebAssembly bytes, an `OndaProcessorMetadata` descriptor, and
-optional WAT. Treat the bytes and descriptor as one integrity-associated pair.
+Use this package for artifact files, metadata-driven controls, or a custom WebAssembly host.
+An `OndaProcessorArtifact` contains WebAssembly bytes, a metadata descriptor, and optional WAT.
+Keep the bytes and descriptor together; they describe one exact compilation.
 
 ### Validation and files
 
-- `validateProcessorMetadata(metadata, expectedKind?)` validates and returns the current descriptor.
+- `validateProcessorMetadata(metadata, expectedKind?)` checks a descriptor.
 - `validateProcessorArtifact(artifact, options?)` normalizes bytes and optionally inspects the module.
-- `validateProcessorModule(module, metadata)` verifies a precompiled module against its descriptor.
-- `parseProcessorMetadata(input, expectedKind?)` parses JSON or validates an object.
-- `serializeProcessorMetadata(metadata, space?)` validates before producing newline-terminated JSON.
-- `createProcessorArtifactFiles(artifact, options?)` creates associated `.wasm` and `.onda.json`
-  records, including integrity metadata.
-- `loadProcessorArtifactFiles(wasm, metadata)` validates a loaded pair and its integrity association.
+- `validateProcessorModule(module, metadata)` checks a precompiled module against its descriptor.
+- `parseProcessorMetadata(input, expectedKind?)` accepts JSON or an object.
+- `serializeProcessorMetadata(metadata, space?)` validates and produces JSON.
+- `createProcessorArtifactFiles(artifact, options?)` creates matching `.wasm` and `.onda.json` records.
+- `loadProcessorArtifactFiles(wasmBytes, metadataJson)` verifies and loads a saved pair.
 
-Failures throw `OndaArtifactError`. Hosts must reject unsupported artifact-format, ABI, and snapshot
-versions rather than guessing layout compatibility.
+Failures throw `OndaArtifactError`. Complete modules have no imports and can be instantiated with
+`WebAssembly.instantiate(artifact.wasm, {})`. Direct hosts must allocate storage and drive the
+[Processor API](https://onda-lang.org/docs/processor-api/); the Web Audio adapter does this for you.
 
 ### Parameter controls
 
-`createParamControl(metadata)` validates one scalar parameter descriptor and returns a reusable
-`OndaPreparedParamControl`. For an array, `createParamControl(metadata, index)` prepares one element;
-`paramElementMetadata(metadata, index)` projects its scalar descriptor, default, and storage offset.
-The Web Audio adapter exposes `setParamElement(nameOrIndex, element, value)` and
-`setParamElementNormalized(nameOrIndex, element, normalized)` for individual scalar or fixed-array
-elements. Indexed names such as `offsets[1]` remain accepted by `setParam` and
-`setParamNormalized`; exact-length arrays use `setParam("offsets", values)`.
-`createParamDomain(domain)` does the same from already-decoded values.
-Prepared controls expose `constrainPlain`, `normalizedToPlain`, and `plainToNormalized` methods.
+Prepare a control with `createParamControl(metadata, elementIndex?)` for repeated conversion, or
+use `paramNormalizedToPlain`, `paramPlainToNormalized`, and `constrainParamPlain` for individual
+values. Prepared controls expose `constrainPlain`, `normalizedToPlain`, and `plainToNormalized`.
+`paramElementMetadata` selects one array element; `createParamDomain` accepts already decoded
+values.
 
-The one-shot `constrainParamPlain`, `paramNormalizedToPlain`, and `paramPlainToNormalized`
-functions provide the same behavior. Preparing once is preferable for frequently updated UI:
-validation and decimal descriptor decoding stay off the interaction path. Mappings preserve exact
-endpoints, apply linear, logarithmic, or curved scale, and clamp and snap to the declared grid.
+Conversions preserve endpoints, clamp ranges, and snap steps. Booleans use a `0.5` threshold;
+unranged numbers have no normalized control domain. Full-width `i64` values use `bigint` for direct
+writes. Numeric host controls are limited to exactly representable binary64 integer domains.
+These helpers are also re-exported by `@onda-lang/webaudio`.
 
-### Delegates and print output
+### Structured event and delegate values
 
-See the [host output guide](https://onda-lang.org/docs/host-output/#javascript-and-web-audio)
-for batch sizing, decoding, formatting, and Web Audio listener examples.
+`PayloadPlan` prepares a message schema for encoding and decoding. `encode(values)` accepts named
+objects or positional arrays; `decode(bytes)` returns named values with `bigint` for `i64`.
+Structs must contain exactly their declared fields; unknown names and extra positional values are
+rejected. Missing event arguments use declared defaults.
 
-Complete wasm32 processor exports receive an optional execution-output descriptor containing
-independently nullable delegate and print batches. Allocate all descriptors and storage before
-real-time execution. Their linear-memory regions must be mutually disjoint and must not overlap any
-other region accessed by the processor call, matching the processor ABI's execution-output
-contract.
+`tensorMetadata` describes each primitive leaf's path, encoding, fixed shape, owning parameter,
+slice status, and fixed element count. For a slice, multiply its logical length by
+`fixedElementCount` to obtain the tensor length. Tuple path components use `__0`, `__1`, and so on.
 
-`writeDelegateBatch` and `writePrintBatch` initialize reusable batch descriptors.
-`writeExecutionOutput` connects their addresses. Call `resetExecutionOutput` immediately before
-every generated init or process entry. Generated event entries reset before input preflight, so
-rejected input returns empty batches. After a successful generated call,
-`readDelegateBatch` or `readPrintBatch` validates the result counters.
-`decodeDelegateBatch` validates and decodes a complete delegate batch in one call;
-`decodeDelegateRecords` decodes an already-isolated storage region using `metadata.delegates`.
-`decodePrintRecords` preserves primitive types and source sites; `formatPrintRecords` and
-`formatPrintBatch` add canonical text formatting. Both decoded record types expose a `sequence` from
-the host-reset call-local counter; merge that call's two arrays by this field when presenting one
-chronological output stream.
+For direct Wasm calls, use `sizes(lengths)` or `requiredWorkspace(bytes)` to provision packed input
+and aligned workspace, then `writeEventInput` to write the required 16-byte event descriptor.
+`OndaAudioProcessor.trigger` performs this preparation for ordinary browser hosts.
 
-Batch capacity is host policy. `overflowCount` reports whole records that did not fit; it is not a
-byte count. Consume the returned storage before reusing it for another init, process, or event call.
-See the [language guide](https://onda-lang.org/docs/language/#delegates-and-when) for authored semantics and
-the [processor API](https://onda-lang.org/docs/processor-api/#call-scoped-execution-output) for
-physical record layout.
+Decoded `f32` values use `canonicalF32Number` to return the shortest decimal representation that
+round-trips to the same `f32` value.
 
-The metadata interfaces expose target facts, storage sizes, ports, parameters, states, events,
-delegates, print sites, buffers, and integration profiles. Scalar `i64` values decoded from records
-use `bigint`; booleans use `boolean`; fixed arrays and slices become JavaScript arrays.
+### Raw delegate and print batches
+
+Direct hosts use `writeDelegateBatch`, `writePrintBatch`, and `writeExecutionOutput` to prepare
+caller-owned collection storage. Reset it with `resetExecutionOutput` before each init or process
+call; event entries reset it before input validation. Storage must be disjoint from other memory
+accessed by the call and remain valid until records have been consumed.
+
+`readDelegateBatch` and `readPrintBatch` validate result counters. `decodeDelegateBatch` decodes a
+complete delegate batch; `decodeDelegateRecords` handles an isolated storage region.
+`decodePrintRecords` retains typed values and source sites. `formatPrintRecords` and
+`formatPrintBatch` produce text. Merge print and delegate records by `sequence` when presenting
+one call's output; `overflowCount` counts whole records that did not fit.
+
+See the [processor output layout](https://onda-lang.org/docs/processor-api/#call-scoped-execution-output)
+for storage requirements and the
+[repository integration guide](https://github.com/onda-lang/onda/blob/main/docs/host-output.md#javascript-and-web-audio)
+for complete collection examples.
 
 ## `@onda-lang/binaryen-web`
 
-### `compileTrustedMir(mir, options?)`
+Use `compileTrustedMir(mir, options?)` only when supplying MIR from a matching Onda frontend. For
+source text, use `@onda-lang/wasm-compiler` instead. MIR input may be MessagePack, JSON, or an
+already decoded object; this synchronous function returns an `OndaProcessorArtifact`. It does not
+validate untrusted or hand-authored MIR.
 
-Lowers MIR emitted by the matching Onda semantic frontend. Input may be compact MessagePack, JSON,
-or an already-decoded object. The function is synchronous and returns an
-`OndaProcessorArtifact`. It is intentionally not a validator for untrusted or hand-authored MIR;
-the producer owns semantic, type, bounds, and resource proofs.
+`SUPPORTED_MIR_SCHEMA_VERSION` identifies the required input version. `OndaBinaryenOptions`
+controls optimization, fast math, SIMD, and optional WAT. Failures throw `OndaBinaryenError`.
+The `/artifact` module path exposes artifact helpers without loading Binaryen.
 
-`OndaBinaryenOptions` controls the same backend policies exposed through compiler `codegen`.
-`SUPPORTED_MIR_SCHEMA_VERSION` identifies the required producer schema. Instantiate self-contained
-artifacts with `{}` imports. Backend failures throw
-`OndaBinaryenError`.
+## Export indexes
 
-The package root re-exports the common artifact validation and file helpers. The
-`@onda-lang/binaryen-web/artifact` subpath re-exports the complete
-`@onda-lang/processor-abi` module without loading Binaryen.
+Expand a package's index to look up runtime exports and TypeScript types. Exact signatures are
+included in each installed package's declarations.
 
-## `@onda-lang/webaudio`
-
-Audio ports retain their declared scalar types in Wasm. At the Web Audio `f32`
-boundary, integer inputs truncate toward zero and saturate (NaN becomes zero),
-and boolean inputs use nonzero comparison, including NaN. Outputs convert
-numerically to `f32`; booleans become zero or one. Event/delegate payloads retain
-their schema-defined types and precision independently of audio conversion.
-
-### Construction
-
-- `registerOndaAudioWorklet(context, workletUrl?)` registers the processor once per context.
-- `compileOndaProcessorModule(artifact)` validates and compiles a reusable module off the render thread.
-- `ondaAudioWorkletNodeOptions(artifact, options?)` builds low-level node options.
-- `createOndaAudioProcessor(context, artifact, options?)` allocates an uninitialized adapter.
-- `createOndaAudioProcessorInitialized(context, artifact, options?)` allocates it, requests full
-  initialization through the status-bearing control protocol, and resolves only on success.
-- `flattenedAudioChannelCount(ports?)` totals declared physical channels with validation.
-
-`OndaAudioProcessorOptions` accepts initial plain parameter values, external buffers, event,
-delegate, and print capacities, an optional construction-time `onPrint` listener, a precompiled
-module, custom node options, and an `AudioWorkletNode` constructor. Pass `onPrint` when using the
-initialized factory if initialization output must be observed; registering a listener after
-construction cannot replay output from an execution that has already completed. The artifact sample
-rate must equal the context sample rate and it must expose at least one audio input or output.
-Print and delegate delivery uses a bounded `SharedArrayBuffer` ring and requires cross-origin
-isolation in browsers; ordinary audio processing remains available when shared memory is absent.
-Low-level callers that manually pair the returned node options with `OndaAudioProcessor` must pass
-the artifact metadata as the adapter constructor's second argument and
-`processorOptions.executionOutputRing` as its fourth argument and
-`processorOptions.executionStatusRing` as its fifth argument. Event encoding and numeric
-unknown-index classification require that metadata.
-
-`paramSmoothingSeconds` is an optional **host** setting on `OndaAudioProcessorOptions`, defaulting
-to `0`. It applies finite linear ramps to continuous floating-point parameters and array elements;
-integer, boolean, and stepped parameters update directly. Ramps publish once per logical compile
-block, independent of Web Audio callback sizes. Durations round up to host samples and are bypassed
-when they fit within one block. A changed target starts a fresh ramp from the published value;
-repeated writes of the same target keep its deadline. Initial values and reinitialization settle
-immediately, and processor snapshots do not contain the host ramps. The browser playground opts
-into `0.03` seconds (30 ms). These block-level updates do not interpolate inside `sample:`.
-
-### `OndaAudioProcessor`
-
-The adapter exposes its `node` and validated `metadata`, plus these operations:
-
-- `setParam(nameOrIndex, plain)` and `setParamNormalized(nameOrIndex, normalized)` for whole
-  parameters.
-- `resetParams()` to restore parameter defaults immediately and cancel host ramps, retaining DSP state.
-- `setParamSmoothingSeconds(seconds)` to change the host duration live without recompiling or
-  reinitializing DSP state. Finite, nonnegative durations are required. Active ramps restart from
-  their current values using the new duration; 0 (or a duration at most one block) settles their
-  targets immediately. Smoothing can be enabled after starting with 0.
-- `setParamElement(nameOrIndex, element, plain)` and
-  `setParamElementNormalized(nameOrIndex, element, normalized)` for one scalar or fixed-array
-  element.
-- `trigger(nameOrIndex, values?)` for input events. Unknown nonnegative numeric indices are
-  successful no-ops, matching native dispatch; unknown names and negative indices are rejected.
-- `onExecutionError(listener)`, `onDelegates(listener)`, and `onPrint(listener)`, each returning an
-  unsubscribe function.
-- `init(mode)`, `snapshot()`, and `restoreSnapshot(bytes)`.
-- `readControlOutputs()` and `readBuffer(nameOrIndex)`.
-- `request(type, fields?, transfer?)` for adapter protocol extensions.
-- `close(reason?)`, an idempotent terminal release of adapter-side resources.
-
-Delegate and print batches report `overflowCount` for generated-storage loss and
-`transportDropCount` for bounded worklet-to-main queue loss. Loss-only notifications can arrive
-without occurrences. Collection is enabled only while the corresponding listener set is nonempty;
-setting the capacity to zero disables host delivery even with listeners while preserving language
-evaluation semantics.
-
-With both listener types active, the adapter invokes them in call-local sequence order and may split
-a same-stream batch around an intervening occurrence from the other stream. Ordering resets for
-each init, event, or process segment.
-
-`ONDA_INIT_FULL` clears and initializes all physical state. `ONDA_INIT_PRESERVE_PINNED` retains
-pinned state according to the processor ABI. The package also re-exports the prepared and one-shot
-parameter conversion helpers. Snapshot restoration performs its internal full initialization
-silently, without delivering init prints or delegates.
-
-Raw WebAssembly exports use the same generated status values as native processor objects:
-`PROCESSOR_EXECUTION_OK` (`0`), `PROCESSOR_EXECUTION_RUNTIME_SAFETY_FAILURE` (`1`), and event-only
-`PROCESSOR_EXECUTION_INPUT_REJECTED` (`2`). The Web Audio adapter translates host-side validation
-problems into rejected promises before generated execution. It also rejects init and event promises
-when generated code returns a nonzero status: status `1` invalidates the live processor, while event
-status `2` preserves it. These generated failures use `OndaExecutionError`, whose `operation` and
-`status` fields retain the machine-readable failure. The Web Audio root re-exports all three
-`PROCESSOR_EXECUTION_*` constants for direct comparison. Render-time process failure invalidates the
-processor and silences subsequent callbacks. `onExecutionError(listener)` receives its typed
-`OndaExecutionError`; requested init and event failures remain on their promise rejection path and
-are not reported twice.
-Worklet validation failures use `OndaRuntimeError` with a numeric `code` from `ONDA_RUNTIME_ERROR`
-and an `operation`. Rejected input leaves the instance usable; invalid output/storage and unexpected
-execution failures invalidate it and silence subsequent callbacks until full initialization or
-snapshot restoration succeeds. Unexpected engine exceptions also follow this recovery path.
-Compiler diagnostics remain unchanged.
-
-The worklet reports generated failures and host validation failures as numeric statuses, without
-constructing errors or formatting text. A separate bounded shared-memory status ring carries
-execution failures and command acknowledgements independently of the lossy print/delegate ring.
-The adapter drains diagnostics before reporting a status, constructs errors on the main thread,
-and bounds in-flight control requests to reserve capacity for replies and render failures.
-Without `Atomics.waitAsync`, control replies wake the adapter through the port instead of waiting
-for a polling interval; asynchronous render failures are polled. Transport overflow is terminal:
-processing stops, the adapter closes, and every pending or queued request rejects. Recreate the
-processor after this error. Status monitoring remains active without print/delegate listeners.
-
-Without shared memory, the same numeric protocol uses a reused MessagePort packet; browser
-structured cloning can allocate. This is not a blanket JavaScript allocation-free guarantee:
-incoming control messages, control wakeups without `Atomics.waitAsync`, BigInt conversion,
-snapshots, buffer/control-output reads, and engine
-exceptions can allocate. The normal f32 rendering and shared-memory status publication paths use
-prepared storage. Public promises and `onExecutionError` continue delivering errors on the main
-thread; requested failures are not also sent to that listener.
-
-The browser API exposes no thread FP-mode setter. WebAssembly uses the engine's specified
-[floating-point semantics](https://webassembly.github.io/spec/core/exec/numerics.html#floating-point-operations),
-including subnormal arithmetic; native x86 FTZ/DAZ setup does not apply to browser execution.
-
-The raw `@onda-lang/processor-abi` package exposes `PROCESSOR_BEGIN_BLOCK`,
-`PROCESSOR_END_BLOCK`, and `PROCESSOR_FULL_BLOCK` for native and direct WebAssembly hosts that use
-segmented processing. Web Audio schedules render quanta internally and has no segmented-process
-method.
-
-`@onda-lang/webaudio/worklet` is the side-effect-only AudioWorklet registration module and has no
-named exports.
-
-## Complete exported surface
-
-The following indexes include runtime values and TypeScript-only types from each package root.
-They are checked against the shipped declarations so additions cannot silently escape this
-reference. Artifact subpaths are complete processor-ABI re-exports; worker and worklet subpaths are
-side-effect-only as described above.
-
-### `@onda-lang/processor-abi`
+<details markdown="1">
+<summary>@onda-lang/processor-abi exports</summary>
 
 <!-- BEGIN WEB API onda_processor_abi -->
+
+```text
 DELEGATE_BATCH_SIZE_BYTES
 DELEGATE_RECORD_HEADER_SIZE_BYTES
 EXECUTION_OUTPUT_SIZE_BYTES
@@ -410,11 +428,18 @@ canonicalF32Number
 EVENT_INPUT_SIZE_BYTES
 PROCESSOR_EXECUTION_INPUT_REJECTED
 writeEventInput
+```
+
 <!-- END WEB API onda_processor_abi -->
 
-### `@onda-lang/binaryen-web`
+</details>
+
+<details markdown="1">
+<summary>@onda-lang/binaryen-web exports</summary>
 
 <!-- BEGIN WEB API onda_binaryen_web -->
+
+```text
 OndaArtifactError
 OndaBinaryenError
 OndaBinaryenOptions
@@ -442,11 +467,18 @@ serializeProcessorMetadata
 validateProcessorArtifact
 validateProcessorMetadata
 validateProcessorModule
+```
+
 <!-- END WEB API onda_binaryen_web -->
 
-### `@onda-lang/wasm-compiler`
+</details>
+
+<details markdown="1">
+<summary>@onda-lang/wasm-compiler exports</summary>
 
 <!-- BEGIN WEB API onda_wasm_compiler -->
+
+```text
 DirectCompilerOptions
 MIR_SCHEMA_VERSION
 ONDA_VERSION
@@ -508,11 +540,18 @@ serializeProcessorMetadata
 validateProcessorArtifact
 validateProcessorMetadata
 validateProcessorModule
+```
+
 <!-- END WEB API onda_wasm_compiler -->
 
-### `@onda-lang/webaudio`
+</details>
+
+<details markdown="1">
+<summary>@onda-lang/webaudio exports</summary>
 
 <!-- BEGIN WEB API onda_webaudio -->
+
+```text
 ONDA_AUDIO_WORKLET_PROCESSOR_NAME
 ONDA_INIT_FULL
 ONDA_INIT_PRESERVE_PINNED
@@ -543,32 +582,8 @@ ondaAudioWorkletNodeOptions
 paramNormalizedToPlain
 paramPlainToNormalized
 registerOndaAudioWorklet
+```
+
 <!-- END WEB API onda_webaudio -->
 
-### Structured event and delegate values
-
-`PayloadPlan` prepares a recursive message schema once. `encode(values)` accepts ordered parameter
-arrays or objects keyed by parameter name; structs are objects containing exactly their declared
-own fields, and arrays/tuples are sequences. Unknown named parameters and excess positional values
-are rejected. Missing event arguments use declared constant defaults.
-Supply `i64` as `bigint`, an exact safe integer, or a decimal string. `decode(bytes)` returns named
-nested values with `bigint` for `i64`. Plans own immutable schema snapshots.
-
-`tensorMetadata` exposes the schema's flattened SoA contract without reparsing JSON. Each immutable
-record contains `path`, `encoding`, fixed `shape`, `parameterIndex`, `isSlice`, and
-`fixedElementCount`. Tuple path components use `__0`, `__1`, and so on. A slice's runtime tensor
-length is its logical length times `fixedElementCount`; the dynamic outer axis is therefore not
-repeated in `shape`.
-
-`requiredWorkspace(bytes)` preflights packed little-endian input. `sizes(lengths)` reports wire
-and aligned workspace sizes without allocating payload storage. Low-level wasm hosts provision
-both regions and a 16-byte descriptor, then call `writeEventInput` before invoking the event.
-Rejected input returns `PROCESSOR_EXECUTION_INPUT_REJECTED` (2) and leaves processor state usable.
-`OndaAudioProcessor.trigger` performs logical encoding before transferring bytes to the worklet.
-Web hosts intentionally have no unchecked tensor-view event entry: JavaScript values must cross the
-main-thread/worklet and Wasm linear-memory boundaries, so native borrowed addresses cannot be
-preserved end to end. Web event dispatch remains the packed, checked `onda_event_N` path and uses
-its preallocated workspace.
-Decoded `f32` leaves use `canonicalF32Number(value)`: the returned JavaScript number has the
-shortest decimal representation that round-trips to the same `f32`, so JSON and controls do not
-expose an irrelevant widened binary tail.
+</details>

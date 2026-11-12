@@ -451,6 +451,8 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `controller_startup.rs` — native child restoration barrier. Children start paused; validated
   control and buffer acknowledgements complete before `play` initializes and processes. Failed
   restoration terminates preparation so retrying restores the complete state again.
+- `controller_project.rs` — Save As captures effective compile constants and current buffer
+  bindings, including CLI selections and later UI replacements or clears.
 - `control_client.rs` — controller-side JSON control connection and requests.
 - `playback/control_reader.rs` — byte framing that retains partial requests across socket timeouts.
 - `param_value_json.rs` — lossless scalar control transport, including decimal strings for `i64`.
@@ -690,7 +692,7 @@ browser hosts leave it empty; the plugin supplies its control-input mappings.
   backends share the same logical layouts. Web Audio transports raw print records out of the audio
   callback and formats on the main side; daemon, CLI, and run hosts likewise decode bounded batches
   outside generated execution. Run UIs deliver prints and subscribed delegates in call-local source
-  order. See the [host output guide](https://onda-lang.org/docs/host-output/) for collection and
+  order. See the [host output guide](https://github.com/onda-lang/onda/blob/main/docs/host-output.md) for collection and
   decoding examples.
 
 ### Optimization boundaries

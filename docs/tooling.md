@@ -1,46 +1,164 @@
 ---
 title: CLI and editor tools
-description: Compile, run, render, diagnose, and edit Onda programs.
+description: Play and edit Onda programs with the CLI, MIDI, samples, and editor tools.
 permalink: /docs/tooling/
-section: learn
+section: tooling
 eyebrow: Tools
 ---
 
 # CLI and editor tools
 
-The `onda` executable is the center of the toolchain. It checks and compiles source, runs real-time audio, renders offline, exposes daemon services, and starts the language server.
+Use `onda` to check and play programs. If you have not installed it yet,
+follow [Getting started]({{ '/docs/getting-started/' | relative_url }}#install-a-precompiled-release).
+Run `onda --help` for all commands and options.
+
+The commands below use files from the included examples. Replace the example path with your own
+`.onda`, `.on`, or `.ondaproject` file when working on a program.
+
+## Real-time playback
+
+Open a program in Onda Run:
+
+```bash
+onda run examples/basic/sine.onda
+```
+
+Onda reloads the program when you save changes to its source files. Projects also reload when you
+change their project file or buffer assets.
+
+Run `onda` without a filename to open the file picker. Use `--sample-rate`, `--block-size`,
+`--input-device`, `--output-device`, and `--theme` to choose playback settings.
+
+### Play with MIDI
+
+Programs with a supported `note_on` event show a piano and MIDI input selector. Choose **Computer
+Keyboard** to play with `A W S E D F T G Y H U J K O L P`, or play the piano with a pointer or touch.
+Select a connected MIDI device to use a hardware keyboard.
+
+The [browser playground]({{ '/playground/' | relative_url }}) also has a piano and computer-keyboard
+input. In browsers that support Web MIDI, choose **Connect MIDI device…** to request access to
+hardware.
+
+For a ready-to-play instrument, open a [MIDI example]({{ '/docs/examples/' | relative_url }}#midi-and-daw-examples).
+To play Onda inside a DAW, use the [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin):
+`OndaSynth` hosts instruments and `OndaFX` hosts effects. A DAW supplies tempo and transport inputs
+through the plug-in; those inputs are inactive in standalone playback.
+
+### Play without a window
+
+Use `onda run play` for command-line playback. Set a duration or keep playing until you stop it:
+
+```bash
+onda run play examples/basic/sine.onda --dur 2
+onda run play examples/basic/sine.onda --forever --set freq=220
+```
+
+Use `--set name=value` to choose parameter values. To connect a MIDI input, pass its exact device
+name:
+
+```bash
+onda run play examples/plugins/instruments/poly_saw.onda \
+  --forever --midi-input-device "Your MIDI Device"
+```
+
+### Supply samples and other buffers
+
+For your own program with a declared `clip` buffer, bind a WAV or `.ondabuffer` file by name:
+
+```bash
+onda run play my-sampler.onda --buffer clip=sample.wav
+```
+
+For a buffer array, select a slot with a quoted name such as `--buffer 'bank[3]=snare.ondabuffer'`.
+Unbound buffers read as zero and discard writes, so missing bindings do not prevent playback.
+
+To save sources and assets together, see [Working with projects]({{ '/docs/projects/' | relative_url }}).
+
+### WAV export
+
+If you need an audio file, export a fixed duration from the command line:
+
+```bash
+onda run render examples/basic/sine.onda --output sine.wav --dur 5
+```
+
+`--dur` is the duration in seconds. Parameter and buffer overrides work as they do for command-line
+playback.
 
 ## Compile and inspect
 
-Check a file:
+Check a program for syntax and semantic errors:
 
 ```bash
 onda compile examples/basic/sine.onda
 ```
 
-Inspect graph lowering or generated LLVM IR:
+To inspect a graph or generated LLVM IR:
 
 ```bash
 onda compile examples/feedback/cybernetic_feedback_graph.onda --dump-graph
 onda compile examples/basic/sine.onda --emit llvm-ir
 ```
 
-Emit a native object for ahead-of-time integration:
+To compile a native object for use in another application:
 
 ```bash
 onda compile examples/basic/sine.onda --emit obj
 ```
 
-Target presets can describe cross-target code generation:
+Use `--target-spec` with a target preset when compiling for another platform:
 
 ```bash
 onda compile examples/basic/sine.onda --target-spec ./targets/arm64.toml --emit obj
 ```
 
-## Compile a complete WebAssembly module
+The [Processor API]({{ '/docs/processor-api/' | relative_url }}) explains how to link and host the
+resulting object.
 
-The separately packaged WebAssembly compiler produces a self-contained core-Wasm processor and its
-descriptor without LLVM or a linker:
+## Editor support
+
+### VS Code
+
+Install the [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) for `.onda` and `.on`
+files, diagnostics, completion, hover, signature help, and go-to-definition. The extension bundles
+the native compiler; you can select an external compiler in its settings. Run **Onda: Run** to open
+the program inside the editor.
+
+### Neovim
+
+The [Onda Neovim plugin](https://github.com/onda-lang/onda-nvim) sets up filetype detection and the
+language server. Use `:OndaRunFile` to open the current program in Onda Run.
+
+### Other editors and tools
+
+Configure a language-server client to start `onda lsp` over standard input and output. It provides
+diagnostics, completion, hover, signature help, navigation, document symbols, and semantic
+highlighting.
+
+To run analysis once from the command line:
+
+```bash
+onda daemon diagnose examples/basic/sine.onda
+```
+
+Tool integrations can use `onda daemon stdio` for the daemon's JSON control interface.
+
+## Compile WebAssembly
+
+Install the WebAssembly compiler with Node.js 20 or newer:
+
+```bash
+npm install @onda-lang/wasm-compiler
+```
+
+If you downloaded a package tarball from a release, install that file instead, replacing `X.Y.Z`
+with the downloaded version:
+
+```bash
+npm install ./onda-lang-wasm-compiler-X.Y.Z.tgz
+```
+
+Then compile a source file:
 
 ```bash
 npx onda-wasm compile examples/basic/sine.onda \
@@ -48,165 +166,13 @@ npx onda-wasm compile examples/basic/sine.onda \
   --output ./sine.wasm
 ```
 
-The same `@onda-lang/wasm-compiler` package exposes asynchronous single-source and virtual-project
-APIs for Node.js and browsers, including a worker-backed browser mode. The lower-level
-`@onda-lang/binaryen-web` package remains available to tools that already produce compatible MIR.
-Use `inspectSourceConstants`, `inspectWorkspaceConstants`, or `inspectProjectImageConstants` to
-resolve exposed `config const` declarations before compilation. Each accepts the same optional
-context and partial constant overrides as its corresponding compile operation, and returns ordinary
-JavaScript scalar values or typed arrays.
+This writes `sine.wasm` and its matching `sine.onda.json` descriptor. Compilation does not require
+LLVM, Rust, or a Wasm linker after the package is installed. See the
+[Web API]({{ '/docs/web-api/' | relative_url }}) to compile inside an application or play an artifact
+through Web Audio.
 
-## Real-time playback
+## Embed Onda in an application
 
-The standalone UI watches the entry plus every transitive non-standard-library import/include and
-provides controls for the program's exposed surface. When opened from an `.ondaproject` file, it
-also watches that manifest, its declared entry, and its file-backed buffer assets. Unresolved source
-dependencies and missing project files remain watchable for recovery, and a failed parse preserves
-the previous dependency watch set. Partial platform-watcher coverage falls back to targeted disk
-validation.
-
-Filesystem-backed entries, imports/includes, project manifests, and project assets must not
-traverse symbolic links. Loading fails with an error identifying the offending path component;
-use regular files and directories for editable, watched inputs.
-
-```bash
-onda run examples/basic/sine.onda
-```
-
-The native host uses the shared GPU interface. Common options select the sample rate, block size, audio devices, and color theme.
-
-Native run hosts support `f32`, `f64`, `i32`, `i64`, and `bool` input/output ports,
-including fixed arrays. Processing uses each port's declared type. The host audio
-stream uses `f32`: integer inputs truncate toward zero and saturate, with NaN
-becoming zero; boolean inputs test nonzero, including NaN. Outputs convert
-numerically to `f32`, with booleans becoming zero or one. Events and delegates
-retain their declared precision independently of the audio stream.
-
-Click a numeric value to type, or drag it horizontally. Knobs drag vertically;
-sliders follow their tracks. Shift-drag adjusts finely, double-click restores a
-default, Enter commits text, and Escape cancels. Section headers collapse controls;
-layouts and scrolling are retained by the host.
-
-Programs that declare the canonical `note_on` event get a piano at the bottom of the run view.
-The MIDI selector defaults to **Computer Keyboard**, using
-`A W S E D F T G Y H U J K O L P`; the piano remains playable with a pointer or touch when another
-input is selected. Linux, macOS, and Windows builds also list physical MIDI inputs. The online
-playground offers the same virtual inputs and can request Web MIDI access from supporting browsers.
-
-Canonical `plugin_midi` and `plugin_host` events are host-owned and do not appear as editable user
-events. Their names require the exact signatures offered by language-server completion. Standalone
-hosts dispatch declared MIDI events, but do not synthesize DAW transport or timeline context for
-`plugin_host` events.
-
-To run Onda inside a DAW, see the separate [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin)
-repository. It provides `OndaSynth` for instruments and `OndaFX` for effects.
-
-For playback without the standalone UI:
-
-```bash
-onda run play examples/basic/sine.onda --dur 2
-onda run play examples/basic/sine.onda --forever --set freq=220
-```
-
-Headless playback can connect a physical MIDI input by exact name:
-
-```bash
-onda run play examples/plugins/instruments/poly_saw.onda \
-  --forever --midi-input-device "Your MIDI Device"
-```
-
-Buffer bindings are optional. Omitted scalar buffers and individual fixed-array slots use neutral
-one-frame storage, so they read as zero and discard writes without preventing playback. Array slots
-use their physical names at the CLI, for example `--buffer 'bank[3]=snare.ondabuffer'`.
-
-## Offline rendering
-
-Render through the run pipeline to a WAV file:
-
-```bash
-onda run render examples/basic/sine.onda \
-  --output ./onda_out.wav \
-  --dur 5 \
-  --set freq=220
-```
-
-Offline rendering is a good default for automated comparisons and patches that do not need live input.
-
-## Diagnostics and services
-
-Run daemon-backed analysis once:
-
-```bash
-onda daemon diagnose examples/basic/sine.onda
-```
-
-`onda daemon stdio` starts the JSON control transport for editor and tool integrations. `onda lsp` starts the language server over stdio.
-
-Current language-server features include document synchronization; immediate and debounced
-diagnostics; context-aware declaration, call, member, parameter-domain, and integer-binding-range
-completion; hover, go-to-definition, and signature help; and semantic tokens for important program
-symbols and domain metadata. Unchecked `read_unsafe` / `write_unsafe` operations are offered only on
-known compatible receivers where possible, with read/write direction reflected in member
-completion; their free-call forms remain available as intrinsic completion. Hover and signature
-help show the memory-safety contract.
-
-Runtime diagnostics and dispatch use the same language-aware surfaces: `print` completion, hover,
-and signature help describe its optional label and variadic printable scalar values; events and
-delegates expose their typed call signatures; and `when` targets, inferred bindings, owner entries,
-and nested locals participate in completion, hover, navigation, document symbols, and semantic
-tokens. Incomplete `when` bodies retain their handler and owner scopes for semantic highlighting.
-
-## Editor support
-
-### VS Code
-
-The [Onda VS Code extension](https://github.com/onda-lang/onda-vscode) bundles the native compiler,
-registers `.onda` and `.on` files, connects to `onda lsp`, and provides **Onda: Run**
-for opening the shared GPU run interface inside the editor. An external compiler
-can be selected in the extension settings.
-
-### Neovim
-
-The [Onda Neovim plugin](https://github.com/onda-lang/onda-nvim) provides filetype detection, built-in LSP setup through `onda lsp`, and `:OndaRunFile` for launching the standalone run window.
-
-## Embedding Onda
-
-The public C interface lives in `include/onda.h`. The
-[C API reference]({{ '/docs/api/' | relative_url }}) covers the complete hosted-library surface,
-including ownership, compilation, compile-time configuration, metadata, instances, bindings,
-processing, events, delegates, printing, snapshots, and project images.
-
-Use the pre-built shared and static libraries or build them from source with:
-
-```bash
-cargo build -p onda_api --release
-```
-
-The pre-built macOS release binaries are not signed with an Apple Developer ID and are not
-notarized. Windows release binaries are not code-signed (Authenticode). See the
-[installation guide]({{ '/docs/getting-started/' | relative_url }}#install-a-precompiled-release)
-for information about macOS approval and Windows SmartScreen warnings.
-
-CMake hosts can consume either library without reproducing platform-specific
-link requirements:
-
-```cmake
-find_package(Onda CONFIG REQUIRED)
-target_link_libraries(my_host PRIVATE Onda::Static)
-# Or:
-target_link_libraries(my_host PRIVATE Onda::Shared)
-```
-
-Use `CMAKE_PREFIX_PATH` for an extracted release SDK, or set `Onda_DIR` to the
-source checkout's `cmake` directory. `Onda::Static` carries the required system
-libraries and, on Linux and macOS, hides the embedded Rust and LLVM implementation
-symbols from the consumer's dynamic ABI. `Onda::Shared` links against the
-shared-library import target and does not inherit those static-only options. On
-Linux its SONAME is `libonda.so`, and on macOS its install name is
-`@rpath/libonda.dylib`. The consuming application controls the runtime search
-path and final shared-library placement.
-
-When using `Onda::Shared`, deploy `onda.dll` where the Windows loader can find
-it, deploy `libonda.so` in the application's configured ELF search path, or
-place `libonda.dylib` at a location covered by the application's macOS
-`LC_RPATH`. `Onda::Static` avoids this runtime deployment step.
+- [C API]({{ '/docs/api/' | relative_url }}) — compile source and run it through `libonda`.
+- [Processor API]({{ '/docs/processor-api/' | relative_url }}) — link and call a compiled processor directly.
+- [Web API]({{ '/docs/web-api/' | relative_url }}) — compile and play programs with JavaScript and WebAssembly.

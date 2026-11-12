@@ -4,6 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use super::param_value_json::param_value_literal;
 use super::{
     child_exit_error, ControllerEvent, RawReadyEvent, ReadyEvent, RunHostOptions, RunParamWire,
     COMPUTER_KEYBOARD_MIDI_INPUT,
@@ -48,6 +49,20 @@ impl ChildSession {
             .arg("--opt-level")
             .arg(options.opt_level.as_str());
 
+        for (name, value) in &options.overrides.constants {
+            cmd.arg("--const").arg(format!("{name}={value}"));
+        }
+        for (name, value) in &options.overrides.params {
+            cmd.arg("--set")
+                .arg(format!("{name}={}", param_value_literal(*value)));
+        }
+        for (name, path) in &options.overrides.buffers {
+            let mut binding = std::ffi::OsString::from(format!("{name}="));
+            if let Some(path) = path {
+                binding.push(path);
+            }
+            cmd.arg("--buffer").arg(binding);
+        }
         if let Some(input_device) = &options.input_device {
             cmd.arg("--input-device").arg(input_device);
         }

@@ -835,6 +835,46 @@ mod tests {
     }
 
     #[test]
+    fn initial_clears_validate_names_and_reject_duplicate_bindings() {
+        let dir = mk_temp_dir("run_initial_clears");
+        let main = dir.join("main.onda");
+        write_file(&main, "buffers:\n  clip: f32\nsample:\n  out1 = clip[0]\n");
+        let mut session = DaemonSession::default();
+        for (bindings, expected) in [
+            (
+                vec![InitialBufferBinding::cleared("unknown")],
+                "unknown buffer",
+            ),
+            (
+                vec![
+                    InitialBufferBinding::cleared("clip"),
+                    InitialBufferBinding::cleared("clip"),
+                ],
+                "more than one initial binding",
+            ),
+        ] {
+            let error = session
+                .start_run_with_initial_buffers(&main, bindings)
+                .err()
+                .unwrap();
+            assert!(error
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(expected)));
+        }
+        session
+            .start_run_with_initial_buffers(&main, [InitialBufferBinding::cleared("clip")])
+            .unwrap();
+        assert!(session.run(&main).unwrap().buffer_info()[0]
+            .loaded_samples
+            .is_none());
+        assert!(session.render_run_block(&main).unwrap()[0]
+            .iter()
+            .all(|sample| *sample == 0.0));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn run_binds_typed_i32_buffer_asset() {
         let dir = mk_temp_dir("run_i32_buffer");
         let main = dir.join("main.onda");

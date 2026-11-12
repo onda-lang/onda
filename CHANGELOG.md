@@ -5,6 +5,27 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.9.2]
+
+### Added
+
+- Support `--const name=value` in `onda run`, `onda run play`, `onda run render`,
+  `onda bench`, and `onda daemon diagnose`. Command-line values override project defaults,
+  which override source defaults; run-window overrides persist across reloads and restarts.
+- Support `--set` and `--buffer` in the run window, boolean `--set` values, and
+  explicit buffer clearing with `--buffer name=` in run and benchmark commands.
+
+### Changed
+
+- Reject duplicate names in command-line constant, parameter, and buffer overrides.
+
+### Fixed
+
+- Clear run-window launch overrides when unloading or replacing the open program.
+- Save As captures effective constants and current buffer bindings, including CLI
+  selections and acknowledged UI replacements or clears. Source defaults retain
+  their normal lazy evaluation.
+
 ## [0.9.1]
 
 ### Changed
@@ -1506,6 +1527,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.9.2]: https://github.com/onda-lang/onda/compare/0.9.1...0.9.2
 [0.9.1]: https://github.com/onda-lang/onda/compare/0.9.0...0.9.1
 [0.9.0]: https://github.com/onda-lang/onda/compare/0.8.40...0.9.0
 [0.8.40]: https://github.com/onda-lang/onda/compare/0.8.39...0.8.40

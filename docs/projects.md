@@ -1,38 +1,29 @@
 ---
-title: Onda projects
-description: Editable project manifests, portable typed buffers, and immutable project images.
+title: Working with projects
+description: Create, open, and share Onda programs with their source files and buffer assets.
 permalink: /docs/projects/
-section: reference
-eyebrow: Project format
+section: tooling
+eyebrow: Tooling
 ---
 
-# Onda projects
+# Working with projects
 
-An Onda project is an `.ondaproject` JSON file referencing an entry source and optional buffer
-assets. Its containing directory is the base and containment boundary for paths stored in the
-manifest (`entry` and file-backed buffer bindings), but the project does not need a dedicated
-directory. It is an editable, host-neutral representation: the CLI, Onda Run, and other hosts
-resolve the same entry and logical buffer bindings.
-Any basename is valid. Filesystem exports use the target name supplied by the user.
+Use an Onda project to keep a program's source files and buffer assets together. A project file
+(`.ondaproject`) names the source file to compile and any samples, wavetables, or other data the
+program uses. It can also save compile-time settings.
 
-Create one with:
+A single `.onda` file is enough for a simple patch. Projects are useful when a patch spans several
+files, needs external data, or should be shared with its assets included.
+
+## Create a project
+
+Choose a new or empty directory:
 
 ```bash
 onda project my-project
-onda compile my-project/my-project.ondaproject
-onda run my-project/my-project.ondaproject
 ```
 
-For complete musical uses of the format, see the checked-in
-[project showcases](https://github.com/onda-lang/onda/tree/main/examples/projects): a morphable
-wavetable bank, a typed-buffer score driving a modal instrument, and a stereo impulse response
-driving a room effect. Each is self-contained and renders without additional host bindings.
-
-The destination passed to `onda project` must be new or an empty directory. Onda writes the complete
-project to a sibling staging directory and publishes it with one rename, so a failed export does not
-leave a partially written project at the destination.
-
-The generated layout is:
+Onda creates:
 
 ```text
 my-project/
@@ -42,9 +33,7 @@ my-project/
     └── main.onda
 ```
 
-## Project file
-
-The generated `my-project.ondaproject` starts as:
+The generated project file contains:
 
 ```json
 {
@@ -52,11 +41,158 @@ The generated `my-project.ondaproject` starts as:
 }
 ```
 
-### Compile constants
+`entry` is the source file Onda starts from. Paths in the project file are relative to the directory
+containing it. You can choose another layout or project filename; `code/` and `assets/` are the
+default folders created by Onda.
 
-`constants` assigns project defaults to executable-root `config const` declarations. Values use
-ordinary JSON booleans, numbers, or arrays. Use a decimal string for an `i64` value so JSON tools
-cannot round it:
+
+Edit `code/main.onda`, then run the project like any other Onda file:
+
+```bash
+onda run my-project/my-project.ondaproject
+```
+
+## Package an existing program
+
+Use `--from` to turn an existing program into a portable project. Add `--buffer` for each sample or
+other buffer asset you want to include:
+
+```bash
+onda project portable-sampler \
+  --from src/sampler.onda \
+  --buffer sample=recording.wav \
+  --buffer sequence=sequence.ondabuffer
+```
+
+The destination must be new or empty. Onda checks the program, copies its source files, updates
+their imports and includes, and packages the supplied assets. The resulting project can be moved
+without depending on the original files. Standard-library modules are provided by Onda and are not
+copied into the project.
+
+Each buffer name must be declared by the program, and its data must match the declared element
+type and channel count. For a buffer array, select individual slots with quoted names such as
+`--buffer 'piano[39]=middle-c.wav'`.
+
+## Open and save projects
+
+### In Onda Run
+
+Open a `.ondaproject` file with `onda run`, the file picker, or a file drop. Onda watches the project
+file, its source dependencies, and its buffer files; saving changes reloads the project.
+
+Command-line overrides stay active while that program reloads. Unloading or opening a file again
+clears them. Save constants and buffer bindings in the project file to reuse them each time you open it.
+
+To package the program you are working on, choose **Save as project**. It saves the source files
+and currently bound buffers into a new or empty directory. Existing inline assets are included,
+along with any replacement files you selected in the window.
+
+### In the browser playground
+
+The [playground]({{ '/playground/' | relative_url }}) opens projects as ZIP files. Include the
+`.ondaproject` file and all the source files and assets it needs. For example, from a repository
+checkout, package the Embedded Room example with:
+
+```bash
+cd examples/projects/embedded_room
+zip -r embedded-room.zip embedded-room.ondaproject code assets
+```
+
+Choose **Open project** and select the ZIP. If it contains several projects, the playground asks
+which project file to open. A project file alone cannot be opened in the browser because it does
+not include the sources and assets it references. Single `.onda` and `.on` files can also be opened
+directly.
+
+Choose **Download project** to save the current sources and bound buffers as a portable ZIP. You
+can reopen it in the playground or extract it and run its `.ondaproject` file with the native CLI.
+
+For complete patches with included assets, see the
+[self-contained project examples]({{ '/docs/examples/' | relative_url }}#self-contained-projects).
+
+## Project file reference
+
+A project file is a JSON object with three fields:
+
+| Field | Purpose |
+| --- | --- |
+| `entry` | Required. The source file to compile, relative to the project file. |
+| `buffers` | Optional. Files or inline data bound to the program's declared buffers. |
+| `constants` | Optional. Project defaults for compile-time configuration constants. |
+
+The [JSON Schema](https://github.com/onda-lang/onda/blob/main/schemas/project.json) can be associated
+with `*.ondaproject` files in your editor. Onda also checks that the named buffers and constants
+match the program when compiling the project.
+
+### File paths
+
+Use `/` between path components and keep the entry and buffer files inside the project directory.
+Absolute paths, `.` and `..` components, and symbolic links are not supported for these paths.
+Source dependencies and buffer files must also be accessed without symbolic links.
+
+For portable filenames, avoid reserved Windows names and characters, trailing dots or spaces, and
+names that differ only in letter case.
+
+While editing on a native filesystem, source imports and includes may refer to files outside the
+project directory. Before sharing such a project, package it with `onda project --from` or **Save
+as project** so those dependencies are included.
+
+### Buffer bindings
+
+Use `buffers` to bind declared buffer names to files or inline data:
+
+```json
+{
+  "entry": "code/main.onda",
+  "buffers": {
+    "impulse": {
+      "file": "assets/impulse.wav"
+    },
+    "steps": {
+      "inline": {
+        "element": "i32",
+        "channels": 1,
+        "sample_rate": 48000,
+        "values": [0, 4, 7, 12]
+      }
+    },
+    "piano": [
+      { "file": "assets/a0.ondabuffer" },
+      null,
+      { "file": "assets/b0.ondabuffer" }
+    ]
+  }
+}
+```
+
+For arrays, use the declared array name, such as `piano`. Entries bind slots in order, and `null`
+leaves a slot unbound. Indexed names such as `piano[0]` are used for command-line overrides only.
+
+Inline data specifies an element type (`bool`, `i32`, `i64`, `f32`, or `f64`), a channel count, a
+sample rate, and values. Values are ordered by frame, with each frame's channels next to one
+another. The number of values must be divisible by the channel count. Write `i64` values as decimal
+strings, such as `"9223372036854775807"`, to preserve their precision in JSON tools.
+
+### Buffer files and overrides
+
+Projects accept WAV files and `.ondabuffer` files. WAV files are decoded as `f32` data.
+`.ondabuffer` preserves any supported element type, including integer and boolean data.
+
+Packaging or downloading a project converts its bound buffers to `.ondabuffer` files. Onda keeps
+the original asset names where possible, changing the extension to `.ondabuffer`.
+
+Use `--buffer` with command-line playback to replace a project binding for one run:
+
+```bash
+onda run play portable-sampler/portable-sampler.ondaproject \
+  --buffer sample=another-recording.wav --forever
+```
+
+This leaves the saved project unchanged. For an array slot, use a quoted argument such as
+`--buffer 'piano[1]=replacement.ondabuffer'`.
+
+### Compile-time settings
+
+Use `constants` to save defaults for `config const` declarations in the entry program:
 
 ```json
 {
@@ -70,232 +206,15 @@ cannot round it:
 }
 ```
 
-The declaration in Onda source remains the type authority, and project compilation rejects
-unknown, ordinary (non-configurable), or mistyped constants. Project values replace the authored
-initializers for that project. An explicit host selection has higher precedence; for example,
-`onda compile synth.ondaproject --const Channels=2` overrides the manifest value only for that
-invocation.
+Names and types must match configurable constants declared in the program. Values can be JSON
+booleans, numbers, or arrays; use decimal strings for `i64` values.
 
-`entry` and buffer file paths are Unicode NFC-normalized, project-relative UTF-8 paths using `/`.
-Each path component is at most 255 UTF-8 bytes. Absolute paths, `.`, `..`, empty components,
-backslashes, control characters, Windows-reserved characters and device names, and components
-ending in a dot or space are rejected. Referenced files must also remain distinct under portable
-Unicode case folding and cannot conflict as both a file and an ancestor directory. Paths which
-traverse symlinks are rejected. This keeps editable filesystem projects and live watching bound to
-stable paths; immutable captured project images are unaffected.
-
-The manifest's containing directory is its project root. A manifest may occur at any path in a
-larger file set; its `entry` and file-backed buffers are resolved relative to that directory. The
-format assigns no meaning to directory names such as `code`, `src`, `assets`, or `media`.
-
-That manifest containment does not restrict normal include/import resolution while editing on a
-native filesystem. Source references may reach outside the manifest's directory, so an editable
-workspace is not necessarily self-contained. `onda project --from` and **Save as project** capture
-the exact reachable graph, relocate its entry to `code/main.onda`, preserve meaningful source
-subdirectories below `code/`, and rewrite references syntax-aware. Sources outside the capture root
-are placed below `code/external/`. Those packaged exports are self-contained and portable to
-filesystem-free hosts.
-
-## Packaging an existing source
-
-`--from` captures the exact reachable source graph, relocates files outside the entry directory,
-and rewrites non-standard-library imports and includes syntax-aware:
+A command-line selection overrides the saved value for that invocation:
 
 ```bash
-onda project portable-sampler \
-  --from src/sampler.onda \
-  --buffer sample=recording.wav \
-  --buffer sequence=sequence.ondabuffer
+onda run my-project/my-project.ondaproject --const Channels=2
 ```
 
-The exported `code/`, `assets/`, and `code/main.onda` layout is a publication convention, not a
-required project shape. An `.ondaproject` file may instead live alongside existing repository
-sources and assets, name any contained entry, and bind assets at any contained relative path. Each `--buffer` name must
-be declared by the compiled program. Its element type and static channel
-count must match the declaration. WAV inputs become canonical `f32` assets; `.ondabuffer` preserves
-any supported primitive type. The resulting directory no longer depends on the original source or
-buffer paths.
-
-For a fixed buffer array, CLI bindings address physical slots by name, such as
-`--buffer 'piano[39]=middle-c.wav'`. Unmentioned scalar buffers and array slots remain neutral and
-are not written into the project. A project therefore records available assets, not a requirement
-that every declared resource be populated.
-
-`buffers` maps each declared Onda buffer name to either a file, typed inline data, or an array of
-those bindings. Array entries bind slots in declaration order; `null` leaves a slot neutral and
-unbound. Unlike CLI overrides, the manifest uses the logical array name (`piano`), not flat keys
-such as `piano[0]`:
-
-```json
-{
-  "buffers": {
-    "impulse": {
-      "file": "assets/impulse.wav"
-    },
-    "steps": {
-      "inline": {
-        "element": "i32",
-        "channels": 1,
-        "sample_rate": 48000,
-        "values": [0, 4, 7, 12]
-      }
-    },
-    "large_ids": {
-      "inline": {
-        "element": "i64",
-        "channels": 1,
-        "sample_rate": 1,
-        "values": ["0", "9223372036854775807"]
-      }
-    },
-    "piano": [
-      { "file": "assets/a0.ondabuffer" },
-      null,
-      { "file": "assets/b0.ondabuffer" }
-    ]
-  }
-}
-```
-
-Inline values are frame-major and interleaved by channel. Their element type must exactly match
-the declaration in Onda source. `i64` values are decimal strings so JSON tooling cannot round
-them through an inexact number representation.
-
-The optional checked-in [JSON Schema](../schemas/project.json) can be associated with
-`*.ondaproject` by editor tooling, but project files do not embed a schema URL. Onda performs
-stricter validation when loading them, including channel divisibility, numeric conversion,
-resource limits, portable filenames, and filesystem containment.
-
-## Buffer files
-
-Projects accept:
-
-- `.ondabuffer`, Onda's canonical lossless typed buffer container for `bool`, `i32`, `i64`, `f32`,
-  and `f64`.
-- WAV input as a convenience adapter. WAV data is decoded to an `f32` buffer.
-
-An `.ondabuffer` stores the element type, frames, channels, sample rate, frame-major interleaved
-payload, and a SHA-256 content digest. Integer and floating-point payloads use fixed-width
-little-endian encoding; booleans are exactly `0` or `1`. Project images and materialized exports
-use `.ondabuffer`, so portability does not depend on a host's audio codecs.
-
-Exports preserve the original asset basename when the host knows it, replacing the extension with
-`.ondabuffer`. Assets without filename provenance use their logical buffer name. Content hashes remain
-the immutable asset identity and are added to filenames only when needed to resolve a portable
-filename collision.
-
-`--buffer name=path` remains available for `onda run play` and `onda run render`. It overrides a
-project binding with the same physical name for that invocation. A fixed-array slot uses a quoted
-shell argument such as `--buffer 'piano[1]=replacement.ondabuffer'`.
-
-## GUI workflows
-
-The standalone run window opens `.onda`, `.on`, and `.ondaproject` files through
-its source picker or a file drop.
-
-While an editable project is open, the native run host watches the selected manifest and its
-file-backed buffer assets in addition to the entry and transitive non-standard-library sources.
-Changing any of them reloads the project; inline assets change when the manifest changes.
-Filesystem-backed Onda inputs, source dependencies, and project assets must not traverse symlinks;
-the loader reports the offending component instead of establishing ambiguous live-watch semantics.
-
-Once a source or project is loaded, **Save as project** captures the exact reachable sources and the
-currently bound buffers into a new portable project directory. Existing inline project assets are
-preserved, and file bindings selected in the host replace the corresponding packaged assets. The
-destination must be new or empty so publication remains atomic.
-
-The browser playground provides **Open project** and **Download project** controls. **Open project**
-accepts a single `.onda` or `.on` file, or a project ZIP containing one or more `.ondaproject`
-files. It intentionally does not offer bare `.ondaproject` files in the browser picker: a selected
-manifest alone does not grant a web page access to the sibling sources and assets that it names.
-ZIP the manifest together with every referenced source and asset, then select that ZIP. When an
-archive contains several projects, the playground asks which manifest to open.
-
-For example, package the checked-in Embedded Room showcase with:
-
-```bash
-cd examples/projects/embedded_room
-zip -r embedded-room.zip embedded-room.ondaproject code assets
-```
-
-**Download project** creates the same kind of portable ZIP from the current in-memory source files
-and bound buffers. Buffer payloads are canonicalized as `.ondabuffer`, including `bool`, `i32`,
-`i64`, `f32`, and `f64` data. The ZIP is only a browser transport: after extraction, open its
-`.ondaproject` file directly with the native CLI or run hosts.
-
-## Immutable project images
-
-The `onda_project` crate also defines `ProjectImage`, an immutable checkpoint intended for DAW
-state, browser tooling, and other hosts. One image contains:
-
-- the relocated entry identity;
-- project-selected configuration constants;
-- the exact built-in standard-library fingerprint;
-- exact source documents;
-- resolved include/import edges;
-- logical buffer-name to content-addressed asset bindings;
-- canonical typed assets;
-- a schema version and root content digest.
-
-`SourceImage::capture` converts a successful frontend source manifest into a portable graph and
-rewrites include/import references syntax-aware. `SourceImage::replay` loads that graph without
-consulting the filesystem and rejects a mismatched built-in standard library.
-Loading an editable project treats its entry and every unclaimed `.onda` or `.on` file as a UTF-8
-source document; project manifests and file-backed buffer bindings take precedence over filename
-extensions. This preserves extensionless entry files and work-in-progress sources which are not
-reachable from the entry. The reachable graph must load and parse successfully; unreachable
-documents are preserved verbatim and do not participate in compilation.
-When a file set contains multiple manifests, they form one shared source workspace. Every valid
-manifest participates in classifying manifest and buffer-asset paths, while the selected
-manifest alone chooses the entry and active buffer bindings. This lets several projects share and
-cross-reference source files without mistaking another project's `.onda`-named asset for source.
-`ProjectImage::serialize` produces the bounded,
-versioned binary image; `ProjectImage::deserialize` verifies every asset and the root digest before
-publication. `materialization_plan` returns relative filenames and bytes without writing the
-filesystem, leaving atomic publication policy to the host.
-
-The native C runtime treats assets from editable filesystem projects and immutable images as program
-defaults. `onda_compile_file` performs source analysis and code generation before decoding external
-assets, then makes those decoded assets part of the compiled program without constructing a portable
-project image. `onda_project_image_compile` instead retains shared ownership of the image's decoded
-assets. Every instance initially binds the program-owned sample storage without copying it. A project
-binding is rejected when reachable Onda code may write that physical buffer slot. Hosts can replace a
-default with `onda_bind_buffer`, unbind it to obtain the neutral buffer behavior, or restore it with
-`onda_reset_buffer_to_project_default`. Instances retain their compiled program and project assets,
-so destroying the original program or image handle does not invalidate their bindings.
-
-## Native and web API parity
-
-The C API and `@onda-lang/wasm-compiler` expose the same project operations over the same
-`onda_project` implementation. The terminology separates an ephemeral source workspace from a
-portable project image:
-
-| Operation | C API | Web compiler |
-| --- | --- | --- |
-| Compile an editable filesystem source or project | `onda_compile_file` | — |
-| Compile exact in-memory sources | `onda_compile_source_graph` | `compileWorkspace` |
-| Capture/build an image | `onda_project_image_capture` | `createProjectImage` |
-| Load a materialized project file set | `onda_project_image_load_files` | `loadProjectFiles` |
-| Serialize or inspect an image | `onda_project_image_serialize`, `onda_project_image_*` getters | `createProjectImage`, `inspectProjectImage` |
-| Compile an image | `onda_project_image_compile` | `compileProjectImage` |
-| Produce relative files and bytes | `onda_project_image_materialize` | `materializeProjectImage` |
-| Encode/decode typed buffers | `onda_buffer_asset_encode`, `onda_buffer_asset_decode` | `encodeBufferAsset`, `decodeBufferAsset` |
-| Query immutable format contracts | `onda_project_image_format_version`, `onda_buffer_asset_format_version`, `onda_current_stdlib_digest` | `projectCapabilities` |
-
-`onda_compile_file` is the native editable-filesystem entry point: it accepts `.onda`, `.on`, and
-`.ondaproject`, attaches project buffers as immutable defaults, and returns a source manifest whose
-deduplicated watch projection includes the selected input, resolved and unresolved source graph,
-project manifest, declared entry, and file-backed assets. Missing dependency, entry, and asset paths
-remain in the projection on failure so their creation can recover the project. The host owns the
-polling or OS-watcher mechanism and recompiles the same input after a relevant change.
-
-The web methods return JavaScript objects and typed arrays; C uses opaque handles and two-pass
-buffer sizing. Those are transport differences only. Image serialization, content and asset
-digests, path validation, source replay, resource limits, and materialized files are canonical Rust
-operations shared by both. `loadProjectFiles(files, projectFilePath)` and
-`onda_project_image_load_files(..., project_file_path_utf8, ...)` accept an explicit manifest
-path when the file set contains multiple projects; omitting it requires an unambiguous manifest.
-Portable project exports require a successful compilation. Loading extracted project files rejects
-a reachable source graph that cannot be loaded and parsed, while
-compilation also verifies that each bound asset names a declared buffer and matches its primitive
-element type and fixed channel count.
+Applications embedding Onda can also load and save projects. See the
+[C API]({{ '/docs/api/' | relative_url }}#project-images-and-buffer-assets) and
+[Web API]({{ '/docs/web-api/' | relative_url }}#onda-langwasm-compiler) for integration details.

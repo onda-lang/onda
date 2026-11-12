@@ -3,11 +3,35 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use onda_frontend::Program;
 use onda_project::{
     is_project_file_path, load_buffer_file, new_project_plan, validate_buffer_assets, BufferAsset,
     BufferElement, MaterializationPlan, ProjectBufferChannels, ProjectBufferDeclaration,
-    ProjectConstValue, ProjectImage, ProjectLimits, SourceImage, ONDA_PROJECT_FILE_EXTENSION,
+    ProjectConstValue, ProjectImage, ProjectInput, ProjectLimits, SourceImage,
+    ONDA_PROJECT_FILE_EXTENSION,
 };
+use onda_semantics::{compile_inputs_from_literals, AnalysisOptions, CompileInputs};
+
+pub fn resolve_compile_inputs(
+    project: &ProjectInput,
+    parsed: &Program,
+    analysis_options: AnalysisOptions,
+    overrides: &[(String, String)],
+) -> Result<CompileInputs, Vec<onda_frontend::Diagnostic>> {
+    let mut literals = project
+        .project()
+        .map(|project| {
+            project
+                .manifest
+                .constants
+                .iter()
+                .map(|(name, value)| (name.clone(), value.onda_literal()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    literals.extend(overrides.iter().cloned());
+    compile_inputs_from_literals(parsed, literals, analysis_options)
+}
 
 pub fn create_empty_project(destination: &Path) -> Result<(), String> {
     let project_file_name = project_file_name_from_target(destination)?;
@@ -44,6 +68,7 @@ pub fn package_project_from_files(
         assets,
         &project_file_name,
         &asset_file_names,
+        AnalysisOptions::default(),
     )?;
     publish_project_plan(destination, &plan)
 }
@@ -55,6 +80,7 @@ pub fn package_project_plan(
     assets: BTreeMap<String, BufferAsset>,
     project_file_name: &str,
     asset_file_names: &BTreeMap<String, String>,
+    analysis_options: AnalysisOptions,
 ) -> Result<MaterializationPlan, String> {
     onda_frontend::ensure_no_symlink_components(source).map_err(|error| {
         format!(
@@ -82,12 +108,12 @@ pub fn package_project_plan(
         constants
             .iter()
             .map(|(name, value)| (name.clone(), value.onda_literal())),
-        onda_semantics::AnalysisOptions::default(),
+        analysis_options,
     )
     .map_err(|diagnostics| format_diagnostics("cannot resolve project constants", &diagnostics))?;
     let typed = onda_semantics::analyze_with_options_and_inputs(
         loaded.program.clone(),
-        onda_semantics::AnalysisOptions::default(),
+        analysis_options,
         &inputs,
     )
     .map_err(|diagnostics| {
@@ -292,7 +318,10 @@ pub fn project_buffer_declarations(
         .collect()
 }
 
-fn format_diagnostics(prefix: &str, diagnostics: &[onda_frontend::Diagnostic]) -> String {
+pub(super) fn format_diagnostics(
+    prefix: &str,
+    diagnostics: &[onda_frontend::Diagnostic],
+) -> String {
     let details = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.message.as_str())
@@ -438,6 +467,7 @@ mod tests {
             BTreeMap::new(),
             "project.ondaproject",
             &BTreeMap::new(),
+            AnalysisOptions::default(),
         )
         .expect_err("project packaging must reject a symlink source");
         assert!(error.contains("symlink component"));

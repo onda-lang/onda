@@ -8,9 +8,11 @@ eyebrow: Learn by listening
 
 # Example cookbook
 
-The examples are a collection of patches that showcase different ways of implementing audio
-algorithms and DSP code in Onda. The [language guide]({{ '/docs/language/' | relative_url }}) and
-[standard-library reference]({{ '/docs/stdlib/' | relative_url }}) cover isolated syntax and APIs.
+Open an example in the playground to hear it, adjust its controls, and edit the code. The examples
+cover instruments, effects, soundscapes, and more advanced DSP techniques. Use the
+[language guide]({{ '/docs/language/' | relative_url }}) and
+[standard-library reference]({{ '/docs/stdlib/' | relative_url }}) when you want to understand a
+particular feature or module.
 
 ## Instruments
 
@@ -23,8 +25,7 @@ algorithms and DSP code in Onda. The [language guide]({{ '/docs/language/' | rel
 | [Formant percussion]({{ '/playground/?example=instruments/formant_percussion.onda' | relative_url }}) | Vowel-like resonant percussion |
 | [Karplus–Strong]({{ '/playground/?example=instruments/karplus_strong.onda' | relative_url }}) | Warm plucked strings from short delay lines |
 
-The polyphonic instruments self-play and also keep their host-facing strike/pluck events where that
-interaction is part of the instrument.
+The polyphonic instruments play automatically and expose events for triggering individual notes.
 
 ## Effects
 
@@ -39,9 +40,9 @@ interaction is part of the instrument.
 | [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter |
 | [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Wavefolded harmonics |
 
-Effects audition themselves by default. Set `live_input` to `true` to process `in1` and `in2`. The
-Schroeder and FDN wrappers are also compact, musical graph-syntax examples: their `graph` blocks
-route the audition/live source, parameters, and stereo outputs declaratively.
+Effects play a built-in sound by default. To process your own audio, select an input and set
+`live_input` to `true`. The Schroeder and FDN examples also show how to connect processors with a
+`graph` block.
 
 ## Soundscapes and experimental systems
 
@@ -65,62 +66,46 @@ route the audition/live source, parameters, and stereo outputs declaratively.
 | --- | --- |
 | [Cybernetic feedback graph]({{ '/playground/?example=feedback/cybernetic_feedback_graph.onda' | relative_url }}) | Cross-coupled graph cycles made causal with `>>[1]` delayed edges |
 | [Dual FM oscillator, 8×]({{ '/playground/?example=basic/dual_fm_osc.onda' | relative_url }}) | A compact musical use of local oversampling and feedback phase modulation |
-| [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | A host-bound recording with normalized scrubbing, stretched through an event/delegate chain carrying structured time, magnitude, and complex-spectrum frames |
-| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | A 1024-point streaming FFT, per-bin delay frames, spectral feedback, and stereo IFFT resynthesis |
-| [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Phase-coherent spectral capture, smear, transpose, and overlap-add resynthesis |
+| [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | Extreme time stretching of a supplied recording, with adjustable playback position |
+| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | Delays and feedback across frequency bins for evolving stereo echoes |
+| [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Freeze a sound's spectrum, with smearing and transposition |
 
-## MIDI and plug-in host surfaces
+## MIDI and DAW examples
 
 These patches are shared with the [Onda VST3 plugin](https://github.com/onda-lang/onda-plugin).
-The instruments use the exact canonical MIDI events, so opening either patch with `onda run`
-reveals the bottom piano and MIDI Input selector. The computer keyboard is active by default;
-in the browser, choose **Connect MIDI device…** for hardware MIDI or play the on-screen keys.
+Open either instrument with `onda run` to play it using the piano, computer keyboard, or a connected
+MIDI device. The computer keyboard is active by default. In the browser, choose **Connect MIDI
+device…** for hardware MIDI or play the on-screen keys.
 
 | Example | Description |
 | --- | --- |
-| [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive note on/off allocation |
-| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | Eight-voice note on/off and per-channel pitch bend |
+| [MIDI FM bells]({{ '/playground/?example=plugins/instruments/fm_bells.onda' | relative_url }}) | Velocity-sensitive FM bells |
+| [MIDI poly saw]({{ '/playground/?example=plugins/instruments/poly_saw.onda' | relative_url }}) | An eight-voice saw synth with per-channel pitch bend |
 | [Orbit flanger]({{ '/playground/?example=plugins/effects/orbit_flanger.onda' | relative_url }}) | Stereo live input with quadrature modulation |
 | [Reactive wavefolder]({{ '/playground/?example=plugins/effects/reactive_wavefolder.onda' | relative_url }}) | Stereo live input with envelope-driven folding |
 | [Tempo ping-pong]({{ '/playground/?example=plugins/effects/tempo_ping_pong.onda' | relative_url }}) | DAW tempo in a plug-in; 120 BPM fallback elsewhere |
 | [Transient sculptor]({{ '/playground/?example=plugins/effects/transient_sculptor.onda' | relative_url }}) | Stereo live input with fast/slow envelope separation |
 
-The four effects require a selected audio input or browser microphone. Canonical `plugin_host`
-events are hidden but inactive in standalone hosts; a DAW supplies them through the plug-in.
+The four effects require a selected audio input or browser microphone. A DAW supplies tempo and
+transport inputs through the plug-in; those inputs are inactive in standalone playback.
 
 ## Self-contained projects
 
-Use `.ondaproject` when data is part of a patch's identity:
+These projects include the source files and data needed to play them. Each link opens the project
+folder in the repository:
 
 | Project | Description |
 | --- | --- |
-| [Embedded Room](https://github.com/onda-lang/onda/blob/main/examples/projects/embedded_room/embedded-room.ondaproject) | A file-backed stereo `impulse.wav` cooperatively transformed into zero-latency convolution kernels, with an explicit FFT size and a configurable loading duration (0.5 seconds by default) |
-| [Score-driven Resonator](https://github.com/onda-lang/onda/blob/main/examples/projects/score_driven_resonator/score-driven-resonator.ondaproject) | Typed note, timing, velocity, and pan buffers |
-| [Wavetable Garden](https://github.com/onda-lang/onda/blob/main/examples/projects/wavetable_garden/wavetable-garden.ondaproject) | Four inline wavetables and a local oscillator module |
+| [Embedded Room](https://github.com/onda-lang/onda/tree/main/examples/projects/embedded_room) | Room reverb using an included stereo impulse response |
+| [Score-driven Resonator](https://github.com/onda-lang/onda/tree/main/examples/projects/score_driven_resonator) | A modal instrument played by an included note sequence |
+| [Wavetable Garden](https://github.com/onda-lang/onda/tree/main/examples/projects/wavetable_garden) | Morphing between four included wavetables |
 
-These links open the repository because the hosted `?example=` catalog contains source workspaces,
-not `.ondaproject` manifests and their buffer assets. To open a showcase in the browser playground,
-download or clone the repository, ZIP the complete project contents, and select the ZIP with
-**Open project**. The browser picker does not accept a bare `.ondaproject`: selecting only the
-manifest would not give the page access to its referenced `code/` and `assets/` files.
-
-For example:
-
-```bash
-cd examples/projects/embedded_room
-zip -r embedded-room.zip embedded-room.ondaproject code assets
-```
-
-The native CLI and run hosts have filesystem access and can open the manifest directly:
+From a repository checkout, open a project's `.ondaproject` file with Onda Run:
 
 ```bash
 onda run examples/projects/embedded_room/embedded-room.ondaproject
 ```
 
-See [Onda projects]({{ '/docs/projects/' | relative_url }}) for the manifest format.
-
-## Host integration
-
-- [Raw native processor object](https://github.com/onda-lang/onda/tree/main/examples/native/raw_processor_object) — compile and call an Onda processor from C.
-- [Embedded compiler playground](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_playground) — compile editable Onda projects in the browser.
-- [AOT WebAssembly sample player](https://github.com/onda-lang/onda/tree/main/examples/web/onda_wasm_aot_sample_player) — host a precompiled processor without shipping a compiler.
+In the playground, use **Open project** with a ZIP containing the complete project. See
+[opening projects in the browser]({{ '/docs/projects/' | relative_url }}#in-the-browser-playground)
+for packaging instructions.

@@ -262,6 +262,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             let mut project = crate::project_cmd::resolve_run_project(
                 Path::new(&path),
                 &[],
+                &[],
                 options.analysis_options(),
                 true,
             )

@@ -1,4 +1,5 @@
 use super::*;
+use onda_run::LaunchOverrides;
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -617,13 +618,9 @@ fn smoothing_reset_keeps_the_exact_launch_default_after_edits_and_unload() {
     assert_eq!(state["paramSmoothingMs"], 42.0);
 }
 
-#[test]
-fn unloading_preserves_the_controllers_device_preferences() {
-    let directory = tempfile::tempdir().unwrap();
-    let source = directory.path().canonicalize().unwrap().join("source.onda");
-    std::fs::write(&source, "sample:\n  out1 = 0.0\n").unwrap();
+fn source_options_with_launch_overrides() -> RunHostOptions {
     // This test executable exits on the CLI arguments; no audio device is opened.
-    let options = RunHostOptions {
+    RunHostOptions {
         onda_bin: std::env::current_exe()
             .unwrap()
             .to_string_lossy()
@@ -631,15 +628,75 @@ fn unloading_preserves_the_controllers_device_preferences() {
         input_device: Some("Chosen input".into()),
         output_device: Some("Chosen output".into()),
         midi_input_device: Some("Chosen MIDI".into()),
+        overrides: LaunchOverrides {
+            constants: vec![("Voices".into(), "8".into())],
+            params: vec![(
+                "gain".into(),
+                onda_run::parse_run_param_value("0.75").unwrap(),
+            )],
+            buffers: vec![("clip".into(), Some(PathBuf::from("clip.wav")))],
+        },
         ..Default::default()
-    };
-    let mut app = App::new(None, RunHostOptions::default());
-    app.controller = Some(RunController::new(&source, options.clone()).unwrap());
-    app.handle_commands(vec![json!({"type":"unload"})]);
-    assert!(app.controller.is_none());
-    assert_eq!(app.options.input_device, options.input_device);
-    assert_eq!(app.options.output_device, options.output_device);
-    assert_eq!(app.options.midi_input_device, options.midi_input_device);
+    }
+}
+
+#[test]
+fn unloading_clears_launch_overrides_and_preserves_host_preferences() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().canonicalize().unwrap().join("source.onda");
+    std::fs::write(&source, "sample:\n  out1 = 0.0\n").unwrap();
+    let options = source_options_with_launch_overrides();
+    for loaded in [false, true] {
+        let mut app = App::new(None, options.clone());
+        if loaded {
+            app.options = RunHostOptions::default();
+            app.controller = Some(RunController::new(&source, options.clone()).unwrap());
+        }
+        app.handle_commands(vec![json!({"type":"unload"})]);
+        assert!(app.controller.is_none());
+        assert!(app.path.is_none());
+        assert_eq!(app.options.overrides, LaunchOverrides::default());
+        assert_eq!(app.options.input_device, options.input_device);
+        assert_eq!(app.options.output_device, options.output_device);
+        assert_eq!(app.options.midi_input_device, options.midi_input_device);
+        app.open(source.clone());
+        let reopened = app.controller.as_ref().unwrap().options();
+        assert_eq!(reopened.overrides, LaunchOverrides::default());
+    }
+}
+
+#[test]
+fn opening_files_uses_launch_overrides_only_for_the_first_program() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let first = root.join("first.onda");
+    let second = root.join("second.onda");
+    let missing = root.join("missing.onda");
+    for path in [&first, &second] {
+        std::fs::write(path, "sample:\n  out1 = 0.0\n").unwrap();
+    }
+    let options = source_options_with_launch_overrides();
+    for replacement in [&first, &second] {
+        let mut app = App::new(None, options.clone());
+        app.open(missing.clone());
+        assert!(app.controller.is_none());
+        app.open(first.clone());
+        let initial = app.controller.as_ref().unwrap().options();
+        assert_eq!(initial.overrides, options.overrides);
+
+        app.open(missing.clone());
+        let retained = app.controller.as_ref().unwrap();
+        assert_eq!(retained.path(), first);
+        assert_eq!(retained.options().overrides, options.overrides);
+
+        app.drop_files(std::slice::from_ref(replacement), None);
+        let replaced = app.controller.as_ref().unwrap().options();
+        assert_eq!(replaced.overrides, LaunchOverrides::default());
+        assert_eq!(app.options.overrides, LaunchOverrides::default());
+        assert_eq!(replaced.input_device, options.input_device);
+        assert_eq!(replaced.output_device, options.output_device);
+        assert_eq!(replaced.midi_input_device, options.midi_input_device);
+    }
 }
 
 #[test]

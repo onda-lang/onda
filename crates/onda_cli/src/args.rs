@@ -58,6 +58,17 @@ fn parse_bench_args(mut args: impl Iterator<Item = String>) -> Result<Command, S
     }
     let mut options = crate::bench_cmd::BenchOptions::new(PathBuf::from(input));
     while let Some(arg) = args.next() {
+        if parse_run_override_option(
+            &arg,
+            &mut args,
+            &mut options.param_sets,
+            &mut options.buffer_bindings,
+        )? {
+            continue;
+        }
+        if parse_const_option(&arg, &mut args, &mut options.const_overrides)? {
+            continue;
+        }
         match arg.as_str() {
             "--fast-math" => {
                 options.fast_math = true;
@@ -96,10 +107,6 @@ fn parse_bench_args(mut args: impl Iterator<Item = String>) -> Result<Command, S
             }
             "--block-size" | "-b" => options.block_samples = parse_block_samples(&value()?)?,
             "--opt-level" => options.opt_level = parse_target_opt_level(&value()?)?,
-            "--set" => options.param_sets.push(parse_param_setting(&value()?)?),
-            "--buffer" => options
-                .buffer_bindings
-                .push(parse_buffer_binding(&value()?)?),
             _ => {
                 return Err(format!(
                     "unknown option '{arg}' for onda bench\n\n{}",
@@ -153,7 +160,11 @@ fn parse_project_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 let Some(value) = args.next() else {
                     return Err("--buffer requires a name=path pair".to_owned());
                 };
-                buffer_bindings.push(parse_buffer_binding(&value)?);
+                push_unique_override(
+                    &mut buffer_bindings,
+                    parse_buffer_binding(&value)?,
+                    "buffer",
+                )?;
             }
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if option.starts_with("--from=") => {
@@ -166,7 +177,11 @@ fn parse_project_args(mut args: impl Iterator<Item = String>) -> Result<Command,
                 }
             }
             _ if option.starts_with("--buffer=") => {
-                buffer_bindings.push(parse_buffer_binding(&option["--buffer=".len()..])?);
+                push_unique_override(
+                    &mut buffer_bindings,
+                    parse_buffer_binding(&option["--buffer=".len()..])?,
+                    "buffer",
+                )?;
             }
             _ => {
                 return Err(format!(
@@ -262,6 +277,9 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut code_model_override = None::<TargetCodeModel>;
     let mut opt_level_override = None::<TargetOptLevel>;
     while let Some(arg) = args.next() {
+        if parse_const_option(&arg, &mut args, &mut const_overrides)? {
+            continue;
+        }
         match arg.as_str() {
             "--emit" => {
                 let Some(value) = args.next() else {
@@ -298,19 +316,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             }
             "--dump-graph" => dump_graph = true,
             "--list-consts" => list_consts = true,
-            "--const" => {
-                let Some(value) = args.next() else {
-                    return Err("--const requires a name=value pair".to_owned());
-                };
-                let parsed = parse_compile_const_override(&value)?;
-                if const_overrides.iter().any(|(name, _)| name == &parsed.0) {
-                    return Err(format!(
-                        "configuration constant '{}' is specified more than once",
-                        parsed.0
-                    ));
-                }
-                const_overrides.push(parsed);
-            }
             "--meta" => show_meta = true,
             "--fast-math" => fast_math = true,
             "--target-triple" => {
@@ -393,16 +398,6 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             _ if arg.starts_with("--block-size=") => {
                 let value = &arg["--block-size=".len()..];
                 block_samples = parse_block_samples(value)?;
-            }
-            _ if arg.starts_with("--const=") => {
-                let parsed = parse_compile_const_override(&arg["--const=".len()..])?;
-                if const_overrides.iter().any(|(name, _)| name == &parsed.0) {
-                    return Err(format!(
-                        "configuration constant '{}' is specified more than once",
-                        parsed.0
-                    ));
-                }
-                const_overrides.push(parsed);
             }
             _ if arg.starts_with("--target-triple=") => {
                 let value = &arg["--target-triple=".len()..];
@@ -515,7 +510,11 @@ fn parse_daemon_diagnose_args(
     };
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_samples = DEFAULT_BLOCK_SAMPLES;
+    let mut const_overrides = Vec::new();
     while let Some(arg) = args.next() {
+        if parse_const_option(&arg, &mut args, &mut const_overrides)? {
+            continue;
+        }
         match arg.as_str() {
             "--sample-rate" | "--sr" => {
                 let Some(value) = args.next() else {
@@ -544,6 +543,7 @@ fn parse_daemon_diagnose_args(
     }
     Ok(DaemonCommand::Diagnose {
         input: PathBuf::from(input),
+        const_overrides,
         sample_rate_hz,
         block_samples,
     })
@@ -558,6 +558,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut duration = DEFAULT_DURATION;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_samples = DEFAULT_BLOCK_SAMPLES;
+    let mut const_overrides = Vec::new();
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut fast_math = false;
@@ -566,6 +567,12 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut buffer_bindings = Vec::new();
 
     while let Some(arg) = args.next() {
+        if parse_run_override_option(&arg, &mut args, &mut param_sets, &mut buffer_bindings)? {
+            continue;
+        }
+        if parse_const_option(&arg, &mut args, &mut const_overrides)? {
+            continue;
+        }
         match arg.as_str() {
             "--output" | "-o" => {
                 let Some(value) = args.next() else {
@@ -603,18 +610,6 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 };
                 opt_level = parse_target_opt_level(&value)?;
             }
-            "--set" => {
-                let Some(value) = args.next() else {
-                    return Err("--set requires a name=value pair".to_owned());
-                };
-                param_sets.push(parse_param_setting(&value)?);
-            }
-            "--buffer" => {
-                let Some(value) = args.next() else {
-                    return Err("--buffer requires a name=path pair".to_owned());
-                };
-                buffer_bindings.push(parse_buffer_binding(&value)?);
-            }
             "--fast-math" => fast_math = true,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
@@ -640,18 +635,13 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
             _ if arg.starts_with("--opt-level=") => {
                 opt_level = parse_target_opt_level(&arg["--opt-level=".len()..])?;
             }
-            _ if arg.starts_with("--set=") => {
-                param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
-            }
-            _ if arg.starts_with("--buffer=") => {
-                buffer_bindings.push(parse_buffer_binding(&arg["--buffer=".len()..])?);
-            }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
 
     Ok(RunCommand::Render {
         input: PathBuf::from(input),
+        const_overrides,
         output,
         duration,
         sample_rate_hz,
@@ -669,6 +659,9 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut input = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_samples = DEFAULT_BLOCK_SAMPLES;
+    let mut const_overrides = Vec::new();
+    let mut param_sets = Vec::new();
+    let mut buffer_bindings = Vec::new();
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
@@ -679,6 +672,12 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut theme = None;
 
     while let Some(arg) = args.next() {
+        if parse_run_override_option(&arg, &mut args, &mut param_sets, &mut buffer_bindings)? {
+            continue;
+        }
+        if parse_const_option(&arg, &mut args, &mut const_overrides)? {
+            continue;
+        }
         match arg.as_str() {
             "--sample-rate" | "--sr" => {
                 let Some(value) = args.next() else {
@@ -769,6 +768,9 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
 
     Ok(RunCommand::Window {
         input,
+        const_overrides,
+        param_sets,
+        buffer_bindings,
         sample_rate_hz,
         block_samples,
         param_smoothing_seconds,
@@ -800,6 +802,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut duration = None;
     let mut sample_rate_hz = DEFAULT_SAMPLE_RATE;
     let mut block_samples = DEFAULT_BLOCK_SAMPLES;
+    let mut const_overrides = Vec::new();
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
     let mut input_device = None;
@@ -815,6 +818,12 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut forever = false;
 
     while let Some(arg) = args.next() {
+        if parse_run_override_option(&arg, &mut args, &mut param_sets, &mut buffer_bindings)? {
+            continue;
+        }
+        if parse_const_option(&arg, &mut args, &mut const_overrides)? {
+            continue;
+        }
         match arg.as_str() {
             "--dur" | "-d" => {
                 let Some(value) = args.next() else {
@@ -848,18 +857,6 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                     return Err("--opt-level requires a value".to_owned());
                 };
                 opt_level = parse_target_opt_level(&value)?;
-            }
-            "--set" => {
-                let Some(value) = args.next() else {
-                    return Err("--set requires a name=value pair".to_owned());
-                };
-                param_sets.push(parse_param_setting(&value)?);
-            }
-            "--buffer" => {
-                let Some(value) = args.next() else {
-                    return Err("--buffer requires a name=path pair".to_owned());
-                };
-                buffer_bindings.push(parse_buffer_binding(&value)?);
             }
             "--input-device" => {
                 let Some(value) = args.next() else {
@@ -922,12 +919,6 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
             _ if arg.starts_with("--midi-input-device=") => {
                 midi_input_device = Some(arg["--midi-input-device=".len()..].to_owned());
             }
-            _ if arg.starts_with("--set=") => {
-                param_sets.push(parse_param_setting(&arg["--set=".len()..])?);
-            }
-            _ if arg.starts_with("--buffer=") => {
-                buffer_bindings.push(parse_buffer_binding(&arg["--buffer=".len()..])?);
-            }
             _ => return Err(format!("unknown option '{arg}'\n\n{}", usage())),
         }
     }
@@ -941,6 +932,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
 
     Ok(RunCommand::Play {
         input: PathBuf::from(input),
+        const_overrides,
         duration: if forever {
             None
         } else {
@@ -1329,10 +1321,76 @@ fn parse_param_setting(value: &str) -> Result<(String, onda_daemon::RunParamValu
     if name.is_empty() {
         return Err("parameter setting requires a non-empty name".to_owned());
     }
-    let parsed = onda_run::parse_run_param_value(raw_value).map_err(|_| {
-        format!("invalid parameter value '{raw_value}' for '{name}', expected number")
-    })?;
+    let parsed = onda_run::parse_run_param_value(raw_value)
+        .map_err(|error| format!("parameter '{name}': {error}"))?;
     Ok((name.to_owned(), parsed))
+}
+
+fn push_unique_override<T>(
+    overrides: &mut Vec<(String, T)>,
+    value: (String, T),
+    kind: &str,
+) -> Result<(), String> {
+    if overrides.iter().any(|(name, _)| name == &value.0) {
+        return Err(format!("{kind} '{}' is specified more than once", value.0));
+    }
+    overrides.push(value);
+    Ok(())
+}
+
+fn parse_run_override_option(
+    arg: &str,
+    args: &mut impl Iterator<Item = String>,
+    params: &mut Vec<(String, onda_daemon::RunParamValue)>,
+    buffers: &mut Vec<(String, Option<PathBuf>)>,
+) -> Result<bool, String> {
+    let (option, inline) = arg
+        .split_once('=')
+        .map_or((arg, None), |(option, value)| (option, Some(value)));
+    if !matches!(option, "--set" | "--buffer") {
+        return Ok(false);
+    }
+    let value = inline
+        .map(str::to_owned)
+        .or_else(|| args.next())
+        .ok_or_else(|| format!("{option} requires a name=value pair"))?;
+    if option == "--set" {
+        push_unique_override(params, parse_param_setting(&value)?, "parameter")?;
+    } else {
+        let (name, path) = value
+            .split_once('=')
+            .ok_or_else(|| format!("invalid buffer binding '{value}', expected name=path"))?;
+        if name.is_empty() {
+            return Err("buffer binding requires a non-empty name".to_owned());
+        }
+        push_unique_override(
+            buffers,
+            (
+                name.to_owned(),
+                (!path.is_empty()).then(|| PathBuf::from(path)),
+            ),
+            "buffer",
+        )?;
+    }
+    Ok(true)
+}
+
+fn parse_const_option(
+    arg: &str,
+    args: &mut impl Iterator<Item = String>,
+    overrides: &mut Vec<(String, String)>,
+) -> Result<bool, String> {
+    let value = if arg == "--const" {
+        args.next()
+            .ok_or_else(|| "--const requires a name=value pair".to_owned())?
+    } else if let Some(value) = arg.strip_prefix("--const=") {
+        value.to_owned()
+    } else {
+        return Ok(false);
+    };
+    let parsed = parse_compile_const_override(&value)?;
+    push_unique_override(overrides, parsed, "configuration constant")?;
+    Ok(true)
 }
 
 fn parse_compile_const_override(value: &str) -> Result<(String, String), String> {

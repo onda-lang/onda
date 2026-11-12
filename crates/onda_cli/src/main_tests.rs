@@ -13,6 +13,9 @@ use onda_run::RunThemeMode;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod compile_constants;
+mod run_overrides;
+
 fn write_temp_target_spec(contents: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -152,6 +155,7 @@ fn project_packages_a_main_source_and_typed_buffer() {
     let resolved = project_cmd::resolve_run_project(
         &project_path,
         &[],
+        &[],
         onda_semantics::AnalysisOptions::default(),
         false,
     )
@@ -187,7 +191,8 @@ fn run_override_skips_the_superseded_manifest_asset() {
 
     let resolved = project_cmd::resolve_run_project(
         &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
-        &[("clip".to_owned(), root.join("override.wav"))],
+        &[("clip".to_owned(), Some(root.join("override.wav")))],
+        &[],
         onda_semantics::AnalysisOptions::default(),
         false,
     )
@@ -270,6 +275,7 @@ fn failed_run_projects_keep_consumed_fingerprints_after_restored_edits() {
         let error = project_cmd::resolve_run_project(
             &input,
             &[],
+            &[],
             onda_semantics::AnalysisOptions::default(),
             true,
         )
@@ -337,7 +343,8 @@ fn run_project_hashes_follow_loaded_constants_and_assets_after_reverted_edits() 
         ..RunOptions::default()
     };
     let resolved =
-        project_cmd::resolve_run_project(&manifest, &[], options.analysis_options(), true).unwrap();
+        project_cmd::resolve_run_project(&manifest, &[], &[], options.analysis_options(), true)
+            .unwrap();
     std::fs::write(&manifest, original_manifest).unwrap();
     std::fs::write(&asset_path, original_asset).unwrap();
 
@@ -616,6 +623,7 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
 
     let resolved = project_cmd::resolve_run_project(
         &root.join(onda_project::ONDA_PROJECT_DEFAULT_FILE_NAME),
+        &[],
         &[],
         onda_semantics::AnalysisOptions::default(),
         false,
@@ -1310,7 +1318,7 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             );
             assert_eq!(
                 buffer_bindings,
-                vec![("table".to_owned(), PathBuf::from("samples.wav"))]
+                vec![("table".to_owned(), Some(PathBuf::from("samples.wav")))]
             );
         }
         _ => panic!("expected run play command"),
@@ -1713,7 +1721,7 @@ fn parse_run_render_accepts_meta_and_param_sets() {
             );
             assert_eq!(
                 buffer_bindings,
-                vec![("table".to_owned(), PathBuf::from("samples.wav"))]
+                vec![("table".to_owned(), Some(PathBuf::from("samples.wav")))]
             );
         }
         _ => panic!("expected run render command"),

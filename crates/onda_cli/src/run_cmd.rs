@@ -8,7 +8,8 @@ use onda_daemon::{
     DaemonConfig, DaemonSession, RunOptions, RunPrintBatch, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
 use onda_run::{
-    format_run_param_info, play_run_realtime, PlaybackLaunch, ProjectBufferBinding, RunHostOptions,
+    format_run_param_info, play_run_realtime, LaunchOverrides, PlaybackLaunch,
+    ProjectBufferBinding, RunHostOptions,
 };
 use onda_semantics::AnalysisOptions;
 
@@ -20,9 +21,10 @@ pub(crate) fn run_daemon(cmd: DaemonCommand) -> Result<(), String> {
         DaemonCommand::Stdio => daemon_stdio::run_stdio_loop(),
         DaemonCommand::Diagnose {
             input,
+            const_overrides,
             sample_rate_hz,
             block_samples,
-        } => run_daemon_diagnose(&input, sample_rate_hz, block_samples),
+        } => run_daemon_diagnose(&input, &const_overrides, sample_rate_hz, block_samples),
     }
 }
 
@@ -31,6 +33,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
     match cmd {
         RunCommand::Play {
             input,
+            const_overrides,
             duration,
             sample_rate_hz,
             block_samples,
@@ -57,6 +60,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             let project = match crate::project_cmd::resolve_run_project(
                 &input,
                 &buffer_bindings,
+                &const_overrides,
                 analysis_options,
                 report_sources,
             ) {
@@ -99,6 +103,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
         }
         RunCommand::Render {
             input,
+            const_overrides,
             output,
             duration,
             sample_rate_hz,
@@ -117,6 +122,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             let project = crate::project_cmd::resolve_run_project(
                 &input,
                 &buffer_bindings,
+                &const_overrides,
                 analysis_options,
                 false,
             )
@@ -139,6 +145,9 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
         }
         RunCommand::Window {
             input,
+            const_overrides,
+            param_sets,
+            buffer_bindings,
             sample_rate_hz,
             block_samples,
             param_smoothing_seconds,
@@ -156,6 +165,11 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             onda_gpu::run(
                 input.as_deref(),
                 RunHostOptions {
+                    overrides: LaunchOverrides {
+                        constants: const_overrides,
+                        params: param_sets,
+                        buffers: buffer_bindings,
+                    },
                     sample_rate_hz,
                     block_samples,
                     param_smoothing_seconds,
@@ -176,6 +190,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
 
 fn run_daemon_diagnose(
     input: &Path,
+    const_overrides: &[(String, String)],
     sample_rate_hz: u32,
     block_samples: usize,
 ) -> Result<(), String> {
@@ -185,14 +200,15 @@ fn run_daemon_diagnose(
         sample_rate: sample_rate_hz as f32,
         block_size: block_samples,
     };
-    let compile_inputs = match project_input.project() {
-        Some(project) if !project.manifest.constants.is_empty() => {
-            let parsed = onda_frontend::parse_program_file(input)
-                .map_err(|diags| format_diagnostics("parse failed", &diags))?;
-            crate::project_cmd::project_compile_inputs(&project_input, &parsed, analysis_options)?
-        }
-        Some(_) | None => onda_semantics::CompileInputs::default(),
-    };
+    let parsed = onda_frontend::parse_program_file(input)
+        .map_err(|diags| format_diagnostics("parse failed", &diags))?;
+    let compile_inputs = onda_run::resolve_compile_inputs(
+        &project_input,
+        &parsed,
+        analysis_options,
+        const_overrides,
+    )
+    .map_err(|diags| format_diagnostics("invalid configuration constant", &diags))?;
     let session = DaemonSession::new(DaemonConfig::for_run(RunOptions {
         sample_rate: sample_rate_hz as f32,
         block_size: block_samples,
@@ -224,7 +240,7 @@ struct DaemonRenderRequest<'a> {
     fast_math: bool,
     show_meta: bool,
     param_sets: &'a [(String, onda_daemon::RunParamValue)],
-    buffer_bindings: &'a [(String, PathBuf)],
+    buffer_bindings: &'a [(String, Option<PathBuf>)],
     project_buffer_bindings: &'a [(String, onda_project::BufferAsset, Option<PathBuf>)],
     compile_inputs: &'a onda_semantics::CompileInputs,
 }

@@ -236,7 +236,7 @@ fn bench_rejects_invalid_counts_and_supports_help() {
         vec!["input.onda", "--warmup-blocks=1.5"],
         vec!["input.onda", "--runs", &overflow, "--blocks=2"],
         vec!["input.onda", "--set=bad"],
-        vec!["input.onda", "--buffer=clip="],
+        vec!["input.onda", "--buffer=clip"],
         vec!["input.onda", "--runs"],
         vec!["input.onda", "--unknown"],
     ] {

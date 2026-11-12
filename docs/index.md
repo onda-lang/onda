@@ -4,16 +4,16 @@ description: Getting started, language and standard library references, tools, a
 permalink: /docs/
 section: learn
 eyebrow: Onda docs
+toc: false
 ---
 
 # Documentation
 
-## Start here
+## Try Onda
 
-- [Getting started]({{ '/docs/getting-started/' | relative_url }}) — Install Onda, run a program, and render audio to a WAV file.
+- [Getting started]({{ '/docs/getting-started/' | relative_url }}) — Install Onda and play your first program.
 - [Playground]({{ '/playground/' | relative_url }}) — Edit and run Onda programs in your browser.
 - [Examples]({{ '/docs/examples/' | relative_url }}) — Instruments, effects, and other programs you can open in the playground.
-- [Projects]({{ '/docs/projects/' | relative_url }}) — Editable source projects, buffer assets, and portable project images.
 
 ## Language
 
@@ -23,13 +23,13 @@ eyebrow: Onda docs
 ## Tooling
 
 - [CLI and editors]({{ '/docs/tooling/' | relative_url }}) — Command-line usage, VS Code, and Neovim.
+- [Projects]({{ '/docs/projects/' | relative_url }}) — Create, open, and share programs with their source files and buffer assets.
 - [Releases](https://github.com/onda-lang/onda/releases/latest) — Precompiled packages for Linux, macOS, and Windows.
 - [VST3 plugins](https://github.com/onda-lang/onda-plugin) — OndaSynth and OndaFX for running Onda in a DAW.
 - [Agentic programming]({{ '/docs/agentic-programming/' | relative_url }}) — Give coding agents the language and standard-library references to write idiomatic Onda.
 
-## Embedding
+## Embedding Onda
 
 - [C API]({{ '/docs/api/' | relative_url }}) — Compile and run Onda programs with `libonda`.
 - [Processor API and ABI]({{ '/docs/processor-api/' | relative_url }}) — Host compiled native and WebAssembly processors without `libonda`.
 - [Web API]({{ '/docs/web-api/' | relative_url }}) — JavaScript packages for compilation, artifacts, and Web Audio playback.
-- [Host output]({{ '/docs/host-output/' | relative_url }}) — Collect and present delegates and prints across host APIs.

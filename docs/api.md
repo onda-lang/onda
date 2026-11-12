@@ -8,13 +8,14 @@ eyebrow: Host API
 
 # Onda C API reference
 
-The static and shared `libonda` libraries expose the same C API through `include/onda.h`. The API
-compiles Onda source, inspects immutable program metadata, creates runtime instances, binds host
-memory, drives initialization, events, and processing, and collects delegates and print output.
+Use `libonda` to compile Onda programs and run them inside a native C or C++ application. The
+library manages processor storage and validates bindings; your application supplies audio memory
+and schedules processing calls.
 
-This document describes the complete hosted-library surface. `include/onda.h` remains the canonical
-source for exact declarations. The separately shipped `include/onda_processor_abi.h` describes the
-lower-level ABI of a generated processor object; it does not require or expose `libonda` handles.
+Static and shared libraries expose the same API through
+[`onda.h`](https://github.com/onda-lang/onda/blob/main/include/onda.h). Use the
+[Processor API](https://onda-lang.org/docs/processor-api/) when you want to link a compiled
+processor directly without the Onda runtime.
 
 ## Linking
 
@@ -41,98 +42,10 @@ Direct C and C++ users include the same header:
 
 The declarations have C linkage when included from C++.
 
-## Conventions
-
-### Handles and ownership
-
-Opaque handles are reference-owning library objects:
-
-| Handle | Created by | Released by |
-| --- | --- | --- |
-| `onda_program_t` | A successful compile function | `onda_program_destroy` |
-| `onda_instance_t` | An instance creation function | `onda_instance_destroy` |
-| `onda_source_manifest_t` | Compilation through files or a source graph | `onda_source_manifest_destroy` |
-| `onda_compile_constants_t` | A compile-constant inspection function | `onda_compile_constants_destroy` |
-| `onda_project_image_t` | Capture, deserialize, or file loading | `onda_project_image_destroy` |
-| `onda_project_materialization_plan_t` | `onda_project_image_materialize` | `onda_project_materialization_destroy` |
-
-The lifetime verbs are deliberate:
-
-- `*_destroy` consumes an opaque handle. Passing `NULL` is allowed.
-- `*_dispose` releases Onda-owned members of a caller-allocated value and resets the value.
-- `*_reset` clears reusable counters without releasing caller-owned storage.
-- `alloc` and `free` are names reserved for raw allocator callbacks.
-
-Never pass an Onda-owned pointer to the C runtime `free`. Strings returned from program, manifest,
-project-image, and descriptor queries are borrowed and remain valid until their owning handle is
-destroyed. Occurrence payloads point into caller-owned batch storage and remain valid only until the
-storage is modified or reused.
-
-Programs are immutable and may be queried or used to create instances concurrently. An instance has
-one exclusive owner at a time: it may move between threads, but operations on the same instance must
-never overlap. Program and instance destruction are not realtime-safe.
-
-### Return values
-
-The common conventions are:
-
-- Pointer-returning constructors return `NULL` on failure.
-- Operation-status functions return `0` on success, `ONDA_API_ERROR_INVALID_ARGUMENT` for malformed
-  scalar arguments or required null handles/pointers, and specific negative codes for runtime
-  rejection: uninitialized/invalidated state, unknown indices, missing bindings, size mismatch,
-  alignment, shape, sample rate, element type, segment bounds, flags or missing control domains.
-  `ONDA_API_ERROR_VALIDATION_FAILED` remains for formatting and unavailable project defaults.
-  `ONDA_API_ERROR_ALLOCATION_FAILED` reports failure to provision explicitly requested runtime
-  storage.
-- Generated execution entry points may additionally return a positive `ONDA_EXECUTION_*` code.
-- Count, index, type, and size queries generally return `-1` for invalid input.
-- Borrowed-string queries generally return `NULL` for invalid input.
-- Optional floating metadata returns NaN when it is absent or invalid.
-- Size-query functions write nothing when the destination is `NULL` or too small and return the
-  required size.
-
-Query sentinels are separate from the named operation error codes even when they have the same
-numeric value. The exact convention for an individual function is documented in `onda.h` when it
-differs.
-
-### Diagnostics
-
-`onda_diag_t` carries a code, source span, message, optional file, and optional trace. Initialize it
-to zero, dispose it before reusing it as an output, and dispose it when finished:
-
-```c
-onda_diag_t diag = {0};
-onda_program_t* program = onda_compile(source, &options, &diag);
-if (program == NULL) {
-  fprintf(stderr, "%s\n", diag.message ? diag.message : "Onda compilation failed");
-}
-onda_diag_dispose(&diag);
-```
-
-Every non-`NULL` diagnostic string is Onda-owned. Copying `onda_diag_t` copies its pointers, not its
-ownership; copied diagnostics must not be disposed independently.
-
-### Primitive and layout identifiers
-
-The metadata and binding APIs use these primitive identifiers:
-
-| Identifier | Native value representation |
-| --- | --- |
-| `ONDA_PRIMITIVE_F32` | `float` |
-| `ONDA_PRIMITIVE_F64` | `double` |
-| `ONDA_PRIMITIVE_I32` | `int32_t` |
-| `ONDA_PRIMITIVE_I64` | `int64_t` |
-| `ONDA_PRIMITIVE_BOOL` | `uint8_t`, exactly `0` or `1` |
-
-Native parameter storage and parameter descriptor `default_bytes` use native byte order. Event and delegate
-wire payloads contain no implicit alignment padding and use little-endian byte order. Fixed arrays
-are contiguous; a top-level slice is encoded as a little-endian signed `int32_t` element count
-followed by its packed field tensors.
-
 ## Minimal host
 
-This example compiles a processor, creates a fully initialized instance, binds one output, and
-processes one complete block:
+This example compiles a processor, creates and initializes an instance, binds one output,
+and processes one complete block:
 
 ```c
 #include <onda.h>
@@ -170,24 +83,103 @@ int main(void) {
   if (onda_init_checked(instance, ONDA_INIT_FULL, NULL) != ONDA_EXECUTION_OK) {
     onda_instance_destroy(instance);
     onda_program_destroy(program);
+    onda_diag_dispose(&diag);
     return 1;
   }
   float output[128];
-  if (onda_bind_output(instance, 0, output, (int)sizeof(output)) != 0 ||
-      onda_process_checked(instance, NULL) != 0) {
+  int failed = onda_bind_output(instance, 0, output, (int)sizeof(output)) != 0 ||
+               onda_process_checked(instance, NULL) != ONDA_EXECUTION_OK;
+  if (failed) {
     fprintf(stderr, "processing failed\n");
   }
 
   onda_instance_destroy(instance);
   onda_program_destroy(program);
   onda_diag_dispose(&diag);
-  return 0;
+  return failed ? 1 : 0;
 }
 ```
 
-An instance retains its compiled program internally, so the original program handle may be
-destroyed immediately after successful instance creation when no further metadata queries or
-instances are needed.
+Create and initialize instances outside the audio callback. Bind every declared audio input and
+output before processing. An instance keeps its program alive, so you may release the original
+program handle after creating the instances you need.
+
+## Conventions
+
+### Handles and ownership
+
+Opaque handles are reference-owning library objects:
+
+| Handle | Created by | Released by |
+| --- | --- | --- |
+| `onda_program_t` | A successful compile function | `onda_program_destroy` |
+| `onda_instance_t` | An instance creation function | `onda_instance_destroy` |
+| `onda_source_manifest_t` | Compilation through files or a source graph | `onda_source_manifest_destroy` |
+| `onda_compile_constants_t` | A compile-constant inspection function | `onda_compile_constants_destroy` |
+| `onda_project_image_t` | Capture, deserialize, or file loading | `onda_project_image_destroy` |
+| `onda_project_materialization_plan_t` | `onda_project_image_materialize` | `onda_project_materialization_destroy` |
+
+Use `*_destroy` to release an opaque handle (`NULL` is allowed). Use `*_dispose` to release
+Onda-owned members of a caller-allocated value, and `*_reset` to clear reusable counters without
+freeing caller-owned storage.
+
+Never pass an Onda-owned pointer to the C runtime `free`. Strings returned from program, manifest,
+project-image, and descriptor queries are borrowed and remain valid until their owning handle is
+destroyed. Occurrence payloads point into caller-owned batch storage and remain valid only until the
+storage is modified or reused.
+
+Programs are immutable and may be queried or used to create instances concurrently. An instance has
+one exclusive owner at a time: it may move between threads, but operations on the same instance must
+never overlap. Program and instance destruction are not realtime-safe.
+
+### Return values
+
+| Result | Meaning |
+| --- | --- |
+| `NULL` from a constructor | Creation or compilation failed; inspect the diagnostic. |
+| `0` from an operation | Success. |
+| Negative `ONDA_API_ERROR_*` | Argument, binding, lifecycle, or storage validation failed. |
+| Positive `ONDA_EXECUTION_*` | Generated code rejected event input or failed during execution. |
+| `-1` from a count, index, type, or size query | Invalid input or an unavailable result. |
+
+Borrowed-string queries return `NULL` for invalid input. Optional floating metadata uses NaN when
+absent or invalid. Size-query functions return the required size without writing when the
+destination is `NULL` or too small. Check the declaration in `onda.h` for a function's exact result
+convention.
+
+### Diagnostics
+
+`onda_diag_t` carries a code, source span, message, optional file, and optional trace. Initialize it
+to zero, dispose it before reusing it as an output, and dispose it when finished:
+
+```c
+onda_diag_t diag = {0};
+onda_program_t* program = onda_compile(source, &options, &diag);
+if (program == NULL) {
+  fprintf(stderr, "%s\n", diag.message ? diag.message : "Onda compilation failed");
+}
+onda_diag_dispose(&diag);
+```
+
+Every non-`NULL` diagnostic string is Onda-owned. Copying `onda_diag_t` copies its pointers, not its
+ownership; copied diagnostics must not be disposed independently.
+
+### Primitive and layout identifiers
+
+The metadata and binding APIs use these primitive identifiers:
+
+| Identifier | Native value representation |
+| --- | --- |
+| `ONDA_PRIMITIVE_F32` | `float` |
+| `ONDA_PRIMITIVE_F64` | `double` |
+| `ONDA_PRIMITIVE_I32` | `int32_t` |
+| `ONDA_PRIMITIVE_I64` | `int64_t` |
+| `ONDA_PRIMITIVE_BOOL` | `uint8_t`, exactly `0` or `1` |
+
+Native parameter storage and parameter descriptor `default_bytes` use native byte order. Event and delegate
+wire payloads contain no implicit alignment padding and use little-endian byte order. Fixed arrays
+are contiguous; a top-level slice is encoded as a little-endian signed `int32_t` element count
+followed by its packed field tensors.
 
 ## Compilation
 
@@ -195,7 +187,7 @@ instances are needed.
 
 All compilation and configuration-inspection entry points use `onda_compile_options_t`:
 
-- `fast_math != 0` enables LLVM fast-math lowering.
+- `fast_math != 0` permits floating-point arithmetic relaxations for faster processing.
 - `sample_rate` must be finite and positive.
 - `block_size` must be positive.
 - `const_inputs` is `NULL` when `const_input_count` is zero.
@@ -380,8 +372,8 @@ surface's immutable metadata; a null pointer means an invalid program or index.
 Value records contain names, type text, primitive element type, array shape, slot and byte offsets,
 exact native default bytes, numeric defaults/ranges, control scale, curve, step, unit and enum JSON.
 Optional strings and default bytes are null when absent; optional numeric fields use their
-`has_*` flags and NaN where appropriate. `slot_offset` is -1 for state. Enum JSON is serialized
-once during compilation and borrowed until program destruction. Its shape is
+`has_*` flags and NaN where appropriate. `slot_offset` is -1 for state. Enum JSON is borrowed until
+program destruction. Its shape is
 `{"name":"Mode","members":[{"name":"LowPass","label":"Low Pass"},...]}`; member ordinals
 use `i32` storage. `onda_state_total_bytes` reports the persistent snapshot size.
 
@@ -398,7 +390,6 @@ unranged numeric conversions return NaN. Raw parameter bytes retain full-width `
 Message records contain a recursive `schema_json`, fixed/minimum packed payload sizes, delegate
 record sizes, tensor/region counts and an immutable borrowed `payload_plan`. Fixed sizes are -1 for dynamic messages; event record sizes are -1.
 The schema preserves nested structs, tuples, arrays, slices, exact defaults and enum/integer domains.
-There is no separate scalar-only parameter projection.
 
 `onda_payload_tensor_info(plan, index)` returns a borrowed descriptor for either an event or
 delegate leaf, or null for an invalid plan/index. It exposes each leaf in dispatch order: path, owning
@@ -471,15 +462,11 @@ dispatch does not allocate. `free` may run during failed creation, reservation, 
 The context and callbacks must remain valid until every associated
 instance is destroyed and must support the threads/concurrency used by the host.
 
-`onda_instance_reserve_event_workspace(instance, capacity_bytes, out_diag)` provisions aligned
-input preparation storage outside realtime execution. It returns `0` on success,
-`ONDA_API_ERROR_INVALID_ARGUMENT` for a null instance or capacity above 2,147,483,640 bytes—the
-largest supported workspace after eight-byte alignment—or `ONDA_API_ERROR_ALLOCATION_FAILED` when
-the requested capacity cannot be provisioned. Fixed messages fit the initial capacity; dynamic
-messages start with at least 64 KiB. A request above the current capacity allocates replacement
-storage and frees the old storage; other requests retain it. Reservation can run before or after
-initialization, and allocation failure preserves the existing workspace and processor state.
-Capacity rejection during event dispatch does not invalidate the instance.
+Use `onda_instance_reserve_event_workspace(instance, capacity_bytes, out_diag)` outside the audio
+callback when dynamic event payloads need more preparation storage. Fixed messages fit the initial
+capacity; dynamic messages initially have at least 64 KiB. Reservation can run before or after
+initialization. Failure preserves the existing workspace and processor state; dispatch rejects an
+oversized event without invalidating the instance.
 
 ### Initialization
 
@@ -502,11 +489,8 @@ when validation rejects the request before generated code runs. It returns
 state indeterminate, and the instance rejects stateful operations until a full initialization or
 snapshot restore succeeds.
 
-Initialization, processing, events, binding validation and snapshot operations allocate no error
-strings, including rejection and generated-failure paths. Rust execution returns
-`Result<u32, RuntimeError>`: a small owned validation error or the generated numeric status.
-Formatting and conversion to an allocating `Diagnostic` are explicit host operations. Compiler
-errors retain their rich `Diagnostic` values, source locations and messages.
+Initialization, processing, events, binding validation, and snapshot operations do not allocate
+error strings. They report numeric statuses; format diagnostics outside the audio callback.
 
 Print records emitted before a generated failure remain available; delegate records are cleared.
 Validation rejection preserves state. Full initialization or successful restore recovers invalidated
@@ -557,18 +541,19 @@ from a compiled project.
 
 ### Process readiness
 
-Bindings validate their shape, extent, type and alignment and update the affected ABI slots
-immediately. Rejected binds preserve the previous binding. Unbinding installs neutral buffer
-descriptors immediately. `onda_prepare_process` checks initialization and required audio bindings;
-it performs no descriptor rebuild. Successful rebinds preserve readiness; unbinding required audio
-or a generated failure revokes it. Host memory must remain valid throughout its binding lifetime.
+Binding calls validate shape, extent, type, and alignment. A rejected bind preserves the previous
+binding. Host memory must remain valid until it is rebound, unbound, or the instance is destroyed.
+
+`onda_prepare_process` checks initialization and required audio bindings before using unchecked
+processing. Successful rebinds preserve readiness. Unbinding required audio or an execution failure
+revokes it.
 
 ## Processing
 
 ### Checked processing
 
 `onda_process_checked(instance, output)` processes exactly the compiled block size, running both
-block hooks and bypassing segment validation. Use the segment API for a shorter prefix or offset.
+beginning- and end-of-block work. Use the segment API for a shorter prefix or offset.
 
 `onda_process_checked_segment(instance, start_frame, frames, flags, output)` splits one logical
 block while keeping full-block bindings:
@@ -586,8 +571,9 @@ or snapshot restoration.
 
 ### Unchecked processing
 
-After successful `onda_prepare_process`, use `onda_process_unchecked` for one complete
-compiled block or `onda_process_unchecked_segment` for segmented processing. Calling these without initialized state and complete valid bindings violates the API contract.
+After successful `onda_prepare_process`, use `onda_process_unchecked` for one complete compiled
+block or `onda_process_unchecked_segment` for segmented processing. The instance must remain
+initialized with complete, valid bindings.
 
 Unchecked calls avoid repeated host-boundary validation but do not suppress generated runtime safety
 checks. `ONDA_EXECUTION_OK` is success;
@@ -596,9 +582,10 @@ state until successful full initialization or snapshot restoration.
 
 ## Events
 
-`onda_trigger_event_by_index_checked` validates instance readiness and preflights packed payload data before running a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
+`onda_trigger_event_by_index_checked` validates readiness and packed payload data before running
+a top-level event. It returns `ONDA_EXECUTION_INPUT_REJECTED` for malformed input or
 insufficient workspace and `ONDA_EXECUTION_RUNTIME_SAFETY_FAILURE` for handler failure. Unknown
-event indices are deliberately neutral and return success.
+event indices return success without running a handler.
 
 `onda_trigger_event_by_index_unchecked` requires successful full initialization and a payload plus
 buffer state satisfying the ABI contract. Like unchecked processing, it may return a positive
@@ -615,8 +602,7 @@ views into an array-of-structs allocation.
 The checked view call verifies tensor count, shapes, shared lengths, alignment, pointer arithmetic,
 and canonical bool and ranged-integer values before executing. Unlike packed wire input, borrowed
 views represent logical native values, so noncanonical values are rejected rather than normalized.
-It then constructs Onda's read-only slice descriptors over the supplied memory without packing or
-copying tensor contents into event workspace. Nonempty regions must remain readable and unchanged
+It borrows the supplied tensors without packing or copying their contents. Nonempty regions must remain readable and unchanged
 until the synchronous call returns and must not overlap memory written by the event. Empty views may
 use a null data pointer. As with all C pointer APIs, the caller owns the validity of the described
 allocations.
@@ -640,26 +626,16 @@ handler failure. The processor remains usable after rejected input.
 ## Delegates
 
 For collection examples across C, Rust, and raw objects, see the
-[host output guide](https://onda-lang.org/docs/host-output/#hosted-c-api).
+[host output guide](https://github.com/onda-lang/onda/blob/main/docs/host-output.md#hosted-c-api).
 
 Top-level delegates are sparse typed output occurrences. Proc-local routing and `when` handlers run
 synchronously inside generated code; optional host collection copies top-level occurrences into a
 caller-owned `onda_delegate_batch_t`.
 
-One record contains:
-
-```text
-u32 delegate_index
-u32 payload_size_bytes
-u32 call_local_sequence
-payload bytes
-```
-
-The header size is `ONDA_DELEGATE_RECORD_HEADER_SIZE`. The message descriptor's `payload_bytes` and
-`record_bytes` contain exact sizes for fixed delegates (-1 for dynamic messages);
-`payload_min_bytes` and `record_min_bytes` include every slice length
-prefix but no runtime slice elements. There is no exact whole-call capacity because occurrence
-count, selected delegates, and slice lengths may all depend on runtime control flow.
+Use the batch cursor helpers to read records. Each occurrence identifies its delegate, payload,
+and call-local sequence. The message descriptor reports exact fixed payload and record sizes, or
+minimum sizes for dynamic messages. Choose a batch capacity for your application and monitor
+`overflow_count`: the number and size of occurrences can depend on runtime input.
 
 ```c
 uint8_t delegate_storage[64 * 1024];
@@ -686,9 +662,8 @@ if (status == ONDA_EXECUTION_OK) {
 
 Each supplied delegate or print batch descriptor and its non-null storage must be disjoint from the
 other batch and from every region accessed during the call, including bound input, output, and
-buffer storage plus packed event payloads or native event tensor views. This is a required calling
-contract even for checked entry points because ordinary binding and payload validation cannot
-establish arbitrary C pointer aliasing.
+buffer storage plus packed event payloads or native event tensor views. This non-overlap requirement
+also applies to checked entry points.
 
 `onda_delegate_batch_reset` clears counters without changing storage. The runtime host resets every
 supplied batch before init or process code; an event entry resets it before input preflight, so
@@ -704,11 +679,10 @@ failure clears delegate results.
 
 ## Printing
 
-Authored `print(...)` statements emit typed scalar occurrences into an independent caller-owned
-`onda_print_batch_t`. Generated code does not allocate or format text. One record contains a
-`uint32_t` log-site index, a `uint32_t` payload size, a `uint32_t` call-local sequence, and packed
-scalar arguments; the header size is `ONDA_PRINT_RECORD_HEADER_SIZE`. When both streams are exposed
-through one log, merge their decoded occurrences by `sequence` within that generated call.
+Collect authored `print(...)` output in a caller-owned `onda_print_batch_t`. Use
+`onda_format_print_batch` to obtain displayable text, or iterate typed records with
+`onda_print_batch_next`. If you combine prints and delegates in one log, merge their records by
+`sequence` within each call.
 
 ```c
 uint8_t print_storage[64 * 1024];
@@ -763,6 +737,13 @@ publish its print output.
 
 `onda_control_output_read_bytes` copies the latest held value of one top-level `kouts` entry and
 uses the same size-query convention.
+
+## Function index
+
+See `onda.h` for complete signatures and structure definitions.
+
+<details markdown="1">
+<summary>All C API functions</summary>
 
 <!-- BEGIN C API FUNCTION INDEX -->
 
@@ -893,3 +874,5 @@ onda_version
 ```
 
 <!-- END C API FUNCTION INDEX -->
+
+</details>

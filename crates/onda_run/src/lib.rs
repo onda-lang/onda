@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256};
 mod child_session;
 mod control_client;
 mod controller_events;
+mod controller_project;
 mod controller_startup;
 use child_session::ChildSession;
 use control_client::IpcBridge;
@@ -55,7 +56,7 @@ pub use playback::{
 };
 pub use project_io::{
     create_empty_project, package_project_from_files, package_project_plan,
-    project_buffer_declarations, publish_project_plan,
+    project_buffer_declarations, publish_project_plan, resolve_compile_inputs,
 };
 
 const SCOPE_MAX_FRAMES: usize = 1024;
@@ -75,8 +76,19 @@ pub enum RunThemeMode {
     Light,
 }
 
+/// Program-specific selections retained across child restarts and source reloads.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LaunchOverrides {
+    pub constants: Vec<(String, String)>,
+    pub params: Vec<(String, onda_daemon::RunParamValue)>,
+    /// An absent path explicitly clears the project binding.
+    pub buffers: Vec<(String, Option<PathBuf>)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct RunHostOptions {
+    /// Cleared by the host when unloading or replacing the open program.
+    pub overrides: LaunchOverrides,
     pub sample_rate_hz: u32,
     pub block_samples: usize,
     pub param_smoothing_seconds: f64,
@@ -96,6 +108,7 @@ pub struct RunHostOptions {
 impl Default for RunHostOptions {
     fn default() -> Self {
         Self {
+            overrides: LaunchOverrides::default(),
             sample_rate_hz: 48_000,
             block_samples: DEFAULT_REALTIME_BLOCK_SAMPLES,
             param_smoothing_seconds: INTERACTIVE_PARAM_SMOOTHING_SECONDS,
@@ -232,6 +245,13 @@ enum PreservedBufferBinding {
 }
 
 impl PreservedBufferBinding {
+    fn file_path(&self) -> Option<&Path> {
+        match self {
+            Self::File(path) => Some(Path::new(path)),
+            Self::Cleared => None,
+        }
+    }
+
     fn replay_request(&self, name: &str) -> (&'static str, Value, PendingCommand) {
         match self {
             Self::File(path) => (
@@ -340,7 +360,12 @@ pub struct RunController {
     last_source_fallback_validation: Instant,
     source_fallback_cache: FileValidationCache,
     preserved_params: Vec<(String, Value)>,
+    // Desired bindings, including interrupted requests to retry after a restart.
     preserved_buffers: BTreeMap<String, PreservedBufferBinding>,
+    // Retained bindings supplied at startup; newer UI requests invalidate these.
+    buffers_restored_at_startup: HashSet<String>,
+    // Accepted changes since the current child's startup metadata.
+    acknowledged_buffers: BTreeMap<String, PreservedBufferBinding>,
     preserved_events: Vec<(String, Vec<Value>)>,
     pending_commands: HashMap<u64, PendingCommand>,
     pending_play: Option<u64>,
@@ -426,6 +451,8 @@ impl RunController {
             source_fallback_cache: FileValidationCache::default(),
             preserved_params: Vec::new(),
             preserved_buffers: BTreeMap::new(),
+            buffers_restored_at_startup: HashSet::new(),
+            acknowledged_buffers: BTreeMap::new(),
             preserved_events: Vec::new(),
             pending_commands: HashMap::new(),
             pending_play: None,
@@ -555,76 +582,6 @@ impl RunController {
 
     pub fn path(&self) -> &Path {
         &self.launch_path
-    }
-
-    pub fn save_as_project(&self, destination: &Path) -> Result<(), String> {
-        let input = onda_project::resolve_project_input(
-            &self.launch_path,
-            onda_project::ProjectLimits::default(),
-        )
-        .map_err(|error| error.to_string())?;
-        let source_root = input.project().map(|project| project.root.as_path());
-        let constants = input
-            .project()
-            .map(|project| project.manifest.constants.clone())
-            .unwrap_or_default();
-        let mut assets = std::collections::BTreeMap::new();
-        let mut asset_file_names = std::collections::BTreeMap::new();
-        if let Some(project) = input.project() {
-            for (name, (asset, path)) in project
-                .load_buffer_assets(onda_project::ProjectLimits::default())
-                .map_err(|error| error.to_string())?
-            {
-                if let Some(file_name) = path
-                    .as_deref()
-                    .and_then(Path::file_name)
-                    .and_then(|file_name| file_name.to_str())
-                {
-                    asset_file_names.insert(name.clone(), file_name.to_owned());
-                }
-                assets.insert(name, asset);
-            }
-        }
-
-        for buffer in &self.state.buffers {
-            let Some(name) = buffer.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            if buffer
-                .get("loadedSamples")
-                .and_then(Value::as_u64)
-                .is_none()
-            {
-                assets.remove(name);
-                asset_file_names.remove(name);
-                continue;
-            }
-            if let Some(path) = buffer.get("loadedPath").and_then(Value::as_str) {
-                let asset =
-                    onda_project::load_buffer_file(path, onda_project::ProjectLimits::default())
-                        .map_err(|error| {
-                            format!("failed to capture buffer '{name}' from '{path}': {error}")
-                        })?;
-                assets.insert(name.to_owned(), asset);
-                if let Some(file_name) = Path::new(path)
-                    .file_name()
-                    .and_then(|file_name| file_name.to_str())
-                {
-                    asset_file_names.insert(name.to_owned(), file_name.to_owned());
-                }
-            }
-        }
-
-        let project_file_name = project_io::project_file_name_from_target(destination)?;
-        let plan = project_io::package_project_plan(
-            &self.onda_path,
-            source_root,
-            constants,
-            assets,
-            &project_file_name,
-            &asset_file_names,
-        )?;
-        project_io::publish_project_plan(destination, &plan)
     }
 
     pub fn poll(&mut self) -> PollResult {
@@ -774,6 +731,10 @@ impl RunController {
             let Some(default_value) = param_default_value(param) else {
                 continue;
             };
+            if let Some(name) = param_name(param) {
+                self.preserved_params
+                    .push((name.to_owned(), default_value.clone()));
+            }
             set_param_value(param, default_value);
         }
         if let Some(id) = self.bridge.send_command("resetParams", &json!({})) {
@@ -873,6 +834,7 @@ impl RunController {
     }
 
     pub fn bind_buffer_file(&mut self, name: &str, file_path: &str) {
+        self.buffers_restored_at_startup.remove(name);
         if let Some(id) = self
             .bridge
             .send_command("bindBufferWav", &json!({ "name": name, "path": file_path }))
@@ -894,6 +856,7 @@ impl RunController {
     }
 
     pub fn clear_buffer(&mut self, name: &str) {
+        self.buffers_restored_at_startup.remove(name);
         if let Some(id) = self
             .bridge
             .send_command("clearBuffer", &json!({ "name": name }))
@@ -985,9 +948,10 @@ impl RunController {
         self.state.scope_samples.clear();
         self.scope_envelope.clear();
 
+        let options = self.prepare_child_options();
         match ChildSession::spawn(
             &self.launch_path,
-            &self.options,
+            &options,
             self.child_generation,
             self.events_tx.clone(),
         ) {
@@ -1030,6 +994,12 @@ impl RunController {
             };
             self.preserved_buffers.insert(name.clone(), binding);
         }
+    }
+
+    fn acknowledge_buffer_binding(&mut self, name: &str, binding: PreservedBufferBinding) {
+        self.preserved_buffers
+            .insert(name.to_owned(), binding.clone());
+        self.acknowledged_buffers.insert(name.to_owned(), binding);
     }
 
     fn forget_older_buffer_requests(&mut self, name: &str, completed_id: u64) {
@@ -1147,6 +1117,7 @@ impl RunController {
         self.state.params = ready.params;
         apply_preserved_param_state(&mut self.state.params, &self.preserved_params);
         self.state.buffers = ready.buffers;
+        self.acknowledged_buffers.clear();
         reconcile_preserved_events(
             &mut self.preserved_events,
             &self.state.events,
@@ -1496,8 +1467,10 @@ impl RunController {
                                 &name,
                                 id.expect("tracked command ID"),
                             );
-                            self.preserved_buffers
-                                .insert(name.clone(), PreservedBufferBinding::File(path.clone()));
+                            self.acknowledge_buffer_binding(
+                                &name,
+                                PreservedBufferBinding::File(path.clone()),
+                            );
                             update_buffer_loaded_path(&mut self.state.buffers, &name, Some(&path));
                             let _ = self.bridge.send_command("getBuffers", &json!({}));
                             self.refresh_processing_state();
@@ -1508,8 +1481,7 @@ impl RunController {
                                 &name,
                                 id.expect("tracked command ID"),
                             );
-                            self.preserved_buffers
-                                .insert(name.clone(), PreservedBufferBinding::Cleared);
+                            self.acknowledge_buffer_binding(&name, PreservedBufferBinding::Cleared);
                             update_buffer_loaded_path(&mut self.state.buffers, &name, None);
                             let _ = self.bridge.send_command("getBuffers", &json!({}));
                             self.refresh_processing_state();
@@ -3044,6 +3016,8 @@ mod tests {
             source_fallback_cache: Default::default(),
             preserved_params: Vec::new(),
             preserved_buffers: Default::default(),
+            buffers_restored_at_startup: Default::default(),
+            acknowledged_buffers: Default::default(),
             preserved_events: Vec::new(),
             pending_commands: HashMap::new(),
             pending_play: None,

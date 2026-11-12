@@ -37,6 +37,7 @@ exclude:
   - ui
   - docs/todo
   - docs/architecture.md
+  - docs/host-output.md
   - docs/ui-api.md
   - docs/mir.md
   - target

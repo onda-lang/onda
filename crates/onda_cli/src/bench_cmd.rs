@@ -10,6 +10,7 @@ use crate::diag_print::{format_run_build_error, format_single_diagnostic};
 
 pub(crate) struct BenchOptions {
     pub input: PathBuf,
+    pub const_overrides: Vec<(String, String)>,
     pub runs: usize,
     pub blocks: usize,
     pub warmup_blocks: usize,
@@ -20,13 +21,14 @@ pub(crate) struct BenchOptions {
     pub show_meta: bool,
     pub json: bool,
     pub param_sets: Vec<(String, RunParamValue)>,
-    pub buffer_bindings: Vec<(String, PathBuf)>,
+    pub buffer_bindings: Vec<(String, Option<PathBuf>)>,
 }
 
 impl BenchOptions {
     pub fn new(input: PathBuf) -> Self {
         Self {
             input,
+            const_overrides: Vec::new(),
             runs: 10,
             blocks: 1000,
             warmup_blocks: 100,
@@ -93,6 +95,7 @@ pub(crate) fn run_bench(options: BenchOptions) -> Result<(), String> {
     let project = crate::project_cmd::resolve_run_project(
         &options.input,
         &options.buffer_bindings,
+        &options.const_overrides,
         run_options.analysis_options(),
         false,
     )

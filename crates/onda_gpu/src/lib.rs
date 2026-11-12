@@ -175,10 +175,14 @@ impl App {
 
     fn open(&mut self, path: PathBuf) {
         self.file_drop.cancel(&mut self.ui);
-        if let Some(controller) = &self.controller {
-            self.options = controller.options().clone();
-        }
-        match RunController::new(&path, self.options.clone()) {
+        let options = if let Some(controller) = &self.controller {
+            let mut options = controller.options().clone();
+            options.overrides = Default::default();
+            options
+        } else {
+            self.options.clone()
+        };
+        match RunController::new(&path, options) {
             Ok(mut controller) => {
                 if let Some(proxy) = self.proxy.clone() {
                     controller.set_wakeup(move || {
@@ -189,6 +193,7 @@ impl App {
                 controller.set_scope_columns(self.ui.scope_columns());
                 controller.set_scope_visible(self.surface_visible() && self.ui.scope_enabled());
                 controller.set_meter_visible(self.surface_visible() && self.ui.meter_enabled());
+                self.options = controller.options().clone();
                 self.controller = Some(controller);
                 self.path = Some(path);
                 // A new controller must restore even when its source path is unchanged.

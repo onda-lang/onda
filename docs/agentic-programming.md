@@ -36,9 +36,8 @@ For example, from the extracted release directory:
 ```text
 Read docs/syntax.md and docs/stdlib.md before writing Onda code.
 Write a sine oscillator in sine.onda with frequency and level parameters.
-Run onda compile sine.onda and fix any diagnostics.
+Run "onda compile sine.onda" and fix any diagnostics.
 ```
 
-Compile after changes to check syntax and semantics. To hear the result, open it with
-`onda run sine.onda` or render a WAV file with
-`onda run render sine.onda --output sine.wav --dur 5`.
+Compile after changes to check syntax and semantics. Open the result with `onda run sine.onda`
+to hear it and adjust its controls.

@@ -237,7 +237,149 @@ fn launch_overrides_and_buffers_are_applied_before_initialization() {
     let mut launch = fixture.launch(false, Some(1));
     launch
         .buffer_bindings
-        .push(("data".into(), fixture.asset("data", 2)));
+        .push(("data".into(), Some(fixture.asset("data", 2))));
+    let harness = RenderHarness::new(launch);
+    assert_eq!(harness.samples(), vec![1.0; 64]);
+}
+
+#[test]
+fn retained_launch_buffers_load_once_and_honor_later_ui_requests() {
+    let fixture = Fixture::new(
+        "buffers:\n  clip: i32\ninit:\n  value = clip[0]\nsample:\n  out1 = f32(value)\n",
+    );
+    for (change, expected) in [("unchanged", 2.0), ("replace", 3.0), ("clear", 0.0)] {
+        let mut controller = crate::tests::controller_without_child();
+        controller.options.overrides.buffers =
+            vec![("clip".into(), Some(fixture.0.join("superseded.ondabuffer")))];
+        let replacement = fixture.asset("replacement", 2);
+        controller.bind_buffer_file("clip", replacement.to_str().unwrap());
+
+        let mut launch = fixture.launch(true, None);
+        launch.buffer_bindings = controller.prepare_child_options().overrides.buffers;
+        let mut harness = RenderHarness::new(launch);
+        // Startup owns the loaded snapshot, even if its file disappears before ready.
+        fs::remove_file(&replacement).unwrap();
+        match change {
+            "replace" => {
+                // A newer request must reload even when its path is unchanged.
+                fixture.asset("replacement", 3);
+                controller.bind_buffer_file("clip", replacement.to_str().unwrap());
+            }
+            "clear" => controller.clear_buffer("clip"),
+            _ => {}
+        }
+        harness.connect_controller(&mut controller);
+        poll_until(&mut controller, |c| {
+            c.state().running && c.state().connected
+        });
+        assert_eq!(harness.samples(), vec![expected; 64], "{change}");
+    }
+}
+
+#[test]
+fn runtime_launch_values_yield_to_ui_edits_and_reset_across_reload() {
+    let fixture = Fixture::new(
+        "params:\n  divisor: i32 = 1\ninit:\n  value = divisor\nsample:\n  out1 = f32(value)\n",
+    );
+    let launch = || fixture.launch(true, Some(2));
+    let mut controller = crate::tests::controller_without_child();
+    controller.options.overrides.params = vec![("divisor".into(), RunParamValue::I32(2))];
+    let mut harness = RenderHarness::new(launch());
+    harness.connect_controller(&mut controller);
+    poll_until(&mut controller, |c| {
+        c.state().running && c.state().connected
+    });
+    assert_eq!(harness.samples(), vec![2.0; 64]);
+    controller.set_param("divisor", json!(3));
+    drop(harness);
+
+    let mut harness = RenderHarness::new(launch());
+    harness.connect_controller(&mut controller);
+    poll_until(&mut controller, |c| {
+        c.state().running && c.state().connected
+    });
+    assert_eq!(harness.samples(), vec![3.0; 64]);
+    controller.reset_params();
+    poll_until(&mut controller, |c| {
+        !c.pending_commands
+            .values()
+            .any(|command| matches!(command, crate::PendingCommand::ResetParams))
+    });
+    drop(harness);
+
+    let mut harness = RenderHarness::new(launch());
+    harness.connect_controller(&mut controller);
+    poll_until(&mut controller, |c| {
+        c.state().running && c.state().connected
+    });
+    assert_eq!(harness.samples(), vec![1.0; 64]);
+}
+
+#[test]
+fn saving_uses_new_child_bindings_before_restoration_acknowledgements() {
+    let fixture = Fixture::new("buffers:\n  clip: i32\nsample:\n  out1 = f32(clip[0])\n");
+    let mut controller = crate::tests::controller_without_child();
+    let mut harness = RenderHarness::new(fixture.launch(true, None));
+    harness.connect_controller(&mut controller);
+    poll_until(&mut controller, |c| {
+        c.state().running && c.state().connected
+    });
+    controller.clear_buffer("clip");
+    poll_until(&mut controller, |c| {
+        c.preserved_buffers.get("clip") == Some(&crate::PreservedBufferBinding::Cleared)
+    });
+    drop(harness);
+    controller.bridge.disconnect();
+    controller.pending_commands.clear();
+
+    let replacement = fixture.asset("replacement", 2);
+    controller.bind_buffer_file("clip", replacement.to_str().unwrap());
+    let mut launch = fixture.launch(true, None);
+    launch.buffer_bindings = vec![("clip".into(), Some(replacement))];
+    let mut harness = RenderHarness::new(launch);
+    harness.connect_controller(&mut controller);
+    // Save directly from startup metadata, before polling any restore acknowledgements.
+    assert!(controller.restoring);
+    let destination = fixture.0.join("saved");
+    controller.save_as_project(&destination).unwrap();
+    let saved = onda_project::resolve_project_input(
+        destination.join("saved.ondaproject"),
+        ProjectLimits::default(),
+    )
+    .unwrap();
+    let assets = saved
+        .project()
+        .unwrap()
+        .load_buffer_assets(ProjectLimits::default())
+        .unwrap();
+    assert!(
+        matches!(&assets["clip"].0.samples, onda_project::BufferSamples::I32(values) if values == &[2])
+    );
+}
+
+#[test]
+fn playback_combines_typed_parameters_constants_and_indexed_buffers() {
+    let fixture = Fixture::new("config const Count: i32 = 1\nparams:\n  gains: f32[Count] = 0.0\n  enabled: bool = false\n  wide: i64 = 0\nbuffers:\n  bank: i32 {Count}\ninit:\n  valid = Count == 2 && enabled && gains[1] == 0.5 && wide == 9007199254740993 && bank[1][0] == 2\n  value = 1 / i32(valid)\nsample:\n  out1 = f32(value)\n");
+    let mut launch = fixture.launch(false, None);
+    let parsed = onda_frontend::parse_program_file(&launch.input).unwrap();
+    launch.compile_inputs = onda_semantics::compile_inputs_from_literals(
+        &parsed,
+        [("Count".into(), "2".into())],
+        Default::default(),
+    )
+    .unwrap();
+    launch.param_sets = vec![
+        ("gains[1]".into(), RunParamValue::F32(0.5)),
+        (
+            "enabled".into(),
+            crate::parse_run_param_value("true").unwrap(),
+        ),
+        (
+            "wide".into(),
+            crate::parse_run_param_value("9007199254740993").unwrap(),
+        ),
+    ];
+    launch.buffer_bindings = vec![("bank[1]".into(), Some(fixture.asset("clip", 2)))];
     let harness = RenderHarness::new(launch);
     assert_eq!(harness.samples(), vec![1.0; 64]);
 }

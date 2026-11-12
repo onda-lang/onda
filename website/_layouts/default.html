@@ -25,7 +25,7 @@
     <link id="site-icon" rel="icon" href="{{ '/assets/svg/onda-logo-circle.svg' | relative_url }}" type="image/svg+xml" sizes="any" data-light="{{ '/assets/svg/onda-logo-circle.svg' | relative_url }}" data-dark="{{ '/assets/svg/onda-logo-dark-circle.svg' | relative_url }}">
     <link rel="apple-touch-icon" sizes="180x180" href="{{ '/assets/png/onda-apple-touch-icon.png' | relative_url }}">
     <link rel="mask-icon" href="{{ '/assets/svg/onda-mask-icon.svg' | relative_url }}" color="#143A63">
-    <link rel="stylesheet" href="{{ '/assets/site/styles.css' | relative_url }}">
+    <link rel="stylesheet" href="{{ '/assets/site/styles.css' | relative_url }}?v={{ site.time | date: '%s' }}">
     {% if page.layout == 'play' %}
       <link rel="stylesheet" href="{{ site.data.onda.asset_path | append: '/playground.css' | relative_url }}">
     {% endif %}
@@ -44,10 +44,12 @@
             {{ content }}
           </article>
         </main>
-        <aside class="page-toc">
-          <p class="sidebar-label">On this page</p>
-          <nav id="page-toc"></nav>
-        </aside>
+        {% unless page.toc == false %}
+          <aside class="page-toc">
+            <p class="sidebar-label">On this page</p>
+            <nav id="page-toc"></nav>
+          </aside>
+        {% endunless %}
       </div>
     {% endif %}
     <script type="module" src="{{ '/assets/site/site.js' | relative_url }}"></script>

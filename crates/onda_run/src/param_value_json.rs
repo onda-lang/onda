@@ -3,6 +3,9 @@ use serde_json::Value;
 
 pub fn parse_run_param_value(text: &str) -> Result<RunParamValue, String> {
     let text = text.trim();
+    if let Ok(value) = text.parse::<bool>() {
+        return Ok(RunParamValue::Bool(value));
+    }
     if let Ok(value) = text.parse::<i64>() {
         return Ok(if value == 0 && text.starts_with('-') {
             RunParamValue::F64(-0.0)
@@ -12,7 +15,7 @@ pub fn parse_run_param_value(text: &str) -> Result<RunParamValue, String> {
     }
     text.parse()
         .map(RunParamValue::F64)
-        .map_err(|_| format!("invalid numeric parameter value '{text}'"))
+        .map_err(|_| format!("invalid parameter value '{text}', expected a number or true/false"))
 }
 
 pub fn param_value_from_json(value: &Value) -> Result<RunParamValue, String> {
@@ -55,9 +58,53 @@ pub(super) fn param_value_repr(value: RunParamValue) -> String {
     }
 }
 
+/// Keep floating-point syntax so reparsing cannot bypass integer precision checks.
+pub(super) fn param_value_literal(value: RunParamValue) -> String {
+    match value {
+        RunParamValue::F32(_) | RunParamValue::F64(_) => format!("{:?}", value.as_f64()),
+        _ => param_value_repr(value),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parameter_literals_preserve_floating_values_and_types() {
+        for value in [
+            RunParamValue::F32(0.1),
+            RunParamValue::F32(9_007_199_254_740_992.0),
+            RunParamValue::F32(-0.0),
+            RunParamValue::F64(9_007_199_254_740_992.0),
+            RunParamValue::F64(1.0),
+            RunParamValue::F64(-0.0),
+            RunParamValue::F64(f64::MIN_POSITIVE),
+            RunParamValue::F64(f64::INFINITY),
+            RunParamValue::F64(f64::NEG_INFINITY),
+        ] {
+            let literal = param_value_literal(value);
+            let parsed = parse_run_param_value(&literal).unwrap();
+            assert!(matches!(parsed, RunParamValue::F64(_)), "{literal}");
+            assert_eq!(
+                parsed.as_f64().to_bits(),
+                value.as_f64().to_bits(),
+                "{literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn booleans_share_the_cli_and_json_parameter_contract() {
+        for (text, value) in [("true", true), ("false", false)] {
+            let scalar = RunParamValue::Bool(value);
+            assert_eq!(parse_run_param_value(text).unwrap(), scalar);
+            assert_eq!(
+                param_value_from_json(&param_value_to_json(scalar)).unwrap(),
+                scalar
+            );
+        }
+    }
 
     #[test]
     fn integer_controls_round_trip_without_floating_point() {

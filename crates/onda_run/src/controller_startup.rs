@@ -14,6 +14,19 @@ impl PendingCommand {
 }
 
 impl RunController {
+    pub(super) fn prepare_child_options(&mut self) -> RunHostOptions {
+        let mut options = self.options.clone();
+        self.buffers_restored_at_startup.clear();
+        // Later UI bindings supersede launch bindings before any asset is loaded.
+        for (name, path) in &mut options.overrides.buffers {
+            if let Some(binding) = self.preserved_buffers.get(name) {
+                *path = binding.file_path().map(Path::to_path_buf);
+                self.buffers_restored_at_startup.insert(name.clone());
+            }
+        }
+        options
+    }
+
     pub(super) fn send_restore_control(
         &mut self,
         command: &str,
@@ -43,7 +56,11 @@ impl RunController {
                 .iter()
                 .any(|buffer| buffer["name"].as_str() == Some(name))
         });
+        let restored_at_startup = std::mem::take(&mut self.buffers_restored_at_startup);
         for (name, binding) in &self.preserved_buffers {
+            if restored_at_startup.contains(name) {
+                continue;
+            }
             let (command, payload, pending) = binding.replay_request(name);
             let id = self.bridge.send_command(command, &payload).ok_or_else(|| {
                 "Run control connection failed during buffer restoration".to_owned()

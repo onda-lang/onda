@@ -29,10 +29,9 @@ const USAGE_BODY: &str = r#"Commands:
   onda compile <input>               Check, inspect, or emit compile artifacts
     
     [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
-    [--sample-rate <hz>] [--block-size <frames>]
-    [--const <name=value>] [--list-consts]
+    [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
     [--opt-level <0|1|2|3>] [--fast-math]  
-    [--dump-graph] [--meta]
+    [--dump-graph] [--list-consts] [--meta]
     [--target-spec <path>] [--target-features <feature-list>] 
     [--target-triple <triple>] [--target-cpu <name|host>] [--target-abi <name>] 
     [--reloc-model <default|static|pic|dynamic-no-pic>] 
@@ -40,24 +39,24 @@ const USAGE_BODY: &str = r#"Commands:
 
   onda run [input]                   Open the interactive run window
     
-    [--sample-rate <hz>] [--block-size <frames>]
-    [--opt-level <0|1|2|3>] [--fast-math] 
+    [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
+    [--opt-level <0|1|2|3>] [--fast-math] [--param-smoothing-ms <ms>]
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
-    [--theme <dark|light>] [--meta]
+    [--set <name=value>] [--buffer <name=path>] [--theme <dark|light>] [--meta]
   
   onda run play <input>              Run realtime playback without the UI
     
     [--dur <seconds> | --forever]
-    [--sample-rate <hz>] [--block-size <frames>]
-    [--opt-level <0|1|2|3>] [--fast-math]
+    [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
+    [--opt-level <0|1|2|3>] [--fast-math] [--param-smoothing-ms <ms>]
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
     [--set <name=value>] [--buffer <name=path>] [--control-json] [--start-paused] [--report-sources] [--meta]
   
   onda run render <input>            Render offline through the run pipeline
     
     [--output <path>] [--dur <seconds>]
-    [--sample-rate <hz>] [--block-size <frames>]
-    [--opt-level <0|1|2|3>] [--fast-math]
+    [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
+    [--opt-level <0|1|2|3>] [--fast-math] [--param-smoothing-ms <ms>]
     [--set <name=value>] [--buffer <name=path>] [--meta]
   
   onda project <directory>           Create or package an Onda project
@@ -67,13 +66,13 @@ const USAGE_BODY: &str = r#"Commands:
   onda bench <input>                 Benchmark native CPU block processing
 
     [--runs <count>] [--blocks <count>] [--warmup-blocks <count>]
-    [--sample-rate <hz>] [--block-size <frames>]
+    [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
     [--opt-level <0|1|2|3>] [--fast-math]
     [--set <name=value>] [--buffer <name=path>] [--meta] [--json]
   
   onda daemon diagnose <input>       Run daemon-backed analysis and diagnostics
     
-    [--sample-rate <hz>] [--block-size <frames>]
+    [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
 
   onda daemon stdio                  Start the daemon transport over stdio
   
@@ -83,6 +82,8 @@ Shared Options:
   
   --sample-rate, --sr    Sample rate in Hz (default: 48000)
   --block-size, -b       Block size in frames (default: 512)
+  --const                Override a typed `config const` with `name=value` (repeatable)
+                         Precedence: command line > project > source
   --param-smoothing-ms   Run parameter smoothing in milliseconds (default: 30; 0 disables)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable all LLVM floating-point arithmetic relaxations
@@ -90,13 +91,14 @@ Shared Options:
   --help, -h             Show this help
   --version, -v          Print the version
 
+  --const, --set, and --buffer may repeat; duplicate names within each option are errors.
+
 Compile Options:
   
   --emit                 Compile artifact: `check`, `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
   --output, -o           Output path for `mir`, `mir-json`, `mir-messagepack`, `llvm-ir`, or `obj`
   --meta-out             Write AOT sidecar metadata JSON for `onda compile --emit obj`
   --dump-graph           Print program after graph lowering, before proc desugaring/codegen
-  --const                Override one typed `config const` declaration
   --list-consts          Resolve and print compile configuration without generating an artifact
   --target-triple        LLVM target triple for compile-time IR emission
   --target-spec          TOML target spec for compile-time IR/object emission
@@ -114,8 +116,10 @@ Run Options:
   --input-device         Select audio input device by exact name for run playback
   --output-device        Select audio output device by exact name for run playback
   --midi-input-device    Select MIDI input device by exact name for run playback
-  --set                  Override a run/bench param or array element with `name=value`
-  --buffer               Bind a declared buffer to a WAV or .ondabuffer file with `name=path`
+  --set                  Set a run/bench parameter with `name=value`: number or true/false
+                         Enums use numeric ordinals; arrays use name[index]=value
+  --buffer               Bind a run/bench buffer with `name=path` (WAV or .ondabuffer)
+                         Use `name=` to clear a binding
   --control-json         Emit run control handshake on stdout and serve param control over localhost
   --start-paused         Compile without starting audio processing (requires --control-json)
   --report-sources       Include source graphs and hashes in startup output (requires --control-json)
@@ -190,6 +194,7 @@ enum CompileEmit {
 enum RunCommand {
     Play {
         input: PathBuf,
+        const_overrides: Vec<(String, String)>,
         duration: Option<Duration>,
         sample_rate_hz: u32,
         block_samples: usize,
@@ -204,10 +209,11 @@ enum RunCommand {
         start_paused: bool,
         report_sources: bool,
         param_sets: Vec<(String, onda_daemon::RunParamValue)>,
-        buffer_bindings: Vec<(String, PathBuf)>,
+        buffer_bindings: Vec<(String, Option<PathBuf>)>,
     },
     Render {
         input: PathBuf,
+        const_overrides: Vec<(String, String)>,
         output: PathBuf,
         duration: Duration,
         sample_rate_hz: u32,
@@ -217,10 +223,13 @@ enum RunCommand {
         fast_math: bool,
         show_meta: bool,
         param_sets: Vec<(String, onda_daemon::RunParamValue)>,
-        buffer_bindings: Vec<(String, PathBuf)>,
+        buffer_bindings: Vec<(String, Option<PathBuf>)>,
     },
     Window {
         input: Option<PathBuf>,
+        const_overrides: Vec<(String, String)>,
+        param_sets: Vec<(String, onda_daemon::RunParamValue)>,
+        buffer_bindings: Vec<(String, Option<PathBuf>)>,
         sample_rate_hz: u32,
         block_samples: usize,
         param_smoothing_seconds: f64,
@@ -238,6 +247,7 @@ enum DaemonCommand {
     Stdio,
     Diagnose {
         input: PathBuf,
+        const_overrides: Vec<(String, String)>,
         sample_rate_hz: u32,
         block_samples: usize,
     },

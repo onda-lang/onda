@@ -8,31 +8,55 @@ eyebrow: Processor integration
 
 # Processor API and ABI reference
 
-This document specifies the backend-neutral contract between a compiled Onda processor and its
-host. The contract is not WebAssembly-specific: LLVM native objects, LLVM WebAssembly objects, and
-complete modules emitted by the Binaryen backend implement the same logical processor interface.
-Target and artifact profiles define how that interface is represented on a particular platform.
+Use the Processor API to run a compiled Onda processor directly in a native application or a
+WebAssembly runtime. Your host owns storage, audio scheduling, and event delivery. Native objects
+require the header
+[`onda_processor_abi.h`](https://github.com/onda-lang/onda/blob/main/include/onda_processor_abi.h)
+and your platform linker; they do not require `libonda`.
+
+For managed instance storage and checked native calls, use the
+[C API](https://onda-lang.org/docs/api/). For browser audio playback, use the
+[Web Audio adapter](https://onda-lang.org/docs/web-api/#onda-langwebaudio).
+
+## Build and host a processor
+
+Compile a program to an object and its matching descriptor:
+
+```bash
+onda compile patch.onda --emit obj --output patch.o --meta-out patch.onda.json
+```
+
+Use a target spec or `--target-triple` when compiling for another platform. Link the object with your
+application using that platform's compiler and linker.
+
+A host then:
+
+1. Reads the descriptor and verifies its versions and target.
+2. Allocates parameter and state storage with the reported sizes and alignments.
+3. Writes parameter defaults and prepares audio and external-buffer tables.
+4. Calls `onda_processor_init` with `FULL` and the current buffer bindings.
+5. Calls `onda_process` for each block, checking its result before using the output.
+6. Releases host-owned storage when processing is finished.
+
+The [direct native example](https://github.com/onda-lang/onda/tree/main/examples/native/raw_processor_object)
+includes a complete C host and link commands for Linux, macOS, and Windows. It reads sizes, offsets,
+and defaults from the descriptor rather than hard-coding them.
 
 ## Versioned artifact descriptor
 
-Every processor artifact is paired with a JSON descriptor whose common envelope contains:
+The paired JSON descriptor describes how to load and call the processor:
 
 - `format: "onda-processor"` and `format_version` for the descriptor schema.
 - `abi_version` for the logical entry-point and storage contract in this document.
 - `artifact_kind`, currently `relocatable_object` or `webassembly_module`.
-- `backend` and `mir_schema_version` for provenance.
 - `target`, including the resolved triple, pointer width, byte order, pointer model, and calling
   convention.
 - `integration`, including symbols that must survive integration and an artifact-specific profile.
 - `compile`, `exports`, `runtime`, and `metadata` for specialization, symbol names, allocation, and
   the program interface.
 
-Hosts must reject unknown descriptor or ABI versions. A descriptor belongs to the exact bytes with
-which it was emitted; physical layouts must not be borrowed from another backend or compilation.
-The Rust `onda_processor_abi` types and the TypeScript `@onda-lang/processor-abi` declarations are
-the same schema. A shared conformance fixture exercises the complete logical metadata record and
-the directly loadable core-WebAssembly profile; profile-specific facts use one tagged integration
-record rather than backend-specific descriptor shapes.
+Hosts must reject unknown descriptor or ABI versions. Use the descriptor from the same compilation
+as the object or module; storage layouts can differ between targets and compilations.
 
 ## Logical processor interface
 
@@ -79,7 +103,7 @@ onda_event_N(
 ) -> i32
 ```
 
-Since processor ABI and descriptor version 6, every event requires an `EventInput` descriptor:
+Every packed event call requires an `EventInput` descriptor:
 
 ```c
 struct EventInput {
@@ -96,15 +120,14 @@ its capacity is provisioned by the host before realtime execution. Input, worksp
 state, parameters, and output storage are disjoint for the call. Native callers supply valid memory
 regions; wasm entry points also check regions against linear-memory bounds.
 
-Before any handler or output access, generated code validates all lengths, checked byte extents,
-exact input consumption, alignment, and workspace capacity. Rejection returns status `2` without
-changing workspace, state, or output records. Accepted input is copied into aligned native tensors;
+Before running a handler, the entry validates lengths, byte extents, exact input consumption,
+alignment, and workspace capacity. Rejection returns status `2` with empty output batches and leaves
+workspace and processor state unchanged. Accepted input is copied into aligned native tensors;
 bools become zero or one and ranged integers are normalized before observation. Status `1` means
 execution failed after entry and requires the usual instance recovery. Neither path allocates.
 
-There is one `onda_event_N` for each declared event, in metadata order. The current ABI permits one
-public processor namespace per artifact. A future ABI may add artifact-specific namespacing for
-multi-processor libraries without changing MIR.
+There is one `onda_event_N` for each declared event, in metadata order. Use `exports` in the
+descriptor to find the entry points for the compiled processor.
 
 Native relocatable objects also advertise one trusted `onda_event_views_N` entry per event through
 the optional `exports.event_views` array. It has the same trailing arguments and result as
@@ -132,34 +155,28 @@ derive its flat tensor contract once from the event schema with
 `PayloadPlan.tensorMetadata`. The metadata records expose each leaf's path, primitive encoding,
 fixed shape, owning top-level parameter, slice status, and fixed element count.
 
-`InitMode` has two portable values: `PRESERVE_PINNED = 0` and `FULL = 1`. Full initialization clears
-the physical state before running every declaration initializer, including pinned state and task
-continuations. Preserve-pinned initialization skips those guarded declarations and leaves their
-existing values intact unless authored init code explicitly changes them. Raw ABI initialization is
-not transactional: a host that needs rollback must provide that policy itself.
+`InitMode` has two values: `PRESERVE_PINNED = 0` and `FULL = 1`. Use `FULL` before processing new
+storage. It clears state and runs initialization. Use `PRESERVE_PINNED` only after successful full
+initialization to rerun initialization while retaining pinned state and suspended tasks, unless
+authored init code changes them.
 
-The initialization interface uses the named initialization mode, supplies current external-buffer
-descriptors to initialization, and adds one optional `ExecutionOutput` to init, process, and event
-entries. Its independently optional print and delegate batches share one call-local sequence so
-hosts can preserve source order across both streams. Language validation forbids delegate
-publication reachable from init, so initialization can populate only the print batch. The
-instance-level C and WebAssembly host APIs use the same initialization-mode values. A failed
-initialization leaves the physical state indeterminate.
+Initialization reads the current external-buffer bindings. Pass null for `output` if you do not
+collect initialization prints. Delegate publication is not allowed during initialization.
+Initialization is not transactional: a failure may leave state partially changed.
 
-Every entry point returns zero on success or a positive execution-failure code. Code `1` is
-`RUNTIME_SAFETY_FAILURE`, produced when generated code encounters a checked condition from which it
-cannot continue safely. After a nonzero init result, the supplied state image is indeterminate and
-must not be processed until the host successfully initializes or restores it.
+All entry points return an execution status:
 
-The process order intentionally places state, parameters, and audio tables before segment controls
-and optional buffer tables. This keeps the hottest pointers in argument registers on common native
-C ABIs without introducing a target-specific entry point.
+| Status | Meaning and host action |
+| --- | --- |
+| `0` (`OK`) | The call completed successfully. |
+| `1` (`RUNTIME_SAFETY_FAILURE`) | Stop processing, discard partial audio, and recover with full initialization or snapshot restoration. |
+| `2` (`INPUT_REJECTED`, events only) | Correct the payload or workspace capacity and retry; processor state remains usable. |
 
 ### Call-scoped execution output
 
 For language semantics, see [delegates](https://onda-lang.org/docs/language/#delegates-and-when) and
 [printing](https://onda-lang.org/docs/language/#printing). The
-[host output guide](https://onda-lang.org/docs/host-output/) covers sizing, ownership, decoding,
+[host output guide](https://github.com/onda-lang/onda/blob/main/docs/host-output.md) covers sizing, ownership, decoding,
 and presentation across host APIs.
 
 `output` is null when the host consumes neither occurrence stream. Otherwise it points to two
@@ -187,7 +204,6 @@ Every supplied batch descriptor and non-null storage region is mutually disjoint
 overlap any other region accessed through the entry-point call. This includes parameter and state
 storage, audio pointer tables and samples, external-buffer descriptor tables and samples, packed
 event input and workspace, native event tensor views, and the execution-output descriptor itself.
-The invariant permits generated delegate packing to use non-overlap-assuming bulk copies.
 
 The fixed header of every contiguous record is three `u32` values followed immediately by payload
 bytes. A delegate record stores declaration-order delegate index, payload byte count, and call-local
@@ -242,35 +258,17 @@ needs but does not replace a target SDK, sysroot, linker, or platform ABI docume
 
 ## Relocatable-object integration
 
-The native compiler deliberately stops at a relocatable object for every LLVM AOT target. Onda does
-not bundle or invoke a linker. The descriptor's `integration.required_symbols` lists processor
-symbols the final application must retain at its chosen integration boundary.
-Optional `integration.link_libraries` lists native library dependencies. Vectorized math is
-automatic on Linux/macOS x64 and ARM64, and Windows x64 MSVC. The compiler embeds precompiled
-SLEEF helpers directly into both JIT code and emitted objects, retaining only used helpers.
-No separate vector-math flag, SLEEF library, DLL, or CMake target is needed.
-Cross-compilation uses the destination CPU features, data layout and calling convention;
-it does not need a SLEEF archive or executable for that target. The usual destination toolchain
-and platform math library are still needed for final linking (scalar tails may require `-lm`
-on Unix). Unsupported targets retain scalar math.
+Onda emits relocatable objects; the application links them into an executable or module.
+`integration.required_symbols` lists processor symbols the final link must retain.
+`integration.link_libraries`, when present, lists required native libraries. Vector-math helpers
+are included in the object; no separate SLEEF library is required. A destination toolchain and
+platform math library may still be needed, such as `-lm` on Unix.
 
-SLEEF uses the `u35` family for sin/cos/tan/tanh/atan/atan2/log and `u10` for exp/pow; results
-can differ from scalar libm within the upstream functions' accuracy contracts. This does not
-permit assuming finite inputs, reassociating arithmetic or discarding signed zeros.
-Optional `compile.floating_point` records the independent `reassociate`, `contract` and
-`no_signed_zeros` permissions; `compile.fast_math` enables all floating-point relaxations.
-Without those permissions, arithmetic preserves operation order and separate rounding.
-
-The `native_relocatable_object` profile requires no Onda-specific entry point. The user's normal
-platform linker combines the object with the host and any required runtime libraries.
-
-The `webassembly_relocatable_object` profile additionally declares `no_entry: true` and
-`export_memory: true`. A typical final link therefore has no conventional `_start`, retains the
-processor symbols as exports, and exposes the selected linear memory. Exact linker flags belong to
-the user's toolchain rather than the Onda compiler.
-
-The native compiler validates that LLVM WebAssembly output is a version-1 Wasm binary with a
-relocatable `linking` section. It does not pretend that the object is directly instantiable.
+For `native_relocatable_object`, link the object with your application normally.
+For `webassembly_relocatable_object`, create a module with no `_start`, retain the processor
+exports, and export its linear memory. The profile declares `no_entry: true` and
+`export_memory: true`; exact linker flags depend on your toolchain. A relocatable Wasm object
+cannot be passed directly to `WebAssembly.instantiate`.
 
 ### Direct native use
 
@@ -287,19 +285,16 @@ required.
 The application must reject descriptor/ABI versions it does not implement and must verify that the
 descriptor's target, pointer width, byte order, and calling convention match the linked process. It
 also owns its audio-thread floating-point environment, scheduling, validation, snapshots, and final
-linker policy. These responsibilities are ordinary consumers of the raw ABI, not generated object
-entrypoints.
+linker policy.
 
 ## Complete core-WebAssembly integration
 
-The browser-safe Binaryen backend emits a complete, directly instantiable core-WebAssembly module
-because browser WebAssembly APIs do not expose relocatable objects or a linker. Its integration
-profile names the `memory` and `__heap_base` exports and declares the module imports. Current
-Binaryen artifacts are self-contained and have no imports, including for transcendental math and
-strict fused multiply-add helpers.
+An artifact with kind `webassembly_module` is ready for `WebAssembly.instantiate`. Its integration
+profile names its `memory` and `__heap_base` exports and declares any imports. Current complete
+modules are self-contained and can be instantiated with an empty import object (`{}`).
 
-This complete-module profile is a packaging choice. It implements the same logical processor
-contract as an LLVM object and does not make Web Audio part of the ABI.
+The host still allocates processor storage and calls the entry points below. The
+[Web API](https://onda-lang.org/docs/web-api/) provides artifact validation and playback helpers.
 
 ## Storage and initialization
 
@@ -311,8 +306,8 @@ current for this initialization call and follow the same rules as process and ev
 null for `output` when initialization output is not consumed. Physical state uses the backend's
 selected target layout and is otherwise opaque.
 
-LLVM aligns state arrays of at least 256 bytes to 64-byte boundaries. Physical padding is included
-in the reported state size; hosts must honor the reported alignment, including when cloning state.
+Honor the descriptor's reported alignment, including when cloning state. Do not infer physical
+storage size or padding from the declared Onda types.
 
 Hosts may replace buffer descriptors between entry-point calls. The next init, event, or process
 call observes the replacement; rebinding alone does not execute initialization or recompute state
@@ -322,9 +317,8 @@ when the host already owns the source buffers before processing begins.
 State-backed control outputs and persistent snapshot entries expose their physical offsets in the
 artifact descriptor. Scratch state is deliberately absent from snapshots.
 
-`metadata.states` includes every packed snapshot entry. Its `authored` flag preserves the explicit
-MIR state provenance and is false for compiler-owned task frames, allowing snapshot implementations
-to preserve suspended tasks while authored-state reflection omits their implementation storage.
+Snapshot every entry in `metadata.states`, including entries with `authored: false`, so suspended
+tasks can resume correctly. Use `authored` only when deciding which state to display to users.
 
 ## Portable snapshots
 
@@ -340,11 +334,9 @@ suppressed. This resets instance scratch while preserving persistent state and t
 A host converting between a big-endian physical target and the portable snapshot must encode
 and decode each scalar according to metadata rather than copying physical bytes wholesale.
 
-Processor ABI version 4 adds optional `integer_range` metadata to `i32` and `i64` state. For fixed arrays, the range applies independently to every element.
-After overlaying each such snapshot entry, the host must normalize it into the inclusive
-`min..=max` interval using the declared `clamp` or Euclidean `wrap` mode. This restores the storage
-invariant before generated code can rely on it to remove bounds checks. The packed snapshot byte
-representation is unchanged, so its format version remains 1.
+For state with `integer_range` metadata, normalize every restored element into the inclusive
+`min..=max` interval using its declared `clamp` or Euclidean `wrap` mode. This also applies to every
+element of a fixed array.
 
 ## Audio ports
 
@@ -372,10 +364,8 @@ A declared surface is not absent merely because the application does not use it.
 input/output slot requires valid compile-block storage. A non-empty buffer declaration list
 requires all four parallel tables. Each descriptor has positive frame/channel counts and a finite
 positive sample rate. A null sample pointer denotes an unbound buffer; generated code redirects
-reads to processor-private zero storage and writes to distinct discard storage. Hosts give unbound buffers
-one frame, retain the declared channel count for exact-channel buffers, and use one channel for
-dynamic-channel buffers. This keeps omitted resource bindings neutral without exposing the
-implementation's separate read/write pointers to hosts.
+reads to zero and discards writes. Give unbound buffers one frame, retain the declared channel
+count for exact-channel buffers, and use one channel for dynamic-channel buffers.
 
 ## Segmented processing
 
@@ -395,8 +385,7 @@ audio indices from `start_frame`.
 Parameter storage follows the paired descriptor's offsets and scalar shapes. Every event and
 delegate also carries a recursive `schema`: named parameters with scalar, primitive tuple, nominal
 struct, fixed array, or top-level slice types. Fields include constant defaults and integer domains.
-Every struct schema contains at least one field. The schema is the authority for host encoding and
-decoding; flattened executable parameters are validated against it.
+Use the schema to encode and decode host values.
 
 Wire payloads are packed little-endian in parameter and depth-first field order. Every primitive
 leaf is one contiguous tensor with outer array axes before inner field-array axes. A runtime slice
@@ -404,17 +393,12 @@ contributes one signed `i32` logical length, then its field tensors; there is no
 length per struct field. Prepared workspace inserts scalar alignment padding and uses native byte
 order. Its required size is computed by the shared payload planner, independently of wire size.
 
-The Rust `onda_processor_abi::payload::PayloadPlan` and JavaScript `PayloadPlan` expose recursive
-host codecs, checked sizing, and the same flattened tensor metadata. Construct plans and encode
-logical host values off the rendering
-thread. Rust instances initially reserve fixed requirements and at least 64 KiB for dynamic events;
-`Instance::reserve_event_workspace` and `onda_instance_reserve_event_workspace` can increase this
-capacity outside realtime execution, using the instance allocator. WebAudio transfers encoded
-bytes to its worklet and uses the configured event capacity without memory growth during dispatch.
-Internal event/delegate forwarding borrows read-only tensors without another payload-sized copy;
-host publication writes a complete packed record or drops it whole on overflow.
+Use Rust's `onda_processor_abi::payload::PayloadPlan` or JavaScript's `PayloadPlan` to encode logical
+values, calculate workspace sizes, and inspect tensor shapes. Prepare payloads and reserve storage
+before realtime execution. See the [C event API](https://onda-lang.org/docs/api/#events) or
+[Web API](https://onda-lang.org/docs/web-api/) for managed dispatch.
 
-Descriptor format version 2 gives every parameter `range_min_repr`, `range_max_repr`, and
+Every parameter has `range_min_repr`, `range_max_repr`, and
 `param_control`. `param_control` is null for a parameter without a numeric host-control domain;
 otherwise it contains:
 
@@ -425,14 +409,14 @@ otherwise it contains:
 - `step_repr`: the optional plain-domain step encoded in the declared scalar representation;
 - `step_count`: the number of equal intervals between the inclusive endpoints.
 
-Descriptor format version 7 adds optional `enumeration` metadata to scalar and fixed-array parameters/control outputs, and scalar leaves of recursive event/delegate schemas. It contains a qualified `name` and
+Optional `enumeration` metadata describes scalar and fixed-array parameters/control outputs and
+scalar leaves of event/delegate schemas. It contains a qualified `name` and
 ordered `members`, each with a source `name` and display `label`. An enum's member index is its
 ordinary signed `i32` representation. Its range is `[0, members.length - 1]`; enum parameters use
 linear scale and unit step. A one-member enum has equal zero bounds and `step_count: 0`.
 
-MIR and descriptor enum strings are metadata only. Event preparation normalizes nested enum values
-through their scalar `integer_range`; snapshot restoration normalizes every element of enum state
-arrays. Executable processor ABI signatures and snapshot byte encoding are unchanged.
+Enum values use `i32` storage. Packed event preparation normalizes them through `integer_range`;
+normalize them when restoring snapshots too.
 
 The raw processor object does not export parameter conversion functions. Native hosts decode each
 numeric control into the `onda_processor_param_domain` structure from
@@ -442,6 +426,9 @@ scalar type so stepped floating-point grids are validated at their actual storag
 reference generator in
 `examples/native/raw_processor_object` emits decoded tables, indexed wrappers, typed reads, and
 typed writes around that shared header implementation.
+
+<details markdown="1">
+<summary>Parameter conversion rules</summary>
 
 For a scalar numeric parameter, normalized-to-plain conversion is:
 
@@ -468,6 +455,8 @@ range width are restricted to the exactly representable integer interval
 `[-9007199254740991, 9007199254740991]`. This restriction does not apply to unranged `i64`
 parameters written through their typed/raw storage representation.
 
+</details>
+
 External buffers use four parallel tables in declaration order:
 
 - `buffers`: writable sample pointers, with null entries denoting unbound buffers.
@@ -481,11 +470,8 @@ storage and the regions reached through non-null host storage pointers.
 
 Fixed resource arrays occupy contiguous physical slots. `metadata.buffer_arrays` records each
 logical group name, its first physical slot, and its length, so hosts can bind a whole bank without
-parsing generated slot names. Selection clamps once and computes `first + selector` in constant
-time. Each physical slot has its own `metadata.buffers[first + slot].may_write` value. A false value
-proves that code reachable from init, process, or an exported event does not write that slot;
-selectors that cannot be resolved statically conservatively mark every slot they may select. Init
-writes include writes reached transitively through top-level and proc initializer helpers.
+parsing generated slot names. Each slot has its own `metadata.buffers[first + slot].may_write`
+value. Supply writable sample memory whenever that value is true.
 
 Samples use interleaved frame-major storage. Metadata declares scalar width, read/write access, and
 mono, static, or dynamic channel constraints. Every sample-rate entry is finite and positive,
@@ -512,15 +498,10 @@ usable after the host corrects its payload or workspace capacity.
 
 ## Web Audio reference adapter
 
-`packages/onda_webaudio` is an optional reference adapter for complete WebAssembly modules. It owns
-Web Audio node construction, render-quantum scheduling, f32 marshaling, parameter/event messages,
-buffer bindings, and snapshot requests. None of those policies are required when embedding an Onda
-processor in a native application, an offline renderer, a plugin API, a worker, or another Wasm
-runtime. The adapter compiles the `WebAssembly.Module` outside the audio rendering thread, caches
-typed views over processor memory, uses a bulk-copy fast path for full-block f32 audio, and locks
-host linear-memory allocation after construction. Dynamic event payload storage is preallocated to a
-configurable capacity; an oversized event fails rather than growing linear memory while audio is
-running.
+Use [`@onda-lang/webaudio`](https://onda-lang.org/docs/web-api/#onda-langwebaudio) to connect a
+complete WebAssembly artifact to an `AudioContext`. It handles audio scheduling, parameter and
+event messages, buffer bindings, and snapshots. Configure dynamic event capacity before playback;
+oversized events are rejected rather than growing memory during rendering.
 
 ## C header reference
 
@@ -550,10 +531,8 @@ All parameter conversion helpers are allocation-free and constant-time. Prepare 
 domain once when constructing host controls rather than validating descriptor text on the audio
 thread.
 
-### Complete function index
-
-This index is checked against `include/onda_processor_abi.h` so newly exposed functions cannot be
-released without appearing in this reference.
+<details markdown="1">
+<summary>All processor C functions</summary>
 
 <!-- BEGIN PROCESSOR C API FUNCTION INDEX -->
 
@@ -579,3 +558,5 @@ onda_processor_print_batch_reset
 ```
 
 <!-- END PROCESSOR C API FUNCTION INDEX -->
+
+</details>
