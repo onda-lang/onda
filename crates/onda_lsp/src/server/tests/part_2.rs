@@ -1619,7 +1619,7 @@ init:
         let smoothing_source =
             fs::read_to_string(&smoothing_path).expect("read materialized smoothing");
 
-        let needle = "\n      coef";
+        let needle = "\n      coefficient";
         let state_definition =
             definition_for(&mut server, &smoothing_path, &smoothing_source, needle);
         assert_ne!(
@@ -1629,8 +1629,8 @@ init:
         );
         let declaration_line = smoothing_source
             .lines()
-            .position(|line| line.trim() == "coef = 0.0")
-            .expect("coef init declaration should exist");
+            .position(|line| line.trim() == "coefficient: f64 = 0.0")
+            .expect("coefficient init declaration should exist");
         assert_eq!(
             state_definition["range"]["start"]["line"],
             json!(declaration_line),

@@ -2074,8 +2074,9 @@ fixed-size arrays. They are mutually exclusive, even when one duration is zero.
 Durations must be finite, nonnegative compile-time constants. An absent attribute or
 a zero duration creates no smoother instance or smoothing state.
 
-A positive duration inserts an ordinary `std::smoothing::Ramp<T>` (linear) or
-`std::smoothing::Lag<T>` at the input boundary; no explicit import is needed.
+A positive duration inserts an ordinary stdlib processor at the input boundary;
+no explicit import is needed. `lag` uses `std::smoothing::Lag<T>`, and `ramp`
+uses a fixed linear path sharing `std::smoothing::Ramp<T>`'s timing and interpolation.
 Each input is clamped to its declared range first, then smoothed once before each
 execution of the sample body. Every read, including dynamic and unchecked indexed reads,
 uses the same cached value. Each array element and proc instance has independent state.

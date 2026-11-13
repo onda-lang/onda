@@ -1,10 +1,7 @@
-import std/env
 import std/osc
-import std/pitch
+import processors/effect_audition
 
 const TapeCapacity = i32(SR * 8)
-const PatternLength = 8
-const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 64.0, 55.0, 60.0, 69.0, 48.0]
 
 params:
   auto_play = true
@@ -25,13 +22,7 @@ init:
   recording = true
   direction = 1.0
 
-  source_a = std::osc::Saw(amp = 0.58)
-  source_b = std::osc::Sine(amp = 0.24)
-  envelope = std::env::DecayEnv(decay_s = 0.22)
-  source_clock = 0
-  source_step = 0
-  source_frequency = std::pitch::note_to_hz(Notes[0])
-  pending_bang = false
+  audition = EffectAudition()
   wow_lfo = std::osc::Sine(freq = 0.27)
 
 event recapture():
@@ -50,27 +41,12 @@ event clear():
   read_position = 0.0
 
 event bang():
-  pending_bang = true
+  audition.bang()
 
 sample:
-  source_period = max(i32(SR * 0.41), 1)
-  if auto_play && source_clock == 0:
-    pending_bang = true
-
-  if pending_bang:
-    source_frequency = std::pitch::note_to_hz(Notes[source_step])
-    source_a.reset()
-    source_b.reset()
-    envelope.start()
-    source_step = (source_step + 1) % PatternLength
-    pending_bang = false
-  source_clock = (source_clock + 1) % source_period
-
-  audition = source_a(freq = source_frequency)
-  audition = audition + source_b(freq = source_frequency * 1.4983)
-  audition = audition * envelope() * 0.44
-  input_l = audition * (1.0 - live_input) + in1 * live_input
-  input_r = audition * (1.0 - live_input) + in2 * live_input
+  source_l, source_r = audition(auto_play = auto_play)
+  input_l = lerp(source_l, in1, live_input)
+  input_r = lerp(source_r, in2, live_input)
   target_samples = min(max(i32(loop_s * SR), 8), TapeCapacity)
 
   loop_l = 0.0

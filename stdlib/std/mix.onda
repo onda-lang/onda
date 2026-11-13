@@ -1,3 +1,6 @@
+# Signal routing, channel conversion, and mixing.
+# Combines signals through sums, averages, weighted mixes, and crossfades.
+
 import std/math
 
 namespace std::mix:
@@ -30,7 +33,7 @@ namespace std::mix:
         y: T = 0.0
         for i in 0..N:
           y += ins[i]
-        out1 = y / T(N)
+        out1 = y / N
 
     proc Crossfade<T>:
       ins:
@@ -65,7 +68,7 @@ namespace std::mix:
     sample:
       out1 = (in1 + in2) * norm
 
-  proc ConstantSum<T>:
+  proc WeightedSum<T>:
     ins<T> 2
     outs<T> 1
 

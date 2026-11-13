@@ -19,7 +19,7 @@ proc StringVoice:
     previous = 0.0
     rng = std::random::Rng()
 
-  event pluck(note: f32, velocity: f32):
+  event pluck(note, velocity):
     freq = std::pitch::note_to_hz(note)
     length = i32(SR / freq)
     if (length < 2):
@@ -63,7 +63,7 @@ init:
   next_voice = 0
   pending_bang = false
 
-event pluck(note: f32 = 55.0, velocity: f32 = 0.8):
+event pluck(note = 55.0, velocity = 0.8):
   strings[next_voice].damping = damping
   strings[next_voice].brightness = brightness
   strings[next_voice].pluck(note, velocity)

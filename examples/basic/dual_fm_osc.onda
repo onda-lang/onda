@@ -15,11 +15,11 @@ proc DualOscillator:
   sample 8:
     current_a = oscillator_a(
       freq = frequency,
-      phase_offset = previous_b * mod_depth
+      phase_offset_rad = previous_b * mod_depth
     )
     current_b = oscillator_b(
       freq = frequency + detune,
-      phase_offset = previous_a * mod_depth
+      phase_offset_rad = previous_a * mod_depth
     )
 
     previous_a = current_a
@@ -31,7 +31,7 @@ params:
   frequency = 110.0 {20.0, 1000.0, scale = log, unit = "Hz"}
   mod_depth = 1.5 {0.0, 10.0}
   detune = 1.0 {0.0, 100.0, unit = "Hz"}
-  level = 1.0 {0.0, 1.0}
+  level = 0.7 {0.0, 1.0}
 
 init:
   oscillator = DualOscillator()
@@ -42,5 +42,5 @@ sample:
     mod_depth = mod_depth,
     detune = detune
   )
-  out1 = tanh(left * level)
-  out2 = tanh(right * level)
+  out1 = tanh(left) * level
+  out2 = tanh(right) * level

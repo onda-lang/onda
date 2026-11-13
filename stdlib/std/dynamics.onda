@@ -1,3 +1,6 @@
+# Amplitude tracking and dynamic-range processing for audio signals.
+# Provides envelope followers, compression, limiting, and gating.
+
 import std/levels
 import std/smoothing
 
@@ -20,19 +23,19 @@ namespace std::dynamics:
     outs<T> 1
 
     params<T>:
-      attack_s = 0.01 => update_attack
-      release_s = 0.1 => update_release
+      attack_lag_s = 0.01 => update_attack
+      release_lag_s = 0.1 => update_release
 
     init<T>:
-      envelope = 0.0
-      attack_coef = 0.0
-      release_coef = 0.0
+      envelope: f64 = 0.0
+      attack_coef: f64 = 0.0
+      release_coef: f64 = 0.0
 
     def update_attack():
-      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+      attack_coef = std::smoothing::lag_coefficient<T>(attack_lag_s)
 
     def update_release():
-      release_coef = std::smoothing::time_coefficient<T>(release_s)
+      release_coef = std::smoothing::lag_coefficient<T>(release_lag_s)
 
     event reset():
       envelope = 0.0
@@ -43,37 +46,37 @@ namespace std::dynamics:
         envelope = level + (envelope - level) * attack_coef
       else:
         envelope = level + (envelope - level) * release_coef
-      out1 = envelope
+      out1 = T(envelope)
 
   proc RmsFollower<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      attack_s = 0.01 => update_attack
-      release_s = 0.1 => update_release
+      attack_lag_s = 0.01 => update_attack
+      release_lag_s = 0.1 => update_release
 
     init<T>:
-      mean_square = 0.0
-      attack_coef = 0.0
-      release_coef = 0.0
+      mean_square: f64 = 0.0
+      attack_coef: f64 = 0.0
+      release_coef: f64 = 0.0
 
     def update_attack():
-      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+      attack_coef = std::smoothing::lag_coefficient<T>(attack_lag_s)
 
     def update_release():
-      release_coef = std::smoothing::time_coefficient<T>(release_s)
+      release_coef = std::smoothing::lag_coefficient<T>(release_lag_s)
 
     event reset():
       mean_square = 0.0
 
     sample:
-      square = in1 * in1
+      square = f64(in1) * f64(in1)
       if square > mean_square:
         mean_square = square + (mean_square - square) * attack_coef
       else:
         mean_square = square + (mean_square - square) * release_coef
-      out1 = sqrt(max(mean_square, T(0.0)))
+      out1 = T(sqrt(max(mean_square, 0.0)))
 
   proc Compressor<T>:
     ins<T> 2
@@ -82,15 +85,15 @@ namespace std::dynamics:
     params<T>:
       threshold_db = -18.0 => update_threshold
       ratio = 4.0 => update_ratio
-      attack_s = 0.01 => update_attack
-      release_s = 0.1 => update_release
+      attack_lag_s = 0.01 => update_attack
+      release_lag_s = 0.1 => update_release
       knee_db = 6.0 => update_knee
       makeup_db = 0.0 => update_makeup
 
     init<T>:
-      detector = 0.0
-      attack_coef = 0.0
-      release_coef = 0.0
+      detector: f64 = 0.0
+      attack_coef: f64 = 0.0
+      release_coef: f64 = 0.0
       slope = 0.0
       half_knee = 0.0
       knee_divisor = 0.0
@@ -98,11 +101,11 @@ namespace std::dynamics:
       makeup_gain = 1.0
 
     def update_ratio():
-      slope = T(1.0) - T(1.0) / max(ratio, T(1.0))
+      slope = 1.0 - 1.0 / max(ratio, 1.0)
 
     def update_knee():
-      half_knee = max(knee_db, T(0.0)) * T(0.5)
-      knee_divisor = T(4.0) * half_knee
+      half_knee = max(knee_db, 0.0) * 0.5
+      knee_divisor = 4.0 * half_knee
       update_threshold()
 
     def update_threshold():
@@ -112,10 +115,10 @@ namespace std::dynamics:
       makeup_gain = std::levels::db_to_gain<T>(makeup_db)
 
     def update_attack():
-      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+      attack_coef = std::smoothing::lag_coefficient<T>(attack_lag_s)
 
     def update_release():
-      release_coef = std::smoothing::time_coefficient<T>(release_s)
+      release_coef = std::smoothing::lag_coefficient<T>(release_lag_s)
 
     event reset():
       detector = 0.0
@@ -130,7 +133,7 @@ namespace std::dynamics:
       gain = makeup_gain
       # Keep the detector running while the curve needs no gain reduction.
       if slope != 0.0 && max(detector, T(std::levels::MIN_FLOAT)) > lower_knee:
-        level_db = std::levels::gain_to_db<T>(detector)
+        level_db = std::levels::gain_to_db<T>(T(detector))
         reduction_db = std::dynamics::_soft_knee_reduction_db<T>(
           level_db - threshold_db, slope, half_knee, knee_divisor
         )
@@ -144,18 +147,18 @@ namespace std::dynamics:
 
     params<T>:
       ceiling_db = -0.3 => update_ceiling
-      release_s = 0.05 => update_release
+      release_lag_s = 0.05 => update_release
 
     init<T>:
-      gain = 1.0
+      gain: f64 = 1.0
       ceiling = 1.0
-      release_coef = 0.0
+      release_coef: f64 = 0.0
 
     def update_ceiling():
       ceiling = std::levels::db_to_gain<T>(ceiling_db)
 
     def update_release():
-      release_coef = std::smoothing::time_coefficient<T>(release_s)
+      release_coef = std::smoothing::lag_coefficient<T>(release_lag_s)
 
     event reset():
       gain = 1.0
@@ -172,8 +175,8 @@ namespace std::dynamics:
       else:
         gain = target_gain + (gain - target_gain) * release_coef
 
-      out1 = in1 * gain
-      out2 = in2 * gain
+      out1 = in1 * T(gain)
+      out2 = in2 * T(gain)
 
   proc Gate<T>:
     ins<T> 2
@@ -181,23 +184,23 @@ namespace std::dynamics:
 
     params<T>:
       threshold_db = -48.0 => update_threshold
-      attack_s = 0.002 => update_attack
-      release_s = 0.08 => update_release
+      attack_lag_s = 0.002 => update_attack
+      release_lag_s = 0.08 => update_release
 
     init<T>:
       threshold = 0.0
-      gain = 0.0
-      attack_coef = 0.0
-      release_coef = 0.0
+      gain: f64 = 0.0
+      attack_coef: f64 = 0.0
+      release_coef: f64 = 0.0
 
     def update_threshold():
       threshold = std::levels::db_to_gain<T>(threshold_db)
 
     def update_attack():
-      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+      attack_coef = std::smoothing::lag_coefficient<T>(attack_lag_s)
 
     def update_release():
-      release_coef = std::smoothing::time_coefficient<T>(release_s)
+      release_coef = std::smoothing::lag_coefficient<T>(release_lag_s)
 
     event reset():
       gain = 0.0
@@ -210,5 +213,5 @@ namespace std::dynamics:
         target_gain = T(0.0)
         coef = release_coef
       gain = target_gain + (gain - target_gain) * coef
-      out1 = in1 * gain
-      out2 = in2 * gain
+      out1 = in1 * T(gain)
+      out2 = in2 * T(gain)

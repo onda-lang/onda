@@ -85,6 +85,19 @@ fn lag_matches_its_time_constant_and_clamps_targets_first() {
 }
 
 #[test]
+fn long_input_lags_keep_sub_ulp_updates_in_the_accumulator() {
+    for source in [
+        "ins:\n  x {lag = 1000000.0}\nsample:\n  out1 = x\n",
+        "proc Main:\n  ins:\n    x {lag = 1000000.0}\n  sample:\n    out1 = x\n",
+    ] {
+        for (index, actual) in render(source, &[1.0; FRAMES]).iter().enumerate() {
+            let expected = -(-((index + 1) as f64) / 1e9).exp_m1();
+            assert!((f64::from(*actual) - expected).abs() < expected * 2e-6);
+        }
+    }
+}
+
+#[test]
 fn defaults_seed_smoothers_without_a_startup_fade() {
     for attribute in ["ramp", "lag"] {
         for source in [
@@ -193,9 +206,10 @@ fn segments_snapshots_and_reinitialization_preserve_the_smoothing_lifecycle() {
 
 #[test]
 fn oversampling_matches_an_explicit_stdlib_smoother() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         let implicit = format!("ins:\n  x = 0.5 {{{attribute} = 0.004}}\nsample 4:\n  out1 = x\n");
-        let explicit = format!("import std/smoothing\nins:\n  x = 0.5\ninit:\n  smoother = std::smoothing::{processor}(time_s = 0.004)\n  smoother.reset(0.5)\nsample 4:\n  out1 = smoother(x)\n");
+        let explicit = format!("import std/smoothing\nins:\n  x = 0.5\ninit:\n  smoother = std::smoothing::{processor}({timing} = 0.004)\n  smoother.reset(0.5)\nsample 4:\n  out1 = smoother(x)\n");
         let input = [0.5, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
         assert_close(&render(&implicit, &input), &render(&explicit, &input));
     }
@@ -203,7 +217,8 @@ fn oversampling_matches_an_explicit_stdlib_smoother() {
 
 #[test]
 fn oversampled_proc_smoothing_uses_its_owner_context() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         for (default, range, duration) in [
             ("3000.0", "0.0, SR, ", "0.004"),
             ("0.0", "", "4.0 / SR"),
@@ -215,7 +230,7 @@ fn oversampled_proc_smoothing_uses_its_owner_context() {
                 ("Voice", "proc Parent:\n  ins 1\n  init:\n    voice = Voice()\n  sample:\n    out1 = voice(in1)\ninit:\n  parent = Parent()\nsample:\n  out1 = parent(in1)\n".into()),
             ] {
                 let implicit = format!("proc {owner}:\n  ins:\n    x = {default} {{{range}{attribute} = {duration}}}\n  sample 4:\n    out1 = x\n{tail}");
-                let explicit = format!("import std/smoothing\nproc {owner}:\n  ins:\n    x = {default}\n  init:\n    smoother = std::smoothing::{processor}(time_s = {duration})\n    smoother.reset(clamp({default}, 0.0, SR))\n  sample 4:\n    out1 = smoother(x)\n{tail}");
+                let explicit = format!("import std/smoothing\nproc {owner}:\n  ins:\n    x = {default}\n  init:\n    smoother = std::smoothing::{processor}({timing} = {duration})\n    smoother.reset(clamp({default}, 0.0, SR))\n  sample 4:\n    out1 = smoother(x)\n{tail}");
                 let input = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
                 assert_close(&render(&implicit, &input), &render(&explicit, &input));
             }
@@ -225,11 +240,12 @@ fn oversampled_proc_smoothing_uses_its_owner_context() {
 
 #[test]
 fn nested_proc_smoothing_inherits_its_callers_sample_rate() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         let implicit = format!(
             "proc Voice:\n  ins:\n    x = 0.5 {{{attribute} = 0.004}}\n  sample:\n    out1 = x\n"
         );
-        let explicit = format!("import std/smoothing\nproc Voice:\n  ins:\n    x = 0.5\n  init:\n    smoother = std::smoothing::{processor}(time_s = 0.004)\n    smoother.reset(0.5)\n  sample:\n    out1 = smoother(x)\n");
+        let explicit = format!("import std/smoothing\nproc Voice:\n  ins:\n    x = 0.5\n  init:\n    smoother = std::smoothing::{processor}({timing} = 0.004)\n    smoother.reset(0.5)\n  sample:\n    out1 = smoother(x)\n");
         let tail = "proc Main:\n  ins 1\n  init:\n    voice = Voice()\n  sample 4:\n    out1 = voice(in1)\n";
         let input = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
         assert_close(
@@ -241,10 +257,11 @@ fn nested_proc_smoothing_inherits_its_callers_sample_rate() {
 
 #[test]
 fn oversampled_generic_array_inputs_share_the_declared_smoothing_context() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         for ty in ["f32", "f64"] {
             let implicit = format!("proc Voice<T>:\n  ins:\n    x: T[2] = [3000.0, 5000.0] {{0.0, SR, {attribute} = 4.0 / SR}}\n  sample 4:\n    out1 = f32(x[0] + x[1])\n");
-            let explicit = format!("import std/smoothing\nproc Voice<T>:\n  ins:\n    x: T[2]\n  init:\n    a = std::smoothing::{processor}<T>(time_s = 4.0 / SR)\n    b = std::smoothing::{processor}<T>(time_s = 4.0 / SR)\n    a.reset(clamp(3000.0, 0.0, SR))\n    b.reset(clamp(5000.0, 0.0, SR))\n  sample 4:\n    out1 = f32(a(x[0]) + b(x[1]))\n");
+            let explicit = format!("import std/smoothing\nproc Voice<T>:\n  ins:\n    x: T[2]\n  init:\n    a = std::smoothing::{processor}<T>({timing} = 4.0 / SR)\n    b = std::smoothing::{processor}<T>({timing} = 4.0 / SR)\n    a.reset(clamp(3000.0, 0.0, SR))\n    b.reset(clamp(5000.0, 0.0, SR))\n  sample 4:\n    out1 = f32(a(x[0]) + b(x[1]))\n");
             let tail = format!(
                 "init:\n  voice = Voice<{ty}>()\nsample:\n  out1 = voice([{ty}(in1), {ty}(in1)])\n"
             );

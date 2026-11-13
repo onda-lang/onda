@@ -17,7 +17,7 @@ params:
   bpm = 104.0 {45.0, 180.0, unit = "BPM"}
   morph = 0.58 {0.0, 1.0}
   brightness = 0.54 {0.0, 1.0}
-  decay_s = 0.42 {0.08, 1.8, unit = "s"}
+  decay_s = 1.8 {0.08, 2.5, unit = "s"}
   space = 0.34 {0.0, 0.75}
   level = 1.0 {0.0, 1.0}
 
@@ -42,13 +42,14 @@ sample:
 
   if pending_bang:
     frequency = std::pitch::note_to_hz(f32(root_note + Notes[step]))
+    envelope.decay_s = decay_s
     envelope.start(Accents[step])
     step = (step + 1) % PatternLength
     pending_bang = false
   clock = (clock + 1) % step_samples
 
   source = oscillator(frequency = frequency, morph = morph)
-  envelope_level = envelope(decay_s = decay_s)
+  envelope_level = envelope()
   filter_cutoff = clamp(260.0 + brightness * 5200.0 + envelope_level * 2800.0, 80.0, SR * 0.44)
   filter.update_coeffs(filter_cutoff, 0.9 + brightness * 2.6)
   voice = filter(source * envelope_level)

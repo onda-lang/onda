@@ -890,10 +890,7 @@ export class MirCompiler extends MirCompilerLowering {
         const layout = this.stateLayout[place.base.data];
         if (!layout) this.fail(`state id ${place.base.data} is out of range`);
         typeId = this.mir.state[place.base.data].ty;
-        address = this.module.i32.add(
-          this.module.global.get(POINTER_GLOBALS.state, binaryen.i32),
-          this.module.i32.const(layout.offset),
-        );
+        address = this.stateAddress(place.base.data, context);
         break;
       }
       case "param": {
@@ -946,6 +943,21 @@ export class MirCompiler extends MirCompilerLowering {
       typeId = type.data.element;
     }
     return address;
+  }
+
+  stateAddress(stateId, context) {
+    let local = context.stateAddressCache.get(stateId);
+    if (local === undefined) {
+      local = this.allocateGeneratedLocal(context, "i32", `state.${stateId}.address`);
+      context.stateAddressCache.set(stateId, local);
+      // State storage stays fixed during an entry-point invocation. Prepare its
+      // addresses once so inlined processor calls do not rebuild them per sample.
+      context.entryInitializers.push(this.module.local.set(local, this.module.i32.add(
+        this.module.global.get(POINTER_GLOBALS.state, binaryen.i32),
+        this.module.i32.const(this.stateLayout[stateId].offset),
+      )));
+    }
+    return this.module.local.get(local, binaryen.i32);
   }
 
   compileBoundedIndex(value, length, bounds, context) {

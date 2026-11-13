@@ -1,3 +1,6 @@
+# Playback of audio clips supplied through host-bound buffers.
+# Supports variable speed, reverse playback, looping, and playback-position control.
+
 import std/math
 import std/lookup
 
@@ -8,8 +11,8 @@ namespace std::sample<Channels = 2>:
     if samples <= 1:
       return f64(0.0)
     if looping:
-      return wrap(position, f64(0.0), f64(samples))
-    return clamp(position, f64(0.0), f64(samples - 1))
+      return wrap(position, 0.0, f64(samples))
+    return clamp(position, 0.0, samples - 1)
 
   proc Player<T>:
     outs<T> Channels
@@ -36,8 +39,8 @@ namespace std::sample<Channels = 2>:
       stop():
         playing = false
 
-      seek(position: f64):
-        playhead = _normalize_position(position, clip.samples(), looping)
+      seek(position_samples: f64):
+        playhead = _normalize_position(position_samples, clip.samples(), looping)
 
       reset():
         playhead = 0.0
@@ -47,11 +50,11 @@ namespace std::sample<Channels = 2>:
       clip_bound = clip.bound()
       clip_samples = clip.samples()
       clip_channels = clip.chans()
-      step = f64(speed) * (clip.samplerate() / SR)
+      sample_rate_ratio = clip.samplerate() / SR
 
       sample:
         for channel in 0..Channels:
-            outs[channel] = T(0.0)
+            outs[channel] = 0.0
 
         if playing:
           if !clip_bound:
@@ -65,10 +68,10 @@ namespace std::sample<Channels = 2>:
               else:
                 outs[channel] = T(std::lookup::readC(clip, source_channel, playhead))
 
-            next_playhead = playhead + step
-            if next_playhead >= f64(clip_samples) || next_playhead < 0.0:
+            next_playhead = playhead + f64(speed) * sample_rate_ratio
+            if next_playhead >= clip_samples || next_playhead < 0.0:
               if looping:
-                playhead = wrap(next_playhead, f64(0.0), f64(clip_samples))
+                playhead = wrap(next_playhead, 0.0, f64(clip_samples))
                 looped()
               else:
                 playing = false

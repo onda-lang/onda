@@ -12,7 +12,7 @@ const Accents: f32[PatternLength] = [1.0, 0.46, 0.68, 0.38, 0.78, 0.42, 0.58, 0.
 
 proc FormantVoice:
   params:
-    decay_s = 0.46
+    decay_s = 2.05
     vowel = 0.45
     resonance = 5.8
 
@@ -25,7 +25,7 @@ proc FormantVoice:
     formant_2 = std::filter::Resonator()
     formant_3 = std::filter::Resonator()
 
-  event strike(note: f32, velocity: f32):
+  event strike(note, velocity):
     frequency = std::pitch::note_to_hz(note)
     shape = clamp(vowel, 0.0, 1.0)
     formant_1.freq = lerp(820.0, 350.0, shape)
@@ -35,13 +35,14 @@ proc FormantVoice:
     formant_2.bandwidth = 680.0 / resonance
     formant_3.bandwidth = 900.0 / resonance
     exciter.reset()
+    amplitude.decay_s = decay_s
     amplitude.start(velocity)
 
   sample:
     # Remove pulse bias before it drives the resonators and saturation
     pulse = excitation_dc(exciter(freq = frequency, width = 0.035 + vowel * 0.055))
     shaped = formant_1(pulse) * 0.72 + formant_2(pulse) * 0.44 + formant_3(pulse) * 0.23
-    out1 = tanh(shaped * 1.8) * amplitude(decay_s = decay_s)
+    out1 = tanh(shaped * 1.8) * amplitude()
 
 params:
   auto_play = true
@@ -49,13 +50,13 @@ params:
   bpm = 104.0 {40.0, 190.0, unit = "BPM"}
   vowel = 0.48 {0.0, 1.0}
   resonance = 5.8 {1.0, 12.0}
-  decay_s = 0.48 {0.08, 2.5, scale = log, unit = "s"}
+  decay_s = 2.05 {0.08, 3.0, scale = log, unit = "s"}
   space = 0.34 {0.0, 0.8}
-  level = 1.0 {0.0, 1.0}
+  level = 0.8 {0.0, 1.0}
 
 init:
   voices: FormantVoice[VoiceCount] = FormantVoice()
-  reverb = std::reverb::Schroeder::Reverb(room_size = 0.72, damping = 0.42, width = 0.94, mix = 1.0)
+  reverb = std::reverb::Schroeder::Reverb(decay_60db_s = 1.8, damping = 0.42, width = 0.94, mix = 1.0)
   clock = 0
   step = 0
   next_voice = 0
@@ -89,5 +90,5 @@ sample:
     dry_r = dry_r + voice * gain_r
 
   wet_l, wet_r = reverb(dry_l, dry_r)
-  out1 = tanh((dry_l + wet_l * space) * level)
-  out2 = tanh((dry_r + wet_r * space) * level)
+  out1 = tanh(dry_l + wet_l * space) * level
+  out2 = tanh(dry_r + wet_r * space) * level

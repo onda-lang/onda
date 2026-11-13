@@ -5,16 +5,19 @@ buffers:
 
 params:
   speed = 1.0 {0.25, 4.0, scale = log}
+  level = 1.0 {0.0, 1.0}
 
 init:
   player = std::sample::Player(clip = clip)
 
 events:
-  play(start_frame: f32 = 0.0):
+  play(start_frame = 0.0):
     player.play(start_frame)
 
   stop():
     player.stop()
 
 sample:
-  out1, out2 = player(speed = speed)
+  left, right = player(speed = speed)
+  out1 = left * level
+  out2 = right * level

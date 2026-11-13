@@ -1,0 +1,20 @@
+import std/env
+
+outs<f64> 2
+init:
+  narrow = std::env::DecayEnv<f32>(decay_s = 4.0 / SR, curve = -60.0)
+  wide = std::env::DecayEnv<f64>(decay_s = 4.0 / SR, curve = -60.0)
+  narrow.start()
+  wide.start()
+  frame = 0
+sample:
+  a = narrow()
+  b = wide()
+  out1 = 0.0
+  out2 = 0.0
+  if frame == 2:
+    if abs(f64(a) / 0.000000000000000000028625177048983175 - 1.0) > 0.000002:
+      out1 = 1.0
+    if abs(b / 0.000000000000000000028625177048983175 - 1.0) > 0.000000000001:
+      out2 = 1.0
+  frame += 1

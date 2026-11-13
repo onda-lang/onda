@@ -1,3 +1,6 @@
+# Filters audio with an impulse response, for sampled acoustics and other linear effects.
+# Provides direct and FFT-based convolution for responses of different lengths.
+
 import std/fft
 import std/random
 
@@ -65,7 +68,7 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
 
     init:
       fft = std::fft<FFTSize>::RealTransform<T>()
-      rng = std::random::Rng<f32>()
+      rng = std::random::Rng()
 
       pending: T[HopSize]
       output: T[HopSize]
@@ -359,9 +362,9 @@ namespace std::convolution<FFTSize = 256, MaxImpulseLen = 16384>:
       return max(min(value_count, end) - start, 0)
 
     def channel_offset(channel: i32) -> i32:
-      phase = (i64(channel) * i64(BS)) % i64(HopSize)
+      phase = (i64(channel) * BS) % HopSize
       if phase < 0:
-        phase += i64(HopSize)
+        phase += HopSize
       return i32(phase)
 
     events:

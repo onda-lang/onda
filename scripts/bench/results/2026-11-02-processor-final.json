@@ -1271,14 +1271,6 @@
       "source_sha256": "10e129a851b68a0daae62b53ef70989a3d6de64e1c08d3b17f54e0d0ff65a181"
     },
     {
-      "name": "example-soundscapes-deep_space_drone",
-      "source": "examples/soundscapes/deep_space_drone.onda",
-      "kind": "example",
-      "warmup": 512,
-      "max_output_abs": null,
-      "source_sha256": "ee2f25780df5949f5c19ae280af9f6bce631c061fc8f911c020521b775116518"
-    },
-    {
       "name": "example-soundscapes-glass_garden",
       "source": "examples/soundscapes/glass_garden.onda",
       "kind": "example",
@@ -3163,17 +3155,6 @@
     },
     {
       "name": "example-soundscapes-aurora_pad",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "buffers": 0,
-      "outputs": 2,
-      "events": [],
-      "scalar_ports": true,
-      "runnable": true
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
       "kind": "example",
       "ok": true,
       "returncode": 0,
@@ -20389,130 +20370,6 @@
       }
     },
     {
-      "name": "example-soundscapes-deep_space_drone",
-      "worker": "current",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "row": {
-        "name": "deep_space_drone",
-        "block_max_us": 16.192999999999998,
-        "block_p50_us": 13.12,
-        "block_p99_us": 14.708,
-        "cold_max_us": 13.448,
-        "frontend_allocations": null,
-        "frontend_ms": 167.77013499999998,
-        "init_ms": 0.030978000000000002,
-        "inputs": [],
-        "iterations": 4096,
-        "jit_allocations": null,
-        "jit_ms": 57.44585,
-        "mad_ns": 0.08711433410644531,
-        "max_ns": 102.63216972351074,
-        "min_ns": 102.3625659942627,
-        "ns_per_frame": 102.46209335327148,
-        "outputs": [
-          "f32",
-          "f32"
-        ],
-        "phases": {
-          "mir_lowering_ms": 2.997676,
-          "mir_optimization_ms": 3.657803,
-          "mir_passes": {
-            "distributed_loops": 0,
-            "eliminated_bounds_checks": 18,
-            "eliminated_common_subexpressions": 0,
-            "iterations": 4,
-            "removed_functions": 2,
-            "removed_parameters": 3
-          },
-          "parse_load_ms": 27.465764,
-          "semantics_ms": 133.55454
-        },
-        "rounds_ns_per_frame": [
-          102.63216972351074,
-          102.3625659942627,
-          102.46209335327148,
-          102.40576362609863,
-          102.54920768737793
-        ],
-        "shape": {
-          "effect_function_visits": 70,
-          "functions": 70,
-          "mir_bytes": 614726,
-          "range_function_visits": 99,
-          "state_entries": 98
-        },
-        "state_bytes": 768960,
-        "validation": "finite",
-        "source_fingerprint": "20b68bd570cc84f47748202d4d47fac19f74e27f93ba773a4766b7db53955c57",
-        "mir_sha256": "a4c3530ed5feb104d668ded3d74dd3c0ba139c94377b6001b85ac4b207d2d282",
-        "llvm_ir_sha256": "4384affa7ce3ac31082f2d8665d069d0ebda99b47d220828193e65c98dcbeb17"
-      }
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
-      "worker": "base",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "row": {
-        "name": "deep_space_drone",
-        "block_max_us": 14.711,
-        "block_p50_us": 13.139000000000001,
-        "block_p99_us": 14.459,
-        "cold_max_us": 17.855,
-        "frontend_allocations": null,
-        "frontend_ms": 163.11062900000002,
-        "init_ms": 0.108644,
-        "inputs": [],
-        "iterations": 4096,
-        "jit_allocations": null,
-        "jit_ms": 67.30446599999999,
-        "mad_ns": 0.03510856628417969,
-        "max_ns": 103.03228759765625,
-        "min_ns": 102.85028457641602,
-        "ns_per_frame": 102.8853931427002,
-        "outputs": [
-          "f32",
-          "f32"
-        ],
-        "phases": {
-          "mir_lowering_ms": 2.748903,
-          "mir_optimization_ms": 4.144585999999999,
-          "mir_passes": {
-            "distributed_loops": 0,
-            "eliminated_bounds_checks": 38,
-            "eliminated_common_subexpressions": 0,
-            "iterations": 4,
-            "removed_functions": 0,
-            "removed_parameters": 3
-          },
-          "parse_load_ms": 35.142982,
-          "semantics_ms": 120.986946
-        },
-        "rounds_ns_per_frame": [
-          102.95564460754395,
-          103.03228759765625,
-          102.8853931427002,
-          102.85028457641602,
-          102.87733459472656
-        ],
-        "shape": {
-          "effect_function_visits": 70,
-          "functions": 70,
-          "mir_bytes": 632702,
-          "range_function_visits": 99,
-          "state_entries": 98
-        },
-        "state_bytes": 768960,
-        "validation": "finite",
-        "source_fingerprint": "20b68bd570cc84f47748202d4d47fac19f74e27f93ba773a4766b7db53955c57",
-        "mir_sha256": "5dafac2677e549a2858f37c9566ace66430b6e7cd370ec42fdcb4cc8520ad4b4",
-        "llvm_ir_sha256": "dba7841f2e59bed2bf28b2e9d206ef20e1a801c3150731e21d2a8a632cc33bf2"
-      }
-    },
-    {
       "name": "example-soundscapes-glass_garden",
       "worker": "base",
       "kind": "example",
@@ -24946,34 +24803,6 @@
         "reference": "base"
       },
       {
-        "name": "example-soundscapes-deep_space_drone",
-        "baseline_name": "deep_space_drone",
-        "backend": "native",
-        "settings_changed": {},
-        "source_changed": false,
-        "baseline_ns_per_frame": 102.8853931427002,
-        "candidate_ns_per_frame": 102.46209335327148,
-        "compiler_changed": true,
-        "mir_changed": true,
-        "llvm_ir_changed": true,
-        "candidate_to_baseline": 0.9958857153916727,
-        "outputs": {
-          "output.bin": {
-            "samples": 2048,
-            "max_abs": 0.0,
-            "mismatches": 0,
-            "equivalent": true
-          },
-          "warm-output.bin": {
-            "samples": 2048,
-            "max_abs": 0.0,
-            "mismatches": 0,
-            "equivalent": true
-          }
-        },
-        "reference": "base"
-      },
-      {
         "name": "example-soundscapes-glass_garden",
         "baseline_name": "glass_garden",
         "backend": "native",
@@ -25986,12 +25815,6 @@
         "nonzero_samples": 4094,
         "samples": 4096,
         "max_abs": 0.778891921043396
-      },
-      {
-        "name": "example-soundscapes-deep_space_drone",
-        "nonzero_samples": 4096,
-        "samples": 4096,
-        "max_abs": 0.24781307578086853
       },
       {
         "name": "example-soundscapes-glass_garden",
@@ -28952,54 +28775,6 @@
           "call:tanf": 1,
           "call:llvm.floor.f32": 7,
           "call:llvm.fabs.f32": 6,
-          "call:tanhf": 2
-        }
-      },
-      {
-        "name": "example-soundscapes-deep_space_drone",
-        "reference": "base",
-        "before": {
-          "instruction_lines": 684,
-          "vector_instruction_lines": 16,
-          "call:llvm.masked.load.v5f32.p0": 1,
-          "shufflevector": 4,
-          "call:llvm.maxnum.v4f32": 1,
-          "call:llvm.minnum.v4f32": 1,
-          "align_1_accesses": 4,
-          "call:llvm.smax.i32": 1,
-          "call:llvm.umin.i32": 1,
-          "call:llvm.maxnum.f32": 4,
-          "call:llvm.minnum.f32": 4,
-          "call:expf": 2,
-          "call:llvm.fptosi.sat.i64.f32": 1,
-          "call:llvm.floor.f32": 3,
-          "call:llvm.fabs.f32": 1,
-          "call:cosf": 1,
-          "call:sinf": 1,
-          "call:tanf": 2,
-          "call:llvm.fptosi.sat.i32.f32": 2,
-          "call:tanhf": 2
-        },
-        "after": {
-          "instruction_lines": 684,
-          "vector_instruction_lines": 16,
-          "call:llvm.masked.load.v5f32.p0": 1,
-          "shufflevector": 4,
-          "call:llvm.maxnum.v4f32": 1,
-          "call:llvm.minnum.v4f32": 1,
-          "align_1_accesses": 4,
-          "call:llvm.smax.i32": 1,
-          "call:llvm.umin.i32": 1,
-          "call:llvm.maxnum.f32": 4,
-          "call:llvm.minnum.f32": 4,
-          "call:expf": 2,
-          "call:llvm.fptosi.sat.i64.f32": 1,
-          "call:llvm.floor.f32": 3,
-          "call:llvm.fabs.f32": 1,
-          "call:cosf": 1,
-          "call:sinf": 1,
-          "call:tanf": 2,
-          "call:llvm.fptosi.sat.i32.f32": 2,
           "call:tanhf": 2
         }
       },

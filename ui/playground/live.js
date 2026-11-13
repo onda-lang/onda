@@ -36,7 +36,7 @@ import {
   decodeProjectArchive,
   sourceGraphWithWorkspaceDocuments,
 } from "./project-archive.js";
-import defaultSource from "./default.onda";
+import defaultSource from "../../examples/basic/saw_filter_saturator.onda";
 
 const statusEl = document.querySelector("[data-status]");
 const editorEl = document.querySelector("[data-editor]");
@@ -451,6 +451,10 @@ async function smokeEditorBindings() {
     ? {
         declaration: source.indexOf("def soft_clip") + "def ".length,
         use: source.lastIndexOf("soft_clip("),
+      }
+    : source.includes("proc Saturator") ? {
+        declaration: source.indexOf("proc Saturator") + "proc ".length,
+        use: source.lastIndexOf("Saturator("),
       }
     : {
         declaration: source.indexOf("phase = 0.0"),

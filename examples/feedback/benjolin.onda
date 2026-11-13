@@ -136,14 +136,14 @@ params:
   output_signal_l = OutputSignal::Filtered
   output_signal_r = OutputSignal::Filtered
   space = 0.24 {0.0, 0.7}
-  level = 1.0 {0.0, 1.0}
+  level = 0.5 {0.0, 1.0}
 
 init:
   benjolin = Benjolin()
-  dc_l = std::filter::DCBlock()
-  dc_r = std::filter::DCBlock()
   echo_l = std::delay::Delay(delay_s = 0.173, feedback = 0.35, mix = 1.0)
   echo_r = std::delay::Delay(delay_s = 0.227, feedback = 0.35, mix = 1.0)
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
 
 sample:
   benjolin_l, benjolin_r = benjolin(
@@ -164,5 +164,5 @@ sample:
   dry_r = dc_r(benjolin_r)
   wet_l = echo_l(dry_l + dry_r * 0.2)
   wet_r = echo_r(dry_r + dry_l * 0.2)
-  out1 = tanh((dry_l + wet_l * space) * level)
-  out2 = tanh((dry_r + wet_r * space) * level)
+  out1 = tanh(dry_l + wet_l * space) * level
+  out2 = tanh(dry_r + wet_r * space) * level

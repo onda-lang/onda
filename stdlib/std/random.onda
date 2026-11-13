@@ -1,3 +1,6 @@
+# Seedable pseudorandom sequences for repeatable audio and control algorithms.
+# Provides random values in unipolar, bipolar, and custom ranges.
+
 namespace std::random:
   const RNG_MASK: i64 = 2147483647
   const RNG_MULT: i64 = 1103515245

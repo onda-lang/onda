@@ -1,0 +1,48 @@
+import std/pitch_shift
+import std/reverb
+
+proc Exercise<T>:
+  outs<T> 3
+
+  init:
+    shift = std::pitch_shift::DualWindow<T>(semitones = 0.0, window_s = 16.0 / SR)
+    reverb = std::reverb::Schroeder<8, 4>::Reverb<T>(decay_60db_s = 0.007, damping = 0.0)
+    semitones: T = 0.0
+    window_s: T = 16.0 / SR
+    decay_60db_s: T = 0.007
+    frame = 0
+
+  sample:
+    if frame == 11:
+      semitones = 12.0
+    if frame == 19:
+      window_s = 32.0 / SR
+    if frame == 37:
+      semitones = -12.0
+    if frame == 49:
+      semitones = 0.0
+    if frame == 61:
+      window_s = 20.0 / SR
+    if frame == 13:
+      decay_60db_s = 0.001
+    if frame == 31:
+      decay_60db_s = 0.0
+    if frame == 47:
+      decay_60db_s = 0.02
+    if frame == 79:
+      reverb.init(decay_60db_s = decay_60db_s, damping = 0.0)
+    signal = T(frame % 7 - 3) * T(0.125)
+    out1 = shift(signal, semitones = semitones, window_s = window_s)
+    out2, out3 = reverb(signal, -signal * T(0.5), decay_60db_s = decay_60db_s)
+    frame += 1
+
+outs<f64> 6
+init:
+  narrow = Exercise<f32>()
+  wide = Exercise<f64>()
+sample 2:
+  a, b, c = narrow()
+  out1 = f64(a)
+  out2 = f64(b)
+  out3 = f64(c)
+  out4, out5, out6 = wide()

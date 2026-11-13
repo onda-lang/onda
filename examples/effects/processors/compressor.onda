@@ -4,8 +4,8 @@ proc StereoCompressor:
   params:
     threshold_db = -18.0
     ratio = 4.0
-    attack_ms = 8.0
-    release_ms = 120.0
+    attack_lag_ms = 8.0
+    release_lag_ms = 120.0
     knee_db = 6.0
     makeup_db = 2.0
 
@@ -15,8 +15,8 @@ proc StereoCompressor:
   block:
     compressor.threshold_db = threshold_db
     compressor.ratio = ratio
-    compressor.attack_s = attack_ms * 0.001
-    compressor.release_s = release_ms * 0.001
+    compressor.attack_lag_s = attack_lag_ms * 0.001
+    compressor.release_lag_s = release_lag_ms * 0.001
     compressor.knee_db = knee_db
     compressor.makeup_db = makeup_db
 

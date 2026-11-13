@@ -25,16 +25,16 @@ params:
   cutoff = 520.0 {70.0, 7000.0, scale = log, unit = "Hz"}
   resonance = 3.8 {0.5, 9.0}
   env_amount = 5.5 {0.0, 12.0}
-  decay_s = 0.19 {0.04, 0.8, unit = "s"}
+  decay_s = 0.8 {0.04, 1.2, unit = "s"}
   drive = 2.4 {1.0, 7.0}
   echo = 0.24 {0.0, 0.65}
-  level = 1.0 {0.0, 1.0}
+  level = 0.6 {0.0, 1.0}
 
 init:
   root_frequency = std::pitch::note_to_hz(f32(root_note))
   saw = std::osc::Saw(freq = root_frequency)
   sub = std::osc::Square(freq = root_frequency * 0.5)
-  glide = std::smoothing::Lag(time_s = 0.003)
+  glide = std::smoothing::Lag(lag_s = 0.003)
   filter = std::filter::Svf(cutoff = cutoff, q = resonance)
   saturator = Drive(amount = drive)
   delay_l = std::delay::Delay(delay_s = 0.238, feedback = 0.38, mix = 1.0)
@@ -65,18 +65,20 @@ block:
         accent = 1.0
         if (Accents[step] == 1):
           accent = 1.38
+        amplitude.decay_s = decay_s
         amplitude.start(accent)
+        filter_sweep.decay_s = decay_s * 0.62
         filter_sweep.start(accent)
         if (Slides[step] == 1):
-          glide.time_s = 0.085
+          glide.lag_s = 0.085
         else:
-          glide.time_s = 0.003
+          glide.lag_s = 0.003
       step = (step + 1) % PatternLength
       pending_bang = false
 
     clock = (clock + 1) % step_samples
-    amp_level = amplitude(decay_s = decay_s)
-    filter_level = filter_sweep(decay_s = decay_s * 0.62)
+    amp_level = amplitude()
+    filter_level = filter_sweep()
 
     freq = glide(target_freq)
     saw.freq = freq
@@ -88,5 +90,5 @@ block:
     acid = saturator(filter(source) * amp_level, amount = drive)
     wet_l = delay_l(acid)
     wet_r = delay_r(acid)
-    out1 = tanh((acid + wet_l * echo) * level)
-    out2 = tanh((acid + wet_r * echo) * level)
+    out1 = tanh(acid + wet_l * echo) * level
+    out2 = tanh(acid + wet_r * echo) * level

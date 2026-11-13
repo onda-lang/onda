@@ -13,7 +13,7 @@ const Scale: i32[ScaleLength] = [0, 2, 5, 7, 9, 12, 14, 17, 21]
 
 proc Chime:
   params:
-    decay_s = 4.0
+    decay_s = 8.0
     shimmer = 0.7
 
   init:
@@ -25,30 +25,33 @@ proc Chime:
     envelope_2 = std::env::DecayEnv()
     envelope_3 = std::env::DecayEnv()
 
-  event strike(note: f32, velocity: f32):
+  event strike(note, velocity):
     freq = std::pitch::note_to_hz(note)
     oscillator_1.reset()
     oscillator_2.reset()
     oscillator_3.reset()
+    envelope_1.decay_s = decay_s
     envelope_1.start(velocity)
+    envelope_2.decay_s = decay_s * 0.58
     envelope_2.start(velocity * shimmer)
+    envelope_3.decay_s = decay_s * 0.31
     envelope_3.start(velocity * shimmer * shimmer)
 
   sample:
-    tone = oscillator_1(freq = freq) * envelope_1(decay_s = decay_s)
-    tone = tone + oscillator_2(freq = freq * 2.756) * envelope_2(decay_s = decay_s * 0.58) * 0.42
-    tone = tone + oscillator_3(freq = freq * 5.404) * envelope_3(decay_s = decay_s * 0.31) * 0.16
+    tone = oscillator_1(freq = freq) * envelope_1()
+    tone = tone + oscillator_2(freq = freq * 2.756) * envelope_2() * 0.42
+    tone = tone + oscillator_3(freq = freq * 5.404) * envelope_3() * 0.16
     out1 = tone
 
 params:
   auto_play = true
   root_note = 67 {48, 88}
   density = 0.48 {0.05, 1.0}
-  decay_s = 4.2 {0.8, 12.0, unit = "s"}
+  decay_s = 8.0 {0.8, 30.0, unit = "s"}
   shimmer = 0.72 {0.0, 1.0}
   wind = 0.14 {0.0, 0.5}
   space = 0.46 {0.0, 0.8}
-  level = 1.0 {0.0, 1.0}
+  level = 0.7 {0.0, 1.0}
 
 init:
   voices: Chime[VoiceCount] = Chime()
@@ -98,5 +101,5 @@ sample:
   breeze = air_lp(air_hp(air())) * wind
   wet_l = space_l(dry_l + dry_r * 0.16 + breeze * 0.18)
   wet_r = space_r(dry_r + dry_l * 0.16 - breeze * 0.18)
-  out1 = tanh((dry_l + breeze + wet_l * space) * level)
-  out2 = tanh((dry_r - breeze + wet_r * space) * level)
+  out1 = tanh(dry_l + breeze + wet_l * space) * level
+  out2 = tanh(dry_r - breeze + wet_r * space) * level

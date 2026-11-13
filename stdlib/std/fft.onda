@@ -1,3 +1,6 @@
+# Fourier transforms for working with audio in the frequency domain.
+# Includes real and complex transforms, windowing, and streaming analysis and resynthesis.
+
 import std/math
 import std/complex
 
@@ -164,13 +167,13 @@ namespace std::fft<N = 256>:
   const def _twiddle_real() -> f64[N / 2]:
     values: f64[N / 2]
     for i in 0..(N / 2):
-      values[i] = cos(TWO_PI * f64(i) / f64(N))
+      values[i] = cos(TWO_PI * f64(i) / N)
     return values
 
   const def _twiddle_imag() -> f64[N / 2]:
     values: f64[N / 2]
     for i in 0..(N / 2):
-      values[i] = sin(TWO_PI * f64(i) / f64(N))
+      values[i] = sin(TWO_PI * f64(i) / N)
     return values
 
   # Bits 0, 2, 4, ... distinguish powers of four from twice a power of four.
@@ -192,7 +195,7 @@ namespace std::fft<N = 256>:
         quarter = stage >> 2
         for power in 1..4:
           for k in 0..quarter:
-            phase = TWO_PI * f64(power * k) / f64(stage)
+            phase = TWO_PI * f64(power * k) / stage
             position = power * k
             value: f64 = 0.0
             if imaginary:

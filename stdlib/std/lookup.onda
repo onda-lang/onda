@@ -1,3 +1,6 @@
+# Indexed reads and writes for arrays and audio buffers.
+# Includes interpolated and wrapping reads for sample playback and wavetable lookup.
+
 import std/math
 
 namespace std::lookup:

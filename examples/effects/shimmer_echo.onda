@@ -6,7 +6,7 @@ import processors/effect_audition
 params:
   auto_play = true
   live_input = 0.0 {0.0, 1.0, step = 1.0}
-  time_s = 0.5 {0.01, 2.0, unit = "s"}
+  delay_s = 0.5 {0.01, 2.0, unit = "s"}
   feedback = 0.5 {0.0, 0.95}
   shimmer = 0.3 {0.0, 0.8}
   shift = 12.0 {0.0, 24.0, unit = "st"}
@@ -17,12 +17,12 @@ params:
 init:
   audition = EffectAudition()
   delay_l = std::delay<SR * 3>::Delay(
-    delay_s = time_s,
+    delay_s = delay_s,
     feedback = 0.0,
     mix = 1.0
   )
   delay_r = std::delay<SR * 3>::Delay(
-    delay_s = time_s * 1.317,
+    delay_s = delay_s * 1.317,
     feedback = 0.0,
     mix = 1.0
   )
@@ -41,8 +41,8 @@ sample:
   source_l = audition_l * (1.0 - live_input) + in1 * live_input
   source_r = audition_r * (1.0 - live_input) + in2 * live_input
 
-  wet_l = dc_l(delay_l(source_l + feedback_r, delay_s = time_s))
-  wet_r = dc_r(delay_r(source_r + feedback_l, delay_s = time_s * 1.317))
+  wet_l = dc_l(delay_l(source_l + feedback_r, delay_s = delay_s))
+  wet_r = dc_r(delay_r(source_r + feedback_l, delay_s = delay_s * 1.317))
   octave_l = shifter_l(wet_l, semitones = shift, window_s = window_s)
   octave_r = shifter_r(wet_r, semitones = shift, window_s = window_s)
   feedback_l = tanh(wet_l * feedback + octave_l * shimmer)

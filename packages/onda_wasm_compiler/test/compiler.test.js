@@ -929,6 +929,7 @@ test("runs the Onda LSP protocol inside frontend Wasm", async () => {
 test("resolves imported playground files in the Wasm language server", async () => {
   const compiler = await createCompiler();
   const files = [
+    ["processors/effect_audition.onda", "../../../examples/effects/processors/effect_audition.onda"],
     ["processors/wavefolder.onda", "../../../examples/effects/processors/wavefolder.onda"],
     ["wavefolder.onda", "../../../examples/effects/wavefolder.onda"],
   ];

@@ -1,3 +1,6 @@
+# Periodic signal generators for synthesis and modulation.
+# Provides common oscillator waveforms and phase ramps at audio or block rate.
+
 namespace std::osc:
   # Sine and KSine share an 8,192-point f32 wavetable with linear interpolation.
   # Both use a wrapping 32-bit phase and f32 parameters and outputs.
@@ -41,7 +44,7 @@ namespace std::osc:
     params:
       freq = 440.0 => update_freq
       amp = 1.0
-      phase_offset = 0.0 => update_phase_offset
+      phase_offset_rad = 0.0 => update_phase_offset
 
     init:
       phase = 0
@@ -52,7 +55,7 @@ namespace std::osc:
       incr = _sine_phase(freq / SR)
 
     def update_phase_offset():
-      offset = _sine_radians(phase_offset)
+      offset = _sine_radians(phase_offset_rad)
 
     event reset(phase_cycles = 0.0):
       phase = _sine_phase(phase_cycles)
@@ -65,7 +68,7 @@ namespace std::osc:
     params:
       freq = 1.0 => update_freq
       amp = 1.0
-      phase_offset = 0.0 => update_phase_offset
+      phase_offset_rad = 0.0 => update_phase_offset
 
     init:
       phase = 0
@@ -76,7 +79,7 @@ namespace std::osc:
       incr = _sine_phase(freq * BS / SR)
 
     def update_phase_offset():
-      offset = _sine_radians(phase_offset)
+      offset = _sine_radians(phase_offset_rad)
 
     event reset(phase_cycles = 0.0):
       phase = _sine_phase(phase_cycles)
@@ -99,13 +102,13 @@ namespace std::osc:
       incr = freq / SR
 
     event reset(phase_cycles: T = 0.0):
-      phase = wrap(phase_cycles, T(0.0), T(1.0))
+      phase = wrap(phase_cycles, 0.0, T(1.0))
 
     sample:
       out1 = phase
       phase += incr
       if phase >= 1.0 || phase < 0.0:
-        phase = wrap(phase, T(0.0), T(1.0))
+        phase = wrap(phase, 0.0, T(1.0))
 
 
   def poly_blep<T>(t: T, dt: T) -> T:
@@ -127,12 +130,12 @@ namespace std::osc:
     if dt <= 0.0:
       return T(0.0)
     if t < dt:
-      x = T(1.0) - t / dt
-    elif t > T(1.0) - dt:
-      x = T(1.0) + (t - T(1.0)) / dt
+      x = 1.0 - t / dt
+    elif t > 1.0 - dt:
+      x = 1.0 + (t - 1.0) / dt
     else:
       return T(0.0)
-    return dt * x * x * x / T(3.0)
+    return dt * x * x * x / 3.0
 
   proc Saw<T>:
     outs<T> 1
@@ -257,9 +260,9 @@ namespace std::osc:
 
     sample:
       phase = phasor()
-      opposite = phase - T(0.5)
+      opposite = phase - 0.5
       if opposite < 0.0:
-        opposite += T(1.0)
-      base = T(1.0) - T(4.0) * abs(phase - T(0.5))
+        opposite += 1.0
+      base = 1.0 - 4.0 * abs(phase - 0.5)
       correction = _poly_blamp<T>(phase, dt) - _poly_blamp<T>(opposite, dt)
-      out1 = (base + T(4.0) * correction) * amp
+      out1 = (base + 4.0 * correction) * amp

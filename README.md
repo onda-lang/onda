@@ -19,6 +19,7 @@ params:
   cutoff = 1200.0 {40.0, 12000.0}
   resonance = 1.0 {0.1, 8.0}
   drive = 1.0 {1.0, 10.0}
+  level = 0.7 {0.0, 1.0}
 
 def soft_clip(x):
   return tanh(x)
@@ -40,7 +41,7 @@ block:
 
   sample:
     tone = osc(freq = freq)
-    out1 = saturator(filter(tone), amount = drive)
+    out1 = saturator(filter(tone), amount = drive) * level
 ```
 
 Take a look at the `examples/` folder for more usage examples.

@@ -93,8 +93,12 @@ mod processor_storage;
 mod processor_views;
 #[path = "examples_suite/slices_and_ports.rs"]
 mod slices_and_ports;
+#[path = "examples_suite/spectral_effects.rs"]
+mod spectral_effects;
 #[path = "examples_suite/stdlib_dsp_regressions.rs"]
 mod stdlib_dsp_regressions;
+#[path = "examples_suite/stdlib_envelopes.rs"]
+mod stdlib_envelopes;
 #[path = "examples_suite/stdlib_optimizations.rs"]
 mod stdlib_optimizations;
 #[path = "examples_suite/stdlib_reverb.rs"]

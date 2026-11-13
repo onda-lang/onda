@@ -126,7 +126,15 @@ fn process_interleaved(
         out_buffers.push(bytes);
     }
 
-    onda_runtime::process_checked_segment(instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none()).map_err(Diagnostic::from).and_then(onda_codegen_llvm::check_execution_status)?;
+    onda_runtime::process_checked_segment(
+        instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .map_err(Diagnostic::from)
+    .and_then(onda_codegen_llvm::check_execution_status)?;
 
     for (idx, desc) in out_descs.iter().copied().enumerate() {
         let bytes = &out_buffers[idx];
@@ -322,4 +330,37 @@ fn decode_primitive_as_f32(ty: PrimitiveType, src: &[u8]) -> Result<f32, Diagnos
             Ok(if b == 0 { 0.0 } else { 1.0 })
         }
     }
+}
+
+fn bind_f64_outputs(instance: &mut Instance, frames: usize) -> Vec<Vec<f64>> {
+    let mut outputs = vec![vec![0.0_f64; frames]; instance.output_count()];
+    for (channel, values) in outputs.iter_mut().enumerate() {
+        assert_eq!(instance.output_type(channel).as_deref(), Some("f64"));
+        bind_output(instance, channel, values.as_mut_ptr().cast(), frames * 8).unwrap();
+    }
+    outputs
+}
+
+fn render_f64(source: &str, sample_rate: f32, frames: usize) -> Vec<Vec<f64>> {
+    let (mut instance, inputs, _) = compile_instance_with_options(
+        source,
+        frames,
+        CompileOptions {
+            sample_rate,
+            block_size: frames,
+            fast_math: false,
+            opt_level: TargetOptLevel::O3,
+        },
+    );
+    assert_eq!(inputs, 0);
+    let output = bind_f64_outputs(&mut instance, frames);
+    process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .unwrap();
+    output
 }

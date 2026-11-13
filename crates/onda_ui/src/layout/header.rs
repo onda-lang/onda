@@ -503,7 +503,9 @@ pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             ],
             crate::fonts::READING_SIZE,
             crate::theme::text(if ui.light { 0xb53333 } else { 0xff7e7e }),
-        );
+        )
+        .style
+        .centered = true;
     }
     if !selects.is_empty() || fast_math {
         let fast_width = if fast_math {

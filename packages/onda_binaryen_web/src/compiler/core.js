@@ -118,6 +118,16 @@ export class MirCompilerCore {
               this.module.runPasses(["vacuum"]);
             }
           }
+          // Inlining and local reuse can keep cold processor-field addresses
+          // live across the sample path. Separate definitions before pushing
+          // that setup into the branches that use it, then coalesce again.
+          this.module.runPasses([
+            "ssa-nomerge",
+            "code-pushing",
+            "simplify-locals",
+            "coalesce-locals",
+            "vacuum",
+          ]);
         } finally {
           binaryen.setOptimizeLevel(previousOptimizeLevel);
           binaryen.setShrinkLevel(previousShrinkLevel);
@@ -1997,6 +2007,7 @@ export class MirCompilerCore {
       generatedLocalBase,
       generatedLocals: [],
       entryInitializers: [],
+      stateAddressCache: new Map(),
       bufferDescriptorCache: new Map(),
       audioChannelPointerCache: new Map(),
       breakLabels: [],

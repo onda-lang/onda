@@ -8,7 +8,7 @@ import std/smoothing
 outs<f64> 1
 init:
   ramp = std::smoothing::Ramp<{width}>(
-    time_s = {width}(4.0) / {width}(SR),
+    duration_s = {width}(4.0) / {width}(SR),
     shape = std::smoothing::RampShape::{shape}
   )
   frame = 0
@@ -51,6 +51,68 @@ fn render_schedule(
         rendered.extend_from_slice(&output);
     }
     rendered
+}
+
+#[test]
+fn lag_ud_and_slew_reset_the_value_without_changing_the_response_rates() {
+    for width in ["f32", "f64"] {
+        for (processor, params, rise, fall) in [
+            (
+                "LagUD",
+                "rise_lag_s = 0.004, fall_lag_s = 0.002",
+                [
+                    1.0 - 0.25 * (-0.25_f64).exp(),
+                    1.0 - 0.25 * (-0.5_f64).exp(),
+                ],
+                [-1.0 + 0.5 * (-0.5_f64).exp(), -1.0 + 0.5 * (-1.0_f64).exp()],
+            ),
+            (
+                "Slew",
+                "rise_per_s = 125.0, fall_per_s = 250.0",
+                [0.875, 1.0],
+                [-0.75, -1.0],
+            ),
+        ] {
+            let output = render(
+                &format!(
+                    r#"
+import std/smoothing
+outs<f64> 1
+init:
+  smooth = std::smoothing::{processor}<{width}>({params})
+  smooth.reset(0.75)
+  frame = 0
+sample:
+  target: {width} = 0.75
+  if frame >= 2:
+    target = 1.0
+  if frame == 4:
+    smooth.reset(-0.5)
+  if frame >= 4:
+    target = -0.5
+  if frame >= 6:
+    target = -1.0
+  if frame == 8:
+    smooth.reset()
+  if frame >= 8:
+    target = 0.0
+  out1 = f64(smooth(target))
+  frame += 1
+"#
+                ),
+                10,
+            );
+            let expected = [
+                0.75, 0.75, rise[0], rise[1], -0.5, -0.5, fall[0], fall[1], 0.0, 0.0,
+            ];
+            for (actual, expected) in output.into_iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() < 1e-7,
+                    "{processor}<{width}>: {actual} != {expected}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -113,7 +175,7 @@ fn durations_round_up_to_samples_and_short_or_invalid_durations_update_directly(
                         width,
                         shape,
                         &format!(
-                            "  ramp.time_s = {width}({seconds})\n  out1 = f64(ramp({width}(1.0)))"
+                            "  ramp.duration_s = {width}({seconds})\n  out1 = f64(ramp({width}(1.0)))"
                         ),
                     ),
                     3,
@@ -124,7 +186,9 @@ fn durations_round_up_to_samples_and_short_or_invalid_durations_update_directly(
                 &source(
                     width,
                     shape,
-                    &format!("  ramp.time_s = {width}(0.00425)\n  out1 = f64(ramp({width}(1.0)))"),
+                    &format!(
+                        "  ramp.duration_s = {width}(0.00425)\n  out1 = f64(ramp({width}(1.0)))"
+                    ),
                 ),
                 7,
             );
@@ -153,7 +217,7 @@ fn duration_and_shape_changes_apply_to_the_next_target() {
                 "Linear",
                 &format!(
                     r#"  if frame == 1:
-    ramp.time_s = {width}(8.0) / {width}(SR)
+    ramp.duration_s = {width}(8.0) / {width}(SR)
     ramp.shape = std::smoothing::RampShape::SCurve
   target: {width} = 1.0
   if frame >= 5:
@@ -332,7 +396,7 @@ import std/smoothing
 proc Voice:
   delegate progress(value: f64)
   init:
-    ramp = std::smoothing::Ramp<{width}>(time_s = 0.004, shape = std::smoothing::RampShape::{shape})
+    ramp = std::smoothing::Ramp<{width}>(duration_s = 0.004, shape = std::smoothing::RampShape::{shape})
   sample 2:
     progress(f64(ramp({width}(1.0))))
     out1 = 0.0
@@ -362,7 +426,7 @@ import std/smoothing
 params:
   amplitude = 0.5 {0.0, 1.0}
 init:
-  amplitude_ramp = std::smoothing::Ramp(time_s = 0.02, shape = std::smoothing::RampShape::SCurve)
+  amplitude_ramp = std::smoothing::Ramp(duration_s = 0.02, shape = std::smoothing::RampShape::SCurve)
   amplitude_ramp.reset(amplitude)
 sample:
   out1 = in1 * amplitude_ramp(amplitude)
@@ -386,4 +450,151 @@ sample:
     }
     process_interleaved(&mut instance, &input, &mut output, 64).unwrap();
     assert_eq!(output, vec![1.0_f32; 64]);
+}
+
+#[test]
+fn smoothed_gains_start_at_requested_gain_then_smooth_changes_in_amplitude() {
+    for width in ["f32", "f64"] {
+        let source = format!(
+            r#"
+import std/gain
+outs<f64> 2
+init:
+  linear = std::gain::Smoothed<{width}>(gain = 0.25, lag_s = 0.004)
+  decibels = std::gain::SmoothedDb<{width}>(db = -6.0, lag_s = 0.004)
+  frame = 0
+sample:
+  if frame == 2:
+    linear.gain = 0.75
+    decibels.db = 0.0
+  out1 = f64(linear({width}(1.0)))
+  out2 = f64(decibels({width}(1.0)))
+  frame += 1
+"#
+        );
+        let output = render_f64(&source, 1000.0, 10);
+
+        for i in 0..10 {
+            let remaining = if i < 2 {
+                1.0
+            } else {
+                (-((i - 1) as f64) / 4.0).exp()
+            };
+            assert_close_f64(output[0][i], 0.75 + (0.25 - 0.75) * remaining);
+            assert_close_f64(
+                output[1][i],
+                1.0 + (10.0_f64.powf(-6.0 / 20.0) - 1.0) * remaining,
+            );
+        }
+    }
+}
+
+#[test]
+fn lag_time_updates_handle_instant_and_fast_responses_after_reset() {
+    for width in ["f32", "f64"] {
+        let source = format!(
+            r#"
+import std/smoothing
+outs<f64> 2
+init:
+  lag = std::smoothing::Lag<{width}>()
+  asymmetric = std::smoothing::LagUD<{width}>()
+  times: {width}[6] = [0.0, -1.0, sqrt({width}(-1.0)), {width}(1.0) / {width}(0.0), 0.000001, 0.00002]
+  frame = 0
+sample:
+  start: {width} = 100000000000000000000.0
+  target: {width} = 0.00000000000000000001
+  if frame >= 6:
+    start = -start
+    target = -target
+  lag.lag_s = times[frame % 6]
+  asymmetric.rise_lag_s = times[frame % 6]
+  asymmetric.fall_lag_s = times[frame % 6]
+  lag.reset(start)
+  asymmetric.reset(start)
+  out1 = f64(lag(target))
+  out2 = f64(asymmetric(target))
+  frame += 1
+"#
+        );
+        let output = render_f64(&source, 1000.0, 12);
+        let adapt = |value: f64| {
+            if width == "f32" {
+                f64::from(value as f32)
+            } else {
+                value
+            }
+        };
+        for frame in 0..12 {
+            let sign = if frame >= 6 { -1.0 } else { 1.0 };
+            let target = sign * adapt(1e-20);
+            for channel in &output {
+                if frame % 6 < 5 {
+                    assert_eq!(channel[frame], target, "{width}, frame {frame}");
+                } else {
+                    let pole = (-1.0 / (1000.0 * adapt(0.00002))).exp();
+                    let expected = adapt(target + (sign * adapt(1e20) - target) * pole);
+                    assert!((channel[frame] - expected).abs() < expected.abs() * 2e-6);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn long_ramps_follow_each_curve_and_finish_exactly() {
+    let samples = 32_000;
+    for width in ["f32", "f64"] {
+        for (shape, curve, initial, target) in [
+            ("Linear", 0.0, 1.0, 0.0),
+            ("SCurve", 0.0, 1.0, 0.0),
+            ("Exponential", -60.0, 1.0, 0.0),
+            ("Exponential", 60.0, 0.0, 1.0),
+        ] {
+            let output = render(
+                &format!(
+                    r#"
+import std/smoothing
+outs<f64> 1
+init:
+  ramp = std::smoothing::Ramp<{width}>(duration_s = 32.0,
+    shape = std::smoothing::RampShape::{shape}, curve = {curve})
+  ramp.reset({initial})
+sample:
+  out1 = f64(ramp({width}({target})))
+"#
+                ),
+                samples + 2,
+            );
+            let tolerance = if width == "f32" {
+                2e-6
+            } else if shape == "Exponential" {
+                2e-8
+            } else {
+                2e-14
+            };
+            for (index, &actual) in output[..samples - 1].iter().enumerate() {
+                let phase = (index + 1) as f64 / samples as f64;
+                let remaining = (samples - index - 1) as f64 / samples as f64;
+                let expected = match shape {
+                    "Linear" => remaining,
+                    "SCurve" => remaining * remaining * (3.0 - 2.0 * remaining),
+                    _ if curve < 0.0 => {
+                        (curve * phase).exp() * -(curve * remaining).exp_m1() / -curve.exp_m1()
+                    }
+                    _ => (curve * phase).exp_m1() / curve.exp_m1(),
+                };
+                assert!(
+                    (actual - expected).abs() <= expected * tolerance,
+                    "{width}, {shape}, curve {curve}, sample {index}: {actual} != {expected}"
+                );
+            }
+            assert!(output.windows(2).all(|pair| if initial > target {
+                pair[0] >= pair[1]
+            } else {
+                pair[0] <= pair[1]
+            }));
+            assert_eq!(&output[samples - 1..], &[target, target, target]);
+        }
+    }
 }

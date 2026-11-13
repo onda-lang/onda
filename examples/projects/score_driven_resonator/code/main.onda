@@ -8,7 +8,7 @@ const VoiceCount = 6
 
 proc GlassVoice:
   params:
-    decay_s = 2.0
+    decay_s = 8.0
     hardness = 0.6
 
   init:
@@ -20,19 +20,22 @@ proc GlassVoice:
     envelope_2 = std::env::DecayEnv()
     envelope_3 = std::env::DecayEnv()
 
-  event strike(note: f32, velocity: f32):
+  event strike(note, velocity):
     frequency = std::pitch::note_to_hz(note)
     oscillator_1.reset()
     oscillator_2.reset()
     oscillator_3.reset()
+    envelope_1.decay_s = decay_s
     envelope_1.start(velocity)
+    envelope_2.decay_s = decay_s * 0.47
     envelope_2.start(velocity * hardness)
+    envelope_3.decay_s = decay_s * 0.19
     envelope_3.start(velocity * hardness * hardness)
 
   sample:
-    tone = oscillator_1(freq = frequency) * envelope_1(decay_s = decay_s)
-    tone = tone + oscillator_2(freq = frequency * 2.706) * envelope_2(decay_s = decay_s * 0.47) * 0.46
-    tone = tone + oscillator_3(freq = frequency * 5.813) * envelope_3(decay_s = decay_s * 0.19) * 0.18
+    tone = oscillator_1(freq = frequency) * envelope_1()
+    tone = tone + oscillator_2(freq = frequency * 2.706) * envelope_2() * 0.46
+    tone = tone + oscillator_3(freq = frequency * 5.813) * envelope_3() * 0.18
     out1 = tone
 
 buffers:
@@ -45,10 +48,10 @@ params:
   auto_play = true
   root_note = 55 {36, 76}
   bpm = 76.0 {35.0, 160.0, unit = "BPM"}
-  decay_s = 2.0 {0.1, 10.0, unit = "s"}
+  decay_s = 8.0 {0.1, 10.0, unit = "s"}
   hardness = 0.7 {0.0, 1.0}
   space = 0.5 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.8 {0.0, 1.0}
 
 init:
   voices: GlassVoice[VoiceCount] = GlassVoice()
@@ -96,5 +99,5 @@ block:
 
     wet_l = delay_l(dry_l + dry_r * 0.2)
     wet_r = delay_r(dry_r + dry_l * 0.2)
-    out1 = tanh((dry_l + wet_l * space) * level)
-    out2 = tanh((dry_r + wet_r * space) * level)
+    out1 = tanh(dry_l + wet_l * space) * level
+    out2 = tanh(dry_r + wet_r * space) * level

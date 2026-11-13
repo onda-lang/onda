@@ -1529,8 +1529,8 @@ sample:
     process_interleaved(&mut instance, &[], &mut output, frames)
         .expect("processing after restart should succeed");
 
-    let coefficient = (-1.0_f32 / 48_000.0).exp();
-    assert_near(output[0], 0.25 * coefficient, 1e-6);
+    let coefficient = 1.0 - (-4.0_f64 / 48_000.0).exp_m1() / (-4.0_f64).exp_m1();
+    assert_near(output[0], (0.25 * coefficient) as f32, 1e-6);
 }
 
 #[test]
@@ -3950,8 +3950,8 @@ init:
 sample:
   reverb(impulse, impulse)
   impulse = 0.0
-  out1 = f32(std::reverb::Schroeder<2048, 1024>::CombLines) + reverb.out1
-  out2 = f32(std::reverb::Schroeder<2048, 1024>::AllpassLines) + reverb.out2
+  out1 = reverb.out1
+  out2 = reverb.out2
 "#;
     let frames = 1_400;
     let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
@@ -3962,14 +3962,14 @@ sample:
     let mut output = vec![0.0_f32; frames * 2];
     process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
 
-    assert_near(output[0], 8.0, 1e-6);
-    assert_near(output[1], 4.0, 1e-6);
+    assert_near(output[0], 0.0, 1e-6);
+    assert_near(output[1], 0.0, 1e-6);
     assert!(output.iter().all(|sample| sample.is_finite()));
     assert!(output
         .as_chunks::<2>()
         .0
         .iter()
-        .any(|frame| { (frame[0] - 8.0).abs() > 1e-6 || (frame[1] - 4.0).abs() > 1e-6 }));
+        .any(|frame| { frame[0].abs() > 1e-6 || frame[1].abs() > 1e-6 }));
 }
 
 #[test]

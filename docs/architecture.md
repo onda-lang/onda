@@ -780,8 +780,8 @@ and invalidation in detail. The main opportunities exposed to backends are:
   invalidate other copy facts; no loop-carried copy is assumed. The first iteration retains its original
   comparisons. LLVM's ordinary inlining and dependence analysis decide whether the remaining loop
   can vectorize. Binaryen keeps the original schedule.
-- The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
-  `DecayEnv`, and `Pan3db` cache results only while their source parameters remain equal, with
+- The standard library keeps selected coefficient derivations at their update rate. `OnePole`
+  and `Pan3db` cache results only while their source parameters remain equal, with
   explicit validity state for initialization and recomputation at each changed assignment.
   NaNs recompute because they do not compare equal. These are processor-owned caches, not a
   compiler-wide promise to skip user parameter hooks; events, segments, and snapshots retain
@@ -805,6 +805,10 @@ and invalidation in detail. The main opportunities exposed to backends are:
   Runtime guards admit disjoint or exactly in-place audio buffers; partial overlap uses scalar code.
   Invariant reads include state and interface controls, whose MIR place base is `param`.
   Carried state, calls, mixed precision and unsupported control flow retain scalar lowering.
+  Fixed instance-state addresses are prepared once per function invocation; dynamic array
+  coordinates and state-value reads retain their ordinary execution timing.
+  After inlining, separate temporary definitions before code pushing so cold per-instance
+  address setup can move into its branches, then coalesce the remaining locals again.
 
 ## Browser build and verification
 

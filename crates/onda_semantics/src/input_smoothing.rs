@@ -14,7 +14,7 @@ pub(crate) fn templates(program: &Program) -> Vec<ProcessorDef> {
             Block::Proc(proc)
                 if matches!(
                     proc.name.as_str(),
-                    "std::smoothing::Ramp" | "std::smoothing::Lag"
+                    "std::smoothing::_LinearRamp" | "std::smoothing::Lag"
                 ) =>
             {
                 Some(proc.clone())
@@ -116,7 +116,7 @@ fn prepare_ports(
         }
         let kind = smoothing.kind;
         let processor = match kind {
-            InputSmoothingKind::Ramp => "std::smoothing::Ramp",
+            InputSmoothingKind::Ramp => "std::smoothing::_LinearRamp",
             InputSmoothingKind::Lag => "std::smoothing::Lag",
         };
         let template = smoothers
@@ -155,7 +155,13 @@ fn prepare_ports(
                     name: processor.clone(),
                     type_args: Vec::new(),
                     args: vec![CallArg {
-                        name: Some("time_s".to_owned()),
+                        name: Some(
+                            match kind {
+                                InputSmoothingKind::Ramp => "duration_s",
+                                InputSmoothingKind::Lag => "lag_s",
+                            }
+                            .to_owned(),
+                        ),
                         expr: typed_const_expr(time),
                     }],
                 },

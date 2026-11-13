@@ -1,0 +1,82 @@
+import std/fft
+
+const SpectralDelayCapacityS = 1.0
+const SpectralDelayStereoHops = 7
+
+namespace SpectralDelay<N = 1024, HistoryFrames = i32(ceil(SpectralDelayCapacityS * SR * 2 / N)) + SpectralDelayStereoHops + 1>:
+  assert(HistoryFrames > SpectralDelayStereoHops + 1)
+
+  proc Engine:
+    params:
+      delay_s = 0.34
+      slope = 0.78
+      feedback = 0.42
+      stereo = 0.68
+      lag_s = 0.05 => update_lag
+
+    init:
+      analysis = std::fft<N>::RealFFT()
+      synthesis_l = std::fft<N>::RealIFFT()
+      synthesis_r = std::fft<N>::RealIFFT()
+      history_re: f32[HistoryFrames * N]
+      history_im: f32[HistoryFrames * N]
+      spectrum_re_l: f32[N]
+      spectrum_im_l: f32[N]
+      spectrum_re_r: f32[N]
+      spectrum_im_r: f32[N]
+      hop_size = N >> 1
+      maximum_delay = HistoryFrames - SpectralDelayStereoHops - 1
+      smoothed_delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
+      lag_coefficient = 0.0
+      write_frame = 0
+
+    def update_lag():
+      if lag_s <= 0.0:
+        lag_coefficient = 0.0
+      else:
+        lag_coefficient = exp(-1.0 / (lag_s * SR))
+
+    block:
+      delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
+      spectral_slope = clamp(slope, 0.0, 1.0)
+      regeneration = clamp(feedback, 0.0, 0.92)
+      stereo_spread = clamp(stereo, 0.0, 1.0)
+
+      sample:
+        smoothed_delay_hops = delay_hops + (smoothed_delay_hops - delay_hops) * lag_coefficient
+        if analysis.push(in1):
+          half = N >> 1
+          write_base = write_frame * N
+
+          for k in 0..(half + 1):
+            position = f32(k) / half
+            delay_shape = 1.0 - spectral_slope + position * spectral_slope
+            left_delay = max(i32(smoothed_delay_hops * delay_shape + 0.5), 1)
+            stereo_offset = i32(position * stereo_spread * SpectralDelayStereoHops + 0.5)
+            right_delay = left_delay + stereo_offset
+
+            left_frame = (write_frame - left_delay + HistoryFrames) % HistoryFrames
+            right_frame = (write_frame - right_delay + HistoryFrames) % HistoryFrames
+            left_base = left_frame * N
+            right_base = right_frame * N
+
+            delayed_re_l = history_re[left_base + k]
+            delayed_im_l = history_im[left_base + k]
+            delayed_re_r = history_re[right_base + k]
+            delayed_im_r = history_im[right_base + k]
+            feedback_re = (delayed_re_l + delayed_re_r) * 0.5
+            feedback_im = (delayed_im_l + delayed_im_r) * 0.5
+
+            history_re[write_base + k] = analysis.real(k) + feedback_re * regeneration
+            history_im[write_base + k] = analysis.imag(k) + feedback_im * regeneration
+            spectrum_re_l[k] = delayed_re_l
+            spectrum_im_l[k] = delayed_im_l
+            spectrum_re_r[k] = delayed_re_r
+            spectrum_im_r[k] = delayed_im_r
+
+          synthesis_l.load_complex(spectrum_re_l, spectrum_im_l)
+          synthesis_r.load_complex(spectrum_re_r, spectrum_im_r)
+          write_frame = (write_frame + 1) % HistoryFrames
+
+        out1 = synthesis_l.tick()
+        out2 = synthesis_r.tick()

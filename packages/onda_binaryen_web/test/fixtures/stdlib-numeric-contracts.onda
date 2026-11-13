@@ -1,0 +1,62 @@
+import std/env
+import std/dynamics
+import std/gain
+import std/pitch
+
+proc Exercise<T>:
+  outs<T> 8
+  init:
+    lag = std::smoothing::Lag<T>(lag_s = 1000.0)
+    peak = std::dynamics::PeakFollower<T>(attack_lag_s = 1000.0)
+    rms = std::dynamics::RmsFollower<T>(attack_lag_s = 1000.0)
+    decay = std::env::Decay<T>(decay_60db_s = 10000.0)
+    gain = std::gain::Smoothed<T>(gain = 0.25, lag_s = 0.004)
+    db = std::gain::SmoothedDb<T>(db = -6.0, lag_s = 0.004)
+    fast = std::smoothing::Lag<T>(lag_s = 1.0 / (50.0 * SR))
+    instant = std::smoothing::LagUD<T>(rise_lag_s = 0.0, fall_lag_s = 0.0)
+    fast.reset(100000000000000000000.0)
+    instant.reset(100000000000000000000.0)
+    frame = 0
+  sample 4:
+    impulse: T = 0.0
+    if frame == 0:
+      impulse = 1.0
+    if frame == 8:
+      gain.gain = 0.75
+      db.db = 0.0
+    # Amplify tiny changes so backend comparisons detect frozen accumulators.
+    out1 = lag(T(1.0)) * 100000.0
+    out2 = peak(T(1.0)) * 100000.0
+    out3 = rms(T(1.0)) * 100.0
+    out4 = (1.0 - decay(impulse)) * 100000.0
+    out5 = gain(T(1.0))
+    out6 = db(T(1.0))
+    out7 = fast(T(0.0))
+    out8 = instant(T(0.00000000000000000001)) * 100000000000000000000.0
+    frame += 1
+
+outs 18
+init:
+  narrow = Exercise<f32>()
+  wide = Exercise<f64>()
+sample:
+  a, b, c, d, e, f, fast_tail, direct = narrow()
+  g, h, i, j, k, l, fast_tail64, direct64 = wide()
+  out1 = a
+  out2 = b
+  out3 = c
+  out4 = d
+  out5 = e
+  out6 = f
+  out7 = f32(g)
+  out8 = f32(h)
+  out9 = f32(i)
+  out10 = f32(j)
+  out11 = f32(k)
+  out12 = f32(l)
+  out13 = std::levels::gain_to_db(2) + std::pitch::hz_to_note(660)
+  out14 = f32(std::levels::gain_to_db(i64(0)) + std::pitch::hz_to_note(i64(660), i64(432)))
+  out15 = fast_tail
+  out16 = direct
+  out17 = f32(fast_tail64)
+  out18 = f32(direct64)

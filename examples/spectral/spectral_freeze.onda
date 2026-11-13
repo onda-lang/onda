@@ -1,10 +1,9 @@
 import std/delay
-import std/filter
-import std/osc
-import std/pitch
 import processors/spectral_freeze
+include "../effects/processors/effect_audition.onda"
 
 params:
+  auto_play = true
   live_input = false
   freeze = true
   transpose = 0 {-24, 24, unit = "st"}
@@ -16,12 +15,15 @@ params:
 
 init:
   freezer = SpectralFreeze<1024>::Engine()
-  saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0), amp = 0.16)
-  filter = std::filter::OnePole(cutoff = 2100.0)
+  audition = EffectAudition()
   space_l = std::delay::Delay(delay_s = 0.31, feedback = 0.34, mix = 1.0)
   space_r = std::delay::Delay(delay_s = 0.43, feedback = 0.31, mix = 1.0)
 
 event recapture():
+  freezer.recapture()
+
+event bang():
+  audition.bang()
   freezer.recapture()
 
 block:
@@ -30,12 +32,10 @@ block:
   freezer.smear = smear
 
   sample:
-    dry_l = in1
-    dry_r = in2
-    if !live_input:
-      source = filter(saw())
-      dry_l = source
-      dry_r = source
+    dry_l, dry_r = audition(auto_play = auto_play)
+    if live_input:
+      dry_l = in1
+      dry_r = in2
 
     mono = (dry_l + dry_r) * 0.5
     frozen_out_l, frozen_out_r = freezer(mono)

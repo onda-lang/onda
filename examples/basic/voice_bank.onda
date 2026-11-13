@@ -8,6 +8,7 @@ params:
   offsets: f32[VoiceCount] = [-3.0, -1.0, 1.0, 3.0] {-100, 100, unit = "Hz"}
   levels: f32[VoiceCount] = 1.0 {0, 1}
   enabled: bool[VoiceCount] = true
+  level = 1.0 {0.0, 1.0}
 
 init:
   voices: std::osc::Sine[VoiceCount]
@@ -18,4 +19,4 @@ sample:
     tone = voices[i](freq = max(1.0, fundamental + offsets[i]))
     if enabled[i]:
       mixed = mixed + tone * levels[i]
-  out1 = mixed * 0.2
+  out1 = mixed * 0.2 * level

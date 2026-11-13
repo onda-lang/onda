@@ -1,3 +1,6 @@
+# Common utilities loaded automatically into every Onda program.
+# Makes math, sample lookup, random generation, level conversion, and pitch helpers available.
+
 import std/math
 import std/lookup
 import std/random

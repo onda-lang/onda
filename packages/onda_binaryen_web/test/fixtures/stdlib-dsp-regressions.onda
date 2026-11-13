@@ -9,7 +9,7 @@ init:
   triangle = std::osc::Triangle<f64>(freq = 4800.0)
   saw = std::osc::Saw<f64>(freq = -4800.0)
   adsr = std::env::ADSR(attack_s = 0.0, decay_s = 0.0, sustain = 0.5, release_s = 8.0 / SR)
-  decay = std::env::DecayEnv(end_level = 1.0)
+  decay = std::env::DecayEnv(decay_s = 0.0)
   low = std::filter::Biquad()
   high = std::filter::Biquad()
   low_coefficients = std::filter::design_lowpass<f32>(1.0, 0.707107)

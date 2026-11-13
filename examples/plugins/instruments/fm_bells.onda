@@ -28,7 +28,7 @@ proc BellVoice:
     modulator = std::osc::Sine()
     amplitude = std::env::ADSR()
     modulation = std::env::DecayEnv()
-    strike_envelope = std::env::DecayEnv(decay_s = 0.024)
+    strike_envelope = std::env::DecayEnv(decay_s = 0.1)
     noise = std::noise::White()
     strike_filter = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass)
 
@@ -45,7 +45,7 @@ proc BellVoice:
     amplitude.release_s = release_s
 
   event trigger(key: i32, velocity_value):
-    note = f32(key)
+    note = key
     velocity = velocity_value
     update_pitch()
     update_envelope()
@@ -53,6 +53,7 @@ proc BellVoice:
     partial.reset(0.17)
     modulator.reset()
     amplitude.start()
+    modulation.decay_s = decay_s * (2.45 / 1.8)
     modulation.start(1.0)
     strike_envelope.start(velocity)
 
@@ -65,7 +66,6 @@ proc BellVoice:
   block:
     update_envelope()
     update_pitch()
-    modulation.decay_s = decay_s * 0.32
     strike_filter.cutoff = clamp(1800.0 + brightness * 9000.0, 30.0, SR * 0.45)
 
     sample:
@@ -73,8 +73,8 @@ proc BellVoice:
       shimmer = modulation()
       index = shimmer * brightness * (3.0 + velocity * 7.0)
       phase_modulation = modulator() * index
-      fundamental = carrier(phase_offset = phase_modulation)
-      overtone = partial(phase_offset = phase_modulation * 0.31)
+      fundamental = carrier(phase_offset_rad = phase_modulation)
+      overtone = partial(phase_offset_rad = phase_modulation * 0.31)
       overtone_level = brightness * (0.12 + shimmer * 0.24)
       strike_noise = strike_filter(noise()) * strike_envelope() * strike_level
       out1 = (fundamental * (1.0 - overtone_level) + overtone * overtone_level) * envelope + strike_noise
@@ -136,7 +136,7 @@ struct BellVoiceManager:
     self.ids[selected] = id
     self.channels[selected] = channel
     self.keys[selected] = key
-    self.pans[selected] = (-1.0 + f32(selected) * 2.0 / f32(VoiceCount - 1)) * spread
+    self.pans[selected] = (-1.0 + selected * 2.0 / (VoiceCount - 1)) * spread
     self.active[selected] = true
     self.held[selected] = true
     self.configure(
@@ -168,7 +168,7 @@ struct BellVoiceManager:
   ):
     for i in 0..VoiceCount:
       if self.active[i]:
-        self.pans[i] = (-1.0 + f32(i) * 2.0 / f32(VoiceCount - 1)) * spread
+        self.pans[i] = (-1.0 + i * 2.0 / (VoiceCount - 1)) * spread
         self.configure(
           voices, i, attack_value, decay_value, sustain_value,
           release_value, brightness_value, ratio_value, strike_value
@@ -198,7 +198,7 @@ params:
   strike = 0.18 {0.0, 0.6}
   space = 0.22 {0.0, 0.65}
   spread = 0.7 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0} 
+  level = 0.5 {0.0, 1.0}
 
 init:
   voices: BellVoice[VoiceCount]
@@ -242,5 +242,5 @@ block:
     mix_l, mix_r = voice_manager.render(voices)
     wet_l = delay_l(mix_l + mix_r * 0.15)
     wet_r = delay_r(mix_r + mix_l * 0.15)
-    out1 = tanh((mix_l + wet_l * space) * level)
-    out2 = tanh((mix_r + wet_r * space) * level)
+    out1 = tanh(mix_l + wet_l * space) * level
+    out2 = tanh(mix_r + wet_r * space) * level

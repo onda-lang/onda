@@ -3,13 +3,13 @@ import std/osc
 import std/pitch
 
 const AuditionPatternLength = 6
-const AuditionNotes: f32[AuditionPatternLength] = [45.0, 52.0, 57.0, 64.0, 55.0, 60.0]
+const AuditionNotes: f32[AuditionPatternLength] = [57.0, 64.0, 69.0, 76.0, 67.0, 72.0]
 
 proc EffectAudition:
   params:
     auto_play = true
     interval_s = 0.8
-    decay_s = 0.3
+    decay_s = 1.3
 
   init:
     fundamental = std::osc::Sine(amp = 0.64)
@@ -34,12 +34,13 @@ proc EffectAudition:
       fundamental.reset()
       upper.reset()
       shimmer.reset()
+      envelope.decay_s = decay_s
       envelope.start()
       step = (step + 1) % AuditionPatternLength
       pending_bang = false
     clock = (clock + 1) % period
 
     source = (fundamental(freq = frequency) + upper(freq = frequency * 1.4983) + shimmer(freq = frequency * 2.006))
-    source = source * envelope(decay_s = decay_s)
+    source = source * envelope()
     out1 = source
     out2 = source

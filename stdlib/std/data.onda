@@ -1,3 +1,6 @@
+# Fixed-size, multichannel sample storage for building stateful audio algorithms.
+# Provides indexed writes, wrapped reads, and interpolation between stored samples.
+
 import std/math
 
 namespace std::data<S = SR, C = 1>:

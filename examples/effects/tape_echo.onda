@@ -1,13 +1,10 @@
-import std/env
-import std/filter
-import std/osc
-import std/pitch
+import processors/effect_audition
 import processors/tape_echo
 
 params:
   auto_play = true
   live_input = false
-  time_s = 0.36 {0.04, 1.2, scale = log, unit = "s"}
+  delay_s = 0.36 {0.04, 1.2, scale = log, unit = "s"}
   feedback = 0.58 {0.0, 0.92}
   tone = 3600.0 {250.0, 14000.0, scale = log, unit = "Hz"}
   wow = 0.0025 {0.0, 0.015}
@@ -17,46 +14,18 @@ params:
 
 init:
   echo = StereoTapeEcho()
-  saw = std::osc::Saw(freq = std::pitch::note_to_hz(45.0))
-  filter = std::filter::OnePole(cutoff = 1300.0)
-  envelope = std::env::DecayEnv(decay_s = 0.075)
-  clock = 0
-  step = 0
-  pending_bang = false
+  audition = EffectAudition()
 
 event bang():
-  pending_bang = true
+  audition.bang()
 
 sample:
-  beat_samples = max(i32(SR * 0.42), 1)
-  if auto_play && clock == 0:
-    pending_bang = true
-
-  if pending_bang:
-    note = 45.0
-    if ((step & 3) == 1):
-      note = 52.0
-    elif ((step & 3) == 2):
-      note = 57.0
-    elif ((step & 3) == 3):
-      note = 48.0
-    saw.freq = std::pitch::note_to_hz(note)
-    saw.reset()
-    envelope.start()
-    step = step + 1
-    pending_bang = false
-  clock = (clock + 1) % beat_samples
-
-  source = filter(saw()) * envelope() * 0.34
-
+  source_l, source_r = audition(auto_play = auto_play)
   if live_input:
     source_l = in1
     source_r = in2
-  else:
-    source_l = source
-    source_r = source
 
-  echo.time_s = time_s
+  echo.delay_s = delay_s
   echo.feedback = feedback
   echo.tone = tone
   echo.wow = wow

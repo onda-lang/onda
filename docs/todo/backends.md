@@ -94,6 +94,27 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
   O4; global loop-inlining and StackIR experiments remain off because the complete workload matrix
   showed regressions.
 
+## Wasm math
+
+- Explore the pinned SLEEF release's documented Wasm path through its SSE2 inlinable headers and
+  Emscripten. Start with f32x4/f64x2 transcendental kernels and explicit per-function accuracy
+  contracts; extend proven independent loops to call vector helpers with scalar tails. Compare
+  complete DSP workloads, compilation cost and artifact size with the current internal `libm`
+  kernel across browser engines.
+- Validate large arguments, NaNs, infinities, signed zero and subnormals independently. SLEEF FMA
+  and remainder have different contracts from Onda's builtins, and relaxed SIMD multiply-add may
+  round twice; none is a strict drop-in replacement. Keep math inside self-contained Wasm modules.
+
+## Floating-point contraction
+
+- Explore further whether native contraction should become the default independently of the
+  other fast-math permissions. It remains disabled. Measure complete examples, including
+  convolution and feedback synths, across ARM64 and x64 CPUs, sample rates, block sizes and
+  voice counts before choosing a default.
+- Define the numerical policy and strict opt-out before changing it. Cover long-running feedback,
+  threshold decisions and snapshot replay; distinguish tolerance-based agreement from bitwise
+  equality. Retain explicit `fma`'s single-rounding contract and test Wasm independently.
+
 ## Native vector math
 
 The [bundled SLEEF kernels](../../crates/onda_codegen_llvm/math-kernel/README.md) already cover

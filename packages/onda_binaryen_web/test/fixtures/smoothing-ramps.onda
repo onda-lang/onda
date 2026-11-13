@@ -3,10 +3,10 @@ import std/smoothing
 outs 4
 
 init:
-  linear = std::smoothing::Ramp(time_s = 8.0 / SR)
-  curved = std::smoothing::Ramp(time_s = 8.0 / SR, shape = std::smoothing::RampShape::SCurve)
-  linear_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR))
-  curved_wide = std::smoothing::Ramp<f64>(time_s = 8.0 / f64(SR), shape = std::smoothing::RampShape::SCurve)
+  linear = std::smoothing::Ramp(duration_s = 8.0 / SR)
+  curved = std::smoothing::Ramp(duration_s = 8.0 / SR, shape = std::smoothing::RampShape::SCurve)
+  linear_wide = std::smoothing::Ramp<f64>(duration_s = 8.0 / f64(SR))
+  curved_wide = std::smoothing::Ramp<f64>(duration_s = 8.0 / f64(SR), shape = std::smoothing::RampShape::SCurve)
   frame = 0
 
 sample:

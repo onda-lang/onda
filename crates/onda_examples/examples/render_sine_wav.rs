@@ -20,13 +20,14 @@ outs {
 }
 params {
   freq = 440.0
+  level = 0.6
 }
 init {
   phase = 0.0
 }
 sample {
   phase = phase + freq * TWO_PI / SR
-  out1 = sin(phase)
+  out1 = sin(phase) * level
 }
 "#;
 

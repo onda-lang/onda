@@ -1098,6 +1098,61 @@ const scenarios = [
     comparison: "approximate",
   },
   {
+    name: "live envelope edits and queued crossfades preserve timing across snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-timing.onda"),
+    comparison: "approximate",
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      ...Array.from({ length: 8 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 8 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
+    name: "long lag and decay, gain startup, and integer conversions survive snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-numeric-contracts.onda"),
+    comparison: "approximate",
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
+    name: "steep exponential envelopes retain representable tails before completion",
+    source: join(packageDir, "test/fixtures/stdlib-envelope-tails.onda"),
+    comparison: "approximate",
+    blocks: 2,
+    expectedChannels: [Array(8).fill(0), Array(8).fill(0)],
+  },
+  {
+    name: "envelope curvature and T60 tails preserve oversampled state across snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-envelope-curves.onda"),
+    comparison: "approximate",
+    actions: [
+      ...Array.from({ length: 3 }, () => ({ kind: "render" })),
+      { kind: "snapshot" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
+    name: "pitch and reverb parameter updates preserve oversampled state across snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-parameter-updates.onda"),
+    comparison: "approximate",
+    actions: [
+      ...Array.from({ length: 3 }, () => ({ kind: "render" })),
+      { kind: "snapshot" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
     name: "coefficient updates remain sample accurate across snapshots",
     source: join(packageDir, "test/fixtures/coefficient-updates.onda"),
     actions: [
@@ -1198,6 +1253,7 @@ try {
         native.snapshots,
         wasm.snapshots,
         artifact.metadata,
+        scenario.comparison ?? "exact",
       );
       compareExecutionBatches(label, native, wasm);
       if (comparison.mode === "exact") exactSamples += comparison.samples;
@@ -2292,7 +2348,7 @@ function compareApproximateChannels(label, nativeChannels, wasmChannels) {
   return { mode: "approximate", samples, maximumAbsoluteError };
 }
 
-function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata) {
+function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata, mode) {
   if (nativeSnapshots.length !== wasmSnapshots.length) {
     throw new Error(
       `${label}: snapshot count differs (LLVM ${nativeSnapshots.length}, Wasm ${wasmSnapshots.length})`,
@@ -2312,6 +2368,24 @@ function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata) {
           byte >= candidate.packed_snapshot_byte_offset
           && byte < candidate.packed_snapshot_byte_offset + candidate.byte_size,
         );
+        // Saved DSP floats use the scenario's numeric tolerance, just like its outputs.
+        // Layout, integers, and exact scenarios still require identical bytes.
+        if (mode === "approximate" && (state?.scalar === "f32" || state?.scalar === "f64")) {
+          const width = state.scalar === "f32" ? 4 : 8;
+          const element = Math.floor((byte - state.packed_snapshot_byte_offset) / width);
+          const offset = state.packed_snapshot_byte_offset + element * width;
+          const read = (bytes) => {
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            return width === 4 ? view.getFloat32(offset, true) : view.getFloat64(offset, true);
+          };
+          compareApproximateChannels(
+            `${label}: snapshot ${snapshot}, state '${state.name}', element ${element}`,
+            [[read(native)]],
+            [[read(wasm)]],
+          );
+          byte = offset + width - 1;
+          continue;
+        }
         const owner = state
           ? ` in state '${state.name}' (${state.scalar}, byte ${byte - state.packed_snapshot_byte_offset})`
           : "";

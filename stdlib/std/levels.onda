@@ -1,3 +1,6 @@
+# Conversions between linear amplitude and decibels, plus stereo panning.
+# Provides gain calculations and a panning processor for positioning mono signals.
+
 namespace std::levels:
   const HALF_PI: f64 = PI / 2.0
   const DB_PER_NAT: f64 = 8.685889638065037
@@ -8,8 +11,8 @@ namespace std::levels:
     return exp(x * 0.11512925464970229)
 
   def gain_to_db<T>(x: T):
-    safe = max(x, T(MIN_FLOAT))
-    return log(safe) * T(DB_PER_NAT)
+    safe = max(x * 1.0, 0.00000000000000000001)
+    return log(safe) * 8.685889638065037
 
   def _pan_position(x):
     return clamp((x + 1.0) * 0.5, 0.0, 1.0)

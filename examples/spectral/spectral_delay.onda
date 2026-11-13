@@ -1,94 +1,5 @@
-import std/env
-import std/fft
-import std/osc
-import std/pitch
-
-const SpectralDelayCapacityS = 1.0
-
-namespace SpectralDelay<N = 1024, HistoryFrames = i32(SpectralDelayCapacityS * SR * 2 / N) + 3>:
-  proc Engine:
-    params:
-      delay_s = 0.34
-      slope = 0.78
-      feedback = 0.42
-      stereo = 0.68
-      transition_s = 0.05 => update_transition
-
-    init:
-      analysis = std::fft<N>::RealFFT()
-      synthesis_l = std::fft<N>::RealIFFT()
-      synthesis_r = std::fft<N>::RealIFFT()
-      history_re: f32[HistoryFrames * N]
-      history_im: f32[HistoryFrames * N]
-      spectrum_re_l: f32[N]
-      spectrum_im_l: f32[N]
-      spectrum_re_r: f32[N]
-      spectrum_im_r: f32[N]
-      hop_size = N >> 1
-      maximum_delay = HistoryFrames - 2
-      smoothed_delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
-      transition_coefficient = 0.0
-      write_frame = 0
-
-    def update_transition():
-      if transition_s <= 0.0:
-        transition_coefficient = 0.0
-      else:
-        transition_coefficient = exp(-1.0 / (transition_s * SR))
-
-    block:
-      delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
-      spectral_slope = clamp(slope, 0.0, 1.0)
-      regeneration = clamp(feedback, 0.0, 0.92)
-      stereo_spread = clamp(stereo, 0.0, 1.0)
-
-      sample:
-        smoothed_delay_hops = delay_hops + (smoothed_delay_hops - delay_hops) * transition_coefficient
-        if analysis.push(in1):
-          half = N >> 1
-          write_base = write_frame * N
-
-          for k in 0..N:
-            spectrum_re_l[k] = 0.0
-            spectrum_im_l[k] = 0.0
-            spectrum_re_r[k] = 0.0
-            spectrum_im_r[k] = 0.0
-
-          for k in 1..half:
-            position = f32(k) / half
-            delay_shape = 1.0 - spectral_slope + position * spectral_slope
-            left_delay = max(i32(smoothed_delay_hops * delay_shape + 0.5), 1)
-            stereo_offset = i32(position * stereo_spread * 7.0 + 0.5)
-            right_delay = min(left_delay + stereo_offset, HistoryFrames - 1)
-
-            left_frame = (write_frame - left_delay + HistoryFrames) % HistoryFrames
-            right_frame = (write_frame - right_delay + HistoryFrames) % HistoryFrames
-            left_base = left_frame * N
-            right_base = right_frame * N
-
-            delayed_re_l = history_re[left_base + k]
-            delayed_im_l = history_im[left_base + k]
-            delayed_re_r = history_re[right_base + k]
-            delayed_im_r = history_im[right_base + k]
-            feedback_re = (delayed_re_l + delayed_re_r) * 0.5
-            feedback_im = (delayed_im_l + delayed_im_r) * 0.5
-
-            history_re[write_base + k] = analysis.real(k) + feedback_re * regeneration
-            history_im[write_base + k] = analysis.imag(k) + feedback_im * regeneration
-            spectrum_re_l[k] = delayed_re_l
-            spectrum_im_l[k] = delayed_im_l
-            spectrum_re_r[k] = delayed_re_r
-            spectrum_im_r[k] = delayed_im_r
-
-          synthesis_l.load_complex(spectrum_re_l, spectrum_im_l)
-          synthesis_r.load_complex(spectrum_re_r, spectrum_im_r)
-          write_frame = (write_frame + 1) % HistoryFrames
-
-        out1 = synthesis_l.tick()
-        out2 = synthesis_r.tick()
-
-const PatternLength = 6
-const Notes: f32[PatternLength] = [45.0, 52.0, 57.0, 48.0, 55.0, 62.0]
+import processors/spectral_delay
+include "../effects/processors/effect_audition.onda"
 
 params:
   auto_play = true
@@ -102,40 +13,15 @@ params:
 
 init:
   spectral_delay = SpectralDelay::Engine()
-  saw_a = std::osc::Saw(amp = 0.54)
-  saw_b = std::osc::Saw(amp = 0.28)
-  saw_c = std::osc::Saw(amp = 0.18)
-  envelope = std::env::DecayEnv(decay_s = 0.24)
-  clock = 0
-  step = 0
-  frequency = std::pitch::note_to_hz(Notes[0])
-  pending_bang = false
+  audition = EffectAudition()
 
 event bang():
-  pending_bang = true
+  audition.bang()
 
 sample:
-  period = max(i32(SR * 0.58), 1)
-  if auto_play && clock == 0:
-    pending_bang = true
-
-  if pending_bang:
-    frequency = std::pitch::note_to_hz(Notes[step])
-    saw_a.reset()
-    saw_b.reset()
-    saw_c.reset()
-    envelope.start()
-    step = (step + 1) % PatternLength
-    pending_bang = false
-  clock = (clock + 1) % period
-
+  source, _ = audition(auto_play = auto_play)
   if live_input:
     source = in1
-  else:
-    audition = saw_a(freq = frequency)
-    audition = audition + saw_b(freq = frequency * 1.4983)
-    audition = audition + saw_c(freq = frequency * 2.006)
-    source = audition * envelope() * 0.28
 
   delayed_l, delayed_r = spectral_delay(
     source,

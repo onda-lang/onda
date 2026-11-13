@@ -1,27 +1,27 @@
-import std/osc
+import processors/effect_audition
 import processors/wavefolder
 
 params:
+  auto_play = true
   live_input = false
   folds = 3.2 {0.5, 12.0}
   bias = 0.0 {-1.0, 1.0}
   movement = 0.38 {0.0, 1.0}
   mix = 0.82 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.7 {0.0, 1.0}
 
 init:
   wavefolder = StereoWavefolder()
-  source_a = std::osc::Sine(freq = 110.0)
-  source_b = std::osc::Sine(freq = 165.0)
+  audition = EffectAudition()
+
+event bang():
+  audition.bang()
 
 sample:
-  source_l = in1
-  source_r = in2
-  if !live_input:
-    audition_a = source_a()
-    audition_b = source_b()
-    source_l = audition_a * 0.72 + audition_b * 0.28
-    source_r = audition_a * 0.68 - audition_b * 0.32
+  source_l, source_r = audition(auto_play = auto_play)
+  if live_input:
+    source_l = in1
+    source_r = in2
 
   wavefolder.folds = folds
   wavefolder.bias = bias

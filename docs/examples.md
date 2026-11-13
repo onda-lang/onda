@@ -40,9 +40,10 @@ The polyphonic instruments play automatically and expose events for triggering i
 | [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter |
 | [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Wavefolded harmonics |
 
-Effects play a built-in sound by default. To process your own audio, select an input and set
-`live_input` to `true`. The Schroeder and FDN examples also show how to connect processors with a
-`graph` block.
+Effects share the same built-in audition sequence.
+Use `auto_play` to control the sequence or `bang()` to trigger a note. To process your own audio,
+select an input and set `live_input` to `true`. The Schroeder and FDN examples also show how to
+connect processors with a `graph` block.
 
 ## Soundscapes and experimental systems
 
@@ -50,14 +51,13 @@ Effects play a built-in sound by default. To process your own audio, select an i
 | --- | --- |
 | [Aurora Pad]({{ '/playground/?example=soundscapes/aurora_pad.onda' | relative_url }}) | A minor chord spread across a gently detuned stereo field and a slowly opening filter |
 | [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | A Hordijk-inspired eight-bit rungler instrument |
-| [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | Burst-driven unstable resonances |
-| [Deep-space drone]({{ '/playground/?example=soundscapes/deep_space_drone.onda' | relative_url }}) | A slowly changing low-frequency chord |
-| [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A soft, slowly evolving resonant cloud |
+| [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | Sine-feedback delays turn sparse chirps into competing rhythms through mutual inhibition and recovery |
+| [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A pitch-shifting feedback matrix turns scattered plucks into a stereo cloud that can freeze in place |
 | [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud |
 | [Orbital FM]({{ '/playground/?example=soundscapes/orbital_fm.onda' | relative_url }}) | An evolving phase-modulation drone with detuned carriers, sub-octave body, and orbiting shimmer |
 | [Neural synth]({{ '/playground/?example=feedback/neural_synth.onda' | relative_url }}) | A self-oscillating neural network with resonant feedback |
 | [Polyphonic saw]({{ '/playground/?example=basic/polyphonic_saw.onda' | relative_url }}) | An eight-voice randomized saw cascade |
-| [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Four nonlinear cross-coupled delays |
+| [Resonant delay matrix]({{ '/playground/?example=feedback/resonant_delay_matrix.onda' | relative_url }}) | Bow-like swells, coupled pitch bends, and self-oscillation in a nonlinear string network |
 | [Wind chimes]({{ '/playground/?example=soundscapes/wind_chimes.onda' | relative_url }}) | Irregular modal chimes over filtered air |
 
 ## Advanced DSP and graph syntax
@@ -67,8 +67,8 @@ Effects play a built-in sound by default. To process your own audio, select an i
 | [Cybernetic feedback graph]({{ '/playground/?example=feedback/cybernetic_feedback_graph.onda' | relative_url }}) | Cross-coupled graph cycles made causal with `>>[1]` delayed edges |
 | [Dual FM oscillator, 8×]({{ '/playground/?example=basic/dual_fm_osc.onda' | relative_url }}) | A compact musical use of local oversampling and feedback phase modulation |
 | [PaulStretch]({{ '/playground/?example=spectral/paul_stretch.onda' | relative_url }}) | Extreme time stretching of a supplied recording, with adjustable playback position |
-| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | Delays and feedback across frequency bins for evolving stereo echoes |
-| [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Freeze a sound's spectrum, with smearing and transposition |
+| [Spectral delay]({{ '/playground/?example=spectral/spectral_delay.onda' | relative_url }}) | Frequency-dependent stereo echoes with adjustable spectral slope and feedback |
+| [Spectral freeze]({{ '/playground/?example=spectral/spectral_freeze.onda' | relative_url }}) | Capture and sustain a spectral frame, with transposition and stereo phase drift |
 
 ## MIDI and DAW examples
 

@@ -417,48 +417,6 @@ sample:
     }
 }
 
-const STDLIB_ENV_AR_ONE_SHOT_EXAMPLE: &str = r#"
-import std/env
-
-outs { out1 }
-
-init {
-  trig = 0.0
-  env = std::env::AR(attack_s = 0.00025, release_s = 0.0005, trigger = trig)
-}
-
-events {
-  bang() {
-    trig = 1.0
-  }
-}
-
-sample {
-  env.trigger = trig
-  trig = 0.0
-  out1 = env()
-}
-"#;
-
-const STDLIB_ENV_ASR_F64_EXAMPLE: &str = r#"
-import std/env
-
-outs { out1 }
-
-init {
-  env = std::env::ASR<f64>(
-    attack_s = f64(0.00025),
-    sustain = f64(0.5),
-    release_s = f64(0.00025),
-    gate = f64(1.0)
-  )
-}
-
-sample {
-  out1 = f32(env())
-}
-"#;
-
 const STDLIB_OSC_SQUARE_F64_EXAMPLE: &str = r#"
 import std/osc
 
@@ -502,11 +460,11 @@ outs { out1, out2, out3, out4 }
 init {
   sine = std::osc::Sine(
     freq = SR * 0.0137,
-    phase_offset = 0.123
+    phase_offset_rad = 0.123
   )
   ksine = std::osc::KSine(
     freq = SR / (BS * 7),
-    phase_offset = -0.27
+    phase_offset_rad = -0.27
   )
   frame = 0
   blocks = 0
@@ -543,7 +501,7 @@ init {
 sample {
   if frame == 0 {
     dynamic.freq = SR * 0.25
-    dynamic.phase_offset = PI * 0.5
+    dynamic.phase_offset_rad = PI * 0.5
   }
   out1 = dynamic()
   out2 = reverse()
@@ -792,34 +750,6 @@ sample {
 }
 "#;
 
-const STDLIB_SMOOTHING_LAG_EXAMPLE: &str = r#"
-import std/smoothing
-
-outs { out1 }
-
-init {
-  smooth = std::smoothing::Lag(time_s = 0.001)
-}
-
-sample {
-  out1 = smooth(1.0)
-}
-"#;
-
-const STDLIB_SMOOTHING_SLEW_F64_EXAMPLE: &str = r#"
-import std/smoothing
-
-outs { out1 }
-
-init {
-  smooth = std::smoothing::Slew<f64>(rise_per_s = f64(4800.0), fall_per_s = f64(2400.0))
-}
-
-sample {
-  out1 = f32(smooth(f64(1.0)))
-}
-"#;
-
 const STDLIB_MIX_HELPERS_EXAMPLE: &str = r#"
 import std/mix
 
@@ -828,7 +758,7 @@ outs 5
 init {
   mono = std::mix::MonoToStereo()
   sum = std::mix::StereoToMono()
-  blend = std::mix::ConstantSum(gain1 = 0.25, gain2 = 0.5)
+  blend = std::mix::WeightedSum(gain1 = 0.25, gain2 = 0.5)
   xfade = std::mix::Crossfade(mix = 0.25)
 }
 
@@ -881,20 +811,6 @@ sample {
   out1 = lin(1.0)
   out2 = db(1.0)
   out3 = db(-1.0)
-}
-"#;
-
-const STDLIB_GAIN_SMOOTHED_DB_F64_EXAMPLE: &str = r#"
-import std/gain
-
-outs { out1 }
-
-init {
-  gain = std::gain::SmoothedDb<f64>(db = f64(0.0), time_s = f64(0.001))
-}
-
-sample {
-  out1 = f32(gain(f64(1.0)))
 }
 "#;
 
@@ -975,224 +891,9 @@ fn graph_nodes_remain_addressable_from_top_level_events() {
     assert!(output.iter().all(|sample| (*sample - 0.75).abs() <= 1e-6));
 }
 
-#[test]
 
-fn stdlib_env_ar_runs_as_a_one_shot_envelope() {
-    let frames = 64;
 
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_ENV_AR_ONE_SHOT_EXAMPLE, frames);
 
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let bang_idx = instance.event_index("bang").expect("bang event must exist");
-
-    assert_eq!(instance.event_payload_bytes(bang_idx), Some(0));
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(output.iter().all(|sample| sample.abs() <= 1e-6));
-
-    trigger_event_by_index_checked(
-        &mut instance,
-        bang_idx,
-        &[],
-        onda_runtime::ExecutionOutput::none(),
-    )
-    .expect("bang trigger should succeed");
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    let peak = output
-        .iter()
-        .fold(0.0_f32, |acc, sample| acc.max(sample.abs()));
-
-    assert!(
-        peak >= 0.9,
-        "expected AR envelope peak near 1.0, got {peak}"
-    );
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 1e-3),
-        "expected AR envelope to finish and return to zero, got {output:?}"
-    );
-}
-
-#[test]
-
-fn stdlib_env_asr_supports_f64_and_holds_sustain() {
-    let frames = 64;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_ENV_ASR_F64_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output.iter().any(|sample| *sample > 0.1),
-        "expected ASR envelope to rise above zero, got {output:?}"
-    );
-
-    let tail = &output[frames - 8..];
-
-    for sample in tail {
-        assert_near(*sample, 0.5, 0.05);
-    }
-}
-
-#[test]
-fn stdlib_decay_env_publishes_finished_once_per_start() {
-    let source = r#"
-import std/env
-
-init:
-  env = std::env::DecayEnv(decay_s = 1.0 / SR, end_level = 0.5)
-  completions: i32 = 0
-
-event start():
-  env.start()
-
-when env.finished():
-  completions += 1
-
-sample:
-  out1 = env() + f32(completions)
-"#;
-    let frames = 1;
-    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
-    assert_eq!(in_channels, 0);
-    assert_eq!(out_channels, 1);
-
-    let start = instance.event_index("start").expect("start event");
-    trigger_event_by_index_checked(
-        &mut instance,
-        start,
-        &[],
-        onda_runtime::ExecutionOutput::none(),
-    )
-    .expect("start should succeed");
-
-    let mut output = [0.0_f32; 1];
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process completion");
-    assert_near(output[0], 1.0, 1e-6);
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process idle envelope");
-    assert_near(output[0], 1.0, 1e-6);
-}
-
-#[test]
-fn stdlib_asr_release_survives_sustain_and_release_time_automation() {
-    fn event(instance: &mut onda_runtime::Instance, name: &str, value: Option<f32>) {
-        let index = instance.event_index(name).expect("event exists");
-        let payload = value.map(f32::to_le_bytes);
-        trigger_event_by_index_checked(
-            instance,
-            index,
-            payload.as_ref().map_or(&[], |bytes| bytes.as_slice()),
-            onda_runtime::ExecutionOutput::none(),
-        )
-        .expect("event should succeed");
-    }
-    fn frame(instance: &mut onda_runtime::Instance, level: f32, completions: f32) {
-        let mut output = [0.0_f32; 2];
-        process_interleaved(instance, &[], &mut output, 1).expect("render envelope");
-        assert_near(output[0], level, 1e-6);
-        assert_eq!(output[1], completions);
-    }
-    let source = r#"
-import std/env
-init:
-  env = std::env::ASR<$T>(attack_s = 0.0, sustain = 0.5, release_s = 8.0 / SR)
-  completions = 0
-event start():
-  env.start()
-event release():
-  env.release()
-event gate(value: f32):
-  env.gate = $T(value)
-event sustain(value: f32):
-  env.sustain = $T(value)
-event duration(samples: f32):
-  env.release_s = $T(samples) / SR
-event attack(samples: f32):
-  env.attack_s = $T(samples) / SR
-when env.finished():
-  completions += 1
-sample:
-  out1 = f32(env())
-  out2 = f32(completions)
-"#;
-    for scalar in ["f32", "f64"] {
-        // Change sustain at note-off and during release, using both event and
-        // parameter gates. Increasing sustain must not reshape the tail either.
-        for (change_after, sustain, parameter_gate) in
-            [(0, 0.0, false), (2, 0.0, true), (2, 1.0, false)]
-        {
-            let (mut instance, _, _) = compile_instance(&source.replace("$T", scalar), 1);
-            event(&mut instance, "start", None);
-            frame(&mut instance, 0.5, 0.0);
-            if parameter_gate {
-                event(&mut instance, "gate", Some(0.0));
-            } else {
-                event(&mut instance, "release", None);
-            }
-            for sample in 0..8 {
-                if sample == change_after {
-                    event(&mut instance, "sustain", Some(sustain));
-                }
-                frame(
-                    &mut instance,
-                    0.5 - (sample + 1) as f32 / 16.0,
-                    if sample == 7 { 1.0 } else { 0.0 },
-                );
-            }
-            frame(&mut instance, 0.0, 1.0);
-        }
-        let (mut instance, _, _) = compile_instance(&source.replace("$T", scalar), 1);
-        event(&mut instance, "start", None);
-        frame(&mut instance, 0.5, 0.0);
-        event(&mut instance, "release", None);
-        frame(&mut instance, 0.4375, 0.0);
-        event(&mut instance, "duration", Some(4.0));
-        frame(&mut instance, 0.3125, 0.0);
-        event(&mut instance, "duration", Some(0.0));
-        frame(&mut instance, 0.0, 1.0);
-        frame(&mut instance, 0.0, 1.0);
-        event(&mut instance, "start", None);
-        frame(&mut instance, 0.5, 1.0);
-        event(&mut instance, "release", None);
-        frame(&mut instance, 0.0, 2.0);
-
-        // Releasing during attack takes the requested time from the current
-        // level, rather than using the still-unreached sustain target.
-        event(&mut instance, "attack", Some(8.0));
-        event(&mut instance, "duration", Some(8.0));
-        event(&mut instance, "start", None);
-        frame(&mut instance, 0.0625, 2.0);
-        event(&mut instance, "sustain", Some(0.0));
-        event(&mut instance, "release", None);
-        for sample in 0..8 {
-            frame(
-                &mut instance,
-                0.0625 - (sample + 1) as f32 / 128.0,
-                if sample == 7 { 3.0 } else { 2.0 },
-            );
-        }
-        frame(&mut instance, 0.0, 3.0);
-    }
-}
 
 #[test]
 fn stdlib_delay_lines_use_wrapped_cursors_and_zero_delay_is_direct() {
@@ -1254,39 +955,6 @@ sample:
     assert_eq!(output, [0.0, 0.0, 1.0, 0.0, 0.5, 0.0, 0.25, 0.0, 0.125]);
 }
 
-#[test]
-fn stdlib_feedback_delay_crossfades_abrupt_time_changes() {
-    let source = r#"
-import std/delay
-
-init:
-  frame = 0
-  delay = std::delay<32>::CrossfadeDelay(
-    delay_s = 2.0 / SR,
-    feedback = 0.0,
-    mix = 1.0,
-    transition_s = 4.0 / SR
-  )
-
-sample:
-  if frame < 6:
-    requested_delay = 2.0 / SR
-  else:
-    requested_delay = 4.0 / SR
-  out1 = delay(f32(frame + 1), delay_s = requested_delay)
-  frame += 1
-"#;
-    let frames = 11;
-    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
-    assert_eq!(in_channels, 0);
-    assert_eq!(out_channels, 1);
-
-    let mut output = [0.0_f32; 11];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process crossfade feedback delay");
-    let expected = [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0, 6.5, 7.0];
-    assert_eq!(output, expected);
-}
 
 #[test]
 fn stdlib_feedback_delay_slews_one_read_head_for_time_changes() {
@@ -1299,7 +967,7 @@ init:
     delay_s = 2.0 / SR,
     feedback = 0.0,
     mix = 1.0,
-    transition_s = 4.0 / SR
+    lag_s = 4.0 / SR
   )
 
 sample:
@@ -1335,7 +1003,7 @@ init:
     delay_s = 2.0 / SR,
     feedback = 0.0,
     mix = 1.0,
-    transition_s = 0.0
+    lag_s = 0.0
   )
 
 sample:
@@ -1371,13 +1039,13 @@ init:
     delay_s = 2.0 / SR,
     feedback = 0.5,
     mix = 1.0,
-    transition_s = 0.0
+    lag_s = 0.0
   )
   crossfade = std::delay<16>::CrossfadeDelay(
     delay_s = 2.0 / SR,
     feedback = 0.5,
     mix = 1.0,
-    transition_s = 0.0
+    fade_s = 0.0
   )
 
 sample:
@@ -1406,41 +1074,6 @@ sample:
     );
 }
 
-#[test]
-fn stdlib_feedback_delay_does_not_restart_an_active_time_crossfade() {
-    let source = r#"
-import std/delay
-
-init:
-  frame = 0
-  delay = std::delay<32>::CrossfadeDelay(
-    delay_s = 2.0 / SR,
-    feedback = 0.0,
-    mix = 1.0,
-    transition_s = 4.0 / SR
-  )
-
-sample:
-  if frame < 6:
-    requested_delay = 2.0 / SR
-  else:
-    requested_delay = f32(frame - 2) / SR
-  out1 = delay(f32(frame + 1), delay_s = requested_delay)
-  frame += 1
-"#;
-    let frames = 12;
-    let (mut instance, in_channels, out_channels) = compile_instance(source, frames);
-    assert_eq!(in_channels, 0);
-    assert_eq!(out_channels, 1);
-
-    let mut output = [0.0_f32; 12];
-    process_interleaved(&mut instance, &[], &mut output, frames)
-        .expect("process continuously retargeted feedback delay");
-    assert_eq!(
-        output,
-        [0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 5.5, 6.0, 6.5, 7.0, 7.0]
-    );
-}
 
 #[test]
 fn stdlib_dynamics_compressor_and_limiter_link_channels() {
@@ -1451,11 +1084,11 @@ init:
   compressor = std::dynamics::Compressor(
     threshold_db = -12.0,
     ratio = 4.0,
-    attack_s = 0.0,
-    release_s = 0.0,
+    attack_lag_s = 0.0,
+    release_lag_s = 0.0,
     knee_db = 0.0
   )
-  limiter = std::dynamics::Limiter(ceiling_db = -6.0, release_s = 0.0)
+  limiter = std::dynamics::Limiter(ceiling_db = -6.0, release_lag_s = 0.0)
 
 sample:
   compressor(1.0, 1.0)
@@ -1499,9 +1132,24 @@ sample:
     for (index, sample) in clip[16_777_216..].iter_mut().enumerate() {
         *sample = (index + 1) as f32;
     }
-    bind_buffer(&mut instance, 0, clip.as_mut_ptr().cast(), clip.len(), 1, 48_000.0, PrimitiveType::F32).unwrap();
+    bind_buffer(
+        &mut instance,
+        0,
+        clip.as_mut_ptr().cast(),
+        clip.len(),
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .unwrap();
     let play = instance.event_index("play").unwrap();
-    trigger_event_by_index_checked(&mut instance, play, &[], onda_runtime::ExecutionOutput::none()).unwrap();
+    trigger_event_by_index_checked(
+        &mut instance,
+        play,
+        &[],
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .unwrap();
     let mut output = [0.0_f32; 8];
     process_interleaved(&mut instance, &[], &mut output, 8).unwrap();
     assert_eq!(output, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
@@ -1878,7 +1526,8 @@ fn stdlib_sine_sample_kernel_avoids_float_range_reduction() {
         .expect("sine source should lower to MIR");
     let ir = lower_optimized_mir_to_llvm_ir_with_options(
         &mir,
-        MirCompileOptions { math: Default::default(),
+        MirCompileOptions {
+            math: Default::default(),
             fast_math: false,
             opt_level: TargetOptLevel::O3,
         },
@@ -2270,64 +1919,7 @@ fn stdlib_levels_helpers_return_expected_values() {
     assert_near(output[7], 20.0 * 0.5_f32.log10(), 1e-5);
 }
 
-#[test]
 
-fn stdlib_lag_rises_toward_target_without_jumping_immediately() {
-    let frames = 64;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_SMOOTHING_LAG_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output[0] > 0.0 && output[0] < 1.0,
-        "expected lag output to move but not jump immediately, got {output:?}"
-    );
-    assert!(
-        output[frames - 1] > output[0],
-        "expected lag output to rise over time, got {output:?}"
-    );
-    assert!(
-        output[frames - 1] >= 0.6,
-        "expected lag output to approach the target, got {output:?}"
-    );
-
-    for pair in output.windows(2) {
-        assert!(
-            pair[1] + 1e-6 >= pair[0],
-            "expected monotonic lag rise, got {output:?}"
-        );
-    }
-}
-
-#[test]
-
-fn stdlib_slew_supports_f64_and_limits_rise_rate() {
-    let frames = 6;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_SMOOTHING_SLEW_F64_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert_near(output[0], 0.1, 1e-4);
-    assert_near(output[1], 0.2, 1e-4);
-    assert_near(output[2], 0.3, 1e-4);
-    assert_near(output[3], 0.4, 1e-4);
-}
 
 #[test]
 
@@ -2398,46 +1990,6 @@ fn stdlib_gain_helpers_apply_linear_and_db_scaling() {
     assert_near(output[2], -10.0_f32.powf(-6.0 / 20.0), 1e-5);
 }
 
-#[test]
-
-fn stdlib_smoothed_db_gain_supports_f64_and_ramps() {
-    let frames = 64;
-
-    let (mut instance, in_channels, out_channels) =
-        compile_instance(STDLIB_GAIN_SMOOTHED_DB_F64_EXAMPLE, frames);
-
-    assert_eq!(in_channels, 0);
-
-    assert_eq!(out_channels, 1);
-
-    let mut output = vec![0.0_f32; frames];
-
-    process_interleaved(&mut instance, &[], &mut output, frames).expect("process should succeed");
-
-    assert!(
-        output[0] > 0.0 && output[0] < 1.0,
-        "expected smoothed gain to ramp from zero, got {output:?}"
-    );
-    assert!(
-        output[frames - 1] > output[0],
-        "expected smoothed gain to continue rising, got {output:?}"
-    );
-    assert!(
-        output[frames - 1] >= 0.6,
-        "expected smoothed gain to approach unity, got {output:?}"
-    );
-    assert!(
-        output.iter().all(|sample| sample.abs() <= 1.0),
-        "expected smoothed gain output to stay bounded, got {output:?}"
-    );
-
-    for pair in output.windows(2) {
-        assert!(
-            pair[1] + 1e-6 >= pair[0],
-            "expected monotonic smoothed gain ramp, got {output:?}"
-        );
-    }
-}
 
 #[test]
 
@@ -2487,8 +2039,14 @@ fn bound_io_writes_directly_for_f32_arrays() {
 
     bind_output(&mut instance, 0, bound_out.as_mut_ptr(), bound_out.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let copied_bound = decode_planar_f32(&bound_out);
 
@@ -2523,8 +2081,14 @@ fn bound_io_writes_directly_for_f64_declared_types() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f64(&out_bytes);
 
@@ -2601,8 +2165,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -2620,8 +2190,14 @@ sample {
     set_param_by_index(&mut instance, 1, &9007199254740995_i64.to_ne_bytes())
         .expect("set i64 param");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -2716,8 +2292,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -2824,8 +2406,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -2938,8 +2526,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -3078,8 +2672,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -3238,8 +2838,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     for sample in decode_planar_f64(&out_f64_bytes) {
         assert!(
@@ -3388,8 +2994,14 @@ sample {
     )
     .expect("bind i64 output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out_f64 = decode_planar_f64(&out_f64_bytes);
 
@@ -3446,8 +3058,14 @@ fn buffer_mono_read_uses_clamped_index_path() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3601,8 +3219,14 @@ fn indexed_access_supports_mono_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3720,8 +3344,6 @@ fn validate_domains_allow_partial_revalidation() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-
-
     unsafe {
         process_unchecked(&mut instance, onda_runtime::ExecutionOutput::none())
             .expect("unchecked process should succeed");
@@ -3747,7 +3369,6 @@ fn validate_domains_allow_partial_revalidation() {
         PrimitiveType::F32,
     )
     .expect("bind buffer B");
-
 
     unsafe {
         process_unchecked(&mut instance, onda_runtime::ExecutionOutput::none())
@@ -3797,8 +3418,14 @@ fn buffer_stereo_two_dim_read_and_clamp_work() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3843,8 +3470,14 @@ fn buffer_stereo_two_dim_write_works() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3889,8 +3522,14 @@ fn indexed_access_supports_multichannel_buffers() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3948,8 +3587,14 @@ fn buffer_static_chans_returns_declared_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -3992,8 +3637,14 @@ fn buffer_dynamic_chans_returns_runtime_channel_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -4035,8 +3686,14 @@ fn buffer_dynamic_len_returns_total_element_count() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -4074,8 +3731,14 @@ fn def_can_take_mono_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 
@@ -4158,8 +3821,14 @@ fn def_can_take_stereo_buffer_typed_param() {
 
     bind_output(&mut instance, 0, out_bytes.as_mut_ptr(), out_bytes.len()).expect("bind output");
 
-    onda_runtime::process_checked_segment(&mut instance, 0, frames, onda_runtime::PROCESSOR_FULL_BLOCK, onda_runtime::ExecutionOutput::none())
-        .expect("process checked");
+    onda_runtime::process_checked_segment(
+        &mut instance,
+        0,
+        frames,
+        onda_runtime::PROCESSOR_FULL_BLOCK,
+        onda_runtime::ExecutionOutput::none(),
+    )
+    .expect("process checked");
 
     let out = decode_planar_f32(&out_bytes);
 

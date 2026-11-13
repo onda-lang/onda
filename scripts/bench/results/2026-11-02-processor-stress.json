@@ -1235,14 +1235,6 @@
       "source_sha256": "10e129a851b68a0daae62b53ef70989a3d6de64e1c08d3b17f54e0d0ff65a181"
     },
     {
-      "name": "example-soundscapes-deep_space_drone",
-      "source": "examples/soundscapes/deep_space_drone.onda",
-      "kind": "example",
-      "warmup": 512,
-      "max_output_abs": null,
-      "source_sha256": "ee2f25780df5949f5c19ae280af9f6bce631c061fc8f911c020521b775116518"
-    },
-    {
       "name": "example-soundscapes-glass_garden",
       "source": "examples/soundscapes/glass_garden.onda",
       "kind": "example",
@@ -3123,17 +3115,6 @@
     },
     {
       "name": "example-soundscapes-aurora_pad",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "buffers": 0,
-      "outputs": 2,
-      "events": [],
-      "scalar_ports": true,
-      "runnable": true
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
       "kind": "example",
       "ok": true,
       "returncode": 0,
@@ -28724,192 +28705,6 @@
       }
     },
     {
-      "name": "example-soundscapes-deep_space_drone",
-      "worker": "current",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "row": {
-        "name": "deep_space_drone",
-        "block_max_us": 15.043,
-        "block_p50_us": 12.882,
-        "block_p99_us": 14.028,
-        "cold_max_us": 17.837,
-        "frontend_allocations": null,
-        "frontend_ms": 167.774395,
-        "init_ms": 0.031826,
-        "inputs": [],
-        "iterations": 4096,
-        "jit_allocations": null,
-        "jit_ms": 57.673190999999996,
-        "mad_ns": 0.09113883972167969,
-        "max_ns": 101.41369819641113,
-        "min_ns": 101.13983917236328,
-        "ns_per_frame": 101.3135986328125,
-        "outputs": [
-          "f32",
-          "f32"
-        ],
-        "phases": {
-          "mir_lowering_ms": 2.818118,
-          "mir_optimization_ms": 3.618306,
-          "mir_passes": {
-            "distributed_loops": 0,
-            "eliminated_bounds_checks": 18,
-            "eliminated_common_subexpressions": 0,
-            "iterations": 4,
-            "removed_functions": 2,
-            "removed_parameters": 3
-          },
-          "parse_load_ms": 30.776632000000003,
-          "semantics_ms": 130.468455
-        },
-        "rounds_ns_per_frame": [
-          101.22245979309082,
-          101.13983917236328,
-          101.3135986328125,
-          101.3386001586914,
-          101.41369819641113
-        ],
-        "shape": {
-          "effect_function_visits": 70,
-          "functions": 70,
-          "mir_bytes": 614706,
-          "range_function_visits": 99,
-          "state_entries": 98
-        },
-        "state_bytes": 768960,
-        "validation": "finite",
-        "source_fingerprint": "8c869b113f71354ff1a7c7a39ec81bbad4313b6add31a0bbcf1ea4e4a424d3d1",
-        "mir_sha256": "8f6984371343784c2dcfff3c37d97b4eded2522c43370133280ded0bb723e0d6",
-        "llvm_ir_sha256": "4384affa7ce3ac31082f2d8665d069d0ebda99b47d220828193e65c98dcbeb17"
-      }
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
-      "worker": "original",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "row": {
-        "name": "deep_space_drone",
-        "block_max_us": 17.655,
-        "block_p50_us": 13.076,
-        "block_p99_us": 14.348,
-        "cold_max_us": 15.809000000000001,
-        "frontend_allocations": null,
-        "frontend_ms": 156.701624,
-        "init_ms": 0.102369,
-        "inputs": [],
-        "iterations": 4096,
-        "jit_allocations": null,
-        "jit_ms": 66.145573,
-        "mad_ns": 0.031524658203125,
-        "max_ns": 101.3424301147461,
-        "min_ns": 100.99895668029785,
-        "ns_per_frame": 101.03048133850098,
-        "outputs": [
-          "f32",
-          "f32"
-        ],
-        "phases": {
-          "mir_lowering_ms": 2.775792,
-          "mir_optimization_ms": 3.651473,
-          "mir_passes": {
-            "distributed_loops": 0,
-            "eliminated_bounds_checks": 38,
-            "eliminated_common_subexpressions": 0,
-            "iterations": 4,
-            "removed_functions": 0,
-            "removed_parameters": 3
-          },
-          "parse_load_ms": 29.524523000000002,
-          "semantics_ms": 120.681887
-        },
-        "rounds_ns_per_frame": [
-          101.03048133850098,
-          101.3424301147461,
-          101.01983642578125,
-          101.22760772705078,
-          100.99895668029785
-        ],
-        "shape": {
-          "effect_function_visits": 70,
-          "functions": 70,
-          "mir_bytes": 632682,
-          "range_function_visits": 99,
-          "state_entries": 98
-        },
-        "state_bytes": 768960,
-        "validation": "finite",
-        "source_fingerprint": "8c869b113f71354ff1a7c7a39ec81bbad4313b6add31a0bbcf1ea4e4a424d3d1",
-        "mir_sha256": "b46e59b08a38d1d3efe1b00cb5f6d7afe6d9c97722ee61f8206386dc549fb6ce",
-        "llvm_ir_sha256": "dba7841f2e59bed2bf28b2e9d206ef20e1a801c3150731e21d2a8a632cc33bf2"
-      }
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
-      "worker": "phase1",
-      "kind": "example",
-      "ok": true,
-      "returncode": 0,
-      "row": {
-        "name": "deep_space_drone",
-        "block_max_us": 15.769,
-        "block_p50_us": 12.863,
-        "block_p99_us": 14.155,
-        "cold_max_us": 16.05,
-        "frontend_allocations": null,
-        "frontend_ms": 162.997036,
-        "init_ms": 0.100078,
-        "inputs": [],
-        "iterations": 4096,
-        "jit_allocations": null,
-        "jit_ms": 66.34575,
-        "mad_ns": 0.0576629638671875,
-        "max_ns": 101.51112365722656,
-        "min_ns": 101.23631286621094,
-        "ns_per_frame": 101.29397583007812,
-        "outputs": [
-          "f32",
-          "f32"
-        ],
-        "phases": {
-          "mir_lowering_ms": 2.7575350000000003,
-          "mir_optimization_ms": 3.9014029999999997,
-          "mir_passes": {
-            "distributed_loops": 0,
-            "eliminated_bounds_checks": 38,
-            "eliminated_common_subexpressions": 0,
-            "iterations": 4,
-            "removed_functions": 0,
-            "removed_parameters": 3
-          },
-          "parse_load_ms": 35.768569,
-          "semantics_ms": 120.499958
-        },
-        "rounds_ns_per_frame": [
-          101.51112365722656,
-          101.29397583007812,
-          101.28276252746582,
-          101.23631286621094,
-          101.46047782897949
-        ],
-        "shape": {
-          "effect_function_visits": 70,
-          "functions": 70,
-          "mir_bytes": 632682,
-          "range_function_visits": 99,
-          "state_entries": 98
-        },
-        "state_bytes": 768960,
-        "validation": "finite",
-        "source_fingerprint": "8c869b113f71354ff1a7c7a39ec81bbad4313b6add31a0bbcf1ea4e4a424d3d1",
-        "mir_sha256": "b46e59b08a38d1d3efe1b00cb5f6d7afe6d9c97722ee61f8206386dc549fb6ce",
-        "llvm_ir_sha256": "dba7841f2e59bed2bf28b2e9d206ef20e1a801c3150731e21d2a8a632cc33bf2"
-      }
-    },
-    {
       "name": "example-soundscapes-glass_garden",
       "worker": "original",
       "kind": "example",
@@ -37422,62 +37217,6 @@
         "reference": "phase1"
       },
       {
-        "name": "example-soundscapes-deep_space_drone",
-        "baseline_name": "deep_space_drone",
-        "backend": "native",
-        "settings_changed": {},
-        "source_changed": false,
-        "baseline_ns_per_frame": 101.03048133850098,
-        "candidate_ns_per_frame": 101.3135986328125,
-        "compiler_changed": true,
-        "mir_changed": true,
-        "llvm_ir_changed": true,
-        "candidate_to_baseline": 1.0028022958077667,
-        "outputs": {
-          "output.bin": {
-            "samples": 2048,
-            "max_abs": 0.0,
-            "mismatches": 0,
-            "equivalent": true
-          },
-          "warm-output.bin": {
-            "samples": 2048,
-            "max_abs": 0.0,
-            "mismatches": 0,
-            "equivalent": true
-          }
-        },
-        "reference": "original"
-      },
-      {
-        "name": "example-soundscapes-deep_space_drone",
-        "baseline_name": "deep_space_drone",
-        "backend": "native",
-        "settings_changed": {},
-        "source_changed": false,
-        "baseline_ns_per_frame": 101.29397583007812,
-        "candidate_ns_per_frame": 101.3135986328125,
-        "compiler_changed": true,
-        "mir_changed": true,
-        "llvm_ir_changed": true,
-        "candidate_to_baseline": 1.0001937213202816,
-        "outputs": {
-          "output.bin": {
-            "samples": 2048,
-            "max_abs": 0.0,
-            "mismatches": 0,
-            "equivalent": true
-          },
-          "warm-output.bin": {
-            "samples": 2048,
-            "max_abs": 0.0,
-            "mismatches": 0,
-            "equivalent": true
-          }
-        },
-        "reference": "phase1"
-      },
-      {
         "name": "example-soundscapes-glass_garden",
         "baseline_name": "glass_garden",
         "backend": "native",
@@ -38673,12 +38412,6 @@
         "nonzero_samples": 4094,
         "samples": 4096,
         "max_abs": 0.778891921043396
-      },
-      {
-        "name": "example-soundscapes-deep_space_drone",
-        "nonzero_samples": 4096,
-        "samples": 4096,
-        "max_abs": 0.24781307578086853
       },
       {
         "name": "example-soundscapes-glass_garden",
@@ -44581,102 +44314,6 @@
         }
       },
       {
-        "name": "example-soundscapes-deep_space_drone",
-        "reference": "original",
-        "before": {
-          "instruction_lines": 684,
-          "vector_instruction_lines": 16,
-          "call:llvm.masked.load.v5f32.p0": 1,
-          "shufflevector": 4,
-          "call:llvm.maxnum.v4f32": 1,
-          "call:llvm.minnum.v4f32": 1,
-          "align_1_accesses": 4,
-          "call:llvm.smax.i32": 1,
-          "call:llvm.umin.i32": 1,
-          "call:llvm.maxnum.f32": 4,
-          "call:llvm.minnum.f32": 4,
-          "call:expf": 2,
-          "call:llvm.fptosi.sat.i64.f32": 1,
-          "call:llvm.floor.f32": 3,
-          "call:llvm.fabs.f32": 1,
-          "call:cosf": 1,
-          "call:sinf": 1,
-          "call:tanf": 2,
-          "call:llvm.fptosi.sat.i32.f32": 2,
-          "call:tanhf": 2
-        },
-        "after": {
-          "instruction_lines": 684,
-          "vector_instruction_lines": 16,
-          "call:llvm.masked.load.v5f32.p0": 1,
-          "shufflevector": 4,
-          "call:llvm.maxnum.v4f32": 1,
-          "call:llvm.minnum.v4f32": 1,
-          "align_1_accesses": 4,
-          "call:llvm.smax.i32": 1,
-          "call:llvm.umin.i32": 1,
-          "call:llvm.maxnum.f32": 4,
-          "call:llvm.minnum.f32": 4,
-          "call:expf": 2,
-          "call:llvm.fptosi.sat.i64.f32": 1,
-          "call:llvm.floor.f32": 3,
-          "call:llvm.fabs.f32": 1,
-          "call:cosf": 1,
-          "call:sinf": 1,
-          "call:tanf": 2,
-          "call:llvm.fptosi.sat.i32.f32": 2,
-          "call:tanhf": 2
-        }
-      },
-      {
-        "name": "example-soundscapes-deep_space_drone",
-        "reference": "phase1",
-        "before": {
-          "instruction_lines": 684,
-          "vector_instruction_lines": 16,
-          "call:llvm.masked.load.v5f32.p0": 1,
-          "shufflevector": 4,
-          "call:llvm.maxnum.v4f32": 1,
-          "call:llvm.minnum.v4f32": 1,
-          "align_1_accesses": 4,
-          "call:llvm.smax.i32": 1,
-          "call:llvm.umin.i32": 1,
-          "call:llvm.maxnum.f32": 4,
-          "call:llvm.minnum.f32": 4,
-          "call:expf": 2,
-          "call:llvm.fptosi.sat.i64.f32": 1,
-          "call:llvm.floor.f32": 3,
-          "call:llvm.fabs.f32": 1,
-          "call:cosf": 1,
-          "call:sinf": 1,
-          "call:tanf": 2,
-          "call:llvm.fptosi.sat.i32.f32": 2,
-          "call:tanhf": 2
-        },
-        "after": {
-          "instruction_lines": 684,
-          "vector_instruction_lines": 16,
-          "call:llvm.masked.load.v5f32.p0": 1,
-          "shufflevector": 4,
-          "call:llvm.maxnum.v4f32": 1,
-          "call:llvm.minnum.v4f32": 1,
-          "align_1_accesses": 4,
-          "call:llvm.smax.i32": 1,
-          "call:llvm.umin.i32": 1,
-          "call:llvm.maxnum.f32": 4,
-          "call:llvm.minnum.f32": 4,
-          "call:expf": 2,
-          "call:llvm.fptosi.sat.i64.f32": 1,
-          "call:llvm.floor.f32": 3,
-          "call:llvm.fabs.f32": 1,
-          "call:cosf": 1,
-          "call:sinf": 1,
-          "call:tanf": 2,
-          "call:llvm.fptosi.sat.i32.f32": 2,
-          "call:tanhf": 2
-        }
-      },
-      {
         "name": "example-soundscapes-glass_garden",
         "reference": "original",
         "before": {
@@ -45302,16 +44939,6 @@
     },
     {
       "name": "example-soundscapes-aurora_pad",
-      "reference": "phase1",
-      "process_instructions_equal_ignoring_metadata": true
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
-      "reference": "original",
-      "process_instructions_equal_ignoring_metadata": true
-    },
-    {
-      "name": "example-soundscapes-deep_space_drone",
       "reference": "phase1",
       "process_instructions_equal_ignoring_metadata": true
     },

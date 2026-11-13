@@ -7,8 +7,8 @@ const Oversample = 4
 
 struct Connections:
   weights: f32[Neurons]
-  excitation: f32
-  bias_weight: f32
+  excitation
+  bias_weight
 
 params:
   neuron_hz = 1800.0 {1.0, 12000.0, scale = log, unit = "Hz"}
@@ -26,7 +26,7 @@ params:
   left_neuron = 0 {0, Neurons - 1}
   right_neuron = 7 {0, Neurons - 1}
   stereo_width = 1.0 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.6 {0.0, 1.0}
 
 init:
   neuron: f32[Neurons]
@@ -36,9 +36,13 @@ init:
   filters: std::filter::Svf[Neurons]
   motion: std::osc::Sine[Neurons]
   excitation = std::osc::Saw()
-  dc_l = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass, cutoff = 10.0)
-  dc_r = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass, cutoff = 10.0)
+  source_dc_l = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass, cutoff = 10.0)
+  source_dc_r = std::filter::OnePole(mode = std::filter::OnePoleMode::HighPass, cutoff = 10.0)
   rng = std::random::Rng()
+
+  # Remove output DC after the final mix and saturation.
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
   rng.seed(90731)
 
   # Normalize each row's energy so feedback gain is meaningful as size changes.
@@ -88,10 +92,10 @@ block:
       # selectivity and ringing instead of multiplying the nominal loop gain.
       resonant[n] = filters[n](neuron[n]) / resonance_q
 
-    left = dc_l(neuron[left_neuron])
-    right = dc_r(neuron[right_neuron])
+    left = source_dc_l(neuron[left_neuron])
+    right = source_dc_r(neuron[right_neuron])
     mid = (left + right) * 0.5
     side = (left - right) * 0.5 * stereo_width
     
-    out1 = tanh(mid + side) * 0.8 * level
-    out2 = tanh(mid - side) * 0.8 * level
+    out1 = dc_l(tanh(mid + side) * 0.8 * level)
+    out2 = dc_r(tanh(mid - side) * 0.8 * level)

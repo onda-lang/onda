@@ -9,14 +9,6 @@ fn literal(values: &[f64]) -> String {
         .join(", ")
 }
 
-fn output_buffers(instance: &mut Instance, frames: usize, channels: usize) -> Vec<Vec<f64>> {
-    let mut outputs = vec![vec![0.0_f64; frames]; channels];
-    for (channel, values) in outputs.iter_mut().enumerate() {
-        bind_output(instance, channel, values.as_mut_ptr().cast(), frames * 8).unwrap();
-    }
-    outputs
-}
-
 fn close(actual: f64, expected: f64, tolerance: f64, label: &str) {
     if expected.is_nan() {
         assert!(actual.is_nan(), "{label}: {actual} should be NaN");
@@ -60,7 +52,7 @@ sample:
         );
         let (mut instance, ins, outs) = compile_instance(&source, values.len());
         assert_eq!((ins, outs), (0, 8));
-        let outputs = output_buffers(&mut instance, values.len(), outs);
+        let outputs = bind_f64_outputs(&mut instance, values.len());
         onda_runtime::process_checked_segment(
             &mut instance,
             0,
@@ -105,7 +97,7 @@ sample:
 "#,
         1,
     );
-    let outputs = output_buffers(&mut instance, 1, 6);
+    let outputs = bind_f64_outputs(&mut instance, 1);
     onda_runtime::process_checked_segment(
         &mut instance,
         0,
@@ -160,7 +152,7 @@ outs<f64> 2
 init:
   compressor = std::dynamics::Compressor<{width}>(
     threshold_db = threshold_db, ratio = ratio, knee_db = knee_db, makeup_db = makeup_db,
-    attack_s = {attack:.25}, release_s = {release:.25})
+    attack_lag_s = {attack:.25}, release_lag_s = {release:.25})
   values: {width}[{frames}] = [{values}]
   index = 0
 block:
@@ -178,8 +170,8 @@ block:
 "#,
         values = literal(&values)
     );
-    let (mut instance, _, outs) = compile_instance(&source, frames);
-    let outputs = output_buffers(&mut instance, frames, outs);
+    let (mut instance, _, _) = compile_instance(&source, frames);
+    let outputs = bind_f64_outputs(&mut instance, frames);
     let q = |x: f64| {
         if width == "f32" {
             f64::from(x as f32)
@@ -191,7 +183,7 @@ block:
         if seconds <= 0.0 {
             0.0
         } else {
-            q(q(-1.0 / q(q(seconds) * 48000.0)).exp())
+            (-1.0 / (q(seconds) * 48000.0)).exp()
         }
     };
     let mut detector = 0.0;
@@ -218,8 +210,8 @@ block:
             let right = q(-left * 0.5);
             let peak = left.abs().max(right.abs());
             let coefficient = coefficient(if peak > detector { attack } else { release });
-            detector = q(peak + q(q(detector - peak) * coefficient));
-            let level = 20.0 * detector.max(q(1e-20)).log10();
+            detector = peak + (detector - peak) * coefficient;
+            let level = 20.0 * q(detector).max(q(1e-20)).log10();
             let gain = 10.0_f64.powf((makeup - reduction(level, threshold, ratio, knee)) / 20.0);
             for (channel, input) in [left, right].into_iter().enumerate() {
                 close(
@@ -262,7 +254,8 @@ fn compressor_detector_continues_below_knee_and_through_release() {
 #[test]
 fn pitch_shift_complementary_windows_match_original_after_warmup() {
     // Retain the original two-cosine algorithm as a behavioral reference. Shared data/pitch
-    // primitives stay current; this comparison isolates the complementary-window change.
+    // primitives stay current. Recompute reference coefficients per sample so this
+    // comparison isolates the complementary-window change from parameter caching.
     let reference = include_str!("stdlib_optimizations/pitch_shift_reference.onda");
     for width in ["f32", "f64"] {
         let source = format!(
@@ -285,18 +278,20 @@ block:
     semitones = 7.0
   if blocks >= 256:
     semitones = -5.0
-  current.semitones = semitones
   original.semitones = semitones
+  if blocks == 96 || blocks == 224:
+    current.init(semitones = semitones)
+    original.init(semitones = semitones)
   blocks += 1
   sample:
     x = {width}(sin(f64(index) * 0.071) * 0.6 + cos(f64(index) * 0.017) * 0.2)
-    out1 = f64(current(x))
+    out1 = f64(current(x, semitones = semitones, window_s = {width}(0.09)))
     out2 = f64(original(x))
     index += 1
 "#
         );
         let (mut instance, _, _) = compile_instance(&source, 128);
-        let outputs = output_buffers(&mut instance, 128, 2);
+        let outputs = bind_f64_outputs(&mut instance, 128);
         let mut nonzero = 0;
         for block in 0..320 {
             onda_runtime::process_checked_segment(
@@ -321,5 +316,43 @@ block:
             nonzero > 10000,
             "pitch validation must cover active, warmed output"
         );
+    }
+}
+
+#[test]
+fn integer_level_and_pitch_conversions_match_floating_inputs() {
+    for width in ["i32", "i64", "f32", "f64"] {
+        let source = format!(
+            r#"
+import std/levels
+import std/pitch
+outs<f64> 7
+sample:
+  out1 = f64(std::levels::gain_to_db({width}(2)))
+  out2 = f64(std::levels::gain_to_db({width}(0)))
+  out3 = f64(std::pitch::hz_to_note({width}(660)))
+  out4 = f64(std::pitch::hz_to_note({width}(660), {width}(432)))
+  out5 = f64(std::pitch::semitones_from_ratio({width}(2)))
+  out6 = f64(std::pitch::note_to_hz({width}(81)))
+  out7 = f64(std::pitch::hz_to_note({width}(0)))
+"#
+        );
+        let output = render_f64(&source, 48000.0, 1);
+        let expected = [
+            20.0 * 2.0_f64.log10(),
+            -400.0,
+            69.0 + 12.0 * 1.5_f64.log2(),
+            69.0 + 12.0 * (660.0_f64 / 432.0).log2(),
+            12.0,
+            880.0,
+            69.0 + 12.0 * (1e-20_f64 / 440.0).log2(),
+        ];
+        for (channel, target) in expected.iter().enumerate() {
+            assert!(
+                (output[channel][0] - target).abs() < 1e-4,
+                "{width}, channel {channel}: {} != {target}",
+                output[channel][0]
+            );
+        }
     }
 }

@@ -11,7 +11,7 @@ const Velocities: f32[PatternLength] = [1.0, 0.58, 0.74, 0.48, 0.82, 0.55, 0.68,
 
 proc BellVoice:
   params:
-    decay_s = 3.2
+    decay_s = 8.0
     brightness = 0.65
 
   init:
@@ -22,29 +22,31 @@ proc BellVoice:
     amplitude = std::env::DecayEnv(decay_s = decay_s)
     modulation_index = std::env::DecayEnv(decay_s = decay_s * 0.24)
 
-  event strike(note: f32, velocity: f32):
+  event strike(note, velocity):
     freq = std::pitch::note_to_hz(note)
     carrier.reset()
     partial.reset()
     modulator.reset()
+    amplitude.decay_s = decay_s
     amplitude.start(velocity)
+    modulation_index.decay_s = decay_s * 0.24
     modulation_index.start()
 
   sample:
-    index = (1.5 + brightness * 11.0) * modulation_index(decay_s = decay_s * 0.24)
+    index = (1.5 + brightness * 11.0) * modulation_index()
     modulation = modulator(freq = freq * 1.414) * index
-    carrier_signal = carrier(freq = freq, phase_offset = modulation)
-    partial_signal = partial(freq = freq * 2.41, phase_offset = modulation * 0.31)
-    out1 = (carrier_signal * 0.72 + partial_signal * 0.28) * amplitude(decay_s = decay_s)
+    carrier_signal = carrier(freq = freq, phase_offset_rad = modulation)
+    partial_signal = partial(freq = freq * 2.41, phase_offset_rad = modulation * 0.31)
+    out1 = (carrier_signal * 0.72 + partial_signal * 0.28) * amplitude()
 
 params:
   auto_play = true
   root_note = 48 {24, 84}
   bpm = 92.0 {35.0, 180.0, unit = "BPM"}
-  decay_s = 3.2 {0.3, 10.0, unit = "s"}
+  decay_s = 8.0 {0.3, 20.0, unit = "s"}
   brightness = 0.65 {0.0, 1.0}
   space = 0.36 {0.0, 0.75}
-  level = 1.0 {0.0, 1.0}
+  level = 0.6 {0.0, 1.0}
 
 init:
   voices: BellVoice[VoiceCount] = BellVoice()
@@ -55,7 +57,7 @@ init:
   next_voice = 0
   pending_bang = false
 
-event strike(note: f32 = 60.0, velocity: f32 = 0.8):
+event strike(note = 60.0, velocity = 0.8):
   voices[next_voice].decay_s = decay_s
   voices[next_voice].brightness = brightness
   voices[next_voice].strike(note, velocity)
@@ -90,5 +92,5 @@ sample:
 
   wet_l = delay_l(dry_l + dry_r * 0.18)
   wet_r = delay_r(dry_r + dry_l * 0.18)
-  out1 = tanh((dry_l + wet_l * space) * level)
-  out2 = tanh((dry_r + wet_r * space) * level)
+  out1 = tanh(dry_l + wet_l * space) * level
+  out2 = tanh(dry_r + wet_r * space) * level

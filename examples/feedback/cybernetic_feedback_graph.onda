@@ -11,7 +11,7 @@ params:
   tone = 4200.0 {180.0, 16000.0}
   spread = 0.42 {0.0, 1.0}
   wet = 1.0 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.5 {0.0, 1.0}
   
 proc CyberCell<T>:
   ins<T>:
@@ -39,6 +39,10 @@ init:
   tone_a = std::filter::OnePole<f64>(cutoff = 4200.0)
   tone_b = std::filter::OnePole<f64>(cutoff = 3600.0)
 
+  # Remove output DC after the final mix and saturation.
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
+
 graph:
   drive >> cell_a.drive
   drive * (0.96 + spread * 0.10) >> cell_b.drive
@@ -65,5 +69,7 @@ graph:
   smear_a.out1 >> tone_a.in1
   smear_b.out1 >> tone_b.in1
 
-  tanh(f32(cell_a.out1 * (1.0 - wet) + tone_a.out1 * wet) * level * 0.5) >> out1
-  tanh(f32(cell_b.out1 * (1.0 - wet) + tone_b.out1 * wet) * level * 0.5) >> out2
+  tanh(f32(cell_a.out1 * (1.0 - wet) + tone_a.out1 * wet) * 0.5) * level >> dc_l.in1
+  dc_l.out1 >> out1
+  tanh(f32(cell_b.out1 * (1.0 - wet) + tone_b.out1 * wet) * 0.5) * level >> dc_r.in1
+  dc_r.out1 >> out2

@@ -4,7 +4,7 @@ import { bindEditorFontSize } from "./editor-font-size.js";
 import { bindProjectMenu } from "./project-menu.js";
 import { bindNewFileButton } from "./new-file.js";
 import "./layout.css";
-import source from "./default.onda";
+import source from "../../examples/basic/saw_filter_saturator.onda";
 
 const editor = new OndaProjectEditor({
   parent: document.querySelector("[data-editor]"),

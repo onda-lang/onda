@@ -5,6 +5,61 @@ All notable changes to Onda are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Onda follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). 
 
+## [0.9.3]
+
+### Changed
+
+- Updated the examples.
+- Retain double-precision coefficients and state for lag smoothing, dynamics, delay
+  smoothing, and impulse decay so long time constants keep progressing with f32 audio.
+  `lag_coefficient` now returns f64. Document lag time constants and RMS energy-domain timing.
+- Use ordinary exponential coefficients for lag smoothing and shared segment
+  timing and interpolation for ramps and finite envelopes. Input metadata retains
+  a fixed linear entry point without mutable curve dispatch.
+- Initialize smoothed gains at their requested value; subsequent changes are smoothed
+  in linear amplitude, including for `SmoothedDb`.
+- Accept integer inputs consistently in level and pitch conversions, promoting before
+  division and logarithms while retaining floating-point callers' precision.
+- Give standard-library envelope times finite stage durations, independent of amplitude
+  and curve shape. `DecayEnv` reaches zero and emits `finished()` after `decay_s`;
+  remove `end_level` and `decay_coefficient`. Envelope parameter hooks apply time,
+  shape, curve, sustain, trigger, and gate changes immediately. Timing edits scale
+  the remaining time; shape and curve edits reshape it from the current level.
+  Repeated writes leave the curve unchanged. Retriggers start from the current
+  level; zero-length stages consume no extra samples.
+- Distinguish timing controls: `Ramp.duration_s`, smoothing/gain/delay `lag_s`,
+  `LagUD.rise_lag_s`/`fall_lag_s`, dynamics `attack_lag_s`/`release_lag_s`, and
+  delay crossfade `fade_s`. Rename `time_coefficient` to `lag_coefficient` and
+  sample-player `seek(position)` to `seek(position_samples)`.
+- Add normalized exponential ramp/envelope shapes with configurable curvature and
+  sample-counted completion. `curve = -4` is the default bend; zero is linear,
+  negative moves early, and positive moves late. Envelope stages expose their own
+  curvature controls. Ramps capture configuration when their target changes;
+  envelope controls update through parameter hooks.
+  Delay crossfades capture each fade duration and process the latest pending target
+  after that fade finishes.
+- Preserve representable exponential ramp and envelope tails instead of subtracting
+  a nearly-one progress value; keep completion on the counted duration sample.
+- Prepare fixed instance-state addresses at function entry in Binaryen, avoiding
+  repeated address setup in state-heavy processor sample loops, and move cold
+  per-instance setup into the branches that use it after inlining.
+- Add impulse-driven `std::env::Decay(decay_60db_s)` with additive exponential tails,
+  sample-rate time updates, and reset. T60 specifies a fall to 0.001 of the original
+  amplitude, independently of finite envelope completion.
+- Replace Schroeder reverb `room_size` with calibrated `decay_60db_s`, using each
+  comb's actual delay length and normalizing its gain independently.
+- Retune affected examples for finite note durations and gentler envelope curves;
+  calibrate decay defaults against the original time to fall by 20 dB, rounded to
+  0.05-second steps and capped at 8 seconds, and configure envelopes before triggering them.
+- Rename oscillator `phase_offset` to `phase_offset_rad` and mixer `ConstantSum` to
+  `WeightedSum`; add unit metadata to existing ranged standard-library parameters.
+- Add `reset(value)` to `LagUD` and `Slew`, and scale the DC blocker coefficient with
+  the effective sample rate to retain its decay time in seconds.
+- Expose reusable `std::delay::Allpass` processing and use it for Schroeder diffusion;
+  hide envelope stages and reverb implementation types and tuning constants from the public API reference.
+- Apply sample-player speed, pitch-shifter pitch/window, and Schroeder decay changes
+  at sample rate, preserving running playback, phase, and feedback state.
+
 ## [0.9.2]
 
 ### Added
@@ -1527,6 +1582,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Rename identifiers that now collide with reserved keywords, especially `in`.
 - Update scripts and documentation that refer to the old flat `examples/` paths.
 
+[0.9.3]: https://github.com/onda-lang/onda/compare/0.9.2...0.9.3
 [0.9.2]: https://github.com/onda-lang/onda/compare/0.9.1...0.9.2
 [0.9.1]: https://github.com/onda-lang/onda/compare/0.9.0...0.9.1
 [0.9.0]: https://github.com/onda-lang/onda/compare/0.8.40...0.9.0

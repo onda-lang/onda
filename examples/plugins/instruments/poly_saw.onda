@@ -45,7 +45,7 @@ proc Voice:
     filter = std::filter::Svf()
 
   def update_pitch():
-    frequency = std::pitch::note_to_hz(f32(key) + bend)
+    frequency = std::pitch::note_to_hz(key + bend)
     detune_ratio = std::pitch::ratio_between(0.0, detune)
     saw_l.freq = frequency / detune_ratio
     saw_r.freq = frequency * detune_ratio
@@ -166,7 +166,7 @@ struct VoiceManager:
     self.ids[selected] = id
     self.channels[selected] = channel
     self.keys[selected] = key
-    self.pans[selected] = (-1.0 + f32(selected) * 2.0 / f32(VoiceCount - 1)) * spread
+    self.pans[selected] = (-1.0 + selected * 2.0 / (VoiceCount - 1)) * spread
     self.active[selected] = true
     self.held[selected] = true
     self.configure(
@@ -216,7 +216,7 @@ struct VoiceManager:
   ):
     for i in 0..VoiceCount:
       if self.active[i]:
-        self.pans[i] = (-1.0 + f32(i) * 2.0 / f32(VoiceCount - 1)) * spread
+        self.pans[i] = (-1.0 + i * 2.0 / (VoiceCount - 1)) * spread
         self.configure(
           voices, i, detune_value, attack_value,
           decay_value, sustain_value, release_value, cutoff_value,
@@ -253,11 +253,11 @@ params:
   filter_env_octaves = 3.0 {0.0, 6.0}
   spread = 0.72 {0.0, 1.0}
   drive = 1.0 {1.0, 8.0}
-  reverb_room_size = 0.8 {0.0, 1.0}
+  reverb_decay_60db_s = 2.3 {0.1, 10.0, unit = "s"}
   reverb_damping = 0.3 {0.0, 0.99}
   reverb_width = 1.0 {0.0, 1.0}
   reverb_level = 1.0 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.5 {0.0, 1.0}
 
 init:
   voices: Voice[VoiceCount]
@@ -293,7 +293,7 @@ event pitch_bend(channel: i32, value):
   voice_manager.pitch_bend(voices, channel, value)
 
 block:
-  reverb.room_size = reverb_room_size
+  reverb.decay_60db_s = reverb_decay_60db_s
   reverb.damping = reverb_damping
   reverb.width = reverb_width
   voice_manager.update(

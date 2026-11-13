@@ -1,3 +1,6 @@
+# Filters for shaping frequency content, emphasizing resonances, and removing DC.
+# Includes reusable filter processors and helpers for designing filter coefficients.
+
 namespace std::filter:
   enum OnePoleMode:
     LowPass
@@ -75,9 +78,9 @@ namespace std::filter:
 
     sample:
       input = f64(in1)
-      y = f64(coefficients.b0) * input + z1
-      z1 = f64(coefficients.b1) * input - coefficients.a1 * y + z2
-      z2 = f64(coefficients.b2) * input - coefficients.a2 * y
+      y = coefficients.b0 * input + z1
+      z1 = coefficients.b1 * input - coefficients.a1 * y + z2
+      z2 = coefficients.b2 * input - coefficients.a2 * y
       out1 = T(y)
 
   proc OnePole<T>:
@@ -85,7 +88,7 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      cutoff = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
+      cutoff = 1000.0 {0.0, T(SR * 0.48), unit = "Hz"} => update_cutoff
       mode: OnePoleMode = OnePoleMode::LowPass
 
     init:
@@ -121,7 +124,8 @@ namespace std::filter:
       y1 = 0.0
 
     sample:
-      r: T = 0.995
+      # Preserve the 48 kHz decay time at the effective sample rate.
+      r: T = pow(0.995, 48000.0 / SR)
       y = in1 - x1 + r * y1
       x1 = in1
       y1 = y
@@ -132,8 +136,8 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      freq = 1000.0 {1.0, T(SR * 0.48)} => update_coefficients
-      bandwidth = 120.0 {1.0, T(SR * 0.48)} => update_coefficients
+      freq = 1000.0 {1.0, T(SR * 0.48), unit = "Hz"} => update_coefficients
+      bandwidth = 120.0 {1.0, T(SR * 0.48), unit = "Hz"} => update_coefficients
 
     init<T>:
       y1 = 0.0
@@ -144,9 +148,9 @@ namespace std::filter:
 
     def update_coefficients():
       radius = exp(-PI * bandwidth / SR)
-      coefficient = T(2.0) * radius * cos(TWO_PI * freq / SR)
+      coefficient = 2.0 * radius * cos(TWO_PI * freq / SR)
       radius_squared = radius * radius
-      input_gain = T(1.0) - radius
+      input_gain = 1.0 - radius
 
     sample:
       y = in1 * input_gain + coefficient * y1 - radius_squared * y2
@@ -159,7 +163,7 @@ namespace std::filter:
     outs<T> 1
 
     params<T>:
-      private cutoff = 1000.0 {0.0, T(SR * 0.48)}
+      private cutoff = 1000.0 {0.0, T(SR * 0.48), unit = "Hz"}
       private q = 0.707107
       mode: SvfMode = SvfMode::LowPass
 
@@ -178,7 +182,7 @@ namespace std::filter:
       compute_coeffs()
 
     def compute_coeffs():
-      qv = max(q, T(0.01))
+      qv = max(q, 0.01)
       f = tan(PI * cutoff / SR)
       inv_q = 1.0 / qv
       d = 1.0 / (1.0 + inv_q * f + f * f)

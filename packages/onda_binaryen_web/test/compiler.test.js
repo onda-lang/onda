@@ -522,6 +522,43 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
   );
 });
 
+test("prepares state addresses outside sample loops and refreshes them for each instance", async () => {
+  for (const optimize of [false, true]) {
+    const artifact = compileMir(executableMir(), { optimize, emitText: true });
+    if (!optimize) {
+      const process = emittedParameterizedFunction(artifact.wat, "$onda.fn.1");
+      const loop = process.slice(process.indexOf("(loop $$onda.loop"));
+      assert.doesNotMatch(loop, /global\.get \$\$onda\.state/);
+    }
+    const { instance } = await WebAssembly.instantiate(artifact.wasm, {});
+    const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+    const params = Number(__heap_base.value);
+    const firstState = params + 16;
+    const secondState = firstState + 16;
+    const outputTable = secondState + 16;
+    const output = outputTable + 16;
+    const view = new DataView(memory.buffer);
+    view.setUint32(outputTable, output, true);
+    for (const state of [firstState, secondState]) {
+      assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+    }
+    for (const [state, step, expected] of [
+      [firstState, 0.25, [0.25, 0.5, 0.75, 1]],
+      [secondState, 0.5, [0.5, 1, 1.5, 2]],
+      [firstState, 1, [2, 3, 4, 5]],
+    ]) {
+      view.setFloat32(params, step, true);
+      for (const [start, frames, flags] of [[0, 2, 1], [2, 2, 2]]) {
+        assert.equal(
+          callProcess(onda_process, 0, outputTable, start, frames, flags, params, state, 0, 0, 0, 0),
+          0,
+        );
+      }
+      assert.deepEqual([...new Float32Array(memory.buffer, output, 4)], expected);
+    }
+  }
+});
+
 test("preserves explicit state authorship in metadata", () => {
   const mir = executableMir();
   mir.state[0].name = "foo____onda_bar";

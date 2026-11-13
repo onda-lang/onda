@@ -3597,7 +3597,7 @@ init:
 
         assert!(labels.contains(&"freq".to_owned()), "labels: {labels:?}");
         assert!(
-            labels.contains(&"phase_offset".to_owned()),
+            labels.contains(&"phase_offset_rad".to_owned()),
             "labels: {labels:?}"
         );
 

@@ -1,13 +1,10 @@
-import std/env
 import std/levels
-import std/osc
 import std/pitch
 import std/random
+include "../effects/processors/effect_audition.onda"
 
 const GrainCount = 16
 const TapeSamples = i32(SR * 4)
-const SourcePatternLength = 7
-const SourceNotes: i32[SourcePatternLength] = [45, 52, 57, 64, 55, 69, 60]
 
 params:
   auto_play = true
@@ -19,7 +16,7 @@ params:
   pitch = 0.0 {-24.0, 24.0, unit = "st"}
   pitch_jitter = 0.08 {0.0, 0.5}
   feedback = 0.18 {0.0, 0.92}
-  dry = 0.2 {0.0, 1.0}
+  wet = 0.8 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}
 
 init:
@@ -35,41 +32,16 @@ init:
   next_grain = 0
   spawn_clock = 0
 
-  source_a = std::osc::Sine(amp = 0.62)
-  source_b = std::osc::Sine(amp = 0.24)
-  source_c = std::osc::Sine(amp = 0.14)
-  source_envelope = std::env::DecayEnv(decay_s = 0.32)
-  source_clock = 0
-  source_step = 0
-  source_frequency = std::pitch::note_to_hz(f32(SourceNotes[0]))
-  pending_bang = false
+  audition = EffectAudition()
   rng = std::random::Rng()
 
 event bang():
-  pending_bang = true
+  audition.bang()
 
 sample:
-  source_period = max(i32(SR * 0.63), 1)
-  if auto_play && source_clock == 0:
-    pending_bang = true
-
-  if pending_bang:
-    source_frequency = std::pitch::note_to_hz(f32(SourceNotes[source_step]))
-    source_a.reset()
-    source_b.reset()
-    source_c.reset()
-    source_envelope.start()
-    source_step = (source_step + 1) % SourcePatternLength
-    pending_bang = false
-  source_clock = (source_clock + 1) % source_period
-
+  source, _ = audition(auto_play = auto_play)
   if live_input:
     source = in1
-  else:
-    audition = source_a(freq = source_frequency)
-    audition = audition + source_b(freq = source_frequency * 1.4983)
-    audition = audition + source_c(freq = source_frequency * 2.006)
-    source = audition * source_envelope() * 0.42
 
   if !freeze:
     tape[write_index] = source + tape[write_index] * feedback
@@ -107,5 +79,5 @@ sample:
       grain_age[i] = grain_age[i] + 1
 
   normalization = 1.0 / sqrt(max(density * grain_size, 1.0))
-  out1 = tanh((cloud_l * normalization + source * dry) * level)
-  out2 = tanh((cloud_r * normalization + source * dry) * level)
+  out1 = tanh((cloud_l * normalization * wet + source * (1.0 - wet)) * level)
+  out2 = tanh((cloud_r * normalization * wet + source * (1.0 - wet)) * level)

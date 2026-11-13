@@ -1,3 +1,6 @@
+# Noise generators with white, pink, and brown spectral characteristics.
+# Useful as audio sources, excitation signals, and random modulation.
+
 namespace std::noise:
   proc White<T>:
     outs<T> 1
@@ -36,12 +39,12 @@ namespace std::noise:
 
     sample:
       white = rng.bipolar()
-      b0 = T(0.99765) * b0 + T(0.0990460) * white
-      b1 = T(0.96300) * b1 + T(0.2965164) * white
-      b2 = T(0.57000) * b2 + T(1.0526913) * white
+      b0 = 0.99765 * b0 + 0.0990460 * white
+      b1 = 0.96300 * b1 + 0.2965164 * white
+      b2 = 0.57000 * b2 + 1.0526913 * white
 
-      pink = (b0 + b1 + b2 + T(0.1848) * white) * T(0.15)
-      out1 = clamp(pink, T(-1.0), T(1.0)) * amp
+      pink = (b0 + b1 + b2 + 0.1848 * white) * 0.15
+      out1 = clamp(pink, -1.0, 1.0) * amp
 
   proc Brown<T>:
     outs<T> 1
@@ -59,5 +62,5 @@ namespace std::noise:
         state = 0.0
 
     sample:
-      state = clamp(state + rng.bipolar() * T(0.02), T(-1.0), T(1.0))
+      state = clamp(state + rng.bipolar() * 0.02, -1.0, 1.0)
       out1 = state * amp

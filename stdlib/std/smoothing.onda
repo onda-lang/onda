@@ -1,59 +1,211 @@
+# Tools for smoothing changing signals and controlling how values move over time.
+# Provides exponential lag, slew-rate limits, and finite-duration ramps.
+
 namespace std::smoothing:
   enum RampShape:
     Linear
     SCurve {label = "S-curve"}
+    Exponential
 
-  def time_coefficient<T>(time_s: T):
-    if time_s <= 0.0:
-      return T(0.0)
-    return exp(T(-1.0) / (time_s * SR))
+  # A lag covers 1 - exp(-1), approximately 63.2%, of a step in lag_s.
+  def lag_coefficient<T>(lag_s: T) -> f64:
+    if lag_s <= 0.0 || lag_s - lag_s != 0.0:
+      return 0.0
+    return exp((-1.0 / SR) / f64(lag_s))
+
+  # Finite transitions share sample rounding and exact endpoint handling.
+  def _duration_samples<T>(duration_s: T) -> i64:
+    if duration_s > 0.0 && duration_s - duration_s == 0.0:
+      return max(i64(ceil(duration_s * SR)), 1)
+    return 0
+
+  # Prepared timing can be cached independently of a segment's current target.
+  struct _Duration:
+    samples: i64 = 0
+    inverse_samples: f64 = 1.0
+
+  def _duration<T>(duration_s: T) -> _Duration:
+    result: _Duration
+    result.samples = _duration_samples(duration_s)
+    result.inverse_samples = 1.0 / max(result.samples, 1)
+    return result
+
+  # Avoid cancellation for small exponential increments.
+  def _expm1(x: f64) -> f64:
+    if abs(x) < 0.001:
+      return x * (1.0 + x * (0.5 + x * (1.0 / 6.0 + x * (1.0 / 24.0 + x * (1.0 / 120.0)))))
+    return exp(x) - 1.0
+
+  struct _Segment<T>:
+    value: T = 0.0
+    origin: T = 0.0
+    target: T = 0.0
+    samples: i64 = 0
+    duration_samples: i64 = 0
+    elapsed: i64 = 0
+    inverse_samples: T = 0.0
+    shape: RampShape = RampShape::Linear
+    exponential: f64 = 0.0
+    increment: f64 = 0.0
+    multiplier: f64 = 1.0
+    curve: T = -4.0
+
+    def reset(self, value: T):
+      self.value = value
+      self.origin = value
+      self.target = value
+      self.samples = 0
+      self.elapsed = 0
+
+    def begin(self, target: T, duration: _Duration, shape: RampShape, curve: T = -4.0):
+      self.origin = self.value
+      self.target = target
+      self.samples = duration.samples
+      self.duration_samples = duration.samples
+      self.elapsed = 0
+      self.inverse_samples = T(duration.inverse_samples)
+      self.shape = shape
+      self.curve = curve
+      if shape == RampShape::Exponential:
+        self.exponential = 0.0
+        if curve == 0.0 || curve - curve != 0.0:
+          self.shape = RampShape::Linear
+        else:
+          # Integrate geometric increments of expm1(curve * phase) / expm1(curve).
+          # Coefficients are f64 and computed once, including for f32 envelopes.
+          curvature = f64(clamp(curve, -60.0, 60.0))
+          step = curvature * duration.inverse_samples
+          self.multiplier = exp(step)
+          self.increment = _expm1(step) / _expm1(curvature)
+          if curve < 0.0:
+            # Falling curves track the remaining distance from the start. This
+            # avoids subtracting nearly-one progress and losing the decay tail.
+            self.exponential = 1.0
+            self.increment *= -exp(curvature)
+      if duration.samples == 0 || self.origin - self.origin != 0.0 || target - target != 0.0:
+        self.value = target
+        self.elapsed = duration.samples
+
+    # Live envelope edits preserve the current value and the fraction of time left.
+    # Identical parameter writes leave the running curve untouched.
+    def update(self, target: T, duration: _Duration, shape: RampShape, curve: T):
+      effective_shape = shape
+      if shape == RampShape::Exponential && (curve == 0.0 || curve - curve != 0.0):
+        effective_shape = RampShape::Linear
+      same_curve = effective_shape != RampShape::Exponential || curve == self.curve
+      if target == self.target && duration.samples == self.duration_samples && effective_shape == self.shape && same_curve:
+        return
+      remaining: _Duration
+      remaining.samples = self.samples - self.elapsed
+      if duration.samples != self.duration_samples:
+        scaled_samples = f64(remaining.samples) * f64(duration.samples)
+        remaining.samples = max(i64(ceil(scaled_samples / max(self.duration_samples, 1))), 0)
+      remaining.inverse_samples = 1.0 / max(remaining.samples, 1)
+      self.begin(target, remaining, shape, curve)
+      self.duration_samples = duration.samples
+
+    def complete(self):
+      return self.elapsed >= self.samples
+
+    def advance(self):
+      return self._advance(self.shape)
+
+    def advance_linear(self):
+      return self._advance(RampShape::Linear)
+
+    def _advance(self, shape: RampShape):
+      if self.elapsed < self.samples:
+        self.elapsed += 1
+        if self.elapsed == self.samples:
+          self.value = self.target
+        else:
+          weight: T = 0.0
+          from = self.origin
+          to = self.target
+          if shape == RampShape::Exponential:
+            if self.curve < 0.0:
+              self.exponential = self.exponential * self.multiplier + self.increment
+              from = self.target
+              to = self.origin
+            else:
+              self.exponential += self.increment
+              self.increment *= self.multiplier
+            distance = clamp(self.exponential, 0.0, 1.0)
+            if distance > 0.5:
+              previous_from = from
+              from = to
+              to = previous_from
+              distance = 1.0 - distance
+            weight = T(distance)
+          else:
+            # Derive the distance from the nearer endpoint without accumulating
+            # rounding error or subtracting a nearly-one floating-point phase.
+            samples_left = self.samples - self.elapsed
+            count = self.elapsed
+            if self.elapsed > samples_left:
+              count = samples_left
+              from = self.target
+              to = self.origin
+            phase = min(T(count) * self.inverse_samples, T(0.5))
+            if shape == RampShape::SCurve:
+              phase = phase * phase * (3.0 - 2.0 * phase)
+            weight = phase
+          # Keep finite extremes finite and preserve precision near either endpoint.
+          if (from < 0.0) != (to < 0.0):
+            self.value = from * (1.0 - weight) + to * weight
+          else:
+            self.value = from + (to - from) * weight
+      return self.value
 
   proc Lag<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      time_s = 0.05 => update_time
+      lag_s = 0.05 => update_lag
 
-    init<T>:
-      y = 0.0
-      coef = 0.0
+    init:
+      y: f64 = 0.0
+      coefficient: f64 = 0.0
 
-    def update_time():
-      coef = std::smoothing::time_coefficient<T>(time_s)
+    def update_lag():
+      coefficient = lag_coefficient(lag_s)
 
     event reset(value: T = 0.0):
       y = value
 
     sample:
-      y = in1 + (y - in1) * coef
-      out1 = y
+      y = in1 + (y - in1) * coefficient
+      out1 = T(y)
 
   proc LagUD<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      attack_s = 0.01 => update_attack
-      release_s = 0.1 => update_release
+      rise_lag_s = 0.01 => update_rise
+      fall_lag_s = 0.1 => update_fall
 
-    init<T>:
-      y = 0.0
-      attack_coef = 0.0
-      release_coef = 0.0
+    init:
+      y: f64 = 0.0
+      rise_coefficient: f64 = 0.0
+      fall_coefficient: f64 = 0.0
 
-    def update_attack():
-      attack_coef = std::smoothing::time_coefficient<T>(attack_s)
+    def update_rise():
+      rise_coefficient = lag_coefficient(rise_lag_s)
 
-    def update_release():
-      release_coef = std::smoothing::time_coefficient<T>(release_s)
+    def update_fall():
+      fall_coefficient = lag_coefficient(fall_lag_s)
+
+    event reset(value: T = 0.0):
+      y = value
 
     sample:
       if (in1 > y):
-        y = in1 + (y - in1) * attack_coef
+        y = in1 + (y - in1) * rise_coefficient
       else:
-        y = in1 + (y - in1) * release_coef
-      out1 = y
+        y = in1 + (y - in1) * fall_coefficient
+      out1 = T(y)
 
   proc Slew<T>:
     ins<T> 1
@@ -69,10 +221,13 @@ namespace std::smoothing:
       fall_step = 0.0
 
     def update_rise():
-      rise_step = max(rise_per_s, T(0.0)) / SR
+      rise_step = max(rise_per_s, 0.0) / SR
 
     def update_fall():
-      fall_step = max(fall_per_s, T(0.0)) / SR
+      fall_step = max(fall_per_s, 0.0) / SR
+
+    event reset(value: T = 0.0):
+      y = value
 
     sample:
       delta = in1 - y
@@ -84,65 +239,51 @@ namespace std::smoothing:
         y = in1
       out1 = y
 
-  # Fixed-duration transitions. Configuration is captured when the target changes.
+  # Duration, shape, and curve are captured on each new target.
   proc Ramp<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      time_s = 0.05 => update_time
+      duration_s = 0.05 => update_duration
       shape: RampShape = RampShape::Linear
+      curve = -4.0 {-60.0, 60.0}
 
-    init<T>:
-      y = 0.0
-      start = 0.0
-      target = 0.0
-      samples: i64 = 0
-      elapsed: i64 = 0
-      inverse_samples: f64 = 0.0
-      transition_shape: RampShape = RampShape::Linear
-      duration_samples: i64 = 0
-      duration_inverse: f64 = 0.0
+    init:
+      segment: _Segment<T>
+      duration: _Duration
 
-    def update_time():
-      duration_samples = 0
-      if time_s > 0.0 && time_s - time_s == 0.0:
-        duration_samples = max(i64(ceil(time_s * SR)), i64(1))
-      duration_inverse = 1.0 / f64(max(duration_samples, i64(1)))
+    def update_duration():
+      duration = _duration(duration_s)
 
     event reset(value: T = 0.0):
-      y = value
-      start = value
-      target = value
-      elapsed = samples
+      segment.reset(value)
 
     sample:
-      if in1 != target:
-        start = y
-        target = in1
-        samples = duration_samples
-        elapsed = 0
-        inverse_samples = duration_inverse
-        transition_shape = shape
-        # Non-finite endpoints update directly, allowing the next finite input to recover.
-        if samples <= 1 || start - start != 0.0 || target - target != 0.0:
-          y = target
-          elapsed = samples
+      if in1 != segment.target:
+        segment.begin(in1, duration, shape, curve)
+      out1 = segment.advance()
 
-      if elapsed < samples:
-        elapsed += 1
-        if elapsed == samples:
-          y = target
-        else:
-          phase = f64(elapsed) * inverse_samples
-          if transition_shape == RampShape::SCurve:
-            phase = phase * phase * (3.0 - 2.0 * phase)
-          weight = T(clamp(phase, 0.0, 1.0))
-          # Keep finite extremes finite and retain precision near either endpoint.
-          if (start < 0.0) != (target < 0.0):
-            y = start * (1.0 - weight) + target * weight
-          elif weight <= 0.5:
-            y = start + (target - start) * weight
-          else:
-            y = target + (start - target) * (1.0 - weight)
-      out1 = y
+  # Input metadata has a fixed linear shape. Keep its sample path independent
+  # of the public Ramp's mutable shape and curve parameters.
+  proc _LinearRamp<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params<T>:
+      duration_s = 0.05 => update_duration
+
+    init:
+      segment: _Segment<T>
+      duration: _Duration
+
+    def update_duration():
+      duration = _duration(duration_s)
+
+    event reset(value: T = 0.0):
+      segment.reset(value)
+
+    sample:
+      if in1 != segment.target:
+        segment.begin(in1, duration, RampShape::Linear)
+      out1 = segment.advance_linear()

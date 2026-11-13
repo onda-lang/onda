@@ -41,9 +41,8 @@ pub fn generate_stdlib_reference() -> Result<String, String> {
          `_` are implementation helpers and are omitted.\n\n",
     );
     out.push_str(
-        "`std/prelude` is imported automatically. It loads `std/math`, `std/lookup`, and \
-         `std/random`, including the unqualified forwarding functions from the first two modules. \
-         Import the other modules explicitly before using their qualified APIs.\n\n",
+        "Common utilities are loaded automatically by `std/prelude`; its import list is shown \
+         below. Import additional modules explicitly before using their qualified APIs.\n\n",
     );
 
     out.push_str("## Modules\n\n| Module | Provides |\n| --- | --- |\n");
@@ -64,6 +63,11 @@ pub fn generate_stdlib_reference() -> Result<String, String> {
 
     for (name, source, program) in &modules {
         out.push_str(&format!("\n## `{name}`\n\n"));
+        let overview = module_overview(source);
+        if !overview.is_empty() {
+            out.push_str(&overview);
+            out.push_str("\n\n");
+        }
         if *name == "std/prelude" {
             out.push_str("Imported automatically. It loads:\n\n");
             for import in module_imports(source) {
@@ -97,6 +101,19 @@ fn parse_module_surface(module: &str, source: &str) -> Result<Program, String> {
     onda_frontend::parse_program(&source_without_imports).map_err(|diagnostics| {
         format!("failed to parse embedded module '{module}': {diagnostics:?}")
     })
+}
+
+// Leading module comments are authored beside the implementation and included verbatim.
+fn module_overview(source: &str) -> String {
+    source
+        .lines()
+        .take_while(|line| line.trim().is_empty() || line.starts_with('#'))
+        .filter_map(|line| {
+            line.strip_prefix('#')
+                .map(|text| text.strip_prefix(' ').unwrap_or(text))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn module_imports(source: &str) -> Vec<String> {
@@ -480,7 +497,8 @@ fn anchor(module: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::generate_stdlib_reference;
+    use super::{generate_stdlib_reference, module_overview};
+    use onda_frontend::{stdlib_module_names, stdlib_module_source};
 
     #[test]
     fn generated_reference_contains_module_and_processor_surfaces() {
@@ -494,5 +512,22 @@ mod tests {
         assert!(docs.contains("## `std/prelude`"));
         assert!(!docs.contains("def _hann_window"));
         assert!(!docs.contains("Namespace: `std::_"));
+        assert!(docs.contains("proc WeightedSum<T>:"));
+        assert!(docs.contains("proc Allpass<T>:"));
+        assert!(docs.contains("proc Decay<T>:"));
+        assert!(docs.contains("decay_60db_s: T = 0.2"));
+        assert!(docs.contains("curve: T = -4.0"));
+        assert!(docs.contains("attack_curve: T = -4.0"));
+        assert!(!docs.contains("### Enum `Stage`"));
+        assert!(!docs.contains("#### Struct `CombLine<T>`"));
+        assert!(!docs.contains("#### Struct `AllpassLine<T>`"));
+        for name in stdlib_module_names() {
+            let overview = module_overview(stdlib_module_source(name).unwrap());
+            assert!(!overview.is_empty(), "{name} needs a module introduction");
+            assert!(
+                docs.contains(&format!("## `{name}`\n\n{overview}\n")),
+                "{name} introduction missing from generated reference"
+            );
+        }
     }
 }

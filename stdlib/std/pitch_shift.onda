@@ -1,3 +1,6 @@
+# Real-time pitch transposition of incoming audio.
+# Useful for harmonization, detuning, and pitch-shifted feedback effects.
+
 import std/data
 import std/pitch
 
@@ -9,29 +12,41 @@ namespace std::pitch_shift:
     outs<T> 1
 
     params<T>:
-      semitones = 12.0
-      window_s = 0.09 {T(16.0) / SR, T(BufferSize - 2) / SR}
+      semitones = 12.0 => update_pitch
+      window_s = 0.09 {T(16.0) / SR, T(BufferSize - 2) / SR, unit = "s"} => update_window
 
     init:
       data = std::data<BufferSize>::Data<T>()
       write_index = 0 {BufferSize, wrap}
       phase: T = 0.0
-
-    block:
-      ratio: T = std::pitch::ratio_between(T(0.0), semitones)
+      pitch_offset: T = 1.0 - std::pitch::ratio_between(0.0, semitones)
       window_samples: T = window_s * SR
-      phase_increment: T = (T(1.0) - ratio) / window_samples
+      phase_increment: T = pitch_offset / window_samples
+      coefficient_semitones: T = semitones
+      coefficient_window_s: T = window_s
 
-      sample:
-        data.storage[write_index] = in1
-        phase = wrap(phase + phase_increment, T(0.0), T(1.0))
-        phase_b = wrap(phase + T(0.5), T(0.0), T(1.0))
+    def update_pitch():
+      if semitones != coefficient_semitones:
+        pitch_offset = 1.0 - std::pitch::ratio_between(0.0, semitones)
+        phase_increment = pitch_offset / window_samples
+        coefficient_semitones = semitones
 
-        read_a = T(write_index) - phase * window_samples
-        read_b = T(write_index) - phase_b * window_samples
-        gain_a = T(0.5) - T(0.5) * cos(phase * TWO_PI)
-        gain_b = T(1.0) - gain_a
-        shifted = data.readL(read_a) * gain_a + data.readL(read_b) * gain_b
+    def update_window():
+      if window_s != coefficient_window_s:
+        window_samples = window_s * SR
+        phase_increment = pitch_offset / window_samples
+        coefficient_window_s = window_s
 
-        write_index += 1
-        out1 = shifted
+    sample:
+      data.storage[write_index] = in1
+      phase = wrap(phase + phase_increment, 0.0, T(1.0))
+      phase_b = wrap(phase + 0.5, 0.0, T(1.0))
+
+      read_a = write_index - phase * window_samples
+      read_b = write_index - phase_b * window_samples
+      gain_a = 0.5 - 0.5 * cos(phase * TWO_PI)
+      gain_b = 1.0 - gain_a
+      shifted = data.readL(read_a) * gain_a + data.readL(read_b) * gain_b
+
+      write_index += 1
+      out1 = shifted

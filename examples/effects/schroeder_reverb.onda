@@ -7,7 +7,7 @@ params:
   auto_play = true
   live_input = 0.0 {0.0, 1.0, step = 1.0}
   mix = 0.54 {0.0, 1.0}
-  room_size = 0.84 {0.0, 1.0}
+  decay_60db_s = 2.7 {0.1, 10.0, unit = "s"}
   damping = 0.36 {0.0, 0.98}
   width = 0.94 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}
@@ -24,7 +24,7 @@ graph:
   audition.out1 * (1.0 - live_input) + in1 * live_input >> reverb.in1
   audition.out2 * (1.0 - live_input) + in2 * live_input >> reverb.in2
   mix >> reverb.mix
-  room_size >> reverb.room_size
+  decay_60db_s >> reverb.decay_60db_s
   damping >> reverb.damping
   width >> reverb.width
   reverb.out1 * level >> out1

@@ -1,9 +1,8 @@
-import std/filter
-import std/osc
-import std/pitch
+import processors/effect_audition
 import processors/stereo_chorus
 
 params:
+  auto_play = true
   live_input = false
   rate = 0.23 {0.03, 4.0, scale = log, unit = "Hz"}
   depth_ms = 5.0 {0.0, 12.0, unit = "ms"}
@@ -13,22 +12,16 @@ params:
 
 init:
   chorus = StereoChorus()
-  pad_a = std::osc::Saw(freq = std::pitch::note_to_hz(45.0), amp = 0.18)
-  pad_b = std::osc::Saw(freq = std::pitch::note_to_hz(52.0), amp = 0.14)
-  pad_c = std::osc::Triangle(freq = std::pitch::note_to_hz(57.0), amp = 0.12)
-  pad_filter = std::filter::OnePole(cutoff = 1250.0)
-  movement = std::osc::Sine(freq = 0.07)
+  audition = EffectAudition()
+
+event bang():
+  audition.bang()
 
 sample:
-  source_l = in1
-  source_r = in2
-  if !live_input:
-    drift = movement()
-    pad_a.freq = std::pitch::note_to_hz(45.0) * (1.0 + drift * 0.0015)
-    pad_b.freq = std::pitch::note_to_hz(52.0) * (1.0 - drift * 0.0011)
-    pad = pad_filter(pad_a() + pad_b() + pad_c())
-    source_l = pad
-    source_r = pad
+  source_l, source_r = audition(auto_play = auto_play)
+  if live_input:
+    source_l = in1
+    source_r = in2
 
   chorus.rate = rate
   chorus.depth_ms = depth_ms

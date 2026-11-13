@@ -1,134 +1,91 @@
 import std/delay
+import std/env
 import std/filter
 import std/osc
+import std/pitch
+import std/pitch_shift
 
-outs 2
+const LineCount = 8
+const Capacity = i32(SR * 0.5) + 4
+const AllpassCapacity = i32(SR * 0.05) + 2
+const Times: f32[LineCount] = [0.037, 0.053, 0.071, 0.089, 0.113, 0.131, 0.157, 0.181]
+const Shifts: f32[LineCount] = [1.0, -1.0, 2.0, -2.0, 1.0, -1.0, 2.0, -2.0]
+const Left: f32[LineCount] = [1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0]
+const Right: f32[LineCount] = [1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0]
+const Normalization = 1.0 / sqrt(f32(LineCount))
 
 params:
-  drive = 0.72 {0.3, 1.5}
-  spray = 0.22 {0.0, 1.0}
-  density = 0.28 {0.0, 1.0}
-  damp = 0.14 {0.02, 0.45}
-  cutoff = 5200.0 {180.0, 17000.0}
-  ping = 3200 {64, 16000}
-
-def sat(x):
-  return clamp(x - 0.10 * x * x * x, -1.0, 1.0)
+  auto_play = true
+  root_note = 48 {36, 72}
+  interval_s = 2.5 {0.5, 8.0, unit = "s"}
+  excitation = 0.7 {0.0, 1.0}
+  size = 1.0 {0.3, 2.0}
+  feedback = 1.4 {0.0, 1.6}
+  diffusion = 0.8 {0.0, 1.0}
+  shimmer = 1.0 {0.0, 1.0}
+  shift = 7.0 {-12.0, 12.0, unit = "st"}
+  damping = 6500.0 {500.0, 14000.0, scale = log, unit = "Hz"}
+  freeze = false
+  level = 0.7 {0.0, 1.0}
 
 init:
-  o1 = std::osc::Sine(freq = 67.0)
-  o2 = std::osc::Saw(freq = 91.0)
-  o3 = std::osc::Sine(freq = 113.0)
-  o4 = std::osc::Saw(freq = 149.0)
+  lines: std::delay<Capacity>::Line<f32>[LineCount]
+  dampers: std::filter::OnePole<f32>[LineCount]
+  washouts: std::filter::OnePole<f32>[LineCount]
+  diffusers: std::delay<AllpassCapacity>::Allpass<f32>[LineCount] = std::delay<AllpassCapacity>::Allpass()
+  shifters: std::pitch_shift::DualWindow<f32>[LineCount]
+  source = std::osc::Saw()
+  envelope = std::env::DecayEnv(decay_s = 0.4)
+  delay_samples: i32[LineCount]
+  clock = 0
+  pending_bang = auto_play
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
+  for i in 0..LineCount:
+    washouts[i].mode = std::filter::OnePoleMode::HighPass
+    washouts[i].cutoff = 55.0
 
-  m1 = std::osc::Phasor(freq = 0.006)
-  m2 = std::osc::Phasor(freq = 0.009)
-  m3 = std::osc::Phasor(freq = 0.014)
+event bang():
+  pending_bang = true
 
-  d1 = std::delay::Delay(delay_s = 0.061, feedback = 0.56, mix = 1.0)
-  d2 = std::delay::Delay(delay_s = 0.074, feedback = 0.54, mix = 1.0)
-  d3 = std::delay::Delay(delay_s = 0.089, feedback = 0.52, mix = 1.0)
-  d4 = std::delay::Delay(delay_s = 0.103, feedback = 0.50, mix = 1.0)
+block:
+  period = max(i32(interval_s * SR), 1)
+  source.freq = std::pitch::note_to_hz(f32(root_note))
+  for i in 0..LineCount:
+    delay_samples[i] = max(i32(Times[i] * size * SR), 1)
+    diffusers[i].delay_samples = max(i32((0.008 + i * 0.005) * diffusion * SR), 1)
+    dampers[i].cutoff = damping
+    shifters[i].semitones = shift * Shifts[i]
+    shifters[i].window_s = 0.07 + i * 0.009
 
-  src1 = std::filter::OnePole(cutoff = 2200.0)
-  src2 = std::filter::OnePole(cutoff = 2600.0)
-  src3 = std::filter::OnePole(cutoff = 2400.0)
-  src4 = std::filter::OnePole(cutoff = 2800.0)
+  sample:
+    if auto_play && clock == 0 && !freeze:
+      pending_bang = true
+    clock = (clock + 1) % period
+    if pending_bang:
+      source.reset()
+      envelope.start()
+      pending_bang = false
+    injected = source() * envelope() * excitation
 
-  lp_l = std::filter::OnePole(cutoff = 5200.0)
-  lp_r = std::filter::OnePole(cutoff = 4700.0)
+    taps: f32[LineCount]
+    total = 0.0
+    left = 0.0
+    right = 0.0
+    for i in 0..LineCount:
+      taps[i] = lines[i].read(delay_samples[i])
+      total += taps[i]
+      left += taps[i] * Left[i] * Normalization
+      right += taps[i] * Right[i] * Normalization
+    for i in 0..LineCount:
+      scattered = taps[i] - total * (2.0 / LineCount)
+      shifted = shifters[i](scattered)
+      returning = scattered
+      if !freeze:
+        returning = washouts[i](dampers[i](lerp(scattered, shifted, shimmer)))
+        returning = tanh(returning * feedback + injected * Normalization)
+      lines[i].write(diffusers[i](returning))
+      lines[i].advance()
 
-  fb1 = 0.0
-  fb2 = 0.0
-  fb3 = 0.0
-  fb4 = 0.0
-  fb1_lp = 0.0
-  fb2_lp = 0.0
-  fb3_lp = 0.0
-  fb4_lp = 0.0
-  burst_left = 0
-  burst_env = 0.0
-  n = 0
-
-sample:
-  p1 = m1()
-  p2 = m2()
-  p3 = m3()
-
-  ma = sin(p1 * TWO_PI)
-  mb = sin((p1 * 0.7 + p2) * TWO_PI + 1.3)
-  mc = sin((p2 * 0.4 + p3) * TWO_PI + 2.2)
-
-  mod_a = 0.5 + 0.5 * ma
-  mod_b = 0.5 + 0.5 * mb
-  mod_c = 0.5 + 0.5 * mc
-
-  o1.freq = 58.0 + 58.0 * mod_a
-  o2.freq = 72.0 + 64.0 * mod_b
-  o3.freq = 93.0 + 70.0 * mod_c
-  o4.freq = 111.0 + 74.0 * (0.5 + 0.5 * sin((p1 + p2 + p3) * TWO_PI))
-
-  d1.feedback = 0.44 + 0.12 * mod_a
-  d2.feedback = 0.42 + 0.12 * mod_b
-  d3.feedback = 0.40 + 0.12 * mod_c
-  d4.feedback = 0.39 + 0.12 * (1.0 - mod_a)
-
-  d1.delay_s = 0.052 + 0.018 * mod_a
-  d2.delay_s = 0.066 + 0.016 * mod_b
-  d3.delay_s = 0.082 + 0.014 * mod_c
-  d4.delay_s = 0.097 + 0.012 * (1.0 - mod_b)
-
-  src1.cutoff = 1500.0 + 1200.0 * mod_a
-  src2.cutoff = 1700.0 + 1300.0 * mod_b
-  src3.cutoff = 1600.0 + 1200.0 * mod_c
-  src4.cutoff = 1800.0 + 1300.0 * mod_a
-
-  hit = 0.0
-  stride_a = ping / 2 + 37
-  stride_b = ping / 3 + 59
-  if ((n % ping) == 0):
-    hit = hit + spray
-  if ((n % stride_a) == 0 && (ma + mb * 0.6 > 1.28)):
-    hit = hit + spray * 0.25
-  if ((n % stride_b) == 0 && (ma * 0.6 + mb * 0.5 + mc * 0.4 > 1.02)):
-    burst_left = 30
-    burst_env = 1.0
-    hit = hit + spray * 0.18
-
-  if (burst_left > 0):
-    burst_left = burst_left - 1
-    burst_env = burst_env * 0.978
-    hit = hit + burst_env * density * 0.20
-
-  n = n + 1
-
-  s1 = src1(o1() * 0.20)
-  s2 = src2(o2() * 0.18)
-  s3 = src3(o3() * 0.20)
-  s4 = src4(o4() * 0.18)
-
-  x1 = sat((s1 + fb2 * (0.48 + 0.07 * ma) - fb4 * (0.16 + 0.03 * mb) + hit) * drive)
-  x2 = sat((s2 + fb3 * (0.46 - 0.06 * mb) + fb1 * (0.15 + 0.03 * mc) + hit * 0.40) * drive)
-  x3 = sat((s3 + fb4 * (0.44 + 0.06 * mc) - fb2 * (0.14 + 0.03 * ma) + hit * 0.28) * drive)
-  x4 = sat((s4 + fb1 * (0.47 - 0.06 * ma) + fb3 * (0.15 + 0.04 * mb) + hit * 0.22) * drive)
-
-  y1 = d1(x1)
-  y2 = d2(x2)
-  y3 = d3(x3)
-  y4 = d4(x4)
-
-  fb1_lp = fb1_lp + damp * (y1 - fb1_lp)
-  fb2_lp = fb2_lp + damp * (y2 - fb2_lp)
-  fb3_lp = fb3_lp + damp * (y3 - fb3_lp)
-  fb4_lp = fb4_lp + damp * (y4 - fb4_lp)
-  fb1 = fb1_lp
-  fb2 = fb2_lp
-  fb3 = fb3_lp
-  fb4 = fb4_lp
-
-  lp_l.cutoff = cutoff
-  lp_r.cutoff = cutoff * 0.92
-  left = sat((y1 + y3 * 0.66 + (y2 - y4) * 0.21) * 0.64)
-  right = sat((y2 + y4 * 0.66 + (y1 - y3) * 0.21) * 0.64)
-  out1 = lp_l(left)
-  out2 = lp_r(right)
+    out1 = dc_l(tanh(left) * level)
+    out2 = dc_r(tanh(right) * level)

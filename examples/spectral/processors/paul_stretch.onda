@@ -33,20 +33,20 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
 
     delegate ready(frame: TimeFrame)
 
-    event seek(position: f32):
-      playhead = clamp(position, 0.0, 1.0) * f32(source.samples() - 1)
+    event seek(position):
+      playhead = clamp(position, 0.0, 1.0) * (source.samples() - 1)
 
-    event read(stretch: f32):
+    event read(stretch):
       source_samples = source.samples()
       source_step = source.samplerate() / SR
 
       if source.bound():
         for i in 0..N:
-          position = playhead + f32(i) * source_step
+          position = playhead + i * source_step
           frame.samples[i] = std::lookup::readCW(source, 0, position)
 
-        analysis_hop = f32(SynthesisHop) * source_step / max(stretch, 1.0)
-        playhead = wrap(playhead + analysis_hop, 0.0, f32(source_samples))
+        analysis_hop = SynthesisHop * source_step / max(stretch, 1.0)
+        playhead = wrap(playhead + analysis_hop, 0.0, source_samples)
       else:
         frame.samples[:] = 0.0
 
@@ -83,7 +83,7 @@ namespace PaulStretch<N = 8192, Overlap = 4>:
       previous[:] = 0.0
       initialized = false
 
-    event process(frame: MagnitudeFrame, blur: f32, width: f32):
+    event process(frame: MagnitudeFrame, blur, width):
       smoothing = clamp(blur, 0.0, 1.0) * 0.82
       stereo_width = clamp(width, 0.0, 1.0)
 
