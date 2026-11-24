@@ -1,5 +1,9 @@
 <h1>
-  <img src="assets/svg/onda-logo-dark-circle.svg" alt="onda logo" width="40" align="absmiddle" /> Onda 
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/svg/onda-logo-dark-circle.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/svg/onda-logo-circle.svg">
+    <img src="assets/svg/onda-logo-circle.svg" alt="onda logo" width="40" align="absmiddle" />
+  </picture> Onda
 </h1>
 
 Onda is an expressive and performant JIT-compiled audio programming language.
