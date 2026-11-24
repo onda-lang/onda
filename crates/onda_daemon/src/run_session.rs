@@ -3,7 +3,7 @@ use std::{collections::HashMap, mem};
 
 use onda_codegen_llvm::{
     check_execution_status, jit_program_from_optimized_mir_with_options, DeclaredBufferChannels,
-    DeclaredDelegate, JitProgram, MirCompileOptions, TargetOptLevel,
+    DeclaredDelegate, FloatMathMode, JitProgram, MirCompileOptions, TargetOptLevel,
 };
 use onda_frontend::{Diagnostic, PrimitiveType};
 use onda_project::{BufferAsset, BufferElement, BufferSamples, ProjectLimits};
@@ -31,7 +31,7 @@ pub struct RunOptions {
     /// Host-owned linear ramps for continuous float controls, published once per
     /// logical block. Zero disables ramps; durations at most one block are bypassed.
     pub param_smoothing_seconds: f64,
-    pub fast_math: bool,
+    pub math: FloatMathMode,
     pub opt_level: TargetOptLevel,
 }
 
@@ -41,7 +41,7 @@ impl Default for RunOptions {
             sample_rate: 48_000.0,
             block_size: 512,
             param_smoothing_seconds: 0.0,
-            fast_math: false,
+            math: FloatMathMode::default(),
             opt_level: TargetOptLevel::O3,
         }
     }
@@ -56,11 +56,7 @@ impl RunOptions {
     }
 
     pub fn mir_compile_options(&self) -> MirCompileOptions {
-        MirCompileOptions {
-            math: Default::default(),
-            fast_math: self.fast_math,
-            opt_level: self.opt_level,
-        }
+        MirCompileOptions::new(self.opt_level, self.math)
     }
 }
 

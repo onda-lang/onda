@@ -1,10 +1,13 @@
 # Tools for smoothing changing signals and controlling how values move over time.
-# Provides exponential lag, slew-rate limits, and finite-duration ramps.
+# Lag covers about 63.2% of a step in lag_s. Slew limits the rate of change per second.
+# A ramp reaches its target after ceil(duration_s * SR) samples and captures its
+# shape at each target change. For Exponential, a negative curve moves early,
+# a positive curve moves late, and zero is linear.
 
 namespace std::smoothing:
   enum RampShape:
     Linear
-    SCurve {label = "S-curve"}
+    SCurve { label = "S-curve" }
     Exponential
 
   # A lag covers 1 - exp(-1), approximately 63.2%, of a step in lag_s.
@@ -13,149 +16,175 @@ namespace std::smoothing:
       return 0.0
     return exp((-1.0 / SR) / f64(lag_s))
 
+  # The closest representable pole below unity still decays.
+  def _decay_pole(pole: f32) -> f32:
+    return min(pole, 1.0 - 1.0 / 16777216.0)
+
+  def _decay_pole(pole: f64) -> f64:
+    return min(pole, 1.0 - 1.0 / 9007199254740992.0)
+
+  def _decay_60db_coefficient<T>(duration_s: T, span_samples: f64) -> T:
+    if duration_s > 0.0 && duration_s - duration_s == 0.0:
+      pole = exp(log(f64(0.001)) * span_samples / (f64(duration_s) * SR))
+      return _decay_pole(T(pole))
+    return 0.0
+
+  def _lag_weights<T>(lag_s: T) -> (T, T):
+    retained = T(lag_coefficient(lag_s))
+    return (retained, 1.0 - retained)
+
+  def _lag_update<T>(previous: T, target: T, retained: T, incoming: T) -> T:
+    # Weight the endpoints independently so their difference cannot overflow.
+    return previous * retained + target * incoming
+
   # Finite transitions share sample rounding and exact endpoint handling.
   def _duration_samples<T>(duration_s: T) -> i64:
     if duration_s > 0.0 && duration_s - duration_s == 0.0:
       return max(i64(ceil(duration_s * SR)), 1)
     return 0
 
-  # Prepared timing can be cached independently of a segment's current target.
-  struct _Duration:
-    samples: i64 = 0
-    inverse_samples: f64 = 1.0
-
-  def _duration<T>(duration_s: T) -> _Duration:
-    result: _Duration
-    result.samples = _duration_samples(duration_s)
-    result.inverse_samples = 1.0 / max(result.samples, 1)
-    return result
-
-  # Avoid cancellation for small exponential increments.
-  def _expm1(x: f64) -> f64:
-    if abs(x) < 0.001:
-      return x * (1.0 + x * (0.5 + x * (1.0 / 6.0 + x * (1.0 / 24.0 + x * (1.0 / 120.0)))))
+  # exp(x) - 1 without cancellation for small per-sample increments.
+  def _expm1(x: f64):
+    if abs(x) < 0.00001:
+      return x * (1.0 + x * 0.5)
     return exp(x) - 1.0
 
-  struct _Segment<T>:
-    value: T = 0.0
-    origin: T = 0.0
-    target: T = 0.0
+  def _blend_at<T>(origin: T, target: T, toward: T) -> T:
+    if toward <= 0.0:
+      return origin
+    if toward >= 1.0:
+      return target
+    return _interpolate(origin, target, toward)
+
+  # Interpolate from the nearer endpoint. Opposite signs use a weighted
+  # sum so the distance between two finite endpoints cannot overflow.
+  def _interpolate<T>(a: T, b: T, toward: T) -> T:
+    if (a < 0.0) != (b < 0.0):
+      return a * (1.0 - toward) + b * toward
+    if toward <= 0.5:
+      return a + (b - a) * toward
+    return b + (a - b) * (1.0 - toward)
+
+  enum _TransitionCurve:
+    Linear
+    LinearSlope
+    SCurve
+    Exponential
+
+  # Prepared from controls and copied into the transition when a target changes.
+  struct _TransitionPlan<T>:
     samples: i64 = 0
-    duration_samples: i64 = 0
-    elapsed: i64 = 0
-    inverse_samples: T = 0.0
-    shape: RampShape = RampShape::Linear
-    exponential: f64 = 0.0
-    increment: f64 = 0.0
-    multiplier: f64 = 1.0
-    curve: T = -4.0
+    inverse: T = 0.0
+    mode: _TransitionCurve = _TransitionCurve::Linear
+    curve_step: T = 0.0
+    curve_bias: T = 0.0
 
-    def reset(self, value: T):
-      self.value = value
-      self.origin = value
-      self.target = value
-      self.samples = 0
-      self.elapsed = 0
+    def configure(self, samples: i64, shape: RampShape = RampShape::Linear, bend: f64 = 0.0):
+      self.samples = samples
+      self.inverse = 1.0 / T(max(samples, 1))
+      self.mode = _TransitionCurve::Linear
+      if shape == RampShape::SCurve:
+        self.mode = _TransitionCurve::SCurve
+      elif shape == RampShape::Exponential && samples > 0 && abs(bend) > 0.00000001:
+        self.mode = _TransitionCurve::Exponential
+        self.curve_step = T(_expm1(bend / f64(samples)))
+        self.curve_bias = T(1.0 / _expm1(bend))
 
-    def begin(self, target: T, duration: _Duration, shape: RampShape, curve: T = -4.0):
-      self.origin = self.value
-      self.target = target
-      self.samples = duration.samples
-      self.duration_samples = duration.samples
-      self.elapsed = 0
-      self.inverse_samples = T(duration.inverse_samples)
-      self.shape = shape
-      self.curve = curve
-      if shape == RampShape::Exponential:
-        self.exponential = 0.0
-        if curve == 0.0 || curve - curve != 0.0:
-          self.shape = RampShape::Linear
-        else:
-          # Integrate geometric increments of expm1(curve * phase) / expm1(curve).
-          # Coefficients are f64 and computed once, including for f32 envelopes.
-          curvature = f64(clamp(curve, -60.0, 60.0))
-          step = curvature * duration.inverse_samples
-          self.multiplier = exp(step)
-          self.increment = _expm1(step) / _expm1(curvature)
-          if curve < 0.0:
-            # Falling curves track the remaining distance from the start. This
-            # avoids subtracting nearly-one progress and losing the decay tail.
-            self.exponential = 1.0
-            self.increment *= -exp(curvature)
-      if duration.samples == 0 || self.origin - self.origin != 0.0 || target - target != 0.0:
-        self.value = target
-        self.elapsed = duration.samples
+  enum _TransitionPolicy:
+    LinearOnly
+    Shaped
+    ShapedWithSlope
 
-    # Live envelope edits preserve the current value and the fraction of time left.
-    # Identical parameter writes leave the running curve untouched.
-    def update(self, target: T, duration: _Duration, shape: RampShape, curve: T):
-      effective_shape = shape
-      if shape == RampShape::Exponential && (curve == 0.0 || curve - curve != 0.0):
-        effective_shape = RampShape::Linear
-      same_curve = effective_shape != RampShape::Exponential || curve == self.curve
-      if target == self.target && duration.samples == self.duration_samples && effective_shape == self.shape && same_curve:
-        return
-      remaining: _Duration
-      remaining.samples = self.samples - self.elapsed
-      if duration.samples != self.duration_samples:
-        scaled_samples = f64(remaining.samples) * f64(duration.samples)
-        remaining.samples = max(i64(ceil(scaled_samples / max(self.duration_samples, 1))), 0)
-      remaining.inverse_samples = 1.0 / max(remaining.samples, 1)
-      self.begin(target, remaining, shape, curve)
-      self.duration_samples = duration.samples
+  namespace _Transition<Policy = i32(_TransitionPolicy::Shaped)>:
+    const _UseCurves = Policy != i32(_TransitionPolicy::LinearOnly)
+    const _UseSlope = Policy == i32(_TransitionPolicy::ShapedWithSlope)
 
-    def complete(self):
-      return self.elapsed >= self.samples
+    # A fixed-duration move. Callers decide when to start the next move.
+    struct State<T>:
+      value: T = 0.0
+      target: T = 0.0
+      origin: T = 0.0
+      samples: i64 = 0
+      remaining: i64 = 0
+      inverse: T = 0.0
+      mode: _TransitionCurve = _TransitionCurve::Linear
+      # Normalized progress for the exponential curve.
+      progress: T = 0.0
+      curve_step: T = 0.0
+      curve_bias: T = 0.0
 
-    def advance(self):
-      return self._advance(self.shape)
+      def reset(self, value: T):
+        self.value = value
+        self.target = value
+        self.remaining = 0
 
-    def advance_linear(self):
-      return self._advance(RampShape::Linear)
+      # Commit the new value on the next advance, keeping the current sample intact.
+      def set_next(self, value: T):
+        self.target = value
+        self.remaining = 1
 
-    def _advance(self, shape: RampShape):
-      if self.elapsed < self.samples:
-        self.elapsed += 1
-        if self.elapsed == self.samples:
+      def begin(self, target: T, samples: i64, shape: RampShape, bend: f64):
+        plan: _TransitionPlan<T>
+        plan.configure(samples, shape, bend)
+        self.start(target, plan)
+
+      def start(self, target: T, plan: _TransitionPlan<T>):
+        if plan.samples == 0 || target - target != 0.0 || self.value - self.value != 0.0:
+          self.reset(target)
+          return
+        self.origin = self.value
+        self.target = target
+        self.samples = plan.samples
+        self.remaining = plan.samples
+        self.inverse = plan.inverse
+        if _UseCurves:
+          self.mode = plan.mode
+          if plan.mode == _TransitionCurve::Exponential:
+            self.progress = 0.0
+            self.curve_step = plan.curve_step
+            self.curve_bias = plan.curve_bias
+          elif _UseSlope && plan.mode == _TransitionCurve::Linear:
+            # Use the slope only when it can recover the endpoint in this precision.
+            step = (target - self.origin) * plan.inverse
+            if self.origin + step * T(plan.samples) == target:
+              self.mode = _TransitionCurve::LinearSlope
+              self.curve_step = step
+
+      def complete(self):
+        return self.remaining == 0
+
+      # True on the sample that reaches the endpoint.
+      def advance(self) -> bool:
+        if self.remaining <= 0:
+          return false
+        self.remaining -= 1
+        if self.remaining == 0:
           self.value = self.target
-        else:
-          weight: T = 0.0
-          from = self.origin
-          to = self.target
-          if shape == RampShape::Exponential:
-            if self.curve < 0.0:
-              self.exponential = self.exponential * self.multiplier + self.increment
-              from = self.target
-              to = self.origin
-            else:
-              self.exponential += self.increment
-              self.increment *= self.multiplier
-            distance = clamp(self.exponential, 0.0, 1.0)
-            if distance > 0.5:
-              previous_from = from
-              from = to
-              to = previous_from
-              distance = 1.0 - distance
-            weight = T(distance)
-          else:
-            # Derive the distance from the nearer endpoint without accumulating
-            # rounding error or subtracting a nearly-one floating-point phase.
-            samples_left = self.samples - self.elapsed
-            count = self.elapsed
-            if self.elapsed > samples_left:
-              count = samples_left
-              from = self.target
-              to = self.origin
-            phase = min(T(count) * self.inverse_samples, T(0.5))
-            if shape == RampShape::SCurve:
+          return true
+
+        if _UseSlope && self.mode == _TransitionCurve::LinearSlope:
+          self.value = self.origin + T(self.samples - self.remaining) * self.curve_step
+          return false
+
+        phase = T(self.samples - self.remaining) * self.inverse
+        if _UseCurves:
+          if self.mode == _TransitionCurve::SCurve:
+            if phase <= 0.5:
               phase = phase * phase * (3.0 - 2.0 * phase)
-            weight = phase
-          # Keep finite extremes finite and preserve precision near either endpoint.
-          if (from < 0.0) != (to < 0.0):
-            self.value = from * (1.0 - weight) + to * weight
-          else:
-            self.value = from + (to - from) * weight
-      return self.value
+            else:
+              tail = T(self.remaining) * self.inverse
+              phase = 1.0 - tail * tail * (3.0 - 2.0 * tail)
+          elif self.mode == _TransitionCurve::Exponential:
+            # The normalized exponential advances by expm1(bend / samples)
+            # times its value plus a constant.
+            self.progress += self.curve_step * (self.progress + self.curve_bias)
+            phase = min(self.progress, 1.0)
+        self.value = _interpolate(self.origin, self.target, phase)
+        return false
+
+  namespace _LinearTransition = _Transition<i32(_TransitionPolicy::LinearOnly)>
+  namespace _ShapedTransition = _Transition<i32(_TransitionPolicy::Shaped)>
+  namespace _EnvelopeTransition = _Transition<i32(_TransitionPolicy::ShapedWithSlope)>
 
   proc Lag<T>:
     ins<T> 1
@@ -165,18 +194,19 @@ namespace std::smoothing:
       lag_s = 0.05 => update_lag
 
     init:
-      y: f64 = 0.0
-      coefficient: f64 = 0.0
+      y: T = 0.0
+      retained: T = 0.0
+      incoming: T = 1.0
 
     def update_lag():
-      coefficient = lag_coefficient(lag_s)
+      retained, incoming = _lag_weights(lag_s)
 
     event reset(value: T = 0.0):
       y = value
 
     sample:
-      y = in1 + (y - in1) * coefficient
-      out1 = T(y)
+      y = _lag_update(y, in1, retained, incoming)
+      out1 = y
 
   proc LagUD<T>:
     ins<T> 1
@@ -187,25 +217,27 @@ namespace std::smoothing:
       fall_lag_s = 0.1 => update_fall
 
     init:
-      y: f64 = 0.0
-      rise_coefficient: f64 = 0.0
-      fall_coefficient: f64 = 0.0
+      y: T = 0.0
+      rise_retained: T = 0.0
+      rise_incoming: T = 1.0
+      fall_retained: T = 0.0
+      fall_incoming: T = 1.0
 
     def update_rise():
-      rise_coefficient = lag_coefficient(rise_lag_s)
+      rise_retained, rise_incoming = _lag_weights(rise_lag_s)
 
     def update_fall():
-      fall_coefficient = lag_coefficient(fall_lag_s)
+      fall_retained, fall_incoming = _lag_weights(fall_lag_s)
 
     event reset(value: T = 0.0):
       y = value
 
     sample:
       if (in1 > y):
-        y = in1 + (y - in1) * rise_coefficient
+        y = _lag_update(y, in1, rise_retained, rise_incoming)
       else:
-        y = in1 + (y - in1) * fall_coefficient
-      out1 = T(y)
+        y = _lag_update(y, in1, fall_retained, fall_incoming)
+      out1 = y
 
   proc Slew<T>:
     ins<T> 1
@@ -245,45 +277,51 @@ namespace std::smoothing:
     outs<T> 1
 
     params<T>:
-      duration_s = 0.05 => update_duration
-      shape: RampShape = RampShape::Linear
-      curve = -4.0 {-60.0, 60.0}
+      duration_s = 0.05 => update_plan
+      shape: RampShape = RampShape::Linear => update_plan
+      curve = -4.0 {-60.0, 60.0} => update_plan
 
     init:
-      segment: _Segment<T>
-      duration: _Duration
+      transition: _ShapedTransition::State<T>
+      plan: _TransitionPlan<T>
+      planned_duration: T = 0.0
+      planned_shape = RampShape::Linear
+      planned_curve: T = 0.0
 
-    def update_duration():
-      duration = _duration(duration_s)
+    def update_plan():
+      if duration_s != planned_duration || shape != planned_shape || curve != planned_curve:
+        plan.configure(_duration_samples(duration_s), shape, curve)
+        planned_duration = duration_s
+        planned_shape = shape
+        planned_curve = curve
 
     event reset(value: T = 0.0):
-      segment.reset(value)
+      transition.reset(value)
 
     sample:
-      if in1 != segment.target:
-        segment.begin(in1, duration, shape, curve)
-      out1 = segment.advance()
+      if in1 != transition.target:
+        transition.start(in1, plan)
+      transition.advance()
+      out1 = transition.value
 
-  # Input metadata has a fixed linear shape. Keep its sample path independent
-  # of the public Ramp's mutable shape and curve parameters.
+  # Input attributes fix both the shape and duration at construction.
   proc _LinearRamp<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      duration_s = 0.05 => update_duration
+      private duration_s = 0.05
 
     init:
-      segment: _Segment<T>
-      duration: _Duration
-
-    def update_duration():
-      duration = _duration(duration_s)
+      transition: _LinearTransition::State<T>
+      plan: _TransitionPlan<T>
+      plan.configure(_duration_samples(duration_s))
 
     event reset(value: T = 0.0):
-      segment.reset(value)
+      transition.reset(value)
 
     sample:
-      if in1 != segment.target:
-        segment.begin(in1, duration, RampShape::Linear)
-      out1 = segment.advance_linear()
+      if in1 != transition.target:
+        transition.start(in1, plan)
+      transition.advance()
+      out1 = transition.value

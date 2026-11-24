@@ -1,7 +1,7 @@
 import std/levels
 import std/pitch
 import std/random
-include "../effects/processors/effect_audition.onda"
+import ../effects/processors/effect_audition
 
 const GrainCount = 16
 const TapeSamples = i32(SR * 4)
@@ -39,7 +39,7 @@ event bang():
   audition.bang()
 
 sample:
-  source, _ = audition(auto_play = auto_play)
+  source, _ = audition(auto_play = auto_play, muted = live_input)
   if live_input:
     source = in1
 
@@ -57,7 +57,10 @@ sample:
       position = position + TapeSamples
 
     grain_position[next_grain] = position
-    grain_speed[next_grain] = std::pitch::ratio_between(0.0, pitch) * rng.range(1.0 - pitch_jitter, 1.0 + pitch_jitter)
+    grain_speed[next_grain] = std::pitch::ratio_between(0.0, pitch) * rng.range(
+      1.0 - pitch_jitter,
+      1.0 + pitch_jitter
+    )
     grain_pan[next_grain] = rng.range(-1.0, 1.0) * scatter
     grain_age[next_grain] = 0
     grain_length[next_grain] = max(i32(grain_size * rng.range(0.72, 1.28) * SR), 8)

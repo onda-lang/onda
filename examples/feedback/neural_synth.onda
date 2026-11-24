@@ -96,6 +96,6 @@ block:
     right = source_dc_r(neuron[right_neuron])
     mid = (left + right) * 0.5
     side = (left - right) * 0.5 * stereo_width
-    
+
     out1 = dc_l(tanh(mid + side) * 0.8 * level)
     out2 = dc_r(tanh(mid - side) * 0.8 * level)

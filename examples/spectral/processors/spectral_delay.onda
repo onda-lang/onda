@@ -1,10 +1,15 @@
 import std/fft
+import std/smoothing
 
 const SpectralDelayCapacityS = 1.0
 const SpectralDelayStereoHops = 7
 
-namespace SpectralDelay<N = 1024, HistoryFrames = i32(ceil(SpectralDelayCapacityS * SR * 2 / N)) + SpectralDelayStereoHops + 1>:
+namespace SpectralDelay<
+  N = 1024,
+  HistoryFrames = i32(ceil(SpectralDelayCapacityS * SR * 2 / N)) + SpectralDelayStereoHops + 1
+>:
   assert(HistoryFrames > SpectralDelayStereoHops + 1)
+  const _Bins = (N >> 1) + 1
 
   proc Engine:
     params:
@@ -18,23 +23,20 @@ namespace SpectralDelay<N = 1024, HistoryFrames = i32(ceil(SpectralDelayCapacity
       analysis = std::fft<N>::RealFFT()
       synthesis_l = std::fft<N>::RealIFFT()
       synthesis_r = std::fft<N>::RealIFFT()
-      history_re: f32[HistoryFrames * N]
-      history_im: f32[HistoryFrames * N]
-      spectrum_re_l: f32[N]
-      spectrum_im_l: f32[N]
-      spectrum_re_r: f32[N]
-      spectrum_im_r: f32[N]
+      history_re: f32[HistoryFrames * _Bins]
+      history_im: f32[HistoryFrames * _Bins]
+      spectrum_re_l: f32[_Bins]
+      spectrum_im_l: f32[_Bins]
+      spectrum_re_r: f32[_Bins]
+      spectrum_im_r: f32[_Bins]
       hop_size = N >> 1
       maximum_delay = HistoryFrames - SpectralDelayStereoHops - 1
-      smoothed_delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
-      lag_coefficient = 0.0
+      delay_lag = std::smoothing::Lag<f64>()
+      delay_lag.reset(clamp(delay_s * SR / hop_size, 1.0, maximum_delay))
       write_frame = 0
 
     def update_lag():
-      if lag_s <= 0.0:
-        lag_coefficient = 0.0
-      else:
-        lag_coefficient = exp(-1.0 / (lag_s * SR))
+      delay_lag.lag_s = lag_s
 
     block:
       delay_hops = clamp(delay_s * SR / hop_size, 1.0, maximum_delay)
@@ -43,13 +45,12 @@ namespace SpectralDelay<N = 1024, HistoryFrames = i32(ceil(SpectralDelayCapacity
       stereo_spread = clamp(stereo, 0.0, 1.0)
 
       sample:
-        smoothed_delay_hops = delay_hops + (smoothed_delay_hops - delay_hops) * lag_coefficient
+        smoothed_delay_hops = delay_lag(f64(delay_hops))
         if analysis.push(in1):
-          half = N >> 1
-          write_base = write_frame * N
+          write_base = write_frame * _Bins
 
-          for k in 0..(half + 1):
-            position = f32(k) / half
+          for k in 0.._Bins:
+            position = f32(k) / (_Bins - 1)
             delay_shape = 1.0 - spectral_slope + position * spectral_slope
             left_delay = max(i32(smoothed_delay_hops * delay_shape + 0.5), 1)
             stereo_offset = i32(position * stereo_spread * SpectralDelayStereoHops + 0.5)
@@ -57,8 +58,8 @@ namespace SpectralDelay<N = 1024, HistoryFrames = i32(ceil(SpectralDelayCapacity
 
             left_frame = (write_frame - left_delay + HistoryFrames) % HistoryFrames
             right_frame = (write_frame - right_delay + HistoryFrames) % HistoryFrames
-            left_base = left_frame * N
-            right_base = right_frame * N
+            left_base = left_frame * _Bins
+            right_base = right_frame * _Bins
 
             delayed_re_l = history_re[left_base + k]
             delayed_im_l = history_im[left_base + k]

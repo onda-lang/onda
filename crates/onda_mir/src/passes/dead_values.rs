@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
+use crate::local_references::collect_direct_local_reads;
 use crate::{Block, Function, Local, LocalId, PlaceBase, Statement, StatementKind, Type};
 
-use super::{collect_statement_read_references, PassStats};
+use super::PassStats;
 
 /// Trace local dependencies from effects and potentially failing operations.
 /// Locals are not SSA: every assignment to a live local contributes dependencies.
@@ -16,7 +17,7 @@ pub(super) fn remove(types: &[Type], function: &mut Function, stats: &mut PassSt
     while let Some(block) = blocks.pop() {
         for statement in &block.statements {
             reads.clear();
-            collect_statement_read_references(statement, &mut reads);
+            collect_direct_local_reads(statement, &mut reads);
             if let Some(local) = discardable_destination(types, &function.locals, statement) {
                 dependencies[local.index()].extend(reads.iter().copied());
             } else {

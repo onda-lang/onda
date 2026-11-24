@@ -2053,6 +2053,110 @@ sample:
     }
 
     #[test]
+    fn power_of_two_wraps_serialize_as_source_width_masks() {
+        for (scalar, mask) in [
+            ("i32", serde_json::json!(7)),
+            ("i64", serde_json::json!("7")),
+        ] {
+            let source = format!(
+                r#"
+init:
+  cursor: {scalar} = 100 {{100..=107, wrap}}
+event set(value: {scalar}):
+  cursor = value
+sample:
+  out1 = f32(cursor)
+"#,
+            );
+            let json = compile_source_to_mir_json(&source, 48_000.0, 4).unwrap();
+            let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let functions = document["functions"].as_array().unwrap();
+            let event = functions
+                .iter()
+                .find(|f| f["kind"]["kind"] == "event")
+                .unwrap();
+            let statements = event["body"]["statements"].as_array().unwrap();
+            assert!(
+                statements.iter().any(|statement| {
+                    let op = &statement["kind"]["data"]["value"];
+                    op["data"]["op"] == "bit_and"
+                        && op["data"]["rhs"]["data"]["type"] == scalar
+                        && op["data"]["rhs"]["data"]["value"] == mask
+                }),
+                "{json}"
+            );
+            assert!(!json.contains("\"intrinsic\":\"range_wrap\""));
+        }
+    }
+
+    #[test]
+    fn ordered_reduction_plans_require_independent_state_updates() {
+        for (destination, independent) in [("i", true), ("i + 1", false)] {
+            let source = format!(
+                r#"
+init:
+  bank: f64[8]
+  bank[0] = 1.0
+sample:
+  total: f64 = 0.0
+  if in1 > 0.0:
+    for i in 0..7:
+      bank[i + 1] = bank[i] * 2.0
+      total += bank[i + 1]
+  else:
+    for i in 1..7:
+      bank[{destination}] = bank[i] * 2.0
+      total += bank[{destination}]
+  out1 = f32(total)
+"#
+            );
+            let json = compile_source_to_mir_json(&source, 48_000.0, 4).unwrap();
+            let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+            if independent {
+                // The sample loop encloses a rejected then-loop and a proven else-loop.
+                let plans = document["ordered_reductions"].as_array().unwrap();
+                assert_eq!(plans.len(), 1);
+                assert_eq!(plans[0]["loop_ordinal"], 2);
+                assert_eq!(plans[0]["first"], 1);
+                assert_eq!(plans[0]["last"], 6);
+            } else {
+                assert!(document.get("ordered_reductions").is_none());
+            }
+
+            let packed = compile_source_to_mir_messagepack(&source, 48_000.0, 4).unwrap();
+            // Both trusted decoders must still expose the same executable program.
+            let json_mir = unsafe { onda_mir::from_json_with_producer_proofs(&json) }.unwrap();
+            let packed_mir =
+                unsafe { onda_mir::from_messagepack_with_producer_proofs(&packed) }.unwrap();
+            assert_eq!(json_mir.as_program(), packed_mir.as_program());
+        }
+    }
+
+    #[test]
+    fn ordered_reductions_reject_loop_carried_scalar_reads() {
+        for update in [
+            "bank[i] += total + in1",
+            "carried = carried * 0.5 + in1\n    bank[i] += carried",
+        ] {
+            let source = format!(
+                r#"
+init:
+  bank: f32[8]
+sample:
+  total = 0.0
+  carried = 0.0
+  for i in 0..8:
+    {update}
+    total += bank[i]
+  out1 = total
+"#
+            );
+            let json = compile_source_to_mir_json(&source, 48_000.0, 4).unwrap();
+            assert!(!json.contains("\"ordered_reductions\""), "{update}");
+        }
+    }
+
+    #[test]
     fn typed_compile_inputs_drive_the_same_browser_compilation_pipeline() {
         let source = r#"
 config const Selected: i32 = missing_default

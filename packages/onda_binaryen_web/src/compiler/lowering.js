@@ -1,4 +1,5 @@
 import binaryen from "binaryen";
+import { vectorizeBankReduction } from "./simd-reductions.js";
 import { vectorizeSampleLoop } from "./simd.js";
 import { MirCompilerCore } from "./core.js";
 import {
@@ -19,16 +20,16 @@ import {
 } from "./shared.js";
 
 export class MirCompilerLowering extends MirCompilerCore {
-  compileBlock(block, context) {
+  compileBlock(block, context, competingLoop = false) {
     return this.module.block(
       null,
       block.statements.map((statement) =>
-        this.compileStatement(statement, context),
+        this.compileStatement(statement, context, competingLoop),
       ),
     );
   }
 
-  compileStatement(statement, context) {
+  compileStatement(statement, context, competingLoop) {
     const kind = statement.kind?.kind;
     const data = statement.kind?.data;
     switch (kind) {
@@ -87,12 +88,15 @@ export class MirCompilerLowering extends MirCompilerCore {
         return this.compileOutputStore(data, context);
       case "control_output_store":
         return this.compileControlOutputStore(data, context);
-      case "if":
+      case "if": {
+        const hasScalarLoop = (block) => block.statements.some(statement =>
+          statement.kind.kind === "loop" && !this.orderedReductions.has(statement));
         return this.module.if(
           this.compileValue(data.condition, context),
-          this.compileBlock(data.then_block, context),
-          this.compileBlock(data.else_block, context),
+          this.compileBlock(data.then_block, context, competingLoop || hasScalarLoop(data.else_block)),
+          this.compileBlock(data.else_block, context, competingLoop || hasScalarLoop(data.then_block)),
         );
+      }
       case "loop": {
         const id = this.nextLabel++;
         const breakLabel = `$onda.break.${id}`;
@@ -108,7 +112,12 @@ export class MirCompilerLowering extends MirCompilerCore {
             this.module.block(null, [body, this.module.br(continueLabel)]),
           ),
         ]);
-        return vectorizeSampleLoop(this, statement, context, scalarLoop) ?? scalarLoop;
+        if (!context.allowLocalOptimizations) return scalarLoop;
+        const vectorLoop = vectorizeSampleLoop(this, statement, context, scalarLoop)
+          ?? vectorizeBankReduction(this, statement, context, scalarLoop, competingLoop);
+        if (vectorLoop == null) return scalarLoop;
+        context.vectorizedLoop = true;
+        return vectorLoop;
       }
       case "break":
         return this.module.br(this.currentLabel(context.breakLabels, "break"));

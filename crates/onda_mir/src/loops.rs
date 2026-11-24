@@ -7,6 +7,7 @@ use crate::*;
 mod facts;
 pub(crate) use facts::FunctionFacts;
 mod independent;
+pub(crate) mod ordered_reductions;
 #[cfg(test)]
 mod tests;
 
@@ -63,6 +64,7 @@ pub struct CountedLoop<'a> {
     pub index: LocalId,
     pub limit: Value,
     pub body: &'a [Statement],
+    condition: LocalId,
 }
 
 fn assigned_local(statement: &Statement) -> Option<(LocalId, &Rvalue)> {
@@ -149,6 +151,7 @@ pub(crate) fn guarded_loop(block: &Block) -> Option<CountedLoop<'_>> {
         index: *index,
         limit: *limit,
         body: &body[..body.len() - tail],
+        condition,
     })
 }
 
@@ -206,6 +209,7 @@ pub(crate) fn nonempty_loop(block: &Block) -> Option<CountedLoop<'_>> {
         index: *index,
         limit: Value::Constant(ScalarValue::I32(last.checked_add(1)?)),
         body: &statements[..tail],
+        condition,
     })
 }
 

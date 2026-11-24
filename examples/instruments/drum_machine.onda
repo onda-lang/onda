@@ -17,7 +17,12 @@ struct StepClock:
     return ((pattern >> self.step) & 1) == 1
 
   def advance_to_hit(self):
-    while !self.active(KickPattern) && !self.active(SnarePattern) && !self.active(HatPattern) && !self.active(OpenHatPattern):
+    while (
+      !self.active(KickPattern)
+      && !self.active(SnarePattern)
+      && !self.active(HatPattern)
+      && !self.active(OpenHatPattern)
+    ):
       self.step = (self.step + 1) & 15
 
   def begin_step(self, bpm, swing):

@@ -25,8 +25,6 @@ particular feature or module.
 | [Formant percussion]({{ '/playground/?example=instruments/formant_percussion.onda' | relative_url }}) | Vowel-like resonant percussion |
 | [Karplus–Strong]({{ '/playground/?example=instruments/karplus_strong.onda' | relative_url }}) | Warm plucked strings from short delay lines |
 
-The polyphonic instruments play automatically and expose events for triggering individual notes.
-
 ## Effects
 
 | Example | Description |
@@ -40,18 +38,13 @@ The polyphonic instruments play automatically and expose events for triggering i
 | [Tape echo]({{ '/playground/?example=effects/tape_echo.onda' | relative_url }}) | Dark saturated repeats with wow and flutter |
 | [Wavefolder]({{ '/playground/?example=effects/wavefolder.onda' | relative_url }}) | Wavefolded harmonics |
 
-Effects share the same built-in audition sequence.
-Use `auto_play` to control the sequence or `bang()` to trigger a note. To process your own audio,
-select an input and set `live_input` to `true`. The Schroeder and FDN examples also show how to
-connect processors with a `graph` block.
-
 ## Soundscapes and experimental systems
 
 | Example | Description |
 | --- | --- |
 | [Aurora Pad]({{ '/playground/?example=soundscapes/aurora_pad.onda' | relative_url }}) | A minor chord spread across a gently detuned stereo field and a slowly opening filter |
 | [Benjolin]({{ '/playground/?example=feedback/benjolin.onda' | relative_url }}) | A Hordijk-inspired eight-bit rungler instrument |
-| [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | Sine-feedback delays turn sparse chirps into competing rhythms through mutual inhibition and recovery |
+| [Chaotic delay matrix]({{ '/playground/?example=feedback/chaotic_delay_matrix.onda' | relative_url }}) | A single startup impulse sets off competing rhythms in a sine-feedback delay matrix. Use `bang()` to inject another. |
 | [Diffuse delay matrix]({{ '/playground/?example=feedback/diffuse_delay_matrix.onda' | relative_url }}) | A pitch-shifting feedback matrix turns scattered plucks into a stereo cloud that can freeze in place |
 | [Granular cloud]({{ '/playground/?example=soundscapes/granular_cloud.onda' | relative_url }}) | A live tape resampled as a stereo grain cloud |
 | [Orbital FM]({{ '/playground/?example=soundscapes/orbital_fm.onda' | relative_url }}) | An evolving phase-modulation drone with detuned carriers, sub-octave body, and orbiting shimmer |

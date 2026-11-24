@@ -299,10 +299,16 @@ typedef struct {
   const char* enumeration_json_utf8;
 } onda_compile_const_descriptor_t;
 
+enum {
+  ONDA_FLOAT_MATH_DEFAULT = 0,
+  ONDA_FLOAT_MATH_STRICT = 1,
+  ONDA_FLOAT_MATH_FAST = 2,
+};
+
 /* Compile options shared by all source and project-image compile entry points. */
 typedef struct {
-  /* fast_math != 0 enables LLVM fast-math lowering. */
-  int fast_math;
+  /* One of ONDA_FLOAT_MATH_*. Zero selects the compiler default. */
+  int math_mode;
   /* Compile-time sample rate constant. Must be finite and > 0. */
   float sample_rate;
   /* Fixed compile-time block size. Must be > 0. */

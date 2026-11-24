@@ -897,6 +897,7 @@ fn format_inline_hint(hint: InlineHint) -> &'static str {
     match hint {
         InlineHint::Auto => "auto",
         InlineHint::Always => "always",
+        InlineHint::Prefer => "prefer",
         InlineHint::Never => "never",
     }
 }

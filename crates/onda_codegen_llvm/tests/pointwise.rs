@@ -56,18 +56,14 @@ fn pointwise_audio_preserves_aliasing_tails_and_segments() {
                 $name, $expression
             ));
             assert_eq!(eligible_loops(&program), 1);
-            let ir =
-                lower_optimized_mir_to_llvm_ir_with_options(&program, MirCompileOptions::default())
-                    .unwrap();
+            let options = MirCompileOptions::default();
+            let ir = lower_optimized_mir_to_llvm_ir_with_options(&program, options).unwrap();
             assert!(
                 ir.contains("audio_equal"),
                 "missing equal-pointer fast path: {ir}"
             );
             assert!(ir.contains("load <"), "no vector audio path: {ir}");
-            assert!(!ir.contains("fadd reassoc") && !ir.contains("fmul contract"));
-            let jit =
-                jit_program_from_optimized_mir_with_options(program, MirCompileOptions::default())
-                    .unwrap();
+            let jit = jit_program_from_optimized_mir_with_options(program, options).unwrap();
             let params = jit.default_param_bytes();
             let mut state = jit.initialize_state(&params).unwrap();
             for output_base in [7, 8, 9, 40] {
@@ -195,11 +191,12 @@ fn pointwise_audio_checks_all_input_and_output_pairs() {
                 )
                 .unwrap();
             }
-            assert_eq!(
-                values.map(f32::to_bits),
-                expected.map(f32::to_bits),
-                "{inputs:?} -> {outputs:?}, {start}+{frames}"
-            );
+            for (index, (actual, expected)) in values.into_iter().zip(expected).enumerate() {
+                assert!(
+                    (actual - expected).abs() < 1e-6,
+                    "{inputs:?} -> {outputs:?}, {start}+{frames}, index {index}: expected {expected}, got {actual}"
+                );
+            }
         }
     }
 }

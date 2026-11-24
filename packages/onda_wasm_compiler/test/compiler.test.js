@@ -107,6 +107,47 @@ test("compiles Onda source to a complete processor artifact", async () => {
   assert.match(files.metadata.text, /"integrity"/);
 });
 
+test("keeps nested proc-local helpers compact at O1 and O4", async () => {
+  const depth = 11;
+  const definitions = ["def f0(x: f32) -> f32:\n  return x * x - 2.0"];
+  for (let i = 1; i <= depth; i++) {
+    definitions.push(`def f${i}(x: f32) -> f32:\n  return f${i - 1}(f${i - 1}(x))`);
+  }
+  const body = [...definitions, `sample:\n  out1 = f${depth}(in1)`].join("\n");
+  const processor = "proc Waveshaper:\n" + body.replace(/^/gm, "  ")
+    + "\ninit:\n  effect = Waveshaper()\nsample:\n  out1 = effect(in1)";
+  const compiler = await createCompiler();
+  try {
+    const shared = await compiler.compileSource(body);
+    await WebAssembly.compile(shared.artifact.wasm);
+
+    const input = [0.25, -0.875];
+    const expected = input.map(x => {
+      for (let i = 0; i < 2 ** depth; i++) x = Math.fround(Math.fround(x * x) - 2);
+      return x;
+    });
+    for (const optimizeLevel of [1, 4]) {
+      const { artifact } = await compiler.compileSource(processor, {
+        blockSize: 2, codegen: { optimizeLevel },
+      });
+      assert.ok(artifact.wasm.byteLength < 2048,
+        `O${optimizeLevel} emitted ${artifact.wasm.byteLength} bytes for the helper chain`);
+      const { instance: { exports } } = await WebAssembly.instantiate(artifact.wasm);
+      const state = Number(exports.__heap_base.value);
+      const tables = state + Math.ceil(artifact.metadata.runtime.state_size_bytes / 16) * 16;
+      const samples = tables + 16;
+      const memory = exports.memory.buffer;
+      new Uint32Array(memory, tables, 2).set([samples, samples + 8]);
+      new Float32Array(memory, samples, 2).set(input);
+      assert.equal(exports.onda_processor_init(0, state, PROCESSOR_INIT_FULL, 0, 0, 0, 0, 0), 0);
+      assert.equal(exports.onda_process(state, 0, tables, tables + 4, 0, 2, PROCESSOR_FULL_BLOCK, 0, 0, 0, 0, 0), 0);
+      assert.deepEqual([...new Float32Array(memory, samples + 8, 2)], expected);
+    }
+  } finally {
+    await compiler.dispose();
+  }
+});
+
 test("compiles copied processor environments and wide aggregates without inlining", async () => {
   const compiler = await createCompiler();
   try {

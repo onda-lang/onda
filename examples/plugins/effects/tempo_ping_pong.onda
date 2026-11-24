@@ -19,20 +19,20 @@ init:
   feedback_tone_l = std::filter::OnePole()
   feedback_tone_r = std::filter::OnePole()
   host_bpm = 120.0
-  current_delay: f64 = SR * 0.375
-  lag_coefficient: f64 = 0.0
+  delay_lag = std::smoothing::Lag<f64>()
+  delay_lag.reset(SR * 0.375)
 
 event tempo(bpm: f64):
   host_bpm = clamp(f32(bpm), 20.0, 400.0)
 
 block:
   target_delay = clamp(60.0 * beats / host_bpm * SR, 1.0, DelayCapacity - 2)
-  lag_coefficient = std::smoothing::lag_coefficient(lag_s)
+  delay_lag.lag_s = lag_s
   feedback_tone_l.cutoff = tone
   feedback_tone_r.cutoff = tone * 0.92
 
   sample:
-    current_delay = target_delay + (current_delay - target_delay) * lag_coefficient
+    current_delay = delay_lag(f64(target_delay))
     delayed_l = line_l.readL(f32(current_delay))
     delayed_r = line_r.readL(f32(current_delay))
 

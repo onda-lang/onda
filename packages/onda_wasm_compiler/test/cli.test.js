@@ -46,8 +46,20 @@ test("onda-wasm writes the reusable artifact pair", async () => {
     assert.equal(WebAssembly.validate(wasm), true);
     assert.equal(metadata.format, "onda-processor");
     assert.equal(metadata.compile.block_size, 512);
+    assert.equal(metadata.compile.fast_math, false);
     assert.match(metadata.integrity.wasm, /^[0-9a-f]{64}$/);
     assert.match(wat, /\(module/);
+
+    for (const [flags, fastMath] of [
+      [["--fast-math"], true],
+      [["--fast-math", "--strict-math"], false],
+    ]) {
+      assert.equal(await main(["compile", input, ...flags]), 0);
+      const metadata = JSON.parse(
+        await readFile(resolve(temporary, "main.onda.json"), "utf8"),
+      );
+      assert.equal(metadata.compile.fast_math, fastMath);
+    }
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

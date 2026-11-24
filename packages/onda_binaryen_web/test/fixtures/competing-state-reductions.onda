@@ -1,0 +1,16 @@
+init:
+  tail: f32[7]
+  independent = false
+
+sample:
+  total = 0.0
+  if independent:
+    for i in 0..7:
+      tail[i] = tail[i] + f32(i) + 0.25
+      total += tail[i]
+  else:
+    for i in 0..6:
+      tail[i + 1] = tail[i] * 0.5 + 0.25
+      total += tail[i + 1]
+  independent = !independent
+  out1 = total

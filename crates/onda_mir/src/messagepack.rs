@@ -37,7 +37,8 @@ pub fn to_messagepack(program: &Program) -> Result<Vec<u8>, MirMessagePackError>
 pub fn to_messagepack_optimized(
     program: &OptimizedProgram,
 ) -> Result<Vec<u8>, MirMessagePackError> {
-    rmp_serde::to_vec_named(program.as_program()).map_err(MirMessagePackError::Encode)
+    rmp_serde::to_vec_named(&crate::transport::OptimizedTransport::new(program))
+        .map_err(MirMessagePackError::Encode)
 }
 
 /// Decodes MessagePack supplied by an untrusted caller. Unchecked bounds are

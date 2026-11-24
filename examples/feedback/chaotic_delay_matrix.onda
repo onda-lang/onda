@@ -1,24 +1,19 @@
 import std/delay
-import std/env
 import std/filter
-import std/osc
-import std/random
 import std/smoothing
-
-proc SineDistortion:
-  sample 4:
-    out1 = sin(in1)
 
 const LineCount = 4
 const Capacity = i32(SR * 0.7) + 4
 const Times: f32[LineCount] = [0.0137, 0.0211, 0.0317, 0.0473]
 const Thresholds: f32[LineCount] = [0.12, 0.2, 0.16, 0.25]
 
+proc SineDistortion:
+  sample 4:
+    out1 = sin(in1)
+
 params:
-  auto_play = true
   memory = 0.4 {0.2, 4.0, scale = log}
   drive = 2.8 {0.5, 8.0}
-  excitation = 0.3 {0.0, 1.0}
   warp = 0.7 {0.0, 1.0}
   recovery_s = 0.3 {0.02, 2.0, scale = log, unit = "s"}
   inhibition = 0.9 {0.0, 1.0}
@@ -33,15 +28,9 @@ init:
   followers: std::smoothing::Lag<f32>[LineCount]
   energy: f32[LineCount]
   resting: bool[LineCount]
-  strike_left = 0
-  clock = 0
-  pending_bang = auto_play
-  rng = std::random::Rng()
-  chirp = std::osc::Sine()
-  envelope = std::env::DecayEnv(decay_s = 0.2)
+  pending_bang = true
   dc_l = std::filter::DCBlock()
   dc_r = std::filter::DCBlock()
-  rng.seed(1279)
   for i in 0..LineCount:
     washouts[i].mode = std::filter::OnePoleMode::HighPass
     washouts[i].cutoff = 25.0
@@ -50,26 +39,13 @@ event bang():
   pending_bang = true
 
 block:
-  period = max(i32(SR * 1.7), 1)
   for i in 0..LineCount:
     dampers[i].cutoff = tone
     followers[i].lag_s = recovery_s * (1.0 + i * 0.23)
 
   sample:
-    if auto_play && clock == 0:
-      envelope.start()
-      chirp.reset()
-    clock = (clock + 1) % period
-    if pending_bang:
-      strike_left = i32(SR * 0.002)
-      envelope.start()
-      chirp.reset()
-      pending_bang = false
-    burst = envelope()
-    injected = chirp(freq = 150.0 + burst * 1100.0) * burst
-    if strike_left > 0:
-      injected += rng.bipolar() * 0.4
-      strike_left -= 1
+    impulse = f32(pending_bang)
+    pending_bang = false
 
     taps: f32[LineCount]
     for i in 0..LineCount:
@@ -93,10 +69,7 @@ block:
       if resting[i]:
         gain *= 1.0 - inhibition * 0.95
       returning = washouts[i](dampers[i](scattered[i]))
-      seed = 0.0
-      if auto_play:
-        seed = rng.bipolar() * 0.00001
-      lines[i].write(distortions[i](returning * gain + (injected + seed) * excitation))
+      lines[i].write(distortions[i](returning * gain + impulse))
       lines[i].advance()
       energy[i] = followers[i](taps[i] * taps[i])
 

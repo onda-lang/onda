@@ -62,6 +62,220 @@ fn representative_checked_in_onda_examples_analyze_and_lower() {
     }
 }
 
+#[test]
+fn plugin_note_off_captures_release_controls_at_the_event() {
+    const FRAMES: usize = 128;
+    const FM_BELLS: &str = include_str!("../../../../examples/plugins/instruments/fm_bells.onda");
+    const POLY_SAW: &str = include_str!("../../../../examples/plugins/instruments/poly_saw.onda");
+    let note = [
+        7_i32.to_ne_bytes(),
+        0_i32.to_ne_bytes(),
+        60_i32.to_ne_bytes(),
+        1.0_f32.to_ne_bytes(),
+    ]
+    .concat();
+    for (source, wet, controls) in [
+        (FM_BELLS, "space", &["release_s"][..]),
+        (
+            POLY_SAW,
+            "reverb_level",
+            &["release_s", "filter_release_s"][..],
+        ),
+    ] {
+        let (mut instance, inputs, outputs) = compile_instance(source, FRAMES);
+        let input = vec![0.0; inputs * FRAMES];
+        let mut output = vec![0.0; outputs * FRAMES];
+        let trigger = |instance: &mut Instance, name| {
+            let event = instance.event_index(name).unwrap();
+            trigger_event_by_index_checked(
+                instance,
+                event,
+                &note,
+                onda_runtime::ExecutionOutput::none(),
+            )
+            .unwrap();
+        };
+        set_param_f32(&mut instance, wet, 0.0);
+        set_param_f32(&mut instance, "sustain", 1.0);
+        for &control in controls {
+            set_param_f32(&mut instance, control, 1.0);
+        }
+        trigger(&mut instance, "note_on");
+        for _ in 0..80 {
+            process_interleaved(&mut instance, &input, &mut output, FRAMES).unwrap();
+        }
+        let held = instance.snapshot_state_bytes().unwrap();
+        for &control in controls {
+            // Replay the same note, changing only when the host writes this control.
+            let mut release = |before_block, at_note_off| {
+                instance.restore_state_bytes(&held).unwrap();
+                set_param_f32(&mut instance, control, before_block);
+                process_interleaved(&mut instance, &input, &mut output, FRAMES).unwrap();
+                set_param_f32(&mut instance, control, at_note_off);
+                trigger(&mut instance, "note_off");
+                for _ in 0..20 {
+                    process_interleaved(&mut instance, &input, &mut output, FRAMES).unwrap();
+                }
+                output.clone()
+            };
+            let short = release(0.02, 0.02);
+            let at_event = release(1.0, 0.02);
+            let long = release(1.0, 1.0);
+            assert_ne!(short, long, "{control} must affect the rendered tail");
+            assert!(at_event == short, "{control} was stale at note-off");
+        }
+    }
+}
+
+#[test]
+fn effect_auditions_consume_triggers_during_live_input() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/effects");
+    for example in [
+        "compressor.onda",
+        "fdn_reverb.onda",
+        "live_tape_looper.onda",
+        "schroeder_reverb.onda",
+        "shimmer_echo.onda",
+        "stereo_chorus.onda",
+        "tape_echo.onda",
+        "wavefolder.onda",
+    ] {
+        let path = root.join(example);
+        let typed = analyze(parse_program_file(&path).unwrap()).unwrap();
+        let sample_rate = typed.analysis_options.sample_rate;
+        let frames = typed.analysis_options.block_size;
+        let jit = lower_typed_and_jit(
+            typed,
+            CompileOptions {
+                sample_rate,
+                block_size: frames,
+                fast_math: false,
+                opt_level: TargetOptLevel::O3,
+            },
+        )
+        .unwrap();
+        let mut instance = onda_runtime::create_instance(jit, None).unwrap();
+        init_checked(
+            &mut instance,
+            InitMode::Full,
+            onda_runtime::ExecutionOutput::none(),
+        )
+        .unwrap();
+        let auto_play = instance.param_index("auto_play").unwrap();
+        let live_input = instance.param_index("live_input").unwrap();
+        let bang = instance.event_index("bang").unwrap();
+        set_param_by_index(&mut instance, auto_play, &[0]).unwrap();
+        onda_runtime::set_param_plain_f64(&mut instance, live_input, 1.0).unwrap();
+        let trigger = |instance: &mut Instance| {
+            trigger_event_by_index_checked(
+                instance,
+                bang,
+                &[],
+                onda_runtime::ExecutionOutput::none(),
+            )
+            .unwrap();
+        };
+        let input = vec![0.0; frames * 2];
+        let mut output = vec![0.0; frames * 2];
+        trigger(&mut instance);
+        process_interleaved(&mut instance, &input, &mut output, frames).unwrap();
+        assert!(
+            output.iter().all(|&sample| sample == 0.0),
+            "{example} in live mode"
+        );
+        onda_runtime::set_param_plain_f64(&mut instance, live_input, 0.0).unwrap();
+        process_interleaved(&mut instance, &input, &mut output, frames).unwrap();
+        assert!(
+            output.iter().all(|&sample| sample == 0.0),
+            "{example} after leaving live mode"
+        );
+        trigger(&mut instance);
+        process_interleaved(&mut instance, &input, &mut output, frames).unwrap();
+        assert!(max_abs(&output) > 0.01, "{example}");
+    }
+}
+
+#[test]
+fn effect_audition_retriggers_with_a_short_fade() {
+    let audition = include_str!("../../../../examples/effects/processors/effect_audition.onda");
+    let source = format!(
+        r#"{audition}
+outs<f64> 1
+init:
+  cue = EffectAudition()
+  frame = 0
+sample:
+  if frame == 35000:
+    cue.bang()
+  left, right = cue()
+  out1 = f64(left)
+  frame += 1
+"#
+    );
+    let output = render_f64(&source, 48_000.0, 153_602).remove(0);
+    for retrigger in [35_000, 153_600] {
+        assert!(
+            (output[retrigger] - output[retrigger - 1]).abs() < 0.002,
+            "discontinuity at sample {retrigger}"
+        );
+    }
+    assert!(output[153_601].abs() > 0.0);
+}
+
+#[test]
+fn effect_audition_finishes_the_fade_and_leaves_manual_notes_idle() {
+    let audition = include_str!("../../../../examples/effects/processors/effect_audition.onda");
+    let source = format!(
+        r#"{audition}
+init:
+  cue = EffectAudition(auto_play = false, interval_s = 0.0)
+event bang():
+  cue.decay_s = 1.3
+  cue.bang()
+event fade_out():
+  cue.decay_s = 0.0
+  cue.bang()
+sample:
+  left, right = cue()
+  out1 = left
+"#
+    );
+    const FRAMES: usize = 128;
+    let (mut instance, _, _) = compile_instance(&source, FRAMES);
+    let fire = |instance: &mut Instance, name: &str| {
+        let event = instance.event_index(name).unwrap();
+        trigger_event_by_index_checked(instance, event, &[], onda_runtime::ExecutionOutput::none())
+            .unwrap();
+    };
+    let mut output = [0.0; FRAMES];
+    fire(&mut instance, "bang");
+    process_interleaved(&mut instance, &[], &mut output, FRAMES).unwrap();
+    let previous = output[FRAMES - 1];
+    assert!(previous.abs() > 0.01);
+
+    fire(&mut instance, "fade_out");
+    process_interleaved(&mut instance, &[], &mut output, FRAMES).unwrap();
+    let fade_samples = (0.002_f32 * 48_000.0).ceil() as usize;
+    assert!((output[0] - previous * (1.0 - 1.0 / fade_samples as f32)).abs() < 1e-6);
+    assert!(output[fade_samples - 2].abs() > 0.0);
+    assert!(output[fade_samples - 1..]
+        .iter()
+        .all(|&sample| sample == 0.0));
+
+    // The one-sample clock period leaves it at the same point each block.
+    let idle = instance.snapshot_state_bytes().unwrap();
+    process_interleaved(&mut instance, &[], &mut output, FRAMES).unwrap();
+    assert!(output.iter().all(|&sample| sample == 0.0));
+    assert!(
+        instance.snapshot_state_bytes().unwrap() == idle,
+        "idle state advanced"
+    );
+
+    fire(&mut instance, "bang");
+    process_interleaved(&mut instance, &[], &mut output, FRAMES).unwrap();
+    assert!(max_abs(&output) > 0.01);
+}
+
 // ---- Phase 0: Namespace Const Fixes — Integration tests ----
 
 #[test]

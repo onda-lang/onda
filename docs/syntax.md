@@ -2074,9 +2074,8 @@ fixed-size arrays. They are mutually exclusive, even when one duration is zero.
 Durations must be finite, nonnegative compile-time constants. An absent attribute or
 a zero duration creates no smoother instance or smoothing state.
 
-A positive duration inserts an ordinary stdlib processor at the input boundary;
-no explicit import is needed. `lag` uses `std::smoothing::Lag<T>`, and `ramp`
-uses a fixed linear path sharing `std::smoothing::Ramp<T>`'s timing and interpolation.
+A positive duration inserts a fixed-duration linear smoother or a
+`std::smoothing::Lag<T>` at the input boundary. No explicit import is needed.
 Each input is clamped to its declared range first, then smoothed once before each
 execution of the sample body. Every read, including dynamic and unchecked indexed reads,
 uses the same cached value. Each array element and proc instance has independent state.
@@ -2977,10 +2976,13 @@ can wrap during evaluation.
 
 ### Evaluation width and explicit casts
 
-At the selected width, integer arithmetic wraps and floating arithmetic rounds
-at each operation. Onda does not compute an `f32` expression through `f64`
-intermediates. Unary minus preserves the selected numeric type; `~` requires
-an integer. Neither supports `bool`.
+At the selected width, integer arithmetic wraps. In strict mode, floating arithmetic
+rounds at each operation. The LLVM compiler default permits regrouping arithmetic,
+fusing a multiply and add into one operation, and ignoring the sign of zero.
+Regrouping can change where intermediate operations overflow or underflow. Use
+`--strict-math` for strict mode. An `f32` expression uses `f32` precision.
+Unary minus preserves the selected numeric type. The `~` operator requires an integer.
+Neither operator supports `bool`.
 
 Contextual numeric const initializers evaluate once at `i64`/`f64` precision.
 Uses adapt the computed value rather than re-evaluating the initializer:

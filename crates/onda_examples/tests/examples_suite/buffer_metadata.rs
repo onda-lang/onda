@@ -105,6 +105,50 @@ sample:
 }
 
 #[test]
+fn cubic_interpolation_handles_taps_at_both_i32_limits() {
+    let source = r#"
+import std/lookup
+import std/data
+outs 8
+buffers:
+  bus: f32[2]
+init:
+  values: f32[3] = [0.0, 1.0, 2.0]
+  bank: std::data<3, 2>::Data<f32>
+  bank.write(1, 1.0, 1)
+  bank.write(2, 2.0, 1)
+sample:
+  low: f64 = -2147483647.5
+  high: f64 = 2147483647.5
+  out1 = f32(values.readC(low))
+  out2 = f32(values.readC(high))
+  out3 = f32(bus.readC(1, low))
+  out4 = f32(bus.readC(1, high))
+  out5 = f32(readC(values[1:3], low))
+  out6 = f32(values.readCW(high))
+  out7 = f32(bank.readC(high, -1))
+  out8 = f32(bank.readC(low, -1))
+"#;
+    let (mut instance, _, outputs) = compile_instance(source, 4);
+    let mut bus = [1.0_f32, 10.0, 2.0, 20.0, 3.0, 30.0];
+    bind_buffer(
+        &mut instance,
+        0,
+        bus.as_mut_ptr().cast(),
+        3,
+        2,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .unwrap();
+    let mut output = vec![0.0; 4 * outputs];
+    process_interleaved(&mut instance, &[], &mut output, 4).unwrap();
+    for sample in output.chunks_exact(outputs) {
+        assert_eq!(sample, [0.0, 2.0, 10.0, 30.0, 1.0, 1.6875, 1.6875, 1.6875]);
+    }
+}
+
+#[test]
 fn wrapping_interpolation_uses_channel_lengths_for_buffers_and_arrays() {
     let source = r#"
 import std/lookup

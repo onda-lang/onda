@@ -8,10 +8,10 @@ params:
   level = 1.0 {0.0, 1.0}
 
 init:
-  player = std::sample::Player(clip = clip)
+  player = std::sample::Player<f64, f32>(clip = clip)
 
 events:
-  play(start_frame = 0.0):
+  play(start_frame: f64 = 0.0):
     player.play(start_frame)
 
   stop():
@@ -19,5 +19,5 @@ events:
 
 sample:
   left, right = player(speed = speed)
-  out1 = left * level
-  out2 = right * level
+  out1 = f32(left * level)
+  out2 = f32(right * level)

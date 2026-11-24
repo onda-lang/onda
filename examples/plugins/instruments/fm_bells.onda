@@ -17,7 +17,6 @@ proc BellVoice:
     attack_s = 0.003
     decay_s = 1.8
     sustain = 0.08
-    release_s = 1.2
     brightness = 0.65
     ratio = 2.01
     strike_level = 0.18
@@ -42,7 +41,6 @@ proc BellVoice:
     amplitude.attack_s = attack_s
     amplitude.decay_s = decay_s
     amplitude.sustain = sustain
-    amplitude.release_s = release_s
 
   event trigger(key: i32, velocity_value):
     note = key
@@ -57,7 +55,8 @@ proc BellVoice:
     modulation.start(1.0)
     strike_envelope.start(velocity)
 
-  event release():
+  event release(release_s):
+    amplitude.release_s = release_s
     amplitude.release()
 
   when amplitude.finished():
@@ -95,7 +94,6 @@ struct BellVoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value,
     brightness_value,
     ratio_value,
     strike_value
@@ -103,7 +101,6 @@ struct BellVoiceManager:
     voices[index].attack_s = attack_value
     voices[index].decay_s = decay_value
     voices[index].sustain = sustain_value
-    voices[index].release_s = release_value
     voices[index].brightness = brightness_value
     voices[index].ratio = ratio_value
     voices[index].strike_level = strike_value
@@ -118,7 +115,6 @@ struct BellVoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value,
     brightness_value,
     ratio_value,
     strike_value,
@@ -140,19 +136,25 @@ struct BellVoiceManager:
     self.active[selected] = true
     self.held[selected] = true
     self.configure(
-      voices, selected, attack_value, decay_value, sustain_value,
-      release_value, brightness_value, ratio_value, strike_value
+      voices,
+      selected,
+      attack_value,
+      decay_value,
+      sustain_value,
+      brightness_value,
+      ratio_value,
+      strike_value
     )
     voices[selected].trigger(key, velocity)
     self.next_voice = (selected + 1) % VoiceCount
 
-  def note_off(self, voices: BellVoice[], id: i32, channel: i32, key: i32):
+  def note_off(self, voices: BellVoice[], id: i32, channel: i32, key: i32, release_s):
     for i in 0..VoiceCount:
       id_matches = id >= 0 && self.ids[i] == id && self.channels[i] == channel
       key_matches = id < 0 && self.channels[i] == channel && self.keys[i] == key
       if self.active[i] && self.held[i] && (id_matches || key_matches):
         self.held[i] = false
-        voices[i].release()
+        voices[i].release(release_s)
 
   def update(
     self,
@@ -160,7 +162,6 @@ struct BellVoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value,
     brightness_value,
     ratio_value,
     strike_value,
@@ -170,8 +171,14 @@ struct BellVoiceManager:
       if self.active[i]:
         self.pans[i] = (-1.0 + i * 2.0 / (VoiceCount - 1)) * spread
         self.configure(
-          voices, i, attack_value, decay_value, sustain_value,
-          release_value, brightness_value, ratio_value, strike_value
+          voices,
+          i,
+          attack_value,
+          decay_value,
+          sustain_value,
+          brightness_value,
+          ratio_value,
+          strike_value
         )
 
   def finish(self, index: i32):
@@ -211,11 +218,14 @@ when voices.finished(index):
 
 event note_on(id: i32, channel: i32, key: i32, velocity):
   voice_manager.note_on(
-    voices, id, channel, key, velocity,
+    voices,
+    id,
+    channel,
+    key,
+    velocity,
     attack_value = attack_s,
     decay_value = decay_s,
     sustain_value = sustain,
-    release_value = release_s,
     brightness_value = brightness,
     ratio_value = ratio,
     strike_value = strike,
@@ -223,7 +233,7 @@ event note_on(id: i32, channel: i32, key: i32, velocity):
   )
 
 event note_off(id: i32, channel: i32, key: i32, velocity):
-  voice_manager.note_off(voices, id, channel, key)
+  voice_manager.note_off(voices, id, channel, key, release_s)
 
 block:
   voice_manager.update(
@@ -231,7 +241,6 @@ block:
     attack_value = attack_s,
     decay_value = decay_s,
     sustain_value = sustain,
-    release_value = release_s,
     brightness_value = brightness,
     ratio_value = ratio,
     strike_value = strike,

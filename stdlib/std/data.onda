@@ -1,7 +1,7 @@
 # Fixed-size, multichannel sample storage for building stateful audio algorithms.
 # Provides indexed writes, wrapped reads, and interpolation between stored samples.
 
-import std/math
+import std/lookup
 
 namespace std::data<S = SR, C = 1>:
   assert(S > 0)
@@ -39,11 +39,6 @@ namespace std::data<S = SR, C = 1>:
       return a + (b - a) * t
 
     def readC(self, pos, ch_i: i32 = 0):
-      pos_floor = floor(pos)
-      i1 = i32(pos_floor)
-      t = pos - pos_floor
-      y0 = self.read(i1 - 1, ch_i)
-      y1 = self.read(i1, ch_i)
-      y2 = self.read(i1 + 1, ch_i)
-      y3 = self.read(i1 + 2, ch_i)
-      return std::math::cubic_interp(y0, y1, y2, y3, t)
+      channel = ch_i {C, wrap}
+      start = channel * S
+      return std::lookup::readCW(self.storage[start:start + S], pos)

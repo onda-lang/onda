@@ -92,7 +92,6 @@ sample:
             "--buffer",
             &binding,
             "--opt-level=2",
-            "--fast-math",
             "--meta",
             "--json",
         ],
@@ -107,7 +106,11 @@ sample:
     assert_eq!(report["block_size"], 16);
     assert_eq!(report["sample_rate_hz"], 44100);
     assert_eq!(report["opt_level"], "2");
-    assert_eq!(report["fast_math"], true);
+    assert_eq!(report["fast_math"], false);
+    assert_eq!(
+        report["floating_point"],
+        serde_json::json!({"reassociate": true, "contract": true, "no_signed_zeros": true}),
+    );
     assert_eq!(report["run_seconds"].as_array().unwrap().len(), 3);
     assert!(report["median_us_per_block"].as_f64().unwrap() > 0.0);
     assert!(String::from_utf8_lossy(&output.stderr).contains("gain"));
@@ -180,10 +183,14 @@ sample:
             "--blocks=1",
             "--warmup-blocks=0",
             &binding,
+            "--strict-math",
             "--json",
         ],
     );
-    assert_eq!(json_report(&output)["total_blocks"], 1);
+    let report = json_report(&output);
+    assert_eq!(report["total_blocks"], 1);
+    assert_eq!(report["fast_math"], false);
+    assert!(report.get("floating_point").is_none());
 }
 
 #[test]

@@ -5,10 +5,11 @@ import std/osc
 import std/pitch
 
 const VoiceCount = 6
+const DefaultDecayS = 8.0
 
 proc GlassVoice:
   params:
-    decay_s = 8.0
+    decay_s = DefaultDecayS
     hardness = 0.6
 
   init:
@@ -25,11 +26,13 @@ proc GlassVoice:
     oscillator_1.reset()
     oscillator_2.reset()
     oscillator_3.reset()
+    # Keep each partial's calibrated default while scaling the whole note.
+    decay_scale = decay_s / DefaultDecayS
     envelope_1.decay_s = decay_s
     envelope_1.start(velocity)
-    envelope_2.decay_s = decay_s * 0.47
+    envelope_2.decay_s = 4.05 * decay_scale
     envelope_2.start(velocity * hardness)
-    envelope_3.decay_s = decay_s * 0.19
+    envelope_3.decay_s = 1.65 * decay_scale
     envelope_3.start(velocity * hardness * hardness)
 
   sample:
@@ -48,7 +51,7 @@ params:
   auto_play = true
   root_note = 55 {36, 76}
   bpm = 76.0 {35.0, 160.0, unit = "BPM"}
-  decay_s = 8.0 {0.1, 10.0, unit = "s"}
+  decay_s = DefaultDecayS {0.1, 10.0, unit = "s"}
   hardness = 0.7 {0.0, 1.0}
   space = 0.5 {0.0, 1.0}
   level = 0.8 {0.0, 1.0}
@@ -65,7 +68,6 @@ init:
   pending_bang = false
 
 event bang():
-  print("yo")
   pending_bang = true
 
 block:

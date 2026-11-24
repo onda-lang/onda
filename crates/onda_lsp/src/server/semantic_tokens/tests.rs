@@ -134,6 +134,38 @@ fn reserved_words_include_singular_event_keyword() {
 }
 
 #[test]
+fn semantic_tokens_ignore_path_separators_in_comments() {
+    for (source, declaration_line) in [
+        ("def divide():\n  # Divide x.\n  quotient: i64 = 0\n", 2),
+        ("def divide():\n  # See x::\n  quotient: i64 = 0\n", 2),
+        (
+            concat!(
+                "struct Division:\n",
+                "  quotient: i64 = 0\n",
+                "\n",
+                "def divide(value: Division):\n",
+                "  # See value.\n",
+                "  quotient: i64 = 0\n",
+            ),
+            5,
+        ),
+    ] {
+        let parsed = parse_program(source).expect("parse function with comment");
+
+        for tokens in [
+            semantic_tokens_for_document_with_parsed(source, None, Some(&parsed)),
+            semantic_tokens_for_document_source_only(source, None),
+        ] {
+            assert_eq!(
+                token_type_at_text_on_line(&tokens, source, declaration_line, "quotient"),
+                Some(SEMANTIC_TOKEN_TYPE_VARIABLE),
+                "local declaration in {source:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn semantic_tokens_highlight_both_const_def_keywords() {
     let source = "const def twice(x: f32) -> f32:\n  return x * 2.0\n";
     for tokens in [
@@ -413,23 +445,34 @@ fn semantic_tokens_preserve_symbol_kinds_in_use_declarations() {
 }
 
 #[test]
-fn semantic_tokens_keep_import_paths_namespaces_despite_name_collisions() {
-    let source = concat!("import std/osc\n", "def osc():\n", "  return 1.0\n",);
+fn semantic_tokens_cover_entire_import_paths() {
+    let source = concat!(
+        "import std/osc\n",
+        "import processors/spectral_freeze\n",
+        "import\t../effects/processors/effect_audition # shared processor\n",
+        "import  ./café/osc\n",
+        "def osc():\n",
+        "  return 1.0\n",
+    );
     for tokens in [
         semantic_tokens_for_document(source, None),
         semantic_tokens_for_document_source_only(source, None),
     ] {
+        for (line, start, path) in [
+            (0, 7, "std/osc"),
+            (1, 7, "processors/spectral_freeze"),
+            (2, 7, "../effects/processors/effect_audition"),
+            (3, 8, "./café/osc"),
+        ] {
+            let mut after_keyword = tokens.iter().filter(|t| t.line == line && t.start >= 6);
+            let token = after_keyword.next().expect("expected import path token");
+            assert_eq!(token.start, start);
+            assert_eq!(token.length, path.encode_utf16().count() as u32);
+            assert_eq!(token.token_type, SEMANTIC_TOKEN_TYPE_NAMESPACE);
+            assert!(after_keyword.next().is_none());
+        }
         assert_eq!(
-            token_type_at_text_on_line(&tokens, source, 0, "std"),
-            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
-        );
-        assert_eq!(
-            token_type_at_text_on_line(&tokens, source, 0, "osc"),
-            Some(SEMANTIC_TOKEN_TYPE_NAMESPACE),
-            "an import module segment must not borrow the unrelated def's function kind",
-        );
-        assert_eq!(
-            token_type_at_text_on_line(&tokens, source, 1, "osc"),
+            token_type_at_text_on_line(&tokens, source, 4, "osc"),
             Some(SEMANTIC_TOKEN_TYPE_FUNCTION),
         );
     }

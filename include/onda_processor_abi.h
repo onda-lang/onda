@@ -83,6 +83,9 @@ typedef struct onda_processor_batch_cursor {
   uint32_t record_index;
 } onda_processor_batch_cursor_t;
 
+/* For every entry point, parameter and state storage must each be disjoint
+ * from all other memory accessed by the call, including audio and external
+ * buffer tables and samples. */
 typedef uint32_t (*onda_processor_init_fn)(
   const void* params,
   void* state,

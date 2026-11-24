@@ -62,12 +62,16 @@ pub fn to_json_validated(program: &ValidatedProgram) -> Result<String, MirJsonEr
 
 /// Encodes optimized producer MIR without discarding its validation proof.
 pub fn to_json_optimized(program: &OptimizedProgram) -> Result<String, MirJsonError> {
-    Ok(serde_json::to_string(program.as_program())?)
+    Ok(serde_json::to_string(
+        &crate::transport::OptimizedTransport::new(program),
+    )?)
 }
 
 /// Encodes readable optimized producer MIR for diagnostics and fixtures.
 pub fn to_json_pretty_optimized(program: &OptimizedProgram) -> Result<String, MirJsonError> {
-    Ok(serde_json::to_string_pretty(program.as_program())?)
+    Ok(serde_json::to_string_pretty(
+        &crate::transport::OptimizedTransport::new(program),
+    )?)
 }
 
 /// Decodes machine-readable MIR and retains proof that all backend-neutral

@@ -625,7 +625,7 @@ sample:
 
 #[test]
 fn llvm_receives_proven_storage_and_call_boundary_ranges() {
-    let (_, mir) = source_program(
+    let (_, mut mir) = source_program(
         r#"
 params:
   selector: i32 = 0 {min = 0, max = 3}
@@ -641,6 +641,12 @@ sample:
 "#,
         1,
     );
+    mir.functions
+        .iter_mut()
+        .find(|f| f.name == "preserve")
+        .expect("preserve helper")
+        .attributes
+        .inline = onda_mir::InlineHint::Never;
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
@@ -679,7 +685,7 @@ sample:
 
 #[test]
 fn llvm_does_not_treat_aliased_readonly_reference_ranges_as_invariant() {
-    let (_, mir) = source_program(
+    let (_, mut mir) = source_program(
         r#"
 struct Box:
   index: i32
@@ -695,6 +701,12 @@ sample:
 "#,
         1,
     );
+    mir.functions
+        .iter_mut()
+        .find(|f| f.name == "select")
+        .expect("select helper")
+        .attributes
+        .inline = onda_mir::InlineHint::Never;
     let ir = lower_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
@@ -2962,38 +2974,34 @@ sample:
         })
         .expect("source helper should lower to a MIR user function");
     let symbol = format!("@__onda_mir_fn_{function_index}");
+    let options = MirCompileOptions {
+        math: Default::default(),
+        fast_math: false,
+        opt_level: TargetOptLevel::O3,
+    };
 
     mir.functions[function_index].attributes.inline = onda_mir::InlineHint::Never;
-    let never_ir = lower_mir_to_llvm_ir_with_options(
-        &mir,
-        MirCompileOptions {
-            math: Default::default(),
-            fast_math: false,
-            opt_level: TargetOptLevel::O3,
-        },
-    )
-    .expect("noinline helper should emit");
+    let never_ir =
+        lower_mir_to_llvm_ir_with_options(&mir, options).expect("noinline helper should emit");
     assert!(never_ir.contains("noinline"));
     assert!(never_ir
         .lines()
         .any(|line| { line.contains("call") && line.contains(&symbol) }));
 
     mir.functions[function_index].attributes.inline = onda_mir::InlineHint::Always;
-    let always_ir = lower_mir_to_llvm_ir_with_options(
-        &mir,
-        MirCompileOptions {
-            math: Default::default(),
-            fast_math: false,
-            opt_level: TargetOptLevel::O3,
-        },
-    )
-    .expect("alwaysinline helper should emit");
+    let always_ir =
+        lower_mir_to_llvm_ir_with_options(&mir, options).expect("alwaysinline helper should emit");
     assert!(!always_ir
         .lines()
         .any(|line| { line.contains("call") && line.contains(&symbol) }));
     assert!(!always_ir
         .lines()
         .any(|line| { line.starts_with("define internal") && line.contains(&symbol) }));
+
+    mir.functions[function_index].attributes.inline = onda_mir::InlineHint::Prefer;
+    let preferred_ir =
+        lower_mir_to_llvm_ir_with_options(&mir, options).expect("preferred helper should emit");
+    assert_eq!(preferred_ir, always_ir);
 }
 
 #[test]
@@ -3109,6 +3117,7 @@ sample:
         })
         .expect("identity helper should lower");
     mir.functions[function_index].params[0].mode = onda_mir::PassingMode::ReadOnlyReference;
+    mir.functions[function_index].attributes.inline = onda_mir::InlineHint::Never;
     fn rewrite_reference_call(block: &mut Block, target: onda_mir::FunctionId) -> bool {
         for statement in &mut block.statements {
             match &mut statement.kind {

@@ -4,9 +4,9 @@
 //! source-language loop pattern or backend-specific representation.
 use std::collections::{HashMap, HashSet};
 
+use crate::local_references::collect_local_writes;
 use crate::{BinaryOp, CompareOp, IntegerRange, Intrinsic, LocalId, ScalarType, UnaryOp};
 
-use super::super::collect_block_writes;
 use super::*;
 
 mod affine;
@@ -568,7 +568,7 @@ impl Proof<'_, '_> {
                         let mut writes = HashSet::new();
                         // The recognized increment is outside counted.body.
                         // Any other write would invalidate monotonic progress.
-                        super::super::collect_statements_writes(counted.body, &mut writes);
+                        collect_local_writes(counted.body, &mut writes);
                         (!writes.contains(&counted.index))
                             .then_some((counted.index, env.locals[counted.index.index()]))
                     });
@@ -603,7 +603,7 @@ impl Proof<'_, '_> {
 fn written_locals(blocks: &[&Block]) -> Vec<LocalId> {
     let mut written = HashSet::new();
     for block in blocks {
-        collect_block_writes(block, &mut written);
+        collect_local_writes(&block.statements, &mut written);
     }
     let mut written: Vec<_> = written.into_iter().collect();
     written.sort_unstable();

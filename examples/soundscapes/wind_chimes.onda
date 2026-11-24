@@ -32,9 +32,9 @@ proc Chime:
     oscillator_3.reset()
     envelope_1.decay_s = decay_s
     envelope_1.start(velocity)
-    envelope_2.decay_s = decay_s * 0.58
+    envelope_2.decay_s = decay_s
     envelope_2.start(velocity * shimmer)
-    envelope_3.decay_s = decay_s * 0.31
+    envelope_3.decay_s = decay_s * (5.60 / 8.0)
     envelope_3.start(velocity * shimmer * shimmer)
 
   sample:

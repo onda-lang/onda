@@ -54,7 +54,7 @@ pub struct ProcessorProjection {
 }
 
 impl ProcessorProjection {
-    fn proc_name(&self) -> &str {
+    pub(crate) fn proc_name(&self) -> &str {
         self.edges
             .last()
             .map_or(&self.owner, |edge| &edge.proc_name)

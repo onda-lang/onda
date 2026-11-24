@@ -1,7 +1,7 @@
 # Real-time pitch transposition of incoming audio.
 # Useful for harmonization, detuning, and pitch-shifted feedback effects.
 
-import std/data
+import std/delay
 import std/pitch
 
 namespace std::pitch_shift:
@@ -16,10 +16,9 @@ namespace std::pitch_shift:
       window_s = 0.09 {T(16.0) / SR, T(BufferSize - 2) / SR, unit = "s"} => update_window
 
     init:
-      data = std::data<BufferSize>::Data<T>()
-      write_index = 0 {BufferSize, wrap}
+      line = std::delay<BufferSize>::Line<T>()
       phase: T = 0.0
-      pitch_offset: T = 1.0 - std::pitch::ratio_between(0.0, semitones)
+      pitch_offset: T = 1.0 - std::pitch::ratio_from_semitones(semitones)
       window_samples: T = window_s * SR
       phase_increment: T = pitch_offset / window_samples
       coefficient_semitones: T = semitones
@@ -27,7 +26,7 @@ namespace std::pitch_shift:
 
     def update_pitch():
       if semitones != coefficient_semitones:
-        pitch_offset = 1.0 - std::pitch::ratio_between(0.0, semitones)
+        pitch_offset = 1.0 - std::pitch::ratio_from_semitones(semitones)
         phase_increment = pitch_offset / window_samples
         coefficient_semitones = semitones
 
@@ -38,15 +37,11 @@ namespace std::pitch_shift:
         coefficient_window_s = window_s
 
     sample:
-      data.storage[write_index] = in1
+      line.write(in1)
       phase = wrap(phase + phase_increment, 0.0, T(1.0))
       phase_b = wrap(phase + 0.5, 0.0, T(1.0))
 
-      read_a = write_index - phase * window_samples
-      read_b = write_index - phase_b * window_samples
       gain_a = 0.5 - 0.5 * cos(phase * TWO_PI)
       gain_b = 1.0 - gain_a
-      shifted = data.readL(read_a) * gain_a + data.readL(read_b) * gain_b
-
-      write_index += 1
-      out1 = shifted
+      out1 = line.readL(phase * window_samples) * gain_a + line.readL(phase_b * window_samples) * gain_b
+      line.advance()

@@ -1,5 +1,5 @@
 import processors/spectral_delay
-include "../effects/processors/effect_audition.onda"
+import ../effects/processors/effect_audition
 
 params:
   auto_play = true
@@ -19,7 +19,7 @@ event bang():
   audition.bang()
 
 sample:
-  source, _ = audition(auto_play = auto_play)
+  source, _ = audition(auto_play = auto_play, muted = live_input)
   if live_input:
     source = in1
 

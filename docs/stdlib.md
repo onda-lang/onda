@@ -269,6 +269,7 @@ proc Triangle<T>:
 
 Filters for shaping frequency content, emphasizing resonances, and removing DC.
 Includes reusable filter processors and helpers for designing filter coefficients.
+Biquad stores coefficients and feedback in T. Use f64 for poles very close to DC.
 
 ```onda
 import std/filter
@@ -310,8 +311,8 @@ struct BiquadCoefficients<T>:
   b0: T = 1.0
   b1: T = 0.0
   b2: T = 0.0
-  a1: f64 = 0.0
-  a2: f64 = 0.0
+  a1: T = 0.0
+  a2: T = 0.0
 ```
 
 ### Processor `Biquad<T>`
@@ -374,9 +375,7 @@ proc Svf<T>:
 
 Triggered and gated envelopes for shaping amplitude and other control signals over time.
 Finite envelopes reach their endpoint after each stage's duration in seconds and
-emit finished() at the end. Parameter hooks apply edits to an active stage.
-Time edits scale the time left; shape and curve edits reshape that remainder.
-Sustain edits apply immediately; releases retain their note-off level.
+emit finished() at the end. Each ramp captures its settings when it starts.
 
 ```onda
 import std/env
@@ -402,9 +401,9 @@ proc Decay<T>:
 proc DecayEnv<T>:
   outs<T> 1
   params:
-    decay_s: T = 0.2 => update_decay
-    shape: std::smoothing::RampShape = std::smoothing::RampShape::Exponential => update_decay
-    curve: T = -4.0 {-60.0, 60.0} => update_decay
+    decay_s: T = 0.2
+    shape: std::smoothing::RampShape = std::smoothing::RampShape::Exponential
+    curve: T = -4.0 {-60.0, 60.0}
     trigger: T = 0.0 {0.0, 1.0} => update_trigger
   delegates:
     finished()
@@ -419,12 +418,12 @@ proc DecayEnv<T>:
 proc AR<T>:
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_shape
-    release_s: T = 0.1 => update_shape
-    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    attack_curve: T = -4.0 {-60.0, 60.0} => update_shape
-    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    release_curve: T = -4.0 {-60.0, 60.0} => update_shape
+    attack_s: T = 0.01
+    release_s: T = 0.1
+    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    attack_curve: T = -4.0 {-60.0, 60.0}
+    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    release_curve: T = -4.0 {-60.0, 60.0}
     trigger: T = 0.0 {0.0, 1.0} => update_trigger
   delegates:
     finished()
@@ -439,13 +438,13 @@ proc AR<T>:
 proc ASR<T>:
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_shape
+    attack_s: T = 0.01
     sustain: T = 1.0 {0.0, 1.0} => update_sustain
-    release_s: T = 0.1 => update_shape
-    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    attack_curve: T = -4.0 {-60.0, 60.0} => update_shape
-    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    release_curve: T = -4.0 {-60.0, 60.0} => update_shape
+    release_s: T = 0.1
+    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    attack_curve: T = -4.0 {-60.0, 60.0}
+    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    release_curve: T = -4.0 {-60.0, 60.0}
     gate: T = 0.0 {0.0, 1.0} => update_gate
   delegates:
     finished()
@@ -461,16 +460,16 @@ proc ASR<T>:
 proc ADSR<T>:
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_shape
-    decay_s: T = 0.1 => update_shape
+    attack_s: T = 0.01
+    decay_s: T = 0.1
     sustain: T = 0.7 {0.0, 1.0} => update_sustain
-    release_s: T = 0.2 => update_shape
-    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    attack_curve: T = -4.0 {-60.0, 60.0} => update_shape
-    decay_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    decay_curve: T = -4.0 {-60.0, 60.0} => update_shape
-    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear => update_shape
-    release_curve: T = -4.0 {-60.0, 60.0} => update_shape
+    release_s: T = 0.2
+    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    attack_curve: T = -4.0 {-60.0, 60.0}
+    decay_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    decay_curve: T = -4.0 {-60.0, 60.0}
+    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    release_curve: T = -4.0 {-60.0, 60.0}
     gate: T = 0.0 {0.0, 1.0} => update_gate
   delegates:
     finished()
@@ -597,8 +596,8 @@ Namespace: `std::levels`.
 
 ```onda
 const HALF_PI: f64 = PI / 2.0
-const DB_PER_NAT: f64 = 8.685889638065037
-const MIN_FLOAT: f64 = 0.00000000000000000001
+const DB_PER_NAT = 8.685889638065037
+const MIN_FLOAT = 0.00000000000000000001
 ```
 
 ### Functions
@@ -783,8 +782,8 @@ Namespace: `std::pitch`.
 
 ```onda
 const A4_HZ: f64 = 440.0
-const MIDI_A4: f64 = 69.0
-const MIN_FLOAT: f64 = 0.00000000000000000001
+const MIDI_A4 = 69.0
+const MIN_FLOAT = 0.00000000000000000001
 ```
 
 ### Functions
@@ -803,7 +802,10 @@ def ratio_between<T>(source_note: T, target_note: T):
 ## `std/smoothing`
 
 Tools for smoothing changing signals and controlling how values move over time.
-Provides exponential lag, slew-rate limits, and finite-duration ramps.
+Lag covers about 63.2% of a step in lag_s. Slew limits the rate of change per second.
+A ramp reaches its target after ceil(duration_s * SR) samples and captures its
+shape at each target change. For Exponential, a negative curve moves early,
+a positive curve moves late, and zero is linear.
 
 ```onda
 import std/smoothing
@@ -871,9 +873,9 @@ proc Ramp<T>:
   ins<T> 1
   outs<T> 1
   params:
-    duration_s: T = 0.05 => update_duration
-    shape: RampShape = RampShape::Linear
-    curve: T = -4.0 {-60.0, 60.0}
+    duration_s: T = 0.05 => update_plan
+    shape: RampShape = RampShape::Linear => update_plan
+    curve: T = -4.0 {-60.0, 60.0} => update_plan
   events:
     reset(value: T = 0.0):
 ```
@@ -883,6 +885,9 @@ proc Ramp<T>:
 
 Amplitude tracking and dynamic-range processing for audio signals.
 Provides envelope followers, compression, limiting, and gating.
+RmsFollower applies attack_lag_s and release_lag_s to squared amplitude.
+After one attack time constant, a unit step from silence reaches about 0.632
+in mean square, giving an RMS output of about 0.795.
 
 ```onda
 import std/dynamics
@@ -971,6 +976,11 @@ proc Gate<T>:
 
 Delay lines and echo processors for shifting audio in time and building feedback effects.
 Supports interpolated reads, diffusion, and smooth transitions between delay positions.
+Capacity is at least two. Cubic uses a fixed one-sample tap with up to four slots.
+Delay and CrossfadeDelay use a fixed one-sample tap with up to three slots.
+With two slots, Linear, Smooth, and Crossfade pass the current sample through.
+The upper tap bounds in samples are Capacity - 2 for linear reads,
+max(Capacity - 3, 1) for Cubic, and max(Capacity - 2, 1) for feedback delays.
 
 ```onda
 import std/delay
@@ -1024,7 +1034,7 @@ proc Linear<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {0.0, Capacity - 2, unit = "samples"}
+    delay_samples: T = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
   events:
     reset():
 ```
@@ -1036,7 +1046,7 @@ proc Cubic<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {1.0, Capacity - 3, unit = "samples"}
+    delay_samples: T = 1.0 {1.0, _MaxCubicTap, unit = "samples"}
   events:
     reset():
 ```
@@ -1048,7 +1058,7 @@ proc Smooth<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {0.0, Capacity - 2, unit = "samples"}
+    delay_samples: T = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
     lag_s: T = 0.02 => update_lag
   events:
     reset():
@@ -1061,7 +1071,7 @@ proc Crossfade<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {0.0, Capacity - 2, unit = "samples"}
+    delay_samples: T = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
     fade_s: T = 0.02
   events:
     reset():
@@ -1074,7 +1084,7 @@ proc Delay<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR, unit = "s"}
+    delay_s: T = 0.1 {T(1.0) / SR, T(_MaxFeedbackTap) / SR, unit = "s"}
     feedback: T = 0.0 {-0.999, 0.999}
     mix: T = 1.0 {0.0, 1.0}
     lag_s: T = 0.02 => update_lag
@@ -1089,7 +1099,7 @@ proc CrossfadeDelay<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR, unit = "s"}
+    delay_s: T = 0.1 {T(1.0) / SR, T(_MaxFeedbackTap) / SR, unit = "s"}
     feedback: T = 0.0 {-0.999, 0.999}
     mix: T = 1.0 {0.0, 1.0}
     fade_s: T = 0.02
@@ -1102,6 +1112,9 @@ proc CrossfadeDelay<T>:
 
 Playback of audio clips supplied through host-bound buffers.
 Supports variable speed, reverse playback, looping, and playback-position control.
+`Player<Precision, Sample>` uses `Precision` for playback position, speed, interpolation,
+and outputs. `Sample` is the clip's element type. Both default to `f32`.
+Use `Player<f64, f32>` to retain single-frame resolution past frame 16,777,216 in an `f32` clip.
 
 ```onda
 import std/sample
@@ -1109,23 +1122,23 @@ import std/sample
 
 Namespace: `std::sample<Channels = 2>`.
 
-### Processor `Player<T>`
+### Processor `Player<Precision, Sample>`
 
 ```onda
-proc Player<T>:
-  outs<T> Channels
+proc Player<Precision, Sample>:
+  outs<Precision> Channels
   params:
-    speed: T = 1.0
+    speed: Precision = 1.0
     looping = false
   buffers:
-    clip: T[]
+    clip: Sample[]
   delegates:
     finished()
     looped()
   events:
-    play(start_sample: f64 = 0.0):
+    play(start_sample: Precision = 0.0):
     stop():
-    seek(position_samples: f64):
+    seek(position_samples: Precision):
     reset():
 ```
 

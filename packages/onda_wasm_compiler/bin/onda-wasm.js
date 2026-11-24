@@ -23,6 +23,7 @@ Options:
   --optimize-level <0..4>  Binaryen optimization level (default: 4)
   --shrink-level <0..2>    Binaryen shrink level (default: 0)
   --fast-math              Enable relaxed floating-point rewrites
+  --strict-math            Preserve strict floating-point arithmetic (default)
   --no-simd                Disable WebAssembly SIMD code generation
   --wat-out <file>         Also write WebAssembly text format
   --help, -h               Show this help
@@ -155,6 +156,9 @@ function parseCompileArguments(args) {
         break;
       case "--fast-math":
         result.fastMath = true;
+        break;
+      case "--strict-math":
+        result.fastMath = false;
         break;
       case "--no-simd":
         result.simd = false;

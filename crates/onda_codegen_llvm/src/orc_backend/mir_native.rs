@@ -166,10 +166,16 @@ pub struct MirTargetOptions {
 
 impl Default for MirTargetOptions {
     fn default() -> Self {
+        Self::new(crate::TargetConfig::host(), crate::FloatMathMode::default())
+    }
+}
+
+impl MirTargetOptions {
+    pub fn new(target: crate::TargetConfig, math: crate::FloatMathMode) -> Self {
         Self {
-            fast_math: false,
-            math: crate::FloatMathPolicy::default(),
-            target: crate::TargetConfig::host(),
+            fast_math: math.is_fast(),
+            math: math.policy(),
+            target,
         }
     }
 }
@@ -183,10 +189,16 @@ pub enum MirEventPayloadShape {
 
 impl Default for MirCompileOptions {
     fn default() -> Self {
+        Self::new(TargetOptLevel::O3, crate::FloatMathMode::default())
+    }
+}
+
+impl MirCompileOptions {
+    pub fn new(opt_level: TargetOptLevel, math: crate::FloatMathMode) -> Self {
         Self {
-            fast_math: false,
-            math: crate::FloatMathPolicy::default(),
-            opt_level: TargetOptLevel::O3,
+            fast_math: math.is_fast(),
+            math: math.policy(),
+            opt_level,
         }
     }
 }
@@ -957,7 +969,7 @@ unsafe fn declare_functions(
         }
         match function.attributes.inline {
             onda_mir::InlineHint::Auto => {}
-            onda_mir::InlineHint::Always => {
+            onda_mir::InlineHint::Always | onda_mir::InlineHint::Prefer => {
                 add_enum_attribute_at_index(
                     context,
                     value,
@@ -1000,6 +1012,8 @@ unsafe fn declare_functions(
                 add_enum_param_attribute(context, value, 3, "noundef")?;
             }
             FunctionKind::Process => {
+                // The processor ABI keeps state and parameter storage
+                // disjoint from all other memory accessed by the call.
                 add_enum_param_attribute(context, value, 1, "noalias")?;
                 for attribute in ["noalias", "readonly"] {
                     add_enum_param_attribute(context, value, 2, attribute)?;

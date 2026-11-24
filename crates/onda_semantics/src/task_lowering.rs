@@ -8,6 +8,7 @@ use onda_frontend::{
     BinaryOp, CmpOp, FnParamDecl, FnParamType, FnReturnScalarType, FnReturnType, LogicalOp,
     TaskDef, INTERNAL_BARE_RETURN_FN, INTERNAL_TASK_AWAIT_FN, INTERNAL_TASK_YIELD_FN,
 };
+use onda_mir::InlineHint;
 
 const TASK_FIELD_PREFIX: &str = "__onda_task_";
 const TASK_AVAILABLE_FIELD: &str = "__onda_task_available";
@@ -3039,9 +3040,9 @@ fn lower_top_level_tasks(
     constants: &crate::def_semantics::CallTypeEnv,
     options: AnalysisOptions,
     errors: &mut Vec<Diagnostic>,
-) -> HashSet<String> {
+) -> LoweredTasks {
     if tasks.is_empty() {
-        return HashSet::new();
+        return LoweredTasks::default();
     }
 
     let owner_surface = TaskOwnerSurface::from_top_level(program);
@@ -3071,7 +3072,7 @@ fn lower_top_level_tasks(
     let mut pinned_fields = vec![TASK_AVAILABLE_FIELD.to_owned()];
     let mut scratch_roots = Vec::with_capacity(tasks.len());
     let mut generated_defs = Vec::with_capacity(tasks.len() * 2);
-    let mut runtime_def_names = HashSet::with_capacity(tasks.len() * 2);
+    let mut runtime_defs = HashMap::with_capacity(tasks.len() * 2);
     for task in tasks {
         let mut task = task.clone();
         rewrite_task_overloads(&mut task, &call_env, call_semantics, struct_defs);
@@ -3103,7 +3104,7 @@ fn lower_top_level_tasks(
             &for_frame_bindings,
             &prepared.views,
         );
-        runtime_def_names.insert(resume.name.clone());
+        runtime_defs.insert(resume.name.clone(), InlineHint::Never);
         generated_defs.push(resume);
         let reset = FunctionDef {
             loc: Default::default(),
@@ -3115,7 +3116,7 @@ fn lower_top_level_tasks(
             return_ty_loc: Default::default(),
             body: prepared.reset_stmts,
         };
-        runtime_def_names.insert(reset.name.clone());
+        runtime_defs.insert(reset.name.clone(), InlineHint::Always);
         generated_defs.push(reset);
     }
 
@@ -3298,7 +3299,10 @@ fn lower_top_level_tasks(
     program
         .blocks
         .extend(generated_defs.into_iter().map(Block::Def));
-    runtime_def_names
+    LoweredTasks {
+        runtime_defs,
+        ..LoweredTasks::default()
+    }
 }
 
 fn task_callable_defs(program: &Program) -> Vec<FunctionDef> {
@@ -3684,7 +3688,7 @@ fn rewrite_task_overloads(
 
 #[derive(Default)]
 pub(crate) struct LoweredTasks {
-    pub runtime_defs: HashSet<String>,
+    pub runtime_defs: HashMap<String, InlineHint>,
     pub lexical_resources: HashMap<String, Vec<crate::processor_views::ProcessorLexicalResource>>,
 }
 
@@ -3744,7 +3748,7 @@ pub(crate) fn lower_tasks(
     ));
 
     let top_level_tasks = take_top_level_tasks(program);
-    let runtime_def_names = lower_top_level_tasks(
+    let mut lowered = lower_top_level_tasks(
         program,
         &top_level_tasks,
         &call_semantics,
@@ -3757,7 +3761,6 @@ pub(crate) fn lower_tasks(
         errors,
     );
 
-    let mut lexical_resources = HashMap::new();
     let mut has_tasks = !top_level_tasks.is_empty();
     for proc in program.blocks.iter_mut().filter_map(|block| match block {
         Block::Proc(proc) => Some(proc),
@@ -3856,7 +3859,7 @@ pub(crate) fn lower_tasks(
                 &for_frame_bindings,
                 &prepared.views,
             );
-            lexical_resources.insert(
+            lowered.lexical_resources.insert(
                 crate::processor_lowering::proc_local_bind_hidden_def_name(
                     &proc.name,
                     &resume.name,
@@ -3993,10 +3996,7 @@ pub(crate) fn lower_tasks(
             body: Vec::new(),
         }));
     }
-    LoweredTasks {
-        runtime_defs: runtime_def_names,
-        lexical_resources,
-    }
+    lowered
 }
 #[cfg(test)]
 #[path = "task_lowering_tests/mod.rs"]

@@ -72,10 +72,19 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
   8-point base stage lowers to extensive shuffles and register spills; evaluate vectorization
   direction, width, interleaving, and register pressure with measured code quality rather than
   assuming wider vectors are faster. Keep target-specific cost decisions in the LLVM backend.
-- Broaden Binaryen/Wasm SIMD beyond slice fills and independent straight-line sample loops with
-  invariant controls. General array/voice loops and helper calls remain candidates. Start with
-  independent contiguous and mirrored-range kernels,
-  preserving numerical and memory semantics with correct scalar handling where required.
+- Use MIR's ordered-reduction proof to find candidates for late LLVM SLP. Evaluate outlining the
+  eligible loop during lowering, running function-scoped SLP after unrolling, and inlining the
+  helper back. Preserve the source-order sum. Compare against standard O3 on different bank sizes
+  and precisions, a direct convolver, and a processor that combines a bank with convolution.
+- Refine the Wasm profitability check for ordered state-bank reductions. Extend measurements to
+  alternating branches and additional architectures. Compare across bank sizes and amounts of work,
+  accounting for casts, shuffles, lane extraction, and scalar tails. The cheap `f64` index-cast
+  loop ran slower with Wasm SIMD in Node and faster in Chrome and Firefox. Preserve the measured
+  smoother and filter-bank gains and the source-order sum when tuning SIMD selection. See the
+  [same-MIR Wasm measurements](../../scripts/bench/README.md#ordered-state-bank-simd).
+- Extend Binaryen SIMD to independent contiguous and mirrored-range array kernels beyond the
+  fixed state banks covered by the ordered-reduction proof. Preserve numerical and memory
+  semantics with scalar handling where required.
 - Continue isolated real-spectrum reconstruction measurements now that shared MIR proofs enable
   vectorization of mirrored bin pairs. Check shuffle/spill costs and wider target coverage against
   complete-transform comparisons in the [benchmark results folder](../../scripts/bench/results/).
@@ -107,13 +116,10 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
 
 ## Floating-point contraction
 
-- Explore further whether native contraction should become the default independently of the
-  other fast-math permissions. It remains disabled. Measure complete examples, including
-  convolution and feedback synths, across ARM64 and x64 CPUs, sample rates, block sizes and
-  voice counts before choosing a default.
-- Define the numerical policy and strict opt-out before changing it. Cover long-running feedback,
-  threshold decisions and snapshot replay; distinguish tolerance-based agreement from bitwise
-  equality. Retain explicit `fma`'s single-rounding contract and test Wasm independently.
+- Extend measurements of the native default, which combines contraction with reassociation and
+  ignoring signed zero, to ARM64 and other x64 CPUs. Include complete convolution and feedback
+  examples, long-running threshold decisions, and snapshot replay. Compare against
+  `--strict-math` and distinguish tolerance-based agreement from bitwise equality.
 
 ## Native vector math
 

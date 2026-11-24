@@ -298,8 +298,10 @@ The host still allocates processor storage and calls the entry points below. The
 
 ## Storage and initialization
 
-The host allocates non-overlapping parameter and physical-state regions using the sizes and minimum
-alignments in `runtime`. It initializes parameter defaults from program metadata and calls
+The host allocates separate parameter and physical-state regions using the sizes and minimum
+alignments in `runtime`. Each region must be disjoint from every other region accessed by a processor
+entry point, including audio channel tables and samples and external-buffer descriptor tables and
+samples. The host initializes parameter defaults from program metadata and calls
 `onda_processor_init(params, state, FULL, buffers, buffer_frames, buffer_channels,
 buffer_sample_rates, output)` before processing. The four buffer tables describe the bindings
 current for this initialization call and follow the same rules as process and event calls. Pass

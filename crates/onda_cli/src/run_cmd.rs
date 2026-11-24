@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use onda_codegen_llvm::TargetOptLevel;
+use onda_codegen_llvm::{FloatMathMode, TargetOptLevel};
 use onda_daemon::{
     DaemonConfig, DaemonSession, RunOptions, RunPrintBatch, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
 };
@@ -42,7 +42,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             input_device,
             output_device,
             midi_input_device,
-            fast_math,
+            math,
             show_meta,
             control_json,
             start_paused,
@@ -84,7 +84,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 input_device,
                 output_device,
                 midi_input_device,
-                fast_math,
+                math,
                 show_meta,
                 control_json,
                 start_paused,
@@ -110,7 +110,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             block_samples,
             param_smoothing_seconds,
             opt_level,
-            fast_math,
+            math,
             show_meta,
             param_sets,
             buffer_bindings,
@@ -135,7 +135,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                 block_samples,
                 param_smoothing_seconds,
                 opt_level,
-                fast_math,
+                math,
                 show_meta,
                 param_sets: &param_sets,
                 buffer_bindings: &buffer_bindings,
@@ -155,7 +155,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
             input_device,
             output_device,
             midi_input_device,
-            fast_math,
+            math,
             show_meta,
             theme,
         } => {
@@ -177,7 +177,7 @@ pub(crate) fn run_run(cmd: RunCommand) -> Result<(), String> {
                     input_device,
                     output_device,
                     midi_input_device,
-                    fast_math,
+                    math,
                     show_fast_math: true,
                     show_meta,
                     theme,
@@ -237,7 +237,7 @@ struct DaemonRenderRequest<'a> {
     block_samples: usize,
     param_smoothing_seconds: f64,
     opt_level: TargetOptLevel,
-    fast_math: bool,
+    math: FloatMathMode,
     show_meta: bool,
     param_sets: &'a [(String, onda_daemon::RunParamValue)],
     buffer_bindings: &'a [(String, Option<PathBuf>)],
@@ -254,7 +254,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         block_samples,
         param_smoothing_seconds,
         opt_level,
-        fast_math,
+        math,
         show_meta,
         param_sets,
         buffer_bindings,
@@ -266,7 +266,7 @@ fn run_daemon_run(request: DaemonRenderRequest<'_>) -> Result<(), String> {
         sample_rate: sample_rate_hz as f32,
         block_size: block_samples,
         param_smoothing_seconds,
-        fast_math,
+        math,
         opt_level,
     };
     let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));

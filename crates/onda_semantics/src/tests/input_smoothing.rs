@@ -1,10 +1,9 @@
 use super::*;
 
-fn compile(source: &str) -> TypedProgram {
+fn compile(source: &str) -> onda_mir::OptimizedProgram {
     let parsed = parse_program(source).unwrap();
     let typed = analyze(parsed).unwrap_or_else(|errors| panic!("{source}\n{errors:?}"));
-    crate::lower_program_to_optimized_mir(&typed).unwrap();
-    typed
+    crate::lower_program_to_optimized_mir(&typed).unwrap()
 }
 
 #[test]
@@ -33,17 +32,10 @@ fn zero_input_smoothing_has_identical_state_and_sample_code() {
                 format!("ins:\n  x {attribute}\nsample:\n  out1 = x\n")
             }
         };
-        let plain = compile(&source(""));
+        let plain = onda_mir::format_program(&compile(&source("")));
         for attribute in ["{ramp = 0}", "{lag = 0}"] {
-            let zero = compile(&source(attribute));
-            assert_eq!(zero.state_vars, plain.state_vars);
-            assert_eq!(zero.structs.len(), plain.structs.len());
-            assert_eq!(
-                zero.defs.iter().map(|def| &def.name).collect::<Vec<_>>(),
-                plain.defs.iter().map(|def| &def.name).collect::<Vec<_>>()
-            );
-            assert_eq!(zero.sample.len(), plain.sample.len());
-            assert!(zero.input_smoothing_aliases.is_empty());
+            let zero = onda_mir::format_program(&compile(&source(attribute)));
+            assert_eq!(zero, plain, "{attribute}");
         }
     }
 }

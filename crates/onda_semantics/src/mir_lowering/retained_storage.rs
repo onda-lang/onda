@@ -597,19 +597,13 @@ pub(super) fn load_scalar_uses(
     types: &[MirType],
 ) {
     let mut statements = Vec::new();
+    let mut references = HashSet::new();
     for mut statement in std::mem::take(&mut block.statements) {
-        let references = match &statement.kind {
-            StatementKind::If {
-                condition: Value::Local(local),
-                ..
-            } => HashSet::from([*local]),
-            StatementKind::If { .. } | StatementKind::Loop { .. } => HashSet::new(),
-            _ => onda_mir::referenced_locals(&MirBlock {
-                statements: vec![statement.clone()],
-            }),
-        };
+        references.clear();
+        onda_mir::collect_direct_local_references(&statement, &mut references);
         let mut reads = references
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|local| {
                 slots.contains_key(local)
                     && matches!(types[locals[local.index()].ty.index()], MirType::Scalar(_))

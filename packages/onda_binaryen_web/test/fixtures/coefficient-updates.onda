@@ -8,7 +8,7 @@ proc Exercise<T>:
     filter = std::filter::OnePole<T>(cutoff = 0.0)
     lag = std::smoothing::Lag<T>(lag_s = 0.0)
     expected_filter = 0.0
-    expected_lag: f64 = 0.0
+    expected_lag: T = 0.0
     frame: i32 = 0
 
   sample:
@@ -29,8 +29,8 @@ proc Exercise<T>:
     lag_coefficient = f64(0.0)
     if lag_time > 0.0:
       lag_coefficient = exp(-1.0 / (f64(lag_time) * SR))
-    expected_lag *= lag_coefficient
-    out2 = lag(T(0.0)) - T(expected_lag)
+    expected_lag *= T(lag_coefficient)
+    out2 = lag(T(0.0)) - expected_lag
     frame += 1
 
 outs 4

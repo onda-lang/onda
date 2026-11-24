@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, BufWriter, Write};
 use std::path::Path;
 
+use onda_codegen_llvm::FloatMathMode;
 use onda_daemon::{
     DaemonConfig, DaemonSession, DocumentVersion, RunBuildError, RunDelegateBatch, RunDelegateInfo,
     RunOptions, RunParamInfo, RunPrintBatch, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
@@ -62,7 +63,7 @@ enum Request {
         #[serde(default)]
         param_smoothing_seconds: Option<f64>,
         #[serde(default)]
-        fast_math: Option<bool>,
+        math: Option<FloatMathMode>,
     },
     Open {
         path: String,
@@ -188,7 +189,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
             sample_rate_hz,
             block_samples,
             param_smoothing_seconds,
-            fast_math,
+            math,
         } => {
             let current = session.config();
             let param_smoothing_seconds =
@@ -203,7 +204,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 sample_rate: sample_rate_hz.unwrap_or(current.run.sample_rate as u32) as f32,
                 block_size: block_samples.unwrap_or(current.run.block_size),
                 param_smoothing_seconds,
-                fast_math: fast_math.unwrap_or(current.run.fast_math),
+                math: math.unwrap_or(current.run.math),
                 opt_level: current.run.opt_level,
             };
             let config = DaemonConfig::for_run(run);
@@ -212,7 +213,7 @@ fn handle_request(session: &mut DaemonSession, envelope: RequestEnvelope) -> Res
                 "sample_rate_hz": run.sample_rate,
                 "block_samples": run.block_size,
                 "param_smoothing_seconds": run.param_smoothing_seconds,
-                "fast_math": run.fast_math,
+                "math": run.math,
             }))
         }
         Request::Open {
@@ -1092,7 +1093,7 @@ mod tests {
                 "sample_rate_hz": 44_100,
                 "block_samples": 256,
                 "param_smoothing_seconds": 0.03,
-                "fast_math": true,
+                "math": "fast",
             }))
             .expect("initialize request"),
         );
@@ -1105,7 +1106,7 @@ mod tests {
         assert_eq!(session.config().analysis.block_size, 256);
         assert_eq!(session.config().analysis.sample_rate, 44_100.0);
         assert_eq!(session.config().run.param_smoothing_seconds, 0.03);
-        assert!(session.config().run.fast_math);
+        assert_eq!(session.config().run.math, FloatMathMode::Fast);
     }
 
     #[test]

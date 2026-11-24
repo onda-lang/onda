@@ -66,9 +66,6 @@ fn source(ui: &RunUi, compact: bool) -> (&str, String) {
             let unit = if compact { "" } else { " samples" };
             details.push_str(&format!(" · {block}{unit}"));
         }
-        if ui.state["fastMath"] == true {
-            details.push_str(if compact { " · FM" } else { " · Fast Math" });
-        }
     }
     (path, details)
 }

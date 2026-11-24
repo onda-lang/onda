@@ -38,12 +38,33 @@ pub(crate) fn parse_args(args: impl Iterator<Item = String>) -> Result<Command, 
         "--version" | "-v" => Ok(Command::Version),
         "project" => parse_project_args(args),
         "compile" => parse_compile_args(args),
+        "fmt" => parse_fmt_args(args),
         "bench" => parse_bench_args(args),
         "lsp" => parse_lsp_args(args),
         "run" => parse_run_args(args),
         "daemon" => parse_daemon_args(args),
         _ => Err(format!("unknown command '{cmd}'\n{}", usage())),
     }
+}
+
+fn parse_fmt_args(args: impl Iterator<Item = String>) -> Result<Command, String> {
+    let mut check = false;
+    let mut input = None;
+    for arg in args {
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(Command::Help),
+            "--check" => check = true,
+            option if option.starts_with('-') => {
+                return Err(format!("unknown fmt option '{option}'"))
+            }
+            _ if input.is_some() => return Err("fmt takes one source file".to_owned()),
+            _ => input = Some(PathBuf::from(arg)),
+        }
+    }
+    Ok(Command::Fmt {
+        input: input.ok_or("usage: onda fmt [--check] <file>")?,
+        check,
+    })
 }
 
 fn parse_bench_args(mut args: impl Iterator<Item = String>) -> Result<Command, String> {
@@ -71,7 +92,11 @@ fn parse_bench_args(mut args: impl Iterator<Item = String>) -> Result<Command, S
         }
         match arg.as_str() {
             "--fast-math" => {
-                options.fast_math = true;
+                options.math = FloatMathMode::Fast;
+                continue;
+            }
+            "--strict-math" => {
+                options.math = FloatMathMode::Strict;
                 continue;
             }
             "--meta" => {
@@ -267,7 +292,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
     let mut const_overrides = Vec::<(String, String)>::new();
     let mut list_consts = false;
     let mut show_meta = false;
-    let mut fast_math = false;
+    let mut math = FloatMathMode::default();
     let mut target_spec_path = None::<PathBuf>;
     let mut target_triple_override = None::<String>;
     let mut target_cpu_override = None::<TargetCpu>;
@@ -317,7 +342,8 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
             "--dump-graph" => dump_graph = true,
             "--list-consts" => list_consts = true,
             "--meta" => show_meta = true,
-            "--fast-math" => fast_math = true,
+            "--fast-math" => math = FloatMathMode::Fast,
+            "--strict-math" => math = FloatMathMode::Strict,
             "--target-triple" => {
                 let Some(value) = args.next() else {
                     return Err("--target-triple requires a target triple".to_owned());
@@ -494,7 +520,7 @@ fn parse_compile_args(mut args: impl Iterator<Item = String>) -> Result<Command,
         const_overrides,
         list_consts,
         show_meta,
-        fast_math,
+        math,
         target,
     })
 }
@@ -561,7 +587,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut const_overrides = Vec::new();
     let mut param_smoothing_seconds = onda_daemon::INTERACTIVE_PARAM_SMOOTHING_SECONDS;
     let mut opt_level = TargetOptLevel::O3;
-    let mut fast_math = false;
+    let mut math = FloatMathMode::default();
     let mut show_meta = false;
     let mut param_sets = Vec::new();
     let mut buffer_bindings = Vec::new();
@@ -610,7 +636,8 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 };
                 opt_level = parse_target_opt_level(&value)?;
             }
-            "--fast-math" => fast_math = true,
+            "--fast-math" => math = FloatMathMode::Fast,
+            "--strict-math" => math = FloatMathMode::Strict,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--output=") => {
@@ -648,7 +675,7 @@ fn parse_run_render_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         block_samples,
         param_smoothing_seconds,
         opt_level,
-        fast_math,
+        math,
         show_meta,
         param_sets,
         buffer_bindings,
@@ -667,7 +694,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
     let mut input_device = None;
     let mut output_device = None;
     let mut midi_input_device = None;
-    let mut fast_math = false;
+    let mut math = FloatMathMode::default();
     let mut show_meta = false;
     let mut theme = None;
 
@@ -727,7 +754,8 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
                 };
                 theme = Some(parse_run_theme_mode(&value)?);
             }
-            "--fast-math" => fast_math = true,
+            "--fast-math" => math = FloatMathMode::Fast,
+            "--strict-math" => math = FloatMathMode::Strict,
             "--meta" => show_meta = true,
             "--help" | "-h" => return Err(usage().to_owned()),
             _ if arg.starts_with("--sample-rate=") => {
@@ -778,7 +806,7 @@ fn parse_run_window_args(mut args: impl Iterator<Item = String>) -> Result<RunCo
         input_device,
         output_device,
         midi_input_device,
-        fast_math,
+        math,
         show_meta,
         theme,
     })
@@ -808,7 +836,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
     let mut input_device = None;
     let mut output_device = None;
     let mut midi_input_device = None;
-    let mut fast_math = false;
+    let mut math = FloatMathMode::default();
     let mut show_meta = false;
     let mut control_json = false;
     let mut start_paused = false;
@@ -882,7 +910,8 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
                 }
                 forever = true;
             }
-            "--fast-math" => fast_math = true,
+            "--fast-math" => math = FloatMathMode::Fast,
+            "--strict-math" => math = FloatMathMode::Strict,
             "--meta" => show_meta = true,
             "--control-json" => control_json = true,
             "--start-paused" => start_paused = true,
@@ -945,7 +974,7 @@ fn parse_run_play_args(mut args: impl Iterator<Item = String>) -> Result<RunComm
         input_device,
         output_device,
         midi_input_device,
-        fast_math,
+        math,
         show_meta,
         control_json,
         start_paused,

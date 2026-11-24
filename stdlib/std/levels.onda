@@ -3,16 +3,16 @@
 
 namespace std::levels:
   const HALF_PI: f64 = PI / 2.0
-  const DB_PER_NAT: f64 = 8.685889638065037
-  const MIN_FLOAT: f64 = 0.00000000000000000001
+  const DB_PER_NAT = 8.685889638065037
+  const MIN_FLOAT = 0.00000000000000000001
 
   def db_to_gain<T>(x: T):
     # ln(10) / 20; contextual typing also promotes integer inputs to floats.
     return exp(x * 0.11512925464970229)
 
   def gain_to_db<T>(x: T):
-    safe = max(x * 1.0, 0.00000000000000000001)
-    return log(safe) * 8.685889638065037
+    safe = max(x * 1.0, MIN_FLOAT)
+    return log(safe) * DB_PER_NAT
 
   def _pan_position(x):
     return clamp((x + 1.0) * 0.5, 0.0, 1.0)

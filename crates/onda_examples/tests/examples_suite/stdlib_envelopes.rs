@@ -8,12 +8,26 @@ fn render_at_host_rate(source: &str, frames: usize) -> Vec<Vec<f64>> {
     render_f64(source, 48_000.0, frames)
 }
 
-fn curve_progress(phase: f64, curve: f64) -> f64 {
-    if curve == 0.0 || !curve.is_finite() {
-        phase
-    } else {
-        (curve * phase).exp_m1() / curve.exp_m1()
-    }
+fn exponential_progress(phase: f64, curve: f64) -> f64 {
+    (curve * phase).exp_m1() / curve.exp_m1()
+}
+
+#[test]
+fn a_positive_attack_uses_at_least_one_sample() {
+    let output = render_f64(
+        r#"
+import std/env
+outs<f64> 1
+init:
+  env = std::env::AR<f32>(attack_s = 0.000000000000000000000000000000000000000000001, release_s = 2.0)
+  env.start()
+sample:
+  out1 = f64(env())
+"#,
+        0.5,
+        2,
+    );
+    assert_eq!(output[0], [1.0, 0.0]);
 }
 
 #[test]
@@ -44,14 +58,14 @@ sample:
                 );
                 let output = render_f64(&source, 1000.0, 12);
 
-                for i in 0..5 {
+                for (i, &actual) in output[0][..5].iter().enumerate() {
                     let p = (i + 1) as f64 / 5.0;
                     let remaining = match shape {
                         "Linear" => 1.0 - p,
                         "SCurve" => 1.0 - p * p * (3.0 - 2.0 * p),
-                        _ => 1.0 - (-4.0 * p).exp_m1() / (-4.0_f64).exp_m1(),
+                        _ => 1.0 - exponential_progress(p, -4.0),
                     };
-                    assert_close_f64(output[0][i], level * remaining);
+                    assert_close_f64(actual, level * remaining);
                 }
                 assert_eq!(&output[0][4..8], &[0.0; 4]);
                 assert_close_f64(output[0][8], level * 0.5);
@@ -63,7 +77,7 @@ sample:
 }
 
 #[test]
-fn gated_envelopes_apply_active_attack_and_release_time_changes() {
+fn gated_envelopes_capture_duration_on_stage_entry() {
     for width in ["f32", "f64"] {
         for processor in ["ASR", "ADSR"] {
             let source = format!(
@@ -97,47 +111,55 @@ sample:
             );
             let output = render_f64(&source, 1000.0, 10);
 
-            assert_eq!(output[0], [0.25, 0.5, 0.625, 1.0, 0.75, 0., 0., 0., 0., 0.]);
-            assert_eq!(output[1], [0., 0., 0., 0., 0., 1., 1., 1., 1., 1.]);
+            assert_eq!(
+                output[0],
+                [0.25, 0.5, 0.625, 0.75, 0.5625, 0.375, 0.1875, 0., 0., 0.]
+            );
+            assert_eq!(output[1], [0., 0., 0., 0., 0., 0., 0., 1., 1., 1.]);
         }
     }
 }
 
 #[test]
-fn gate_and_time_parameter_hooks_apply_in_either_argument_order() {
-    for width in ["f32", "f64"] {
-        for processor in ["ASR", "ADSR"] {
-            let source = format!(
+fn gate_writes_capture_the_settings_in_effect_at_the_edge() {
+    for processor in ["ASR", "ADSR"] {
+        let output = render_f64(
+            &format!(
                 r#"
 import std/env
 outs<f64> 3
 init:
-  first = std::env::{processor}<{width}>(attack_s = 0.1, sustain = 1.0)
-  last = std::env::{processor}<{width}>(attack_s = 0.1, sustain = 1.0)
-  initial = std::env::{processor}<{width}>(gate = 0.5, attack_s = 0.004, sustain = 1.0)
+  first = std::env::{processor}<f64>(attack_s = 0.008, sustain = 1.0, release_s = 0.008)
+  last = std::env::{processor}<f64>(attack_s = 0.008, sustain = 1.0, release_s = 0.008)
+  initial = std::env::{processor}<f64>(gate = 0.5, attack_s = 0.004, sustain = 1.0)
   frame = 0
 sample:
   if frame == 0:
-    # Time edits after a gate edge must update the already-started attack.
     first.gate = 1.0
-    first.gate = 0.0
+    first.attack_s = 0.004
+    last.attack_s = 0.004
     last.gate = 1.0
+  if frame == 4:
+    first.gate = 0.0
+    first.release_s = 0.004
+    last.release_s = 0.004
     last.gate = 0.0
-    out1 = f64(first(gate = 1.0, attack_s = 0.004))
-    out2 = f64(last(attack_s = 0.004, gate = 1.0))
-  else:
-    out1 = f64(first(gate = 0.5))
-    out2 = f64(last())
-  out3 = f64(initial())
+  out1 = first()
+  out2 = last()
+  out3 = initial()
   frame += 1
 "#
-            );
-            let output = render_f64(&source, 1000.0, 4);
+            ),
+            1000.0,
+            8,
+        );
 
-            for channel in output {
-                assert_eq!(channel, [0.25, 0.5, 0.75, 1.0]);
-            }
-        }
+        assert_eq!(
+            output[0],
+            [0.125, 0.25, 0.375, 0.5, 0.4375, 0.375, 0.3125, 0.25]
+        );
+        assert_eq!(output[1], [0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0]);
+        assert_eq!(output[2], [0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0]);
     }
 }
 
@@ -186,6 +208,33 @@ sample:
 }
 
 #[test]
+fn unchanged_sustain_preserves_the_release_level_after_a_descending_asr_retrigger() {
+    let output = render_at_1khz(
+        r#"
+import std/env
+outs<f64> 1
+init:
+  env = std::env::ASR(attack_s = 0.004, release_s = 0.008)
+  env.start()
+  frame = 0
+sample:
+  if frame == 4:
+    env.release()
+    env.sustain = 0.25
+  if frame == 6:
+    env.start()
+  if frame == 7:
+    env.sustain = 0.25
+    env.release()
+  out1 = f64(env())
+  frame += 1
+"#,
+        8,
+    );
+    assert_eq!(&output[6..], &[0.625, 0.546875]);
+}
+
+#[test]
 fn ar_retrigger_takes_a_full_attack_and_zero_stages_consume_no_extra_samples() {
     for width in ["f32", "f64"] {
         let output = render_f64(
@@ -226,9 +275,9 @@ sample:
         );
         assert_eq!(
             output[0],
-            [0.25, 0.5, 0.625, 0.75, 0.875, 1., 0., 0., 0., 0., 0., 0.]
+            [0.25, 0.5, 0.625, 0.75, 0.875, 1., 0.75, 0.5, 0.25, 0., 0., 0.]
         );
-        assert_eq!(output[1], [0., 0., 0., 0., 0., 0., 1., 1., 1., 1., 1., 1.]);
+        assert_eq!(output[1], [0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 1., 1.]);
         assert_eq!(
             output[2],
             [0.5, 0.5, 0.5, 0.5, 0., 0., 0., 0., 0., 0., 0., 0.]
@@ -382,157 +431,57 @@ sample:
 }
 
 #[test]
-fn exponential_curve_edits_update_envelopes_and_wait_for_new_ramp_targets() {
+fn envelope_shapes_and_curvature_are_captured_for_each_stage() {
     for width in ["f32", "f64"] {
-        for curve in [-60.0, -4.0, -1e-6, 0.0, 1e-6, 4.0, 60.0] {
-            let literal = format!("{curve:.8}");
-            let output = render_f64(
-                &format!(
-                    r#"
-import std/env
-outs<f64> 3
-init:
-  env = std::env::DecayEnv<{width}>(decay_s = 0.004, curve = {literal})
-  ramp = std::smoothing::Ramp<{width}>(duration_s = 0.004, shape = std::smoothing::RampShape::Exponential, curve = {literal})
-  count = 0
-  frame = 0
-when env.finished():
-  count += 1
-sample:
-  if frame == 0 || frame == 6:
-    env.start(0.75)
-  if frame == 1:
-    env.curve = 4.0
-    ramp.curve = 4.0
-  target: {width} = 1.0
-  if frame >= 6:
-    target = -1.0
-  out1 = f64(env())
-  out2 = f64(ramp(target))
-  out3 = f64(count)
-  frame += 1
-"#
-                ),
-                1000.0,
-                12,
-            );
-            for i in 0..12 {
-                let (phase, curvature) = if i < 6 {
-                    (((i + 1) as f64 / 4.0).min(1.0), curve)
-                } else {
-                    (((i - 5) as f64 / 4.0).min(1.0), 4.0)
-                };
-                let progress = curve_progress(phase, curvature);
-                let envelope = if curve == 4.0 {
-                    0.75 * (1.0 - progress)
-                } else if i == 0 {
-                    0.75 * (1.0 - curve_progress(0.25, curve))
-                } else if i < 6 {
-                    let level = 0.75 * (1.0 - curve_progress(0.25, curve));
-                    level * (1.0 - curve_progress((i as f64 / 3.0).min(1.0), 4.0))
-                } else {
-                    0.75 * (1.0 - progress)
-                };
-                assert_close_f64(output[0][i], envelope);
-                assert_close_f64(
-                    output[1][i],
-                    if i < 6 {
-                        progress
-                    } else {
-                        1.0 - 2.0 * progress
-                    },
-                );
-            }
-            assert_eq!(output[2], [0., 0., 0., 1., 1., 1., 1., 1., 1., 2., 2., 2.]);
-            assert_eq!(&output[0][9..], &[0.; 3]);
-            assert_eq!(&output[1][9..], &[-1.; 3]);
-        }
-    }
-}
-
-#[test]
-fn envelope_curve_hooks_update_only_the_active_stage() {
-    for processor in ["AR", "ASR", "ADSR"] {
-        let decay = if processor == "ADSR" {
-            "decay_s = 0.004, decay_shape = std::smoothing::RampShape::Exponential, decay_curve = 4.0,"
-        } else {
-            ""
-        };
-        let sustain = if processor == "AR" {
-            ""
-        } else {
-            "sustain = 0.5,"
-        };
-        let changes = if processor == "ADSR" {
-            "    env.decay_curve = -8.0"
-        } else {
-            ""
-        };
-        let release = if processor == "AR" {
-            ""
-        } else {
-            "  if frame == 8:\n    env.release()"
-        };
         let output = render_f64(
             &format!(
                 r#"
 import std/env
-outs<f64> 1
+outs<f64> 2
 init:
-  env = std::env::{processor}<f64>({decay} {sustain} attack_s = 0.004, release_s = 0.004,
-    attack_shape = std::smoothing::RampShape::Exponential, attack_curve = -4.0,
-    release_shape = std::smoothing::RampShape::Exponential, release_curve = -2.0)
+  decay = std::env::DecayEnv<{width}>(decay_s = 4.0 / SR, curve = -4.0)
+  gated = std::env::ADSR<{width}>(attack_s = 4.0 / SR, decay_s = 4.0 / SR,
+    sustain = 0.5, release_s = 4.0 / SR,
+    attack_shape = std::smoothing::RampShape::Exponential, attack_curve = 4.0)
   frame = 0
 sample:
+  if frame == 0 || frame == 4:
+    decay.start()
   if frame == 0:
-    env.start()
+    gated.start()
   if frame == 1:
-    env.attack_curve = 8.0
+    decay.curve = 4.0
+    decay.decay_s = 2.0 / SR
+    gated.attack_shape = std::smoothing::RampShape::Linear
+    gated.decay_shape = std::smoothing::RampShape::SCurve
   if frame == 5:
-{changes}
-    env.attack_curve = 0.0
-{release}
+    gated.decay_shape = std::smoothing::RampShape::Linear
+  if frame == 8:
+    gated.release()
   if frame == 9:
-    env.release_curve = 8.0
-  out1 = env()
+    gated.release_curve = -8.0
+    gated.release_shape = std::smoothing::RampShape::Exponential
+  if frame == 12:
+    gated.start()
+  out1 = f64(decay())
+  out2 = f64(gated())
   frame += 1
 "#
             ),
             1000.0,
-            14,
+            16,
         );
-        for i in 0..14 {
-            let expected = if i < 4 {
-                let target = if processor == "ASR" { 0.5 } else { 1.0 };
-                let first = target * curve_progress(0.25, -4.0);
-                if i == 0 {
-                    first
-                } else {
-                    first + (target - first) * curve_progress(i as f64 / 3.0, 8.0)
-                }
-            } else if processor == "AR" {
-                1.0 - curve_progress(((i - 3) as f64 / 4.0).min(1.0), -2.0)
-            } else if i < 8 {
-                if processor == "ADSR" {
-                    let first = 1.0 - 0.5 * curve_progress(0.25, 4.0);
-                    if i == 4 {
-                        first
-                    } else {
-                        first + (0.5 - first) * curve_progress((i - 4) as f64 / 3.0, -8.0)
-                    }
-                } else {
-                    0.5
-                }
-            } else {
-                let first = 0.5 * (1.0 - curve_progress(0.25, -2.0));
-                if i == 8 {
-                    first
-                } else {
-                    first * (1.0 - curve_progress(((i - 8) as f64 / 3.0).min(1.0), 8.0))
-                }
-            };
-            assert_close_f64(output[0][i], expected);
+        for i in 0..4 {
+            let phase = (i + 1) as f64 / 4.0;
+            let s_curve = phase * phase * (3.0 - 2.0 * phase);
+            assert_close_f64(output[0][i], 1.0 - exponential_progress(phase, -4.0));
+            assert_close_f64(output[1][i], exponential_progress(phase, 4.0));
+            assert_close_f64(output[1][i + 4], 1.0 - 0.5 * s_curve);
+            assert_close_f64(output[1][i + 8], 0.5 * (1.0 - phase));
+            assert_close_f64(output[1][i + 12], phase);
         }
+        assert_close_f64(output[0][4], 1.0 - exponential_progress(0.5, 4.0));
+        assert_eq!(&output[0][5..], &[0.0; 11]);
     }
 }
 
@@ -574,6 +523,8 @@ sample:
                     rate,
                     period * 3,
                 );
+                // Each feedback pass multiplies by a pole rounded to the processor width.
+                let relative_tolerance = if width == "f32" { 1e-4 } else { 1e-12 };
                 for (i, &actual) in output[0].iter().enumerate() {
                     let tick = (i + 1) * factor - 1;
                     let elapsed = tick as f64 / (period * factor) as f64;
@@ -584,7 +535,7 @@ sample:
                             0.0
                         };
                     assert!(
-                        (actual - expected).abs() < 1e-8 + expected * 1e-4,
+                        (actual - expected).abs() <= expected * relative_tolerance,
                         "{width}, {rate}, {factor}x, frame {i}: {actual} != {expected}"
                     );
                 }
@@ -629,13 +580,13 @@ sample:
         );
         let output = render_f64(&source, 1000.0, 12);
 
-        for i in 0..5 {
+        for (i, &actual) in output[0][..5].iter().enumerate() {
             let elapsed = if i == 0 {
                 0.0
             } else {
                 0.25 + (i - 1) as f64 / 8.0
             };
-            assert_close_f64(output[0][i], 0.001_f64.powf(elapsed));
+            assert_close_f64(actual, 0.001_f64.powf(elapsed));
         }
         assert_eq!(&output[0][5..7], &[0., 0.]);
         assert_eq!(&output[0][7..], &[1.; 5]);
@@ -643,74 +594,46 @@ sample:
 }
 
 #[test]
-fn unchanged_or_irrelevant_envelope_controls_leave_the_running_curve_untouched() {
-    // Exercise the shared shape guard in DecayEnv and each remaining processor's
-    // parameter hooks without recompiling every processor/shape combination.
-    for width in ["f32", "f64"] {
-        for (processor, shape, curve) in [
-            ("DecayEnv", "Linear", -4.0),
-            ("DecayEnv", "SCurve", -4.0),
-            ("DecayEnv", "Exponential", 0.0),
-            ("DecayEnv", "Exponential", -4.0),
-            ("DecayEnv", "Exponential", 4.0),
-            ("AR", "Exponential", -4.0),
-            ("ASR", "Exponential", -4.0),
-            ("ADSR", "Exponential", -4.0),
-        ] {
-            let (time, prefix, extra) = match processor {
-                "DecayEnv" => ("decay_s", "", ""),
-                "ADSR" => ("decay_s", "decay_", "attack_s = 0.0, sustain = 0.25,"),
-                _ => ("attack_s", "attack_", ""),
-            };
-            let edits = format!(
-                "  env.{time} = 0.025\n  env.{prefix}shape = std::smoothing::RampShape::{shape}\n  env.{prefix}curve = {}",
-                if shape == "Exponential" { curve.to_string() } else { format!("{width}(frame)") },
-            );
-            let source = |edits: &str| {
-                format!(
-                    r#"
+fn disabling_impulse_decay_recovers_from_an_overflowed_tail() {
+    let output = render_at_1khz(
+        r#"
 import std/env
-outs<f64> 2
+const Large: f64 = pow(f64(2.0), 1023.0) * 1.8
+outs<f64> 1
 init:
-  env = std::env::{processor}<{width}>({extra} {time} = 0.025,
-    {prefix}shape = std::smoothing::RampShape::{shape}, {prefix}curve = {curve})
+  decay = std::env::Decay<f64>(decay_60db_s = 2.0)
   frame = 0
-  count = 0
-  env.start()
-when env.finished():
-  count += 1
 sample:
-{edits}
-  out1 = f64(env())
-  out2 = f64(count)
+  if frame == 2:
+    decay.decay_60db_s = 0.0
+  if frame < 2:
+    out1 = decay(Large)
+  else:
+    out1 = decay(0.5)
   frame += 1
-"#
-                )
-            };
-            assert_eq!(
-                render_f64(&source(&edits), 1000.0, 32),
-                render_f64(&source(""), 1000.0, 32),
-                "{processor}<{width}>, {shape}, curve {curve}"
-            );
-        }
-    }
+"#,
+        5,
+    );
+    assert!(output[0].is_finite());
+    assert_eq!(output[1], f64::INFINITY);
+    assert_eq!(&output[2..], &[0.5; 3]);
 }
 
 #[test]
-fn sustain_hooks_update_attack_decay_and_hold_without_changing_release() {
+fn sustain_is_captured_during_a_move_and_editable_while_held() {
     for width in ["f32", "f64"] {
         for processor in ["ASR", "ADSR"] {
             let (extra, level, expected) = if processor == "ASR" {
                 (
                     "attack_s = 0.004, sustain = 1.0,",
                     0.25,
-                    [0.25, 0.25, 0.25, 0.25, 0.5, 0.25, 0.0, 0.0],
+                    [0.25, 0.5, 0.75, 1.0, 0.25, 0.5, 0.25, 0.0, 0.0],
                 )
             } else {
                 (
                     "attack_s = 0.0, decay_s = 0.004, sustain = 0.0,",
-                    0.9,
-                    [0.75, 0.9, 0.9, 0.9, 0.5, 0.25, 0.0, 0.0],
+                    0.875,
+                    [0.75, 0.5, 0.25, 0.0, 0.875, 0.5, 0.25, 0.0, 0.0],
                 )
             };
             let source = format!(
@@ -727,106 +650,119 @@ when env.finished():
 sample:
   if frame == 1:
     env.sustain = {level}
-  if frame == 4:
-    env.sustain = 0.5
   if frame == 5:
-    env.release()
+    env.sustain = 0.5
   if frame == 6:
+    env.release()
+  if frame == 7:
     env.sustain = 1.0
   out1 = f64(env())
   out2 = f64(count)
   frame += 1
 "#
             );
-            let output = render_f64(&source, 1000.0, 8);
+            let output = render_f64(&source, 1000.0, 9);
 
             for (actual, expected) in output[0].iter().zip(expected) {
                 assert_close_f64(*actual, expected);
             }
-            assert_eq!(output[1], [0., 0., 0., 0., 0., 0., 1., 1.]);
+            assert_eq!(output[1], [0., 0., 0., 0., 0., 0., 0., 1., 1.]);
         }
     }
 }
 
 #[test]
-fn configuration_edits_preserve_exact_sample_deadlines() {
-    for width in ["f32", "f64"] {
-        for (edit, remaining) in [
-            ("env.shape = std::smoothing::RampShape::SCurve", 7),
-            ("env.decay_s = 0.05", 14),
-        ] {
-            let output = render_f64(
-                &format!(
-                    r#"
+fn a_pending_sustain_edit_can_be_replaced_or_released_before_the_first_held_sample() {
+    for envelope in [
+        "ASR<f64>(attack_s = 0.002, sustain = 0.5, release_s = 0.002)",
+        "ADSR<f64>(attack_s = 0.0, decay_s = 0.002, sustain = 0.5, release_s = 0.002)",
+    ] {
+        let output = render_f64(
+            &format!(
+                r#"
 import std/env
 outs<f64> 2
 init:
-  env = std::env::DecayEnv<{width}>(decay_s = 0.025, shape = std::smoothing::RampShape::Linear)
-  env.start()
+  released = std::env::{envelope}
+  held = std::env::{envelope}
+  released.start()
+  held.start()
   frame = 0
-  count = 0
-when env.finished():
-  count += 1
 sample:
-  if frame == 18:
-    {edit}
-  out1 = f64(env())
-  out2 = f64(count)
+  if frame == 1:
+    released.sustain = 0.125
+    held.sustain = 0.125
+  if frame == 2:
+    released.release()
+    held.sustain = 0.875
+  out1 = released()
+  out2 = held()
   frame += 1
 "#
-                ),
-                1000.0,
-                35,
-            );
-            for (frame, &actual) in output[0].iter().enumerate() {
-                let expected = if frame < 18 {
-                    1.0 - (frame + 1) as f64 / 25.0
-                } else {
-                    let phase = ((frame - 17) as f64 / remaining as f64).min(1.0);
-                    let progress = if remaining == 7 {
-                        phase * phase * (3.0 - 2.0 * phase)
-                    } else {
-                        phase
-                    };
-                    0.28 * (1.0 - progress)
-                };
-                assert_close_f64(actual, expected);
-            }
-            let terminal = 18 + remaining - 1;
-            assert!(output[1][..terminal].iter().all(|&count| count == 0.0));
-            assert!(output[1][terminal..].iter().all(|&count| count == 1.0));
-        }
+            ),
+            1000.0,
+            4,
+        );
+        assert_eq!(&output[0][1..], &[0.5, 0.25, 0.0]);
+        assert_eq!(&output[1][1..], &[0.5, 0.875, 0.875]);
+    }
+}
+
+#[test]
+fn coincident_adsr_events_release_from_the_settled_level() {
+    let output = render_at_1khz(
+        r#"
+import std/env
+outs<f64> 1
+init:
+  env = std::env::ADSR<f64>(attack_s = 0.0, decay_s = 0.0, sustain = 0.25, release_s = 0.002)
+  env.start()
+  env.release()
+sample:
+  out1 = env()
+"#,
+        2,
+    );
+    assert_eq!(output, [0.125, 0.0]);
+}
+
+#[test]
+fn coincident_gated_retriggers_settle_and_report_zero_length_releases() {
+    for processor in ["ASR", "ADSR"] {
+        let output = render_f64(
+            &format!(
+                r#"
+import std/env
+outs<f64> 2
+init:
+  env = std::env::{processor}<f64>(attack_s = 0.004, sustain = 1.0, release_s = 0.0)
+  frame = 0
+  completions = 0
+  env.start()
+when env.finished():
+  completions += 1
+sample:
+  if frame == 2:
+    env.release()
+    env.start()
+    env.release()
+    env.start()
+  out1 = env()
+  out2 = f64(completions)
+  frame += 1
+"#,
+            ),
+            1_000.0,
+            4,
+        );
+        assert_eq!(output[0], [0.25, 0.5, 0.25, 0.5], "{processor}");
+        assert_eq!(output[1], [0.0, 0.0, 2.0, 2.0], "{processor}");
     }
 }
 
 #[test]
 fn zero_duration_decay_completes_once_for_every_start_level() {
     for width in ["f32", "f64"] {
-        for level in [1.0, 0.5, 0.25, 0.0] {
-            let output = render_at_host_rate(
-                &format!(
-                    r#"
-import std/env
-outs<f64> 2
-init:
-  env = std::env::DecayEnv<{width}>(decay_s = 0.0)
-  completions = 0
-  frame = 0
-when env.finished():
-  completions += 1
-sample:
-  if frame == 0 || frame == 4:
-    env.start({width}({level}))
-  out1 = f64(env())
-  out2 = f64(completions)
-  frame += 1
-"#
-                ),
-                8,
-            );
-            assert!(output[0].iter().all(|&x| x == 0.0));
-            assert_eq!(output[1], [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
-        }
         let output = render_at_host_rate(
             &format!(
                 r#"
@@ -834,18 +770,23 @@ import std/env
 outs<f64> 2
 init:
   env = std::env::DecayEnv<{width}>(decay_s = 0.0, trigger = 1.0)
+  levels: {width}[4] = [1.0, 0.5, 0.25, 0.0]
   completions = 0
+  frame = 0
 when env.finished():
   completions += 1
 sample:
+  if frame >= 1 && frame <= 4:
+    env.start(levels[frame - 1])
   out1 = f64(env())
   out2 = f64(completions)
+  frame += 1
 "#
             ),
-            4,
+            6,
         );
-        assert_eq!(output[0], [0.0; 4]);
-        assert_eq!(output[1], [1.0; 4]);
+        assert_eq!(output[0], [0.0; 6]);
+        assert_eq!(output[1], [1.0, 2.0, 3.0, 4.0, 5.0, 5.0]);
     }
 }
 
@@ -897,7 +838,7 @@ sample:
 }
 
 #[test]
-fn asr_host_events_apply_sustain_and_release_time_changes() {
+fn asr_host_events_capture_release_settings_and_the_note_off_level() {
     fn event(instance: &mut onda_runtime::Instance, name: &str, value: Option<f32>) {
         let index = instance.event_index(name).expect("event exists");
         let payload = value.map(f32::to_le_bytes);
@@ -970,10 +911,15 @@ sample:
         event(&mut instance, "release", None);
         frame(&mut instance, 0.4375, 0.0);
         event(&mut instance, "duration", Some(4.0));
-        // Seven of eight samples remain; halving the duration leaves four.
-        frame(&mut instance, 0.328125, 0.0);
+        frame(&mut instance, 0.375, 0.0);
         event(&mut instance, "duration", Some(0.0));
-        frame(&mut instance, 0.0, 1.0);
+        for sample in 3..=8 {
+            frame(
+                &mut instance,
+                0.5 - sample as f32 / 16.0,
+                if sample == 8 { 1.0 } else { 0.0 },
+            );
+        }
         frame(&mut instance, 0.0, 1.0);
         event(&mut instance, "start", None);
         frame(&mut instance, 0.5, 1.0);
@@ -1000,36 +946,22 @@ sample:
 }
 
 #[test]
-fn exponential_envelopes_preserve_representable_tails_until_the_duration_sample() {
-    for width in ["f32", "f64"] {
-        for curve in [-60.0_f64, -20.0, -4.0] {
-            let output = render_at_1khz(
-                &format!(
-                    r#"
+fn exponential_envelopes_approach_linear_at_tiny_curvature() {
+    for curve in [-f64::MIN_POSITIVE, f64::MIN_POSITIVE] {
+        let output = render_at_1khz(
+            &format!(
+                r#"
 import std/env
 outs<f64> 1
 init:
-  envelope = std::env::DecayEnv<{width}>(decay_s = 4.0 / SR, curve = {curve})
+  envelope = std::env::DecayEnv<f64>(decay_s = 0.004, curve = {curve:.324})
   envelope.start()
 sample:
-  out1 = f64(envelope())
+  out1 = envelope()
 "#
-                ),
-                5,
-            );
-            for (index, &actual) in output[..3].iter().enumerate() {
-                let phase = (index + 1) as f64 / 4.0;
-                // Evaluate the residual directly, without subtracting progress from one.
-                let expected =
-                    (curve * phase).exp() * -(curve * (1.0 - phase)).exp_m1() / -curve.exp_m1();
-                let tolerance = if width == "f32" { 2e-6 } else { 2e-13 };
-                assert!(
-                    (actual - expected).abs() <= expected * tolerance,
-                    "{width}, curve {curve}, sample {}: {actual} != {expected}",
-                    index + 1
-                );
-            }
-            assert_eq!(&output[3..], &[0.0, 0.0]);
-        }
+            ),
+            4,
+        );
+        assert_eq!(output, [0.75, 0.5, 0.25, 0.0]);
     }
 }

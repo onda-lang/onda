@@ -374,7 +374,7 @@ const ondaEditorTheme = EditorView.theme({
   ".cm-onda-hover": { maxWidth: "38rem", padding: ".65rem .8rem", whiteSpace: "pre-wrap" },
   ...Object.fromEntries(
     Object.entries(ondaSemanticTokenColors).map(([type, color]) => [
-      `.cm-onda-semantic-${type}`,
+      `.cm-onda-semantic-${type}, .cm-onda-semantic-${type} span`,
       { color },
     ]),
   ),

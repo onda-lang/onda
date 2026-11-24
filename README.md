@@ -96,6 +96,7 @@ onda run [input]
 onda run play <input>
 onda run render <input>
 onda project <directory> [--from <input.onda>]
+onda fmt [--check] <file>
 onda bench <input>
 onda daemon diagnose <input>
 onda daemon stdio
@@ -178,6 +179,23 @@ onda project portable-sampler \
   --from sampler.onda \
   --buffer sample=recording.wav
 ```
+
+### `onda fmt`
+
+Run `onda fmt file.onda` to format one source file in place. It uses two-space indentation,
+normalizes spacing, and wraps long comma-separated argument lists at a target width of 100
+columns, including indentation. Long arrays of short, simple values pack multiple elements
+per row. Long boolean conditions wrap at their top-level `&&` and `||` operators.
+Comments, literals, and the choice of braces or indentation are preserved. The formatter
+validates the file's syntax using the compiler's parser without opening imports or includes.
+The formatter opens the existing file for writing, locks it, and rechecks its identity and
+contents before saving. Writing through that handle preserves the file's access permissions
+and makes the formatted contents visible through existing hard links. A read-only or locked
+file causes an error before writing. Save pending edits first and give the formatter exclusive
+access to the file while it runs. An I/O error after writing starts can leave partial edits.
+
+Run `onda fmt --check file.onda` to check the same style without writing. It exits with
+status 0 when the file is formatted and 1 when it needs changes or cannot be formatted.
 
 ### `onda bench`
 

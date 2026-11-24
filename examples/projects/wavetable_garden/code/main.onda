@@ -6,7 +6,9 @@ import wavetable_voice
 
 const PatternLength = 12
 const Notes: i32[PatternLength] = [0, 7, 12, 3, 10, 15, 7, 19, 12, 5, 10, 22]
-const Accents: f32[PatternLength] = [1.0, 0.55, 0.72, 0.48, 0.84, 0.52, 0.68, 0.44, 0.78, 0.5, 0.64, 0.42]
+const Accents: f32[PatternLength] = [
+  1.0, 0.55, 0.72, 0.48, 0.84, 0.52, 0.68, 0.44, 0.78, 0.5, 0.64, 0.42
+]
 
 buffers:
   waves: f32 {4}
@@ -27,7 +29,7 @@ init:
   echo_l = std::delay::Delay(delay_s = 0.288, feedback = 0.38, mix = 1.0)
   echo_r = std::delay::Delay(delay_s = 0.433, feedback = 0.34, mix = 1.0)
   frequency = std::pitch::note_to_hz(f32(root_note))
-  envelope = std::env::DecayEnv(decay_s = decay_s)
+  envelope = std::env::DecayEnv()
   clock = 0
   step = 0
   pending_bang = false

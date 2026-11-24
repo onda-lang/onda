@@ -46,7 +46,7 @@ fn many_channel_programs_supply_complete_device_callbacks_and_preserve_scope_sam
                 input_device: None,
                 output_device: None,
                 midi_input_device: None,
-                fast_math: Default::default(),
+                math: FloatMathMode::Strict,
                 show_meta: false,
                 control_json: false,
                 start_paused,

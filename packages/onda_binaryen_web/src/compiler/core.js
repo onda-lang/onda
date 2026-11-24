@@ -2,6 +2,10 @@ import { PayloadPlan } from "@onda-lang/processor-abi";
 import { prepareEventInput } from "./event-input.js";
 import { CollectionOrigins, selectedResourceRange } from "./resource-origins.js";
 import binaryen from "binaryen";
+import { createModuleWithInlineHints, defineFunction } from "./inlining.js";
+import { prepareFunctionBody, rewriteExpressionChildren } from "./expression-tree.js";
+import { indexOrderedReductions } from "./simd-reductions.js";
+import { optimizeGuardedAddresses } from "./guarded-addresses.js";
 import {
   SUPPORTED_MIR_SCHEMA_VERSION,
   OndaBinaryenError,
@@ -32,10 +36,13 @@ import {
   BUFFER_DESCRIPTOR_POINTER_GLOBALS,
   TRAPPING_DESCRIPTOR_UNARY_OPS,
   TRAPPING_DESCRIPTOR_BINARY_OPS,
-  collectMathKernelHelpers,
+  collectMathHelpers,
+  roundHelperName,
   alignUp,
   encodeScalarValues,
 } from "./shared.js";
+
+const MAX_WASM_FUNCTION_LOCALS = 50_000;
 
 export class MirCompilerCore {
   constructor(mir, options) {
@@ -50,8 +57,8 @@ export class MirCompilerCore {
       allowInliningFunctionsWithLoops:
         options.allowInliningFunctionsWithLoops === true,
     };
-    this.module = new binaryen.Module();
-    this.functionNames = [];
+    this.module = null;
+    this.signatureTypes = new Map();
     this.stateLayout = [];
     this.paramLayout = [];
     this.inputLayout = [];
@@ -64,11 +71,10 @@ export class MirCompilerCore {
     this.localScalarRefLayout = [];
     this.functionAbiLayout = [];
     this.memorySegments = [];
-    this.requiredMathHelpers = collectMathKernelHelpers(mir);
-    this.nextStaticAddress = this.requiredMathHelpers.size > 0
+    this.mathHelpers = collectMathHelpers(mir);
+    this.nextStaticAddress = this.mathHelpers.kernel.size > 0
       ? MATH_KERNEL_RESERVED_END
       : STATIC_BASE;
-    this.internalHelpers = new Set();
     this.functionMayFail = [];
     this.bufferMayWrite = [];
     this.fallbackBufferReadAddress = 0;
@@ -78,10 +84,16 @@ export class MirCompilerCore {
   }
 
   compile() {
+    this.validateEnvelope();
+    this.orderedReductions = indexOrderedReductions(this.mir);
+    this.functionNames = this.mir.functions.map((_, id) => `$onda.fn.${id}`);
+    const hasAlways = this.options.optimize
+      && this.mir.functions.some((func) => func.attributes.inline === "always");
+    // Binaryen 132's default pipeline includes inlining at O2+ or shrink level 2.
+    const hintOnlyPass = hasAlways && this.options.optimizeLevel < 2 && this.options.shrinkLevel < 2;
     try {
-      this.validateEnvelope();
-      this.buildLayouts();
-      this.addMathKernel();
+      this.initializeModule(hintOnlyPass);
+      for (const scalar of this.mathHelpers.round) this.addRoundHelper(scalar);
       this.addMemoryAndContextGlobals();
       this.addMirFunctions();
       this.addAbiWrappers();
@@ -102,6 +114,14 @@ export class MirCompilerCore {
           binaryen.setAllowInliningFunctionsWithLoops(
             this.options.allowInliningFunctionsWithLoops,
           );
+          if (hintOnlyPass) {
+            this.module.runPasses(["inlining-optimizing"]);
+          } else if (hasAlways) {
+            // The default pipeline merges identical functions before inlining.
+            // Inline explicit requests while calls still identify their original callees.
+            // Drop unused locals first so inlining does not copy them into callers.
+            this.module.runPasses(["remove-unused-module-elements", "reorder-locals", "inlining"]);
+          }
           this.module.optimize();
           if (this.hoistInvariantBufferDescriptorLoads()) {
             // The first rewrite makes descriptor provenance explicit in
@@ -118,16 +138,10 @@ export class MirCompilerCore {
               this.module.runPasses(["vacuum"]);
             }
           }
-          // Inlining and local reuse can keep cold processor-field addresses
-          // live across the sample path. Separate definitions before pushing
-          // that setup into the branches that use it, then coalesce again.
-          this.module.runPasses([
-            "ssa-nomerge",
-            "code-pushing",
-            "simplify-locals",
-            "coalesce-locals",
-            "vacuum",
-          ]);
+          for (let i = 0; i < this.module.getNumFunctions(); i++) {
+            optimizeGuardedAddresses(this.module, this.module.getFunctionByIndex(i));
+          }
+          this.module.runPasses(["strip-toolchain-annotations"]);
         } finally {
           binaryen.setOptimizeLevel(previousOptimizeLevel);
           binaryen.setShrinkLevel(previousShrinkLevel);
@@ -154,7 +168,7 @@ export class MirCompilerCore {
       validateProcessorMetadata(result.metadata, "webassembly_module");
       return result;
     } finally {
-      this.module.dispose();
+      this.module?.dispose();
     }
   }
 
@@ -167,13 +181,12 @@ export class MirCompilerCore {
     this.descriptorLoadsHoisted = 0;
     for (let index = 0; index < this.module.getNumFunctions(); index += 1) {
       const func = this.module.getFunctionByIndex(index);
-      const body = binaryen.Function.getBody(func);
-      if (!body) continue;
       // The local-write scan below is part of the safety proof. If Binaryen
       // adds an expression kind that this backend does not know how to walk,
       // leave the whole function untouched rather than silently overlooking
       // a nested local.tee.
-      if (!this.visitExpression(body, () => {})) continue;
+      const body = prepareFunctionBody(this.module, func);
+      if (!body) continue;
       const rewritten = this.rewriteDescriptorLoops(body, func);
       if (rewritten !== body) binaryen.Function.setBody(func, rewritten);
     }
@@ -181,7 +194,7 @@ export class MirCompilerCore {
   }
 
   rewriteDescriptorLoops(expression, func) {
-    this.rewriteExpressionChildren(expression, (child) =>
+    rewriteExpressionChildren(expression, (child) =>
       this.rewriteDescriptorLoops(child, func)
     );
     if (expressionInfo(expression).id !== binaryen.LoopId) {
@@ -207,7 +220,7 @@ export class MirCompilerCore {
     const loopLocalCaches = new Map();
 
     const rewriteLoad = (candidate) => {
-      this.rewriteExpressionChildren(candidate, rewriteLoad);
+      rewriteExpressionChildren(candidate, rewriteLoad);
       const info = expressionInfo(candidate);
       if (info.id !== binaryen.LoadId || info.isAtomic) return candidate;
       const candidatePath = controlPaths.get(candidate) ?? [];
@@ -277,7 +290,13 @@ export class MirCompilerCore {
         visit(info.body, [...path, `loop:${candidate}`]);
         return;
       }
-      this.rewriteExpressionChildren(candidate, (child) => {
+      // A branch to a named block can skip a tee and resume after the block.
+      if (info.id === binaryen.BlockId && info.name) {
+        const nested = [...path, `block:${candidate}`];
+        for (const child of info.children) visit(child, nested);
+        return;
+      }
+      rewriteExpressionChildren(candidate, (child) => {
         visit(child, path);
         return child;
       });
@@ -352,7 +371,7 @@ export class MirCompilerCore {
   }
 
   descriptorPointerForPreheader(expression, loopLocalCaches, candidatePath) {
-    this.rewriteExpressionChildren(expression, (child) =>
+    rewriteExpressionChildren(expression, (child) =>
       this.descriptorPointerForPreheader(
         child,
         loopLocalCaches,
@@ -377,7 +396,7 @@ export class MirCompilerCore {
   }
 
   descriptorPointerExpression(expression, definitions, localIsInvariant) {
-    if (!this.expressionUsesDescriptorTable(expression, definitions, new Set())) {
+    if (!this.expressionUsesDescriptorTable(expression, definitions)) {
       return false;
     }
     const visit = (candidate) => {
@@ -391,7 +410,9 @@ export class MirCompilerCore {
         return false;
       }
       if (info.id === binaryen.LocalSetId && info.isTee) {
-        return visit(info.value);
+        // Coalescing can reuse this local for a different buffer or index.
+        // Only a single definition can supply a cache for later local.gets.
+        return definitions.get(info.index)?.length === 1 && visit(info.value);
       }
       if (info.id === binaryen.UnaryId) {
         return !TRAPPING_DESCRIPTOR_UNARY_OPS.has(info.op)
@@ -417,68 +438,39 @@ export class MirCompilerCore {
     return visit(expression);
   }
 
-  expressionUsesDescriptorTable(expression, definitions, visitingLocals) {
-    const info = expressionInfo(expression);
-    if (info.id === binaryen.GlobalGetId) {
-      return BUFFER_DESCRIPTOR_POINTER_GLOBALS.has(info.name);
-    }
-    if (info.id === binaryen.LocalGetId) {
-      const values = definitions.get(info.index);
-      if (
-        !values
-        || values.length !== 1
-        || visitingLocals.has(info.index)
-      ) {
-        return false;
+  // Local definitions form a graph and can span many shallow statements.
+  expressionUsesDescriptorTable(expression, definitions) {
+    const pending = [expression];
+    const visited = new Set();
+    while (pending.length) {
+      const expr = pending.pop();
+      switch (binaryen.getExpressionId(expr)) {
+        case binaryen.GlobalGetId:
+          if (BUFFER_DESCRIPTOR_POINTER_GLOBALS.has(binaryen.GlobalGet.getName(expr))) return true;
+          break;
+        case binaryen.LocalGetId: {
+          const local = binaryen.LocalGet.getIndex(expr);
+          const values = definitions.get(local);
+          if (values?.length === 1 && !visited.has(local)) {
+            visited.add(local);
+            pending.push(values[0]);
+          }
+          break;
+        }
+        case binaryen.LocalSetId:
+          if (binaryen.LocalSet.isTee(expr)) pending.push(binaryen.LocalSet.getValue(expr));
+          break;
+        case binaryen.UnaryId:
+          pending.push(binaryen.Unary.getValue(expr));
+          break;
+        case binaryen.BinaryId:
+          pending.push(binaryen.Binary.getRight(expr), binaryen.Binary.getLeft(expr));
+          break;
+        case binaryen.SelectId:
+          pending.push(binaryen.Select.getIfFalse(expr), binaryen.Select.getIfTrue(expr),
+            binaryen.Select.getCondition(expr));
+          break;
       }
-      visitingLocals.add(info.index);
-      const result = this.expressionUsesDescriptorTable(
-        values[0],
-        definitions,
-        visitingLocals,
-      );
-      visitingLocals.delete(info.index);
-      return result;
-    }
-    if (info.id === binaryen.LocalSetId && info.isTee) {
-      return this.expressionUsesDescriptorTable(
-        info.value,
-        definitions,
-        visitingLocals,
-      );
-    }
-    if (info.id === binaryen.UnaryId) {
-      return this.expressionUsesDescriptorTable(
-        info.value,
-        definitions,
-        visitingLocals,
-      );
-    }
-    if (info.id === binaryen.BinaryId) {
-      return this.expressionUsesDescriptorTable(
-        info.left,
-        definitions,
-        visitingLocals,
-      ) || this.expressionUsesDescriptorTable(
-        info.right,
-        definitions,
-        visitingLocals,
-      );
-    }
-    if (info.id === binaryen.SelectId) {
-      return this.expressionUsesDescriptorTable(
-        info.condition,
-        definitions,
-        visitingLocals,
-      ) || this.expressionUsesDescriptorTable(
-        info.ifTrue,
-        definitions,
-        visitingLocals,
-      ) || this.expressionUsesDescriptorTable(
-        info.ifFalse,
-        definitions,
-        visitingLocals,
-      );
     }
     return false;
   }
@@ -526,140 +518,7 @@ export class MirCompilerCore {
 
   visitExpression(expression, visitor) {
     visitor(expression);
-    let complete = true;
-    const supported = this.rewriteExpressionChildren(expression, (child) => {
-      if (!this.visitExpression(child, visitor)) complete = false;
-      return child;
-    });
-    return complete && supported;
-  }
-
-  rewriteExpressionChildren(expression, rewrite) {
-    const info = expressionInfo(expression);
-    const replace = (child, setter) => {
-      if (child) setter(rewrite(child));
-    };
-    switch (info.id) {
-      case binaryen.BlockId:
-        info.children.forEach((child, index) =>
-          replace(child, (value) => binaryen.Block.setChildAt(expression, index, value))
-        );
-        break;
-      case binaryen.IfId:
-        replace(info.condition, (value) => binaryen.If.setCondition(expression, value));
-        replace(info.ifTrue, (value) => binaryen.If.setIfTrue(expression, value));
-        replace(info.ifFalse, (value) => binaryen.If.setIfFalse(expression, value));
-        break;
-      case binaryen.LoopId:
-        replace(info.body, (value) => binaryen.Loop.setBody(expression, value));
-        break;
-      case binaryen.BreakId:
-        replace(info.condition, (value) => binaryen.Break.setCondition(expression, value));
-        replace(info.value, (value) => binaryen.Break.setValue(expression, value));
-        break;
-      case binaryen.SwitchId:
-        replace(info.condition, (value) => binaryen.Switch.setCondition(expression, value));
-        replace(info.value, (value) => binaryen.Switch.setValue(expression, value));
-        break;
-      case binaryen.CallId:
-        info.operands.forEach((child, index) =>
-          replace(child, (value) => binaryen.Call.setOperandAt(expression, index, value))
-        );
-        break;
-      case binaryen.CallIndirectId:
-        replace(info.target, (value) => binaryen.CallIndirect.setTarget(expression, value));
-        info.operands.forEach((child, index) =>
-          replace(child, (value) => binaryen.CallIndirect.setOperandAt(expression, index, value))
-        );
-        break;
-      case binaryen.LocalSetId:
-        replace(info.value, (value) => binaryen.LocalSet.setValue(expression, value));
-        break;
-      case binaryen.GlobalSetId:
-        replace(info.value, (value) => binaryen.GlobalSet.setValue(expression, value));
-        break;
-      case binaryen.LoadId:
-        replace(info.ptr, (value) => binaryen.Load.setPtr(expression, value));
-        break;
-      case binaryen.StoreId:
-        replace(info.ptr, (value) => binaryen.Store.setPtr(expression, value));
-        replace(info.value, (value) => binaryen.Store.setValue(expression, value));
-        break;
-      case binaryen.UnaryId:
-        replace(info.value, (value) => binaryen.Unary.setValue(expression, value));
-        break;
-      case binaryen.BinaryId:
-        replace(info.left, (value) => binaryen.Binary.setLeft(expression, value));
-        replace(info.right, (value) => binaryen.Binary.setRight(expression, value));
-        break;
-      case binaryen.SelectId:
-        replace(info.ifTrue, (value) => binaryen.Select.setIfTrue(expression, value));
-        replace(info.ifFalse, (value) => binaryen.Select.setIfFalse(expression, value));
-        replace(info.condition, (value) => binaryen.Select.setCondition(expression, value));
-        break;
-      case binaryen.DropId:
-        replace(info.value, (value) => binaryen.Drop.setValue(expression, value));
-        break;
-      case binaryen.ReturnId:
-        replace(info.value, (value) => binaryen.Return.setValue(expression, value));
-        break;
-      case binaryen.MemoryCopyId:
-        replace(info.dest, (value) => binaryen.MemoryCopy.setDest(expression, value));
-        replace(info.source, (value) => binaryen.MemoryCopy.setSource(expression, value));
-        replace(info.size, (value) => binaryen.MemoryCopy.setSize(expression, value));
-        break;
-      case binaryen.MemoryFillId:
-        replace(info.dest, (value) => binaryen.MemoryFill.setDest(expression, value));
-        replace(info.value, (value) => binaryen.MemoryFill.setValue(expression, value));
-        replace(info.size, (value) => binaryen.MemoryFill.setSize(expression, value));
-        break;
-      case binaryen.SIMDExtractId:
-        replace(info.vec, (value) => binaryen.SIMDExtract.setVec(expression, value));
-        break;
-      case binaryen.SIMDReplaceId:
-        replace(info.vec, (value) => binaryen.SIMDReplace.setVec(expression, value));
-        replace(info.value, (value) => binaryen.SIMDReplace.setValue(expression, value));
-        break;
-      case binaryen.SIMDShuffleId:
-        replace(info.left, (value) => binaryen.SIMDShuffle.setLeft(expression, value));
-        replace(info.right, (value) => binaryen.SIMDShuffle.setRight(expression, value));
-        break;
-      case binaryen.SIMDTernaryId:
-        replace(info.a, (value) => binaryen.SIMDTernary.setA(expression, value));
-        replace(info.b, (value) => binaryen.SIMDTernary.setB(expression, value));
-        replace(info.c, (value) => binaryen.SIMDTernary.setC(expression, value));
-        break;
-      case binaryen.SIMDShiftId:
-        replace(info.vec, (value) => binaryen.SIMDShift.setVec(expression, value));
-        replace(info.shift, (value) => binaryen.SIMDShift.setShift(expression, value));
-        break;
-      case binaryen.SIMDLoadId:
-        replace(info.ptr, (value) => binaryen.SIMDLoad.setPtr(expression, value));
-        break;
-      case binaryen.SIMDLoadStoreLaneId:
-        replace(info.ptr, (value) => binaryen.SIMDLoadStoreLane.setPtr(expression, value));
-        replace(info.vec, (value) => binaryen.SIMDLoadStoreLane.setVec(expression, value));
-        break;
-      case binaryen.TupleMakeId:
-        info.operands.forEach((child, index) =>
-          replace(child, (value) => binaryen.TupleMake.setOperandAt(expression, index, value))
-        );
-        break;
-      case binaryen.TupleExtractId:
-        replace(info.tuple, (value) => binaryen.TupleExtract.setTuple(expression, value));
-        break;
-      case binaryen.ConstId:
-      case binaryen.LocalGetId:
-      case binaryen.GlobalGetId:
-      case binaryen.NopId:
-      case binaryen.UnreachableId:
-      case binaryen.MemorySizeId:
-      case binaryen.DataDropId:
-        break;
-      default:
-        return false;
-    }
-    return true;
+    rewriteExpressionChildren(expression, child => { this.visitExpression(child, visitor); });
   }
 
   validateEnvelope() {
@@ -909,7 +768,7 @@ export class MirCompilerCore {
     }
 
     const origins = new Set(["source", "compiler_generated"]);
-    const inlineHints = new Set(["auto", "always", "never"]);
+    const inlineHints = new Set(["auto", "always", "prefer", "never"]);
     for (const [functionId, func] of this.mir.functions.entries()) {
       if (
         !func?.attributes ||
@@ -1836,92 +1695,95 @@ export class MirCompilerCore {
     );
   }
 
-  addMathKernel() {
-    if (this.requiredMathHelpers.size === 0) return;
-
-    const source = binaryen.readBinary(ONDA_MATH_KERNEL_WASM);
+  initializeModule(hintOnlyPass) {
+    const kernel = this.mathHelpers.kernel.size ? binaryen.readBinary(ONDA_MATH_KERNEL_WASM) : null;
     try {
-      if (
-        source.getNumGlobals() !== 1
-        || source.getNumTables() !== 0
-        || source.getNumDataSegments() !== 1
-      ) {
-        this.fail("embedded Wasm math kernel has an unsupported module shape");
-      }
-
-      for (let index = source.getNumExports() - 1; index >= 0; index -= 1) {
-        const exported = binaryen.getExportInfo(source.getExportByIndex(index));
-        if (!this.requiredMathHelpers.has(exported.name)) {
-          source.removeExport(exported.name);
+      if (kernel) {
+        if (kernel.getNumGlobals() !== 1 || kernel.getNumTables() !== 0 || kernel.getNumDataSegments() !== 1) {
+          this.fail("embedded Wasm math kernel has an unsupported module shape");
         }
-      }
-      source.runPasses(["remove-unused-module-elements"]);
-
-      if (source.getNumGlobals() > 1 || source.getNumDataSegments() > 1) {
-        this.fail("optimized Wasm math kernel has an unsupported module shape");
-      }
-      if (source.getNumGlobals() === 1) {
-        const global = binaryen.getGlobalInfo(source.getGlobalByIndex(0));
-        if (
-          global.module
-          || global.name !== MATH_KERNEL_STACK_GLOBAL
-          || global.type !== binaryen.i32
-          || !global.mutable
-        ) {
-          this.fail("embedded Wasm math kernel has an invalid stack global");
+        for (let i = kernel.getNumExports() - 1; i >= 0; i--) {
+          const exported = binaryen.getExportInfo(kernel.getExportByIndex(i));
+          if (!this.mathHelpers.kernel.has(exported.name)) kernel.removeExport(exported.name);
         }
-        this.module.addGlobal(
-          global.name,
-          global.type,
-          global.mutable,
-          this.module.copyExpression(global.init),
-        );
+        kernel.runPasses(["remove-unused-module-elements"]);
       }
-
-      if (source.getNumDataSegments() === 1) {
-        const segment = source.getDataSegmentInfo(source.getDataSegmentByIndex(0));
-        if (
-          segment.name !== MATH_KERNEL_DATA_SEGMENT
-          || segment.passive
-          || !Number.isInteger(segment.offset)
-          || segment.offset < STATIC_BASE
-          || segment.offset + segment.data.byteLength > MATH_KERNEL_RESERVED_END
-        ) {
-          this.fail("embedded Wasm math kernel exceeds its reserved memory region");
-        }
-        this.memorySegments.push({
-          offset: this.module.i32.const(segment.offset),
-          data: new Uint8Array(segment.data),
-        });
-      }
-
-      this.module.setFeatures(this.module.getFeatures() | source.getFeatures());
-      for (let index = 0; index < source.getNumFunctions(); index += 1) {
-        const func = binaryen.getFunctionInfo(source.getFunctionByIndex(index));
-        if (func.module || !func.body) {
-          this.fail("embedded Wasm math kernel must not import functions");
-        }
-        this.module.addFunction(
-          func.name,
-          func.params,
-          func.results,
-          func.vars,
-          this.module.copyExpression(func.body),
-        );
-      }
+      this.module = this.options.optimize
+        ? createModuleWithInlineHints(
+            this.mir.functions, this.functionNames, hintOnlyPass,
+            kernel, Array.from(this.mathHelpers.round, roundHelperName),
+          )
+        : new binaryen.Module();
+      this.buildLayouts();
+      if (kernel) this.linkMathKernel(kernel);
     } finally {
-      source.dispose();
+      kernel?.dispose();
+    }
+  }
+
+  linkMathKernel(source) {
+    if (source.getNumGlobals() > 1 || source.getNumDataSegments() > 1) {
+      this.fail("optimized Wasm math kernel has an unsupported module shape");
+    }
+    if (source.getNumGlobals() === 1) {
+      const global = binaryen.getGlobalInfo(source.getGlobalByIndex(0));
+      if (
+        global.module
+        || global.name !== MATH_KERNEL_STACK_GLOBAL
+        || global.type !== binaryen.i32
+        || !global.mutable
+      ) {
+        this.fail("embedded Wasm math kernel has an invalid stack global");
+      }
+      this.module.addGlobal(
+        global.name,
+        global.type,
+        global.mutable,
+        this.module.copyExpression(global.init),
+      );
+    }
+
+    if (source.getNumDataSegments() === 1) {
+      const segment = source.getDataSegmentInfo(source.getDataSegmentByIndex(0));
+      if (
+        segment.name !== MATH_KERNEL_DATA_SEGMENT
+        || segment.passive
+        || !Number.isInteger(segment.offset)
+        || segment.offset < STATIC_BASE
+        || segment.offset + segment.data.byteLength > MATH_KERNEL_RESERVED_END
+      ) {
+        this.fail("embedded Wasm math kernel exceeds its reserved memory region");
+      }
+      this.memorySegments.push({
+        offset: this.module.i32.const(segment.offset),
+        data: new Uint8Array(segment.data),
+      });
+    }
+
+    this.module.setFeatures(this.module.getFeatures() | source.getFeatures());
+    for (let index = 0; index < source.getNumFunctions(); index += 1) {
+      const func = binaryen.getFunctionInfo(source.getFunctionByIndex(index));
+      if (func.module || !func.body) {
+        this.fail("embedded Wasm math kernel must not import functions");
+      }
+      defineFunction(
+        this.module, this.signatureTypes,
+        func.name,
+        func.params,
+        func.results,
+        func.vars,
+        this.module.copyExpression(func.body),
+      );
     }
   }
 
   addMirFunctions() {
-    this.functionNames = this.mir.functions.map((_, id) => `$onda.fn.${id}`);
     for (let id = 0; id < this.mir.functions.length; id += 1) {
       this.addMirFunction(id, this.mir.functions[id]);
     }
   }
 
-  addMirFunction(id, func) {
+  addMirFunction(id, func, allowLocalOptimizations = true) {
     const packed = this.functionAbiLayout[id];
     const paramValueBase = packed ? 1 : 0;
     let nextIndex = paramValueBase;
@@ -1964,10 +1826,7 @@ export class MirCompilerCore {
       flatLocalScalars.length +
       callResultLocals.length +
       sliceScratch.count;
-    if (
-      resultScalars.length > 1
-      || callResultLocals.some((entry) => entry.resultCount > 1)
-    ) {
+    if (resultScalars.length > 1 || callResultLocals.length > 0) {
       this.module.setFeatures(
         this.module.getFeatures() | binaryen.Features.Multivalue,
       );
@@ -2004,10 +1863,12 @@ export class MirCompilerCore {
       ),
       eventId: func.kind?.kind === "event" ? func.kind.data : null,
       processFrameLocals,
+      allowLocalOptimizations,
+      vectorizedLoop: false,
       generatedLocalBase,
       generatedLocals: [],
       entryInitializers: [],
-      stateAddressCache: new Map(),
+      stateAddressCache: allowLocalOptimizations && func.kind.kind !== "init" ? new Map() : null,
       bufferDescriptorCache: new Map(),
       audioChannelPointerCache: new Map(),
       breakLabels: [],
@@ -2021,13 +1882,27 @@ export class MirCompilerCore {
       });
     }
     const compiledBody = this.compileBlock(func.body, context);
+    // A tuple occupies one Binaryen local index but one Wasm local per component.
+    const wasmLocalCount = callResultLocals.reduce(
+      (count, spill) => count + spill.resultCount - 1,
+      generatedLocalBase + context.generatedLocals.length,
+    );
+    if (wasmLocalCount > MAX_WASM_FUNCTION_LOCALS) {
+      if (context.stateAddressCache?.size || context.vectorizedLoop) {
+        return this.addMirFunction(id, func, false);
+      }
+      if (!this.options.optimize) {
+        this.fail(`function '${func.name}' needs ${wasmLocalCount} parameters and locals, exceeding the Wasm limit of ${MAX_WASM_FUNCTION_LOCALS}`);
+      }
+    }
     const body = context.entryInitializers.length === 0
       ? compiledBody
       : this.module.block(null, [
           ...context.entryInitializers,
           compiledBody,
         ]);
-    const functionRef = this.module.addFunction(
+    const functionRef = defineFunction(
+      this.module, this.signatureTypes,
       this.functionNames[id],
       packed ? binaryen.i32 : binaryen.createType(paramScalars.map((type) => this.wasmType(type))),
       this.wasmResultType(resultScalars),

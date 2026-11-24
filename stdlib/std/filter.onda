@@ -1,5 +1,6 @@
 # Filters for shaping frequency content, emphasizing resonances, and removing DC.
 # Includes reusable filter processors and helpers for designing filter coefficients.
+# Biquad stores coefficients and feedback in T. Use f64 for poles very close to DC.
 
 namespace std::filter:
   enum OnePoleMode:
@@ -18,22 +19,47 @@ namespace std::filter:
     b0: T = 1.0
     b1: T = 0.0
     b2: T = 0.0
-    # Feedback needs wider precision to preserve poles near DC.
-    a1: f64 = 0.0
-    a2: f64 = 0.0
+    a1: T = 0.0
+    a2: T = 0.0
 
-  def _normalize_biquad<T>(b0: f64, b1: f64, b2: f64, a0: f64, a1: f64, a2: f64) -> BiquadCoefficients<T>:
+  def _feedback_margin(value: f32) -> f64:
+    return 1.0 / 16777216.0
+
+  def _feedback_margin(value: f64) -> f64:
+    return 1.0 / 9007199254740992.0
+
+  def _normalize_biquad<T>(
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a0: f64,
+    a1: f64,
+    a2: f64
+  ) -> BiquadCoefficients<T>:
     inverse_a0 = 1.0 / a0
+    margin = _feedback_margin(T(0.0))
+    feedback2 = T(clamp(a2 * inverse_a0, margin - 1.0, 1.0 - margin))
+    feedback1 = T(a1 * inverse_a0)
+    # The rounded denominator is stable when |a2| < 1 and |a1| < 1 + a2.
+    # Move a1 inside that interval only if rounding crossed its boundary.
+    bound = 1.0 + f64(feedback2)
+    if abs(f64(feedback1)) >= bound:
+      interior = bound * (1.0 - margin)
+      feedback1 = T(clamp(f64(feedback1), -interior, interior))
     return BiquadCoefficients<T>(
       b0 = T(b0 * inverse_a0),
       b1 = T(b1 * inverse_a0),
       b2 = T(b2 * inverse_a0),
-      a1 = a1 * inverse_a0,
-      a2 = a2 * inverse_a0
+      a1 = feedback1,
+      a2 = feedback2
     )
 
   def _design_biquad<T>(cutoff: T, q: T, highpass: bool) -> BiquadCoefficients<T>:
     frequency = clamp(f64(cutoff), 0.0, f64(SR) * 0.48)
+    if frequency == 0.0:
+      if highpass:
+        return BiquadCoefficients<T>()
+      return BiquadCoefficients<T>(b0 = 0.0)
     omega = TWO_PI * frequency / SR
     cosine = cos(omega)
     alpha = sin(omega) / (2.0 * max(f64(q), 0.001))
@@ -45,14 +71,7 @@ namespace std::filter:
     b1 = 2.0 * b0
     if highpass:
       b1 = -b1
-    return _normalize_biquad<T>(
-      b0,
-      b1,
-      b0,
-      1.0 + alpha,
-      -2.0 * cosine,
-      1.0 - alpha
-    )
+    return _normalize_biquad<T>(b0, b1, b0, 1.0 + alpha, -2.0 * cosine, 1.0 - alpha)
 
   def design_lowpass<T>(cutoff: T, q: T) -> BiquadCoefficients<T>:
     return _design_biquad<T>(cutoff, q, false)
@@ -66,8 +85,8 @@ namespace std::filter:
 
     init:
       coefficients = BiquadCoefficients<T>()
-      z1: f64 = 0.0
-      z2: f64 = 0.0
+      z1: T = 0.0
+      z2: T = 0.0
 
     event set_coefficients(value: BiquadCoefficients<T>):
       coefficients = value
@@ -77,11 +96,10 @@ namespace std::filter:
       z2 = 0.0
 
     sample:
-      input = f64(in1)
-      y = coefficients.b0 * input + z1
-      z1 = coefficients.b1 * input - coefficients.a1 * y + z2
-      z2 = coefficients.b2 * input - coefficients.a2 * y
-      out1 = T(y)
+      y = coefficients.b0 * in1 + z1
+      z1 = coefficients.b1 * in1 - coefficients.a1 * y + z2
+      z2 = coefficients.b2 * in1 - coefficients.a2 * y
+      out1 = y
 
   proc OnePole<T>:
     ins<T> 1

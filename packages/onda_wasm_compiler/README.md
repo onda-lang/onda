@@ -219,7 +219,8 @@ onda-wasm compile ./main.onda --root . --output ./dist/main.wasm
 ```
 
 The command recursively collects `.onda` files below `--root`, compiles the requested entry, and
-writes an integrity-associated `main.wasm` plus `main.onda.json` descriptor. Use `--help` for code
+writes an integrity-associated `main.wasm` plus `main.onda.json` descriptor. Arithmetic is strict
+by default. Use `--fast-math` to enable Binaryen's relaxed rewrites. Use `--help` for code
 generation and output options.
 
 ## Artifact hosting

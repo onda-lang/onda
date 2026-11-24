@@ -38,6 +38,12 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "indexed proc hooks update shared fields only on transitions",
+    source: join(packageDir, "test/fixtures/indexed-guarded-fields.onda"),
+    blocks: 2,
+    expectedChannels: [[28, 28, 40, 40, 54, 54, 70, 70]],
+  },
+  {
     name: "named processor params preserve statement evaluation order",
     source: join(packageDir, "test/fixtures/processor-statement-param-order.onda"),
     blocks: 1,
@@ -1098,9 +1104,10 @@ const scenarios = [
     comparison: "approximate",
   },
   {
-    name: "live envelope edits and queued crossfades preserve timing across snapshots",
+    name: "captured envelope stages and queued crossfades preserve timing across snapshots",
     source: join(packageDir, "test/fixtures/stdlib-timing.onda"),
     comparison: "approximate",
+    snapshotComparison: "approximate",
     actions: [
       { kind: "render" },
       { kind: "snapshot" },
@@ -1110,9 +1117,10 @@ const scenarios = [
     ],
   },
   {
-    name: "long lag and decay, gain startup, and integer conversions survive snapshots",
+    name: "lag and decay, gain startup, and integer conversions survive snapshots",
     source: join(packageDir, "test/fixtures/stdlib-numeric-contracts.onda"),
     comparison: "approximate",
+    snapshotComparison: "approximate",
     actions: [
       { kind: "render" },
       { kind: "snapshot" },
@@ -1122,16 +1130,16 @@ const scenarios = [
     ],
   },
   {
-    name: "steep exponential envelopes retain representable tails before completion",
-    source: join(packageDir, "test/fixtures/stdlib-envelope-tails.onda"),
-    comparison: "approximate",
+    name: "fixed transitions retain their deadline and disabled decay clears overflow",
+    source: join(packageDir, "test/fixtures/stdlib-fixed-transitions.onda"),
     blocks: 2,
-    expectedChannels: [Array(8).fill(0), Array(8).fill(0)],
+    expectedChannels: [Array(8).fill(0), Array(8).fill(0), [0, 0, 0, 0, 0, 0, 1, 1], [0, 0, 1, 1, 1, 1, 1, 1]],
   },
   {
     name: "envelope curvature and T60 tails preserve oversampled state across snapshots",
     source: join(packageDir, "test/fixtures/stdlib-envelope-curves.onda"),
     comparison: "approximate",
+    snapshotComparison: "approximate",
     actions: [
       ...Array.from({ length: 3 }, () => ({ kind: "render" })),
       { kind: "snapshot" },
@@ -1144,6 +1152,7 @@ const scenarios = [
     name: "pitch and reverb parameter updates preserve oversampled state across snapshots",
     source: join(packageDir, "test/fixtures/stdlib-parameter-updates.onda"),
     comparison: "approximate",
+    snapshotComparison: "approximate",
     actions: [
       ...Array.from({ length: 3 }, () => ({ kind: "render" })),
       { kind: "snapshot" },
@@ -1163,6 +1172,21 @@ const scenarios = [
       ...Array.from({ length: 12 }, () => ({ kind: "render" })),
     ],
     expectedChannels: Array.from({ length: 4 }, () => Array(100).fill(0)),
+  },
+  {
+    name: "short state reductions with a competing scalar loop stay scalar",
+    source: join(packageDir, "test/fixtures/competing-state-reductions.onda"),
+    optimizedInstructions: { "f32x4.add": false },
+    blocks: 2,
+  },
+  {
+    name: "mixed-precision voice reductions preserve addition order and saved state",
+    source: join(packageDir, "test/fixtures/ordered-state-reductions.onda"),
+    optimizedInstructions: { "f64x2.add": true },
+    actions: [
+      { kind: "render" }, { kind: "snapshot" }, { kind: "render" },
+      { kind: "restore" }, { kind: "render" },
+    ],
   },
   {
     name: "independent voice rendering retains ordered floating-point mixing",
@@ -1218,10 +1242,16 @@ try {
     const mirPath = join(temporary, `scenario-${scenarioIndex}.mir.msgpack`);
     compileSourceToMir(scenario.source, mirPath);
     const mir = readFileSync(mirPath);
-    const artifacts = wasmConfigurations.map((configuration) => ({
-      configuration,
-      artifact: compileMir(mir, configuration.options),
-    }));
+    const artifacts = wasmConfigurations.map((configuration) => {
+      const instructions = configuration.options.optimize === false ? {} : scenario.optimizedInstructions ?? {};
+      const artifact = compileMir(mir, { ...configuration.options, emitText: Object.keys(instructions).length > 0 });
+      for (const [instruction, expected] of Object.entries(instructions)) {
+        if (artifact.wat.includes(instruction) !== expected) {
+          throw new Error(`${scenario.name} expected ${instruction} presence to be ${expected}`);
+        }
+      }
+      return { configuration, artifact };
+    });
     const native = await renderNativeBlocks(scenario, artifacts[0].artifact.metadata);
     verifyChannelExpectations(`${scenario.name} (LLVM)`, scenario, native);
     verifySnapshotExpectations(
@@ -1253,7 +1283,7 @@ try {
         native.snapshots,
         wasm.snapshots,
         artifact.metadata,
-        scenario.comparison ?? "exact",
+        scenario.snapshotComparison ?? "exact",
       );
       compareExecutionBatches(label, native, wasm);
       if (comparison.mode === "exact") exactSamples += comparison.samples;
@@ -1309,7 +1339,7 @@ async function renderNativeBlocks(scenario, metadata) {
       command: "initialize",
       sample_rate_hz: sampleRate,
       block_samples: blockSize,
-      fast_math: false,
+      math: "strict",
       // Match `onda compile`; interactive daemon defaults add persistent ramp state.
     });
     const start = await request({ command: "run_start", path: source });

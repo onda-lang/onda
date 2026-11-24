@@ -102,6 +102,8 @@ pub const RESERVED_IDENTIFIER_WORDS: &[&str] = &[
 #[grammar = "grammar.pest"]
 struct OndaParser;
 
+mod formatting;
+pub use formatting::format_source;
 mod loading_support;
 mod module_loading;
 mod preprocess;

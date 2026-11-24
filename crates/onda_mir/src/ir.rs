@@ -644,6 +644,8 @@ pub enum FunctionOrigin {
 pub enum InlineHint {
     Auto,
     Always,
+    /// Selects LLVM's `alwaysinline` attribute and Binaryen's ordinary inlining heuristics.
+    Prefer,
     Never,
 }
 

@@ -3,9 +3,10 @@
 //! without expensive pointwise math keep their original schedule.
 use std::collections::HashSet;
 
+use crate::local_references::collect_direct_local_reads;
 use crate::*;
 
-use super::{collect_statement_read_references, PassStats};
+use super::PassStats;
 
 // Below this size the extra traversal can outweigh vector math, especially
 // after unrolling. This is a profitability threshold, not a legality rule.
@@ -299,7 +300,7 @@ fn independent_map(
 ) -> bool {
     for statement in statements {
         let mut reads = HashSet::new();
-        collect_statement_read_references(statement, &mut reads);
+        collect_direct_local_reads(statement, &mut reads);
         if reads.iter().any(|local| {
             context.forbidden.contains(local)
                 || context.written.contains(local) && !defined.contains(local)

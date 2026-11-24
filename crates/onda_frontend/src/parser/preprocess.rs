@@ -16,19 +16,24 @@ enum ContinuationDelimiter {
 pub(super) fn preprocess_indentation_blocks(
     source: &str,
 ) -> Result<(String, Vec<usize>), Vec<Diagnostic>> {
-    fn push_mapped_line(
-        out: &mut String,
-        line_map: &mut Vec<usize>,
-        text: &str,
-        source_line: usize,
-    ) {
+    preprocess_with_layout(source, |_, _| {}, |_| {})
+}
+
+/// Reports the depth of each authored code line and the authored prefix length
+/// in bytes of each emitted line. Generated braces are outside that prefix.
+pub(super) fn preprocess_with_layout(
+    source: &str,
+    mut record_depth: impl FnMut(usize, usize),
+    mut record_authored_bytes: impl FnMut(usize),
+) -> Result<(String, Vec<usize>), Vec<Diagnostic>> {
+    let mut out = String::with_capacity(source.len() + source.len() / 4);
+    let mut line_map = Vec::<usize>::new();
+    let mut push_line = |text: &str, source_line, authored_bytes| {
         out.push_str(text);
         out.push('\n');
         line_map.push(source_line);
-    }
-
-    let mut out = String::with_capacity(source.len() + source.len() / 4);
-    let mut line_map = Vec::<usize>::new();
+        record_authored_bytes(authored_bytes);
+    };
     let mut indent_stack = vec![0usize];
     let mut pending: Option<PendingIndentBlock> = None;
     let mut continuation_delimiters = Vec::new();
@@ -45,7 +50,7 @@ pub(super) fn preprocess_indentation_blocks(
         let is_comment_or_blank = code_part.trim().is_empty();
 
         if is_comment_or_blank {
-            push_mapped_line(&mut out, &mut line_map, line, line_no);
+            push_line(line, line_no, line.len());
             continue;
         }
 
@@ -66,7 +71,7 @@ pub(super) fn preprocess_indentation_blocks(
         } else if !continues_statement && indent_stack.len() > 1 {
             while indent_stack.len() > 1 && indent_width < *indent_stack.last().unwrap_or(&0) {
                 indent_stack.pop();
-                push_mapped_line(&mut out, &mut line_map, "}", line_no);
+                push_line("}", line_no, 0);
             }
             if indent_stack.len() > 1 && indent_width != *indent_stack.last().unwrap_or(&0) {
                 return Err(vec![Diagnostic::syntax(
@@ -76,6 +81,7 @@ pub(super) fn preprocess_indentation_blocks(
                 )]);
             }
         }
+        record_depth(idx, indent_stack.len() - 1);
         if !continues_statement {
             logical_line = line_no;
             logical_indent = indent_width;
@@ -94,13 +100,13 @@ pub(super) fn preprocess_indentation_blocks(
                 )]);
             }
             let header_line = format!("{header} {{");
-            push_mapped_line(&mut out, &mut line_map, &header_line, line_no);
+            push_line(&header_line, line_no, header.len());
             pending = Some(PendingIndentBlock {
                 line: logical_line,
                 indent: logical_indent,
             });
         } else {
-            push_mapped_line(&mut out, &mut line_map, line, line_no);
+            push_line(line, line_no, line.len());
         }
     }
 
@@ -114,7 +120,7 @@ pub(super) fn preprocess_indentation_blocks(
 
     while indent_stack.len() > 1 {
         indent_stack.pop();
-        push_mapped_line(&mut out, &mut line_map, "}", last_source_line);
+        push_line("}", last_source_line, 0);
     }
 
     Ok((out, line_map))
@@ -152,7 +158,7 @@ pub(super) fn unquoted_chars(line: &str) -> impl Iterator<Item = (usize, char)> 
     })
 }
 
-fn leading_indent_width(line: &str) -> usize {
+pub(super) fn leading_indent_width(line: &str) -> usize {
     let mut width = 0usize;
     for ch in line.chars() {
         match ch {
@@ -210,7 +216,7 @@ fn close_continuation(
     }
 }
 
-fn is_continuation_opening_brace(line: &str, brace_idx: usize) -> bool {
+pub(super) fn is_continuation_opening_brace(line: &str, brace_idx: usize) -> bool {
     let before = line[..brace_idx].trim_end();
     if before.trim().is_empty() {
         return true;

@@ -18,7 +18,7 @@ event bang():
   audition.bang()
 
 sample:
-  source_l, source_r = audition(auto_play = auto_play)
+  source_l, source_r = audition(auto_play = auto_play, muted = live_input)
   if live_input:
     source_l = in1
     source_r = in2

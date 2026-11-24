@@ -5,17 +5,17 @@ This example compiles the shared
 links it directly into a C application, and calls the raw processor ABI. It does not link an Onda
 runtime, compiler, loader, or linker wrapper.
 
-The Onda program is a small stereo sample player. Its `play(bool)` event starts or stops a
-host-bound clip and its `speed` parameter controls playback rate. Enabling playback restarts the
-clip from frame zero; playback stops at the buffer end.
+The stereo player reads a host-bound `f32` clip with an `f64` playhead.
+Its `play(start_frame: f64 = 0.0)` event starts playback at the requested frame.
+Playback ends at the clip boundary or when the host sends `stop()`.
 
 The processor deliberately exercises the complete native call surface:
 
 - zero audio inputs and two planar audio outputs;
-- one playback-speed parameter and persistent state;
+- playback speed and output level parameters and persistent state;
 - a host-owned, interleaved, dynamic-channel external buffer;
 - all buffer metadata tables: data, frames, channels, and sample rate;
-- the `play(bool)` event exported as `onda_event_0`;
+- the `play` and `stop` events;
 - one complete logical block processed with a single `onda_process` call.
 
 [`generate_config.py`](generate_config.py) reads the exact emitted sidecar and generates the small C

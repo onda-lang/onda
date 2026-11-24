@@ -23,7 +23,7 @@ pub use ast::{
 };
 pub use diagnostics::{DiagCode, DiagCtx, Diagnostic};
 pub use parser::{
-    absolute_lexical_path, ensure_no_symlink_components, inject_auto_std_math,
+    absolute_lexical_path, ensure_no_symlink_components, format_source, inject_auto_std_math,
     inject_auto_std_prelude, is_language_keyword, is_language_type_name, is_reserved_identifier,
     is_reserved_word, language_type_names, load_program_file, load_program_file_from_snapshot,
     load_program_file_from_virtual_sources, load_program_file_with_overlays,

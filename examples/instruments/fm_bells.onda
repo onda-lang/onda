@@ -19,8 +19,8 @@ proc BellVoice:
     carrier = std::osc::Sine()
     partial = std::osc::Sine()
     modulator = std::osc::Sine()
-    amplitude = std::env::DecayEnv(decay_s = decay_s)
-    modulation_index = std::env::DecayEnv(decay_s = decay_s * 0.24)
+    amplitude = std::env::DecayEnv()
+    modulation_index = std::env::DecayEnv()
 
   event strike(note, velocity):
     freq = std::pitch::note_to_hz(note)
@@ -29,7 +29,7 @@ proc BellVoice:
     modulator.reset()
     amplitude.decay_s = decay_s
     amplitude.start(velocity)
-    modulation_index.decay_s = decay_s * 0.24
+    modulation_index.decay_s = decay_s * (3.30 / 8.0)
     modulation_index.start()
 
   sample:

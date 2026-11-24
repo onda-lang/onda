@@ -53,7 +53,7 @@ impl Fixture {
             input_device: None,
             output_device: None,
             midi_input_device: None,
-            fast_math: false,
+            math: FloatMathMode::Strict,
             show_meta: false,
             control_json: true,
             start_paused,

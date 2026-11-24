@@ -361,6 +361,8 @@ fn render_f64(source: &str, sample_rate: f32, frames: usize) -> Vec<Vec<f64>> {
         PROCESSOR_FULL_BLOCK,
         onda_runtime::ExecutionOutput::none(),
     )
+    .map_err(Diagnostic::from)
+    .and_then(onda_codegen_llvm::check_execution_status)
     .unwrap();
     output
 }

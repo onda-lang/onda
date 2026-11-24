@@ -3,7 +3,7 @@ use super::{
     DaemonCommand, RunCommand,
 };
 use onda_codegen_llvm::{
-    TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
+    FloatMathMode, TargetCodeModel, TargetConfig, TargetCpu, TargetOptLevel, TargetRelocMode,
     AOT_METADATA_FORMAT_VERSION, AOT_SNAPSHOT_FORMAT_VERSION, PROCESSOR_ABI_VERSION,
 };
 use onda_frontend::{
@@ -433,7 +433,7 @@ fn compile_project_validates_manifest_buffers_against_source_declarations() {
         const_overrides: &[],
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     })
     .expect_err("project buffer type mismatch should fail compilation");
@@ -543,7 +543,7 @@ fn compile_library_checks_constants_without_evaluating_unused_arrays() {
             const_overrides: &[],
             list_consts: false,
             show_meta: false,
-            fast_math: false,
+            math: FloatMathMode::Strict,
             target: TargetConfig::host(),
         });
         std::fs::remove_file(&source_path).expect("remove library source");
@@ -585,7 +585,7 @@ fn compile_constant_override_replaces_the_default_for_the_whole_compilation() {
         const_overrides: &overrides,
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     let _ = std::fs::remove_file(&source_path);
@@ -647,7 +647,7 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
         const_overrides: &[],
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     })
     .expect("the project constant should replace the invalid authored default");
@@ -670,7 +670,7 @@ fn project_constants_are_defaults_and_cli_constants_take_precedence() {
         const_overrides: &overrides,
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     std::fs::remove_dir_all(root).expect("remove project constant test directory");
@@ -714,12 +714,46 @@ fn cli_constant_literals_cover_all_supported_value_const_types() {
         const_overrides: &overrides,
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     let _ = std::fs::remove_file(&source_path);
 
     result.expect("CLI literals should use the ordinary const type system");
+}
+
+#[test]
+fn native_commands_select_the_same_float_math_modes() {
+    for command in [
+        &["compile", "x.onda"][..],
+        &["bench", "x.onda"],
+        &["run"],
+        &["run", "play", "x.onda"],
+        &["run", "render", "x.onda"],
+    ] {
+        for (flags, expected) in [
+            (&[][..], FloatMathMode::Default),
+            (&["--fast-math"][..], FloatMathMode::Fast),
+            (&["--strict-math"][..], FloatMathMode::Strict),
+        ] {
+            let args = ["onda"]
+                .iter()
+                .chain(command)
+                .chain(flags)
+                .map(|arg| (*arg).to_owned());
+            let math = match parse_args(args).unwrap() {
+                Command::Compile { math, .. }
+                | Command::Run(
+                    RunCommand::Window { math, .. }
+                    | RunCommand::Play { math, .. }
+                    | RunCommand::Render { math, .. },
+                ) => math,
+                Command::Bench(options) => options.math,
+                _ => panic!("unexpected command for {command:?}"),
+            };
+            assert_eq!(math, expected, "{command:?} {flags:?}");
+        }
+    }
 }
 
 #[test]
@@ -996,7 +1030,7 @@ fn compile_emits_complete_portable_mir_slice() {
         const_overrides: &[],
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     let dump = std::fs::read_to_string(&output_path).expect("MIR output should exist");
@@ -1042,7 +1076,7 @@ fn compile_emits_versioned_mir_json() {
         const_overrides: &[],
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     let json = std::fs::read_to_string(&output_path).expect("MIR JSON output should exist");
@@ -1088,7 +1122,7 @@ fn compile_emits_versioned_mir_messagepack() {
         const_overrides: &[],
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     let bytes = std::fs::read(&output_path).expect("MIR MessagePack output should exist");
@@ -1143,7 +1177,7 @@ events {
         const_overrides: &[],
         list_consts: false,
         show_meta: false,
-        fast_math: false,
+        math: FloatMathMode::Strict,
         target: TargetConfig::host(),
     });
     let object = std::fs::read(&object_path).expect("object output should exist");
@@ -1292,7 +1326,6 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             "gain=0.5",
             "--buffer",
             "table=samples.wav",
-            "--fast-math",
         ]
         .into_iter()
         .map(str::to_owned),
@@ -1303,7 +1336,6 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             show_meta,
             control_json,
             report_sources,
-            fast_math,
             param_sets,
             buffer_bindings,
             ..
@@ -1311,7 +1343,6 @@ fn parse_run_play_accepts_meta_and_param_sets() {
             assert!(show_meta);
             assert!(control_json);
             assert!(!report_sources);
-            assert!(fast_math);
             assert_eq!(
                 param_sets,
                 vec![("gain".to_owned(), onda_daemon::RunParamValue::F64(0.5))]
@@ -1437,7 +1468,10 @@ fn parse_no_command_defaults_to_run_window() {
     let cmd = parse_args(["onda"].into_iter().map(str::to_owned))
         .expect("bare onda invocation should open the run window");
     match cmd {
-        Command::Run(RunCommand::Window { input, .. }) => assert_eq!(input, None),
+        Command::Run(RunCommand::Window { input, math, .. }) => {
+            assert_eq!(input, None);
+            assert_eq!(math, FloatMathMode::Default);
+        }
         _ => panic!("expected run window command"),
     }
 }
@@ -1699,7 +1733,6 @@ fn parse_run_render_accepts_meta_and_param_sets() {
             "--set",
             "gain=0.5",
             "--buffer=table=samples.wav",
-            "--fast-math",
         ]
         .into_iter()
         .map(str::to_owned),
@@ -1708,13 +1741,11 @@ fn parse_run_render_accepts_meta_and_param_sets() {
     match cmd {
         Command::Run(RunCommand::Render {
             show_meta,
-            fast_math,
             param_sets,
             buffer_bindings,
             ..
         }) => {
             assert!(show_meta);
-            assert!(fast_math);
             assert_eq!(
                 param_sets,
                 vec![("gain".to_owned(), onda_daemon::RunParamValue::F64(0.5))]

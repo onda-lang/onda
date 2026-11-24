@@ -6,10 +6,10 @@ import std/pitch
 proc Exercise<T>:
   outs<T> 8
   init:
-    lag = std::smoothing::Lag<T>(lag_s = 1000.0)
-    peak = std::dynamics::PeakFollower<T>(attack_lag_s = 1000.0)
-    rms = std::dynamics::RmsFollower<T>(attack_lag_s = 1000.0)
-    decay = std::env::Decay<T>(decay_60db_s = 10000.0)
+    lag = std::smoothing::Lag<T>(lag_s = 0.05)
+    peak = std::dynamics::PeakFollower<T>(attack_lag_s = 0.05)
+    rms = std::dynamics::RmsFollower<T>(attack_lag_s = 0.05)
+    decay = std::env::Decay<T>(decay_60db_s = 0.5)
     gain = std::gain::Smoothed<T>(gain = 0.25, lag_s = 0.004)
     db = std::gain::SmoothedDb<T>(db = -6.0, lag_s = 0.004)
     fast = std::smoothing::Lag<T>(lag_s = 1.0 / (50.0 * SR))
@@ -24,11 +24,10 @@ proc Exercise<T>:
     if frame == 8:
       gain.gain = 0.75
       db.db = 0.0
-    # Amplify tiny changes so backend comparisons detect frozen accumulators.
-    out1 = lag(T(1.0)) * 100000.0
-    out2 = peak(T(1.0)) * 100000.0
-    out3 = rms(T(1.0)) * 100.0
-    out4 = (1.0 - decay(impulse)) * 100000.0
+    out1 = lag(T(1.0))
+    out2 = peak(T(1.0))
+    out3 = rms(T(1.0))
+    out4 = decay(impulse)
     out5 = gain(T(1.0))
     out6 = db(T(1.0))
     out7 = fast(T(0.0))

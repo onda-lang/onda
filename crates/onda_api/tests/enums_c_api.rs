@@ -28,7 +28,7 @@ block:
         )
         .unwrap();
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48000.0,
             block_size: 4,
             const_inputs: std::ptr::null(),
@@ -131,7 +131,7 @@ sample:
             },
         ];
         let mut options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48000.0,
             block_size: 4,
             const_inputs: inputs.as_ptr(),

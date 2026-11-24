@@ -179,7 +179,11 @@ sample:
         let mir = lower_program_to_optimized_mir(&typed)
             .expect("processor range should lower to optimized MIR");
         let dump = onda_mir::format_program(mir.as_program());
-        assert!(dump.contains("intrinsic range_wrap"));
+        assert!(
+            dump.lines()
+                .any(|line| line.contains("bit_and") && line.contains(", i32(3)")),
+            "{dump}"
+        );
         assert!(
             mir.state
                 .iter()
@@ -220,7 +224,11 @@ sample:
         let mir = lower_program_to_optimized_mir(&typed)
             .expect("nested generic processor range should lower to optimized MIR");
         let dump = onda_mir::format_program(mir.as_program());
-        assert!(dump.contains("intrinsic range_wrap"), "{dump}");
+        assert!(
+            dump.lines()
+                .any(|line| line.contains("bit_and") && line.contains(", i32(3)")),
+            "{dump}"
+        );
         assert!(
             mir.state
                 .iter()

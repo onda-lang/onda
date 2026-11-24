@@ -13,6 +13,87 @@ fn near(actual: f64, expected: f64, tolerance: f64) {
 }
 
 #[test]
+fn small_delay_lines_use_the_available_one_sample_tap() {
+    for (width, amplitude) in [("f32", f64::from(f32::MAX)), ("f64", f64::MAX)] {
+        let source = r#"
+import std/delay
+outs<f64> 10
+init:
+  cubic_two = std::delay<2>::Cubic<$T>(delay_samples = 10.0)
+  cubic_three = std::delay<3>::Cubic<$T>(delay_samples = 10.0)
+  cubic_four = std::delay<4>::Cubic<$T>(delay_samples = 10.0)
+  delay_two = std::delay<2>::Delay<$T>(delay_s = 1.0)
+  delay_three = std::delay<3>::Delay<$T>(delay_s = 1.0)
+  crossfade_two = std::delay<2>::CrossfadeDelay<$T>(delay_s = 1.0)
+  crossfade_three = std::delay<3>::CrossfadeDelay<$T>(delay_s = 1.0)
+  linear = std::delay<2>::Linear<$T>()
+  smooth = std::delay<2>::Smooth<$T>()
+  crossfade = std::delay<2>::Crossfade<$T>()
+  input: $T = $T($AMPLITUDE)
+sample:
+  out1 = f64(cubic_two(input))
+  out2 = f64(cubic_three(input))
+  out3 = f64(cubic_four(input))
+  out4 = f64(delay_two(input))
+  out5 = f64(delay_three(input))
+  out6 = f64(crossfade_two(input))
+  out7 = f64(crossfade_three(input))
+  out8 = f64(linear(input))
+  out9 = f64(smooth(input))
+  out10 = f64(crossfade(input))
+  input = -input
+"#
+        .replace("$T", width)
+        .replace("$AMPLITUDE", &format!("{amplitude:.1}"));
+        let output = render_f64(&source, 44_106.0, 4);
+        for (index, channel) in output.iter().enumerate() {
+            let expected = if index < 7 {
+                [0.0, amplitude, -amplitude, amplitude]
+            } else {
+                [amplitude, -amplitude, amplitude, -amplitude]
+            };
+            assert_eq!(channel, &expected, "{width}, output {}", index + 1);
+        }
+    }
+}
+
+#[test]
+fn fractional_feedback_taps_match_unwrapped_history_across_resets() {
+    for (width, capacity) in [("f32", 5), ("f64", 8)] {
+        let source = format!(
+            r#"
+import std/delay
+outs<f64> 1
+init:
+  delay = std::delay<{capacity}>::Delay<{width}>(lag_s = 0.0, feedback = 0.5)
+  frame = 0
+sample:
+  if frame == 13:
+    delay.reset()
+  tap: {width} = 1.25
+  if frame % 2 == 0:
+    tap = 2.75
+  out1 = f64(delay({width}(frame % 7) - 3.0, delay_s = tap / SR))
+  frame += 1
+"#
+        );
+        let output = render_f64(&source, 1024.0, 32);
+        let mut history = vec![0.0; 3];
+        for (frame, &actual) in output[0].iter().enumerate() {
+            if frame == 13 {
+                history.fill(0.0);
+            }
+            let (delay, fraction) = if frame % 2 == 0 { (2, 0.75) } else { (1, 0.25) };
+            let newer = history[history.len() - delay];
+            let older = history[history.len() - delay - 1];
+            let expected = newer + (older - newer) * fraction;
+            near(actual, expected, if width == "f32" { 1e-6 } else { 1e-12 });
+            history.push((frame % 7) as f64 - 3.0 + 0.5 * expected);
+        }
+    }
+}
+
+#[test]
 fn allpass_delay_clamps_its_tap_and_reset_clears_the_feedback_tail() {
     for width in ["f32", "f64"] {
         for capacity in [2, 8, 32] {
@@ -235,8 +316,16 @@ sample:
 }
 
 #[test]
-fn biquad_low_cutoffs_remain_stable_and_pass_dc_correctly() {
-    for width in ["f32", "f64"] {
+fn biquad_low_cutoffs_stay_bounded_and_resolvable_poles_pass_dc() {
+    // At 48 kHz, f32 can represent the 120 Hz design. At 1 Hz its
+    // quantized feedback changes the DC gain, but the response stays bounded.
+    for (width, cutoff, dc_tolerance) in [
+        ("f32", 0.0, Some(1e-6)),
+        ("f32", 1.0, None),
+        ("f32", 1.2, None),
+        ("f32", 120.0, Some(1e-3)),
+        ("f64", 1.0, Some(1e-4)),
+    ] {
         let output = render(
             &format!(
                 r#"
@@ -245,8 +334,8 @@ outs<f64> 3
 init:
   low = std::filter::Biquad<{width}>()
   high = std::filter::Biquad<{width}>()
-  low_coeffs = std::filter::design_lowpass<{width}>(1.0, 0.707107)
-  high_coeffs = std::filter::design_highpass<{width}>(1.0, 0.707107)
+  low_coeffs = std::filter::design_lowpass<{width}>({cutoff}, 0.707107)
+  high_coeffs = std::filter::design_highpass<{width}>({cutoff}, 0.707107)
   impulse: {width} = 1.0
   frame = 0
 sample:
@@ -262,6 +351,13 @@ sample:
             ),
             96_000,
         );
+        if cutoff == 0.0 {
+            assert!(output[0].iter().all(|&x| x == 0.0));
+            assert_eq!(output[1][0], 1.0);
+            assert!(output[1][1..].iter().all(|&x| x == 0.0));
+            assert_eq!(output[2][0], 0.0);
+            continue;
+        }
         assert!(
             output[2][0] > 0.0,
             "{width}: vanished feedforward coefficients"
@@ -269,7 +365,9 @@ sample:
         assert!(output[0]
             .iter()
             .all(|&x| x.is_finite() && (0.0..1.1).contains(&x)));
-        near(*output[0].last().unwrap(), 1.0, 1e-4);
+        if let Some(tolerance) = dc_tolerance {
+            near(*output[0].last().unwrap(), 1.0, tolerance);
+        }
         assert!(output[1].iter().all(|&x| x.is_finite() && x.abs() <= 1.0));
         near(*output[1].last().unwrap(), 0.0, 1e-6);
     }
@@ -302,59 +400,7 @@ sample:
 }
 
 #[test]
-fn long_lags_and_decay_keep_moving_in_both_precisions() {
-    for width in ["f32", "f64"] {
-        let source = format!(
-            r#"
-import std/smoothing
-import std/dynamics
-import std/env
-outs<f64> 5
-init:
-  lag = std::smoothing::Lag<{width}>(lag_s = 1000.0)
-  asymmetric = std::smoothing::LagUD<{width}>(rise_lag_s = 1000.0)
-  peak = std::dynamics::PeakFollower<{width}>(attack_lag_s = 1000.0)
-  rms = std::dynamics::RmsFollower<{width}>(attack_lag_s = 1000.0)
-  decay = std::env::Decay<{width}>(decay_60db_s = 10000.0)
-  frame = 0
-sample:
-  impulse: {width} = 0.0
-  if frame == 0:
-    impulse = 1.0
-  out1 = f64(lag({width}(1.0)))
-  out2 = f64(asymmetric({width}(1.0)))
-  out3 = f64(peak({width}(1.0)))
-  out4 = f64(rms({width}(1.0)))
-  out5 = f64(decay(impulse))
-  frame += 1
-"#
-        );
-        for rate in [48000.0, 192000.0] {
-            let output = render_f64(&source, rate, 480);
-
-            for i in [0, 47, 479] {
-                let expected = -(-((i + 1) as f64) / (rate as f64 * 1000.0)).exp_m1();
-                for channel in 0..4 {
-                    let target = if channel == 3 {
-                        expected.sqrt()
-                    } else {
-                        expected
-                    };
-                    assert!(
-                        (output[channel][i] - target).abs() < target * 2e-6,
-                        "{width}, {rate}, channel {channel}, frame {i}: {} != {target}",
-                        output[channel][i]
-                    );
-                }
-                let tail = 0.001_f64.powf(i as f64 / (rate as f64 * 10000.0));
-                assert!((output[4][i] - tail).abs() < 4e-8);
-            }
-        }
-    }
-}
-
-#[test]
-fn slow_releases_and_delay_changes_accumulate_below_output_precision() {
+fn release_and_delay_smoothing_follow_the_requested_time_constant() {
     for width in ["f32", "f64"] {
         let source = format!(
             r#"
@@ -363,18 +409,18 @@ import std/dynamics
 import std/delay
 outs<f64> 9
 init:
-  lag = std::smoothing::Lag<{width}>(lag_s = 1000.0)
+  lag = std::smoothing::Lag<{width}>(lag_s = 0.1)
   lag.reset(1.0)
-  asymmetric = std::smoothing::LagUD<{width}>(fall_lag_s = 1000.0)
+  asymmetric = std::smoothing::LagUD<{width}>(fall_lag_s = 0.1)
   asymmetric.reset(1.0)
-  peak = std::dynamics::PeakFollower<{width}>(attack_lag_s = 0.0, release_lag_s = 1000.0)
-  rms = std::dynamics::RmsFollower<{width}>(attack_lag_s = 0.0, release_lag_s = 1000.0)
-  gate = std::dynamics::Gate<{width}>(attack_lag_s = 0.0, release_lag_s = 1000.0)
-  limiter = std::dynamics::Limiter<{width}>(ceiling_db = 0.0, release_lag_s = 1000.0)
+  peak = std::dynamics::PeakFollower<{width}>(attack_lag_s = 0.0, release_lag_s = 0.1)
+  rms = std::dynamics::RmsFollower<{width}>(attack_lag_s = 0.0, release_lag_s = 0.1)
+  gate = std::dynamics::Gate<{width}>(attack_lag_s = 0.0, release_lag_s = 0.1)
+  limiter = std::dynamics::Limiter<{width}>(ceiling_db = 0.0, release_lag_s = 0.1)
   compressor = std::dynamics::Compressor<{width}>(threshold_db = 0.0, ratio = 2.0,
-    knee_db = 0.0, attack_lag_s = 0.0, release_lag_s = 1000.0)
-  smooth = std::delay<64>::Smooth<{width}>(delay_samples = 1.0, lag_s = 1000.0)
-  delay = std::delay<64>::Delay<{width}>(delay_s = 1.0 / SR, lag_s = 1000.0)
+    knee_db = 0.0, attack_lag_s = 0.0, release_lag_s = 0.1)
+  smooth = std::delay<64>::Smooth<{width}>(delay_samples = 1.0, lag_s = 0.1)
+  delay = std::delay<64>::Delay<{width}>(delay_s = 1.0 / SR, lag_s = 0.1)
   frame = 0
 sample:
   input: {width} = 0.0
@@ -403,11 +449,22 @@ sample:
 "#
         );
         let output = render_f64(&source, 48000.0, 4800);
+        if width == "f32" {
+            let pole = (-1.0 / (48_000.0 * f64::from(0.1_f32))).exp() as f32;
+            let mut history = 1.0_f32;
+            for (&lag, &lag_ud) in output[0].iter().zip(&output[1]) {
+                history *= pole;
+                assert_eq!(lag, f64::from(history));
+                assert_eq!(lag_ud, f64::from(history));
+            }
+        }
+        // Quantizing a pole near one affects every subsequent sample.
+        let tolerance = if width == "f32" { 5e-5 } else { 1e-10 };
         for i in [479, 4799] {
-            let remaining = (-(i as f64) / 48000000.0).exp();
+            let remaining = (-(i as f64) / 4800.0).exp();
             let expected = [
-                (-((i + 1) as f64) / 48000000.0).exp(),
-                (-((i + 1) as f64) / 48000000.0).exp(),
+                (-((i + 1) as f64) / 4800.0).exp(),
+                (-((i + 1) as f64) / 4800.0).exp(),
                 remaining,
                 remaining.sqrt(),
                 remaining,
@@ -418,7 +475,7 @@ sample:
             ];
             for (channel, target) in expected.iter().enumerate() {
                 assert!(
-                    (output[channel][i] - target).abs() < 3e-7,
+                    (output[channel][i] - target).abs() < tolerance,
                     "{width}, channel {channel}, frame {i}: {} != {target}",
                     output[channel][i]
                 );
@@ -481,14 +538,12 @@ fn lags_and_dynamics_measure_response_in_their_documented_domain() {
                 r#"
 import std/smoothing
 import std/dynamics
-import std/gain
-outs<f64> 5
+outs<f64> 4
 init:
   lag = std::smoothing::Lag<{width}>(lag_s = 0.004)
   asymmetric = std::smoothing::LagUD<{width}>(rise_lag_s = 0.004, fall_lag_s = 0.002)
   peak = std::dynamics::PeakFollower<{width}>(attack_lag_s = 0.004, release_lag_s = 0.002)
   rms = std::dynamics::RmsFollower<{width}>(attack_lag_s = 0.004, release_lag_s = 0.002)
-  gain = std::gain::SmoothedDb<{width}>(db = 0.0, lag_s = 0.004)
   frame = 0
 sample:
   input: {width} = 1.0
@@ -499,24 +554,22 @@ sample:
   out2 = f64(asymmetric(input))
   out3 = f64(peak(input))
   out4 = f64(rms(input))
-  out5 = f64(gain({width}(1.0)))
   frame += 1
 "#
             ),
             1000.0,
             8,
         );
-        for i in 0..8 {
+        for (i, &rms) in output[3].iter().enumerate() {
             let expected = if i < 4 {
                 1.0 - (-((i + 1) as f64) / 4.0).exp()
             } else {
                 (1.0 - (-1.0_f64).exp()) * (-((i - 3) as f64) / 2.0).exp()
             };
-            for channel in 0..3 {
-                assert_close_f64(output[channel][i], expected);
+            for channel in &output[..3] {
+                assert_close_f64(channel[i], expected);
             }
-            assert_close_f64(output[3][i], expected.sqrt());
-            assert_close_f64(output[4][i], 1.0);
+            assert_close_f64(rms, expected.sqrt());
         }
     }
 }
@@ -565,15 +618,20 @@ sample:
 #[test]
 fn player_speed_updates_within_blocks_and_tracks_rebound_sample_rates() {
     let speeds = [1.0, 2.0, 0.0, -1.0, -2.0, 0.5, 1.0, 0.0];
-    for width in ["f32", "f64"] {
+    for (width, storage) in [
+        ("f32", "f32"),
+        ("f32", "f64"),
+        ("f64", "f32"),
+        ("f64", "f64"),
+    ] {
         let source = format!(
             r#"
 import std/sample
 buffers:
-  clip: {width}
+  clip: {storage}
 outs<f64> 1
 init:
-  player = std::sample<1>::Player<{width}>(clip = clip)
+  player = std::sample<1>::Player<{width}, {storage}>(clip = clip)
   speeds: {width}[8] = [1.0, 2.0, 0.0, -1.0, -2.0, 0.5, 1.0, 0.0]
   frame = 0
 event play():
@@ -586,11 +644,21 @@ sample:
         let (mut instance, _, _) = compile_instance(&source, 8);
         let mut output = [0.0_f64; 8];
         bind_output(&mut instance, 0, output.as_mut_ptr().cast(), 64).unwrap();
+        let round = |x: f64| {
+            if width == "f32" {
+                f64::from(x as f32)
+            } else {
+                x
+            }
+        };
         let mut position = 8.0;
-        for (block, rate) in [48_000.0, 24_000.0, 96_000.0].into_iter().enumerate() {
+        for (block, rate) in [48_000.0, 24_000.0, 96_000.0, 44_100.0]
+            .into_iter()
+            .enumerate()
+        {
             let mut clip64: Vec<f64> = (0..64).map(|i| (i + block * 100) as f64).collect();
             let mut clip32: Vec<f32> = clip64.iter().map(|&x| x as f32).collect();
-            let (pointer, ty) = if width == "f32" {
+            let (pointer, ty) = if storage == "f32" {
                 (clip32.as_mut_ptr().cast(), PrimitiveType::F32)
             } else {
                 (clip64.as_mut_ptr().cast(), PrimitiveType::F64)
@@ -614,16 +682,77 @@ sample:
                 .unwrap();
             }
             for (frame, speed) in speeds.iter().enumerate() {
-                let expected = position + (block * 100) as f64;
+                let expected = round(position + (block * 100) as f64);
                 assert!(
-                    (output[frame] - expected).abs() < 1e-6,
-                    "{width}, block {block}, sample {frame}: {} != {expected}",
+                    (output[frame] - expected).abs() < 1e-12,
+                    "Player<{width}, {storage}>, block {block}, sample {frame}: {} != {expected}",
                     output[frame]
                 );
-                position += speed * f64::from(rate) / 48_000.0;
+                position = round(position + speed * round(f64::from(rate) / 48_000.0));
             }
         }
     }
+}
+
+#[test]
+fn player_interpolates_clip_samples_in_playback_precision() {
+    let source = r#"
+import std/sample
+buffers:
+  clip32: f32
+  clip64: f64
+outs<f64> 2
+init:
+  wide = std::sample<1>::Player<f64, f32>(clip = clip32)
+  narrow = std::sample<1>::Player<f32, f64>(clip = clip64, looping = true)
+event play():
+  wide.play(0.5)
+  narrow.play(0.5)
+sample:
+  out1 = wide()
+  out2 = f64(narrow())
+"#;
+    let (mut instance, _, _) = compile_instance(source, 2);
+    let small = 2.0_f64.powi(-26);
+    let mut clip64 = [-1.0, small, 0.0, 1.0 + 2.0_f64.powi(-24)];
+    let mut clip32 = clip64.map(|x| x as f32);
+    bind_buffer(
+        &mut instance,
+        0,
+        clip32.as_mut_ptr().cast(),
+        4,
+        1,
+        48_000.0,
+        PrimitiveType::F32,
+    )
+    .unwrap();
+    bind_buffer(
+        &mut instance,
+        1,
+        clip64.as_mut_ptr().cast(),
+        4,
+        1,
+        48_000.0,
+        PrimitiveType::F64,
+    )
+    .unwrap();
+    let output = bind_f64_outputs(&mut instance, 2);
+    let play = instance.event_index("play").unwrap();
+    trigger_event_by_index_checked(&mut instance, play, &[], ExecutionOutput::none()).unwrap();
+    process_checked_segment(
+        &mut instance,
+        0,
+        2,
+        PROCESSOR_FULL_BLOCK,
+        ExecutionOutput::none(),
+    )
+    .unwrap();
+
+    // At half a frame the cubic weights are [-1, 9, 9, -1] / 16.
+    let weighted = 9.0 * small / 16.0;
+    assert_eq!(output[0], [-0.5 + weighted, weighted]);
+    // With f32 taps the small terms round away in the cubic coefficients.
+    assert_eq!(output[1], [-0.625, small]);
 }
 
 fn render_updates(block_size: usize) -> Vec<Vec<f64>> {

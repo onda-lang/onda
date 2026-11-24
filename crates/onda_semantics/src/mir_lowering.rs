@@ -1983,7 +1983,8 @@ fn synthetic_runtime_function(name: &str, body: Vec<Stmt>) -> TypedFunction {
     TypedFunction {
         compile_context: None,
         name: name.to_owned(),
-        runtime_context: false,
+        runtime_context: true,
+        generated_inline_hint: Some(InlineHint::Always),
         publishes_print: false,
         method_of: None,
         type_params: Vec::new(),
@@ -2002,7 +2003,7 @@ fn empty_entry_function(name: &str, kind: onda_mir::FunctionKind) -> onda_mir::F
     onda_mir::Function {
         name: name.to_owned(),
         kind,
-        attributes: compiler_generated_function_attributes(),
+        attributes: compiler_generated_function_attributes(InlineHint::Always),
         params: Vec::new(),
         results: Vec::new(),
         locals: Vec::new(),
@@ -2011,30 +2012,11 @@ fn empty_entry_function(name: &str, kind: onda_mir::FunctionKind) -> onda_mir::F
     }
 }
 
-fn compiler_generated_function_attributes() -> FunctionAttributes {
+fn compiler_generated_function_attributes(inline: InlineHint) -> FunctionAttributes {
     FunctionAttributes {
         origin: FunctionOrigin::CompilerGenerated,
-        inline: InlineHint::Always,
+        inline,
         runtime_context: true,
-    }
-}
-
-fn compiler_shared_function_attributes() -> FunctionAttributes {
-    FunctionAttributes {
-        origin: FunctionOrigin::CompilerGenerated,
-        inline: InlineHint::Never,
-        runtime_context: true,
-    }
-}
-
-fn source_function_attributes(name: &str, publishes_print: bool) -> FunctionAttributes {
-    if crate::internal_names::is_compiler_generated_function_name(name) {
-        compiler_generated_function_attributes()
-    } else {
-        FunctionAttributes {
-            runtime_context: publishes_print,
-            ..FunctionAttributes::default()
-        }
     }
 }
 

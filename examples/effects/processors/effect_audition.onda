@@ -1,6 +1,7 @@
 import std/env
 import std/osc
 import std/pitch
+import std/smoothing
 
 const AuditionPatternLength = 6
 const AuditionNotes: f32[AuditionPatternLength] = [57.0, 64.0, 69.0, 76.0, 67.0, 72.0]
@@ -8,39 +9,78 @@ const AuditionNotes: f32[AuditionPatternLength] = [57.0, 64.0, 69.0, 76.0, 67.0,
 proc EffectAudition:
   params:
     auto_play = true
-    interval_s = 0.8
-    decay_s = 1.3
+    muted = false
+    interval_s = 0.8 => update_interval
+    decay_s = 1.3 => update_decay
 
   init:
     fundamental = std::osc::Sine(amp = 0.64)
     upper = std::osc::Sine(amp = 0.25)
     shimmer = std::osc::Sine(amp = 0.11)
-    envelope = std::env::DecayEnv(decay_s = decay_s)
+    envelope = std::env::DecayEnv()
+    fade = std::smoothing::Ramp(duration_s = 0.002)
+    source = 0.0
+    fade_from = 0.0
+    period = 1
     clock = 0
     step = 0
-    frequency = std::pitch::note_to_hz(AuditionNotes[0])
     pending_bang = false
+    envelope_active = false
+    fading = false
+
+  def update_interval():
+    period = max(i32(interval_s * SR), 1)
+
+  def update_decay():
+    envelope.decay_s = decay_s
 
   event bang():
     pending_bang = true
 
+  when envelope.finished():
+    envelope_active = false
+
+  def start_note():
+    # Keep the output continuous when a note interrupts an audible tail.
+    fade_from = source
+    fade.reset()
+    frequency = std::pitch::note_to_hz(AuditionNotes[step])
+    fundamental.freq = frequency
+    upper.freq = frequency * 1.4983
+    shimmer.freq = frequency * 2.006
+    fundamental.reset()
+    upper.reset()
+    shimmer.reset()
+    envelope_active = true
+    fading = true
+    envelope.start()
+
   sample:
-    period = max(i32(interval_s * SR), 1)
     if auto_play && clock == 0:
       pending_bang = true
 
     if pending_bang:
-      frequency = std::pitch::note_to_hz(AuditionNotes[step])
-      fundamental.reset()
-      upper.reset()
-      shimmer.reset()
-      envelope.decay_s = decay_s
-      envelope.start()
+      if !muted:
+        start_note()
       step = (step + 1) % AuditionPatternLength
       pending_bang = false
-    clock = (clock + 1) % period
+    clock += 1
+    if clock >= period:
+      clock %= period
 
-    source = (fundamental(freq = frequency) + upper(freq = frequency * 1.4983) + shimmer(freq = frequency * 2.006))
-    source = source * envelope()
+    # Advance the sequence during live input and discard its muted notes.
+    if muted:
+      source = 0.0
+      envelope_active = false
+      fading = false
+    elif envelope_active || fading:
+      source = 0.0
+      if envelope_active:
+        source = (fundamental() + upper() + shimmer()) * envelope()
+      if fading:
+        progress = fade(1.0)
+        fading = progress < 1.0
+        if fading:
+          source = lerp(fade_from, source, progress)
     out1 = source
     out2 = source

@@ -11,7 +11,7 @@ Examples:
 ```powershell
 cargo run -p onda_cli -- compile examples/basic/sine.onda --emit obj --target-spec .\targets\arm64.toml
 cargo run -p onda_cli -- compile examples/basic/sine.onda --emit obj --target-spec .\targets\aarch64-none-elf.toml
-cargo run -p onda_cli -- compile examples/web/onda_wasm_playground/default.onda --emit obj --target-spec .\targets\wasm32-unknown-unknown.toml
+cargo run -p onda_cli -- compile examples/basic/saw_filter_saturator.onda --emit obj --target-spec .\targets\wasm32-unknown-unknown.toml
 ```
 
 Suggested presets:

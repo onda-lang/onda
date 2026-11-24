@@ -358,6 +358,26 @@ async function openEditor(t, url, autoplay = true) {
   return { page, frame, geometry, click, section, key };
 }
 
+test("the editor renders entire import paths in the namespace color", async t => {
+  const base = await serve(t);
+  const chrome = await openChrome(t, [
+    ...flags(true, "webgl"), "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream",
+  ]);
+  const page = await chrome.page();
+  await page.navigate(`${base}/website/?backend=webgl&example=spectral/spectral_freeze.onda`);
+  await eventually(() => page.evaluate(`(() => {
+    const imports = [...document.querySelectorAll(".cm-content .cm-line")]
+      .filter(line => line.textContent.startsWith("import "));
+    return imports.some(line => line.textContent.startsWith("import ../")) && imports.every(line => {
+      const marks = [...line.querySelectorAll(".cm-onda-semantic-namespace")];
+      return marks.map(mark => mark.textContent).join("") === line.textContent.slice(7)
+        && marks.every(mark => [...mark.querySelectorAll("*")].every(
+          child => getComputedStyle(child).color === getComputedStyle(mark).color
+        ));
+    });
+  })()`), "consistent color across all three import paths");
+});
+
 for (const host of ["example", "website"]) {
   test(`GPU ${host} initialization errors stay visible and iframe reload recovers`, { timeout:60000 }, async t => {
     let unavailable = true;
@@ -1059,6 +1079,7 @@ for (const host of ["example", "website"]) {
     const { page, frame, geometry, click, section, key } = await openEditor(
       t, `${base}/${host === "website" ? "website/" : ""}?backend=webgl`,
     );
+    assert.equal(await frame("probe.state.fastMath"), false);
     assert.equal(await page.evaluate("document.querySelectorAll('[data-sample-rate], [data-block-size]').length"), 0);
     assert.equal(await page.evaluate("document.querySelector('[data-editor-font-size]').closest('[data-project-menu]') !== null"), true);
     await section("params");

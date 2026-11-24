@@ -63,11 +63,7 @@ proc RunglerCore:
     if tri_a + tri_b > 0.0:
       comparator = 1.0
 
-    cutoff = clamp(
-      filter_frequency + rungler_hz * rungler_filter * 12.0,
-      25.0,
-      SR * 0.5
-    )
+    cutoff = clamp(filter_frequency + rungler_hz * rungler_filter * 12.0, 25.0, SR * 0.5)
 
     out1 = tri_a
     out2 = square_a
@@ -110,15 +106,7 @@ proc Benjolin:
     filter.update_coeffs(filter_control, resonance)
     filter.mode = filter_mode
     filtered = filter(tanh((mixed_a * 0.72 + mixed_b * 0.28) * 1.8))
-    signals: f32[7] = [
-      triangle_a,
-      pulse_a,
-      triangle_b,
-      pulse_b,
-      mixed_a,
-      mixed_b,
-      filtered
-    ]
+    signals: f32[7] = [triangle_a, pulse_a, triangle_b, pulse_b, mixed_a, mixed_b, filtered]
     out1 = signals[i32(output_signal_l)]
     out2 = signals[i32(output_signal_r)]
 

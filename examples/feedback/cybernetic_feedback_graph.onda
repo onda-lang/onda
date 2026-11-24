@@ -12,18 +12,18 @@ params:
   spread = 0.42 {0.0, 1.0}
   wet = 1.0 {0.0, 1.0}
   level = 0.5 {0.0, 1.0}
-  
+
 proc CyberCell<T>:
   ins<T>:
     src
     fb
 
   outs<T> 1
-  
+
   params<T>:
     drive = 1.0
     bias = 0.0
-    
+
   sample 32:
     x = (src + fb + bias) * drive
     y = x - x * x * x * 0.18
@@ -52,8 +52,8 @@ graph:
   inject * (1.0 + spread * 0.35) >> cell_a.src
   inject * (1.0 - spread * 0.25) >> cell_b.src
 
-  tone_b.out1 * coupling >>[1] cell_a.fb
-  tone_a.out1 * coupling >>[1] cell_b.fb
+  tone_b.out1 * coupling >> [1] cell_a.fb
+  tone_a.out1 * coupling >> [1] cell_b.fb
 
   1.0 / max(pitch_hz, 0.1) >> smear_a.delay_s
   1.0 / max(pitch_hz * (1.0 + spread * 0.012), 0.1) >> smear_b.delay_s

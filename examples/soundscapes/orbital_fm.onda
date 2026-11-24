@@ -70,11 +70,7 @@ sample:
   orbit_phase = wrap(orbit_phase + orbit.rate / SR, 0.0, 1.0)
   left_orbit = sin(orbit_phase * TWO_PI)
   right_orbit = sin(wrap(orbit_phase + orbit.stereo_phase, 0.0, 1.0) * TWO_PI)
-  modulator_phase = wrap(
-    modulator_phase + tuning.center * spectrum.modulator_ratio / SR,
-    0.0,
-    1.0
-  )
+  modulator_phase = wrap(modulator_phase + tuning.center * spectrum.modulator_ratio / SR, 0.0, 1.0)
   modulation = sin(modulator_phase * TWO_PI)
   left_index = spectrum.modulation_index * (1.0 + orbit.depth * left_orbit * 0.72)
   right_index = spectrum.modulation_index * (1.0 + orbit.depth * right_orbit * 0.72)

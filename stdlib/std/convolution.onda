@@ -21,7 +21,7 @@ namespace std::_convolution_core<FFTSize = 256, MaxImpulseLen = 16384>:
 
     init:
       pin impulse: T[MaxImpulseLen]
-      delay: T[TimeDelayStorageSize] # Store the ring twice so the newest-to-oldest history is always contiguous
+      delay: T[TimeDelayStorageSize]  # Store the ring twice so the newest-to-oldest history is always contiguous
       pin active_taps = 0 {0..=MaxImpulseLen}
       write = 0 {0..MaxImpulseLen, wrap}
 

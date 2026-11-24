@@ -1115,17 +1115,20 @@ sample:
 }
 
 #[test]
-fn stdlib_sample_player_advances_past_f32_integer_precision() {
+fn stdlib_sample_player_uses_selected_playhead_precision() {
     let source = r#"
 import std/sample
 buffers:
   clip: f32
 init:
-  player = std::sample<Channels = 1>::Player(clip = clip)
+  narrow = std::sample<1>::Player(clip = clip)
+  wide = std::sample<1>::Player<f64, f32>(clip = clip, looping = true)
 event play():
-  player.play(16777216.0)
+  narrow.play(16777216.0)
+  wide.play(16777216.5)
 sample:
-  out1 = player()
+  out1 = narrow()
+  out2 = f32(wide())
 "#;
     let (mut instance, _, _) = compile_instance(source, 8);
     let mut clip = vec![0.0_f32; 16_777_232];
@@ -1150,9 +1153,11 @@ sample:
         onda_runtime::ExecutionOutput::none(),
     )
     .unwrap();
-    let mut output = [0.0_f32; 8];
+    let mut output = [0.0_f32; 16];
     process_interleaved(&mut instance, &[], &mut output, 8).unwrap();
-    assert_eq!(output, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    for (frame, &pair) in output.as_chunks::<2>().0.iter().enumerate() {
+        assert_eq!(pair, [1.0, frame as f32 + 1.5]);
+    }
 }
 
 #[test]
@@ -1335,7 +1340,7 @@ buffers:
   clip: f64
 
 init:
-  player = std::sample::Player<f64>(clip = clip)
+  player = std::sample::Player<f64, f64>(clip = clip)
 
 event play():
   player.play()

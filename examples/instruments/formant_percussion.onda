@@ -7,8 +7,12 @@ import std/reverb
 
 const VoiceCount = 6
 const PatternLength = 12
-const Notes: f32[PatternLength] = [0.0, 7.0, 12.0, 3.0, 10.0, 15.0, 5.0, 19.0, 12.0, 8.0, 17.0, 22.0]
-const Accents: f32[PatternLength] = [1.0, 0.46, 0.68, 0.38, 0.78, 0.42, 0.58, 0.86, 0.44, 0.64, 0.36, 0.72]
+const Notes: f32[PatternLength] = [
+  0.0, 7.0, 12.0, 3.0, 10.0, 15.0, 5.0, 19.0, 12.0, 8.0, 17.0, 22.0
+]
+const Accents: f32[PatternLength] = [
+  1.0, 0.46, 0.68, 0.38, 0.78, 0.42, 0.58, 0.86, 0.44, 0.64, 0.36, 0.72
+]
 
 proc FormantVoice:
   params:
@@ -56,7 +60,12 @@ params:
 
 init:
   voices: FormantVoice[VoiceCount] = FormantVoice()
-  reverb = std::reverb::Schroeder::Reverb(decay_60db_s = 1.8, damping = 0.42, width = 0.94, mix = 1.0)
+  reverb = std::reverb::Schroeder::Reverb(
+    decay_60db_s = 1.8,
+    damping = 0.42,
+    width = 0.94,
+    mix = 1.0
+  )
   clock = 0
   step = 0
   next_voice = 0

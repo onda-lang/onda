@@ -16,16 +16,8 @@ params:
 
 init:
   audition = EffectAudition()
-  delay_l = std::delay<SR * 3>::Delay(
-    delay_s = delay_s,
-    feedback = 0.0,
-    mix = 1.0
-  )
-  delay_r = std::delay<SR * 3>::Delay(
-    delay_s = delay_s * 1.317,
-    feedback = 0.0,
-    mix = 1.0
-  )
+  delay_l = std::delay<SR * 3>::Delay(delay_s = delay_s, feedback = 0.0, mix = 1.0)
+  delay_r = std::delay<SR * 3>::Delay(delay_s = delay_s * 1.317, feedback = 0.0, mix = 1.0)
   shifter_l = std::pitch_shift::DualWindow(semitones = shift, window_s = window_s)
   shifter_r = std::pitch_shift::DualWindow(semitones = shift, window_s = window_s)
   dc_l = std::filter::DCBlock()
@@ -37,7 +29,7 @@ event bang():
   audition.bang()
 
 sample:
-  audition_l, audition_r = audition(auto_play = auto_play)
+  audition_l, audition_r = audition(auto_play = auto_play, muted = live_input == 1.0)
   source_l = audition_l * (1.0 - live_input) + in1 * live_input
   source_r = audition_r * (1.0 - live_input) + in2 * live_input
 

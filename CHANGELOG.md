@@ -7,58 +7,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.9.3]
 
+### Added
+
+- `onda fmt <file>` formats Onda source in place. Use `--check` to check formatting without writing.
+- Configurable exponential curves for ramps and envelope stages. A negative curve moves
+  early, zero is linear, and a positive curve moves late.
+- `std::env::Decay` generates additive exponential tails from impulses. Its
+  `decay_60db_s` control sets the time for the tail to drop by 60 dB.
+- `std::delay::Allpass` for diffusion and `reset(value)` on `LagUD` and `Slew`.
+
 ### Changed
 
-- Updated the examples.
-- Retain double-precision coefficients and state for lag smoothing, dynamics, delay
-  smoothing, and impulse decay so long time constants keep progressing with f32 audio.
-  `lag_coefficient` now returns f64. Document lag time constants and RMS energy-domain timing.
-- Use ordinary exponential coefficients for lag smoothing and shared segment
-  timing and interpolation for ramps and finite envelopes. Input metadata retains
-  a fixed linear entry point without mutable curve dispatch.
-- Initialize smoothed gains at their requested value; subsequent changes are smoothed
-  in linear amplitude, including for `SmoothedDb`.
-- Accept integer inputs consistently in level and pitch conversions, promoting before
-  division and logarithms while retaining floating-point callers' precision.
-- Give standard-library envelope times finite stage durations, independent of amplitude
-  and curve shape. `DecayEnv` reaches zero and emits `finished()` after `decay_s`;
-  remove `end_level` and `decay_coefficient`. Envelope parameter hooks apply time,
-  shape, curve, sustain, trigger, and gate changes immediately. Timing edits scale
-  the remaining time; shape and curve edits reshape it from the current level.
-  Repeated writes leave the curve unchanged. Retriggers start from the current
-  level; zero-length stages consume no extra samples.
-- Distinguish timing controls: `Ramp.duration_s`, smoothing/gain/delay `lag_s`,
-  `LagUD.rise_lag_s`/`fall_lag_s`, dynamics `attack_lag_s`/`release_lag_s`, and
-  delay crossfade `fade_s`. Rename `time_coefficient` to `lag_coefficient` and
-  sample-player `seek(position)` to `seek(position_samples)`.
-- Add normalized exponential ramp/envelope shapes with configurable curvature and
-  sample-counted completion. `curve = -4` is the default bend; zero is linear,
-  negative moves early, and positive moves late. Envelope stages expose their own
-  curvature controls. Ramps capture configuration when their target changes;
-  envelope controls update through parameter hooks.
-  Delay crossfades capture each fade duration and process the latest pending target
-  after that fade finishes.
-- Preserve representable exponential ramp and envelope tails instead of subtracting
-  a nearly-one progress value; keep completion on the counted duration sample.
-- Prepare fixed instance-state addresses at function entry in Binaryen, avoiding
-  repeated address setup in state-heavy processor sample loops, and move cold
-  per-instance setup into the branches that use it after inlining.
-- Add impulse-driven `std::env::Decay(decay_60db_s)` with additive exponential tails,
-  sample-rate time updates, and reset. T60 specifies a fall to 0.001 of the original
-  amplitude, independently of finite envelope completion.
-- Replace Schroeder reverb `room_size` with calibrated `decay_60db_s`, using each
-  comb's actual delay length and normalizing its gain independently.
-- Retune affected examples for finite note durations and gentler envelope curves;
-  calibrate decay defaults against the original time to fall by 20 dB, rounded to
-  0.05-second steps and capped at 8 seconds, and configure envelopes before triggering them.
-- Rename oscillator `phase_offset` to `phase_offset_rad` and mixer `ConstantSum` to
-  `WeightedSum`; add unit metadata to existing ranged standard-library parameters.
-- Add `reset(value)` to `LagUD` and `Slew`, and scale the DC blocker coefficient with
-  the effective sample rate to retain its decay time in seconds.
-- Expose reusable `std::delay::Allpass` processing and use it for Schroeder diffusion;
-  hide envelope stages and reverb implementation types and tuning constants from the public API reference.
-- Apply sample-player speed, pitch-shifter pitch/window, and Schroeder decay changes
-  at sample rate, preserving running playback, phase, and feedback state.
+- Enable reassociation, multiply-add contraction, and ignoring signed zero by default in
+  the LLVM compiler, including embedded use. Use `--strict-math` for strict arithmetic or
+  `--fast-math` for the full set of relaxations. C hosts select these modes with `math_mode`.
+- Envelope stages complete at their specified durations, regardless of amplitude or curve.
+  `DecayEnv` reaches zero and emits `finished()` after `decay_s`. Each stage captures
+  its duration and curve when it starts. Note-off starts release from the current level.
+- Generic smoothers, envelopes, dynamics, biquads and reverb now run their sample
+  arithmetic and store signal history in the selected precision. Use `f64` for
+  fine control tracking, very low biquad cutoffs or especially long decay times.
+- Smoothed gains start at the requested level and smooth later changes in linear
+  amplitude, including when the target is expressed in decibels with `SmoothedDb`.
+- A delay crossfade uses the duration in effect when it starts, then follows the
+  latest requested tap.
+- Sample-player speed, pitch-shifter transposition and window length, and Schroeder
+  reverb decay can change at sample rate while preserving playback position, phase,
+  and the reverb tail.
+- Ranged standard-library controls include units such as Hz, seconds, and samples.
+- Rework the feedback delay matrix examples and lower the default levels of many examples.
+  Effect examples share an audition sequence with `auto_play` and `bang()` controls.
+- Spectral Freeze preserves the pitch of held notes and takes the next available frame
+  on live recapture.
+- The browser playground opens with the Saw Filter Saturator example.
+- Speed up eligible processor banks on Wasm while preserving
+  the order of floating-point sums.
+- The Wasm backend uses Binaryen 132 to honor MIR inline hints for generated
+  processor calls and shared task resume functions.
+
+### Fixed
+
+- Level and pitch conversions accept integer inputs without truncating fractional results.
+- The DC blocker keeps the same decay time across sample rates, including with oversampling.
+- Quitting Onda Run on macOS stops its playback process.
+
+### Removed
+
+- The Fast Math indicator in the run status bar.
+- The Deep-space Drone example.
+
+### Migration notes
+
+- `Ramp.time_s` is now `duration_s`. For `Lag`, `Smoothed`, and `SmoothedDb`,
+  use `lag_s` in place of `time_s`. One lag time constant covers about 63% of a step.
+  `time_coefficient` is now `lag_coefficient` and returns `f64`.
+- `LagUD` uses `rise_lag_s` and `fall_lag_s`. Dynamics processors use
+  `attack_lag_s` and `release_lag_s` where applicable. Envelope stage names such
+  as `attack_s` and `release_s` still describe finite durations.
+- `Smooth` and `Delay` use `lag_s` in place of `transition_s`.
+  `Crossfade` and `CrossfadeDelay` use `fade_s`.
+- Schroeder reverb uses `decay_60db_s` in place of `room_size`.
+  `DecayEnv.end_level` and `std::env::decay_coefficient` have been removed.
+- `std::sample::Player<Precision, Sample>` takes playback precision first and clip
+  element type second. Both default to `f32`. Use `Player<f64, f32>` for long
+  `f32` recordings or `Player<f64, f64>` for double-precision clips and playback.
+  Both produce `f64` outputs, which callers can explicitly cast to `f32`.
+- Use `phase_offset_rad` on `Sine` and `KSine`, `WeightedSum` in place of
+  `ConstantSum`, and `position_samples` as the sample player’s named `seek` argument.
+- Raw processor hosts must keep parameter and state storage separate from each other
+  and from all other memory accessed by a call, including audio and external-buffer
+  tables and samples. See the [raw processor ABI](docs/processor-abi.md#storage-and-initialization).
 
 ## [0.9.2]
 

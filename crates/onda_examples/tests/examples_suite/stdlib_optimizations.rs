@@ -326,7 +326,7 @@ fn integer_level_and_pitch_conversions_match_floating_inputs() {
             r#"
 import std/levels
 import std/pitch
-outs<f64> 7
+outs<f64> 9
 sample:
   out1 = f64(std::levels::gain_to_db({width}(2)))
   out2 = f64(std::levels::gain_to_db({width}(0)))
@@ -335,6 +335,8 @@ sample:
   out5 = f64(std::pitch::semitones_from_ratio({width}(2)))
   out6 = f64(std::pitch::note_to_hz({width}(81)))
   out7 = f64(std::pitch::hz_to_note({width}(0)))
+  out8 = f64(std::pitch::ratio_between({width}(69), {width}(70)))
+  out9 = f64(std::pitch::ratio_between({width}(70), {width}(69)))
 "#
         );
         let output = render_f64(&source, 48000.0, 1);
@@ -346,13 +348,50 @@ sample:
             12.0,
             880.0,
             69.0 + 12.0 * (1e-20_f64 / 440.0).log2(),
+            2.0_f64.powf(1.0 / 12.0),
+            2.0_f64.powf(-1.0 / 12.0),
         ];
-        for (channel, target) in expected.iter().enumerate() {
-            assert!(
-                (output[channel][0] - target).abs() < 1e-4,
-                "{width}, channel {channel}: {} != {target}",
-                output[channel][0]
+        let tolerance = if matches!(width, "i32" | "f32") {
+            3e-7
+        } else {
+            5e-14
+        };
+        for (channel, target) in expected.into_iter().enumerate() {
+            close(
+                output[channel][0],
+                target,
+                tolerance,
+                &format!("{width}, channel {channel}"),
             );
         }
     }
+}
+
+#[test]
+fn pitch_ratios_preserve_wide_integer_intervals() {
+    let output = render_f64(
+        r#"
+import std/pitch
+outs<f64> 6
+init:
+  wide32: i32 = 16777216
+  wide64: i64 = 9007199254740992
+  low: i64 = -9223372036854775807 - 1
+  high: i64 = 9223372036854775807
+sample:
+  out1 = f64(std::pitch::ratio_between(wide32, wide32 + 1))
+  out2 = f64(std::pitch::ratio_between(wide32 + 1, wide32))
+  out3 = std::pitch::ratio_between<i64>(wide64, wide64 + 1)
+  out4 = std::pitch::ratio_between(wide64 + 1, wide64)
+  out5 = std::pitch::ratio_between(low, high)
+  out6 = std::pitch::ratio_between(high, low)
+"#,
+        48_000.0,
+        1,
+    );
+    for (channel, semitones) in output.iter().zip([1.0, -1.0, 1.0, -1.0]) {
+        assert!((channel[0] - 2.0_f64.powf(semitones / 12.0)).abs() < 1e-7);
+    }
+    assert_eq!(output[4], [f64::INFINITY]);
+    assert_eq!(output[5], [0.0]);
 }

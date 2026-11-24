@@ -1,6 +1,74 @@
 use super::*;
 use onda_run::LaunchOverrides;
 
+#[cfg(unix)]
+#[test]
+fn native_quit_reaps_playback_before_the_event_loop_returns() {
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command, thread};
+    use winit::error::EventLoopError;
+
+    struct QuitEventLoop(String);
+
+    impl QuitEventLoop {
+        fn playback_is_alive(&self) -> bool {
+            Command::new("/bin/sh")
+                .args(["-c", "kill -0 \"$1\"", "sh", &self.0])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        }
+    }
+
+    impl EventLoopExtRunOnDemand for QuitEventLoop {
+        fn run_app_on_demand<A: ApplicationHandler>(
+            &mut self,
+            app: A,
+        ) -> Result<(), EventLoopError> {
+            assert!(self.playback_is_alive());
+            // AppKit drops the registered handler before terminating the process.
+            drop(app);
+            assert!(
+                !self.playback_is_alive(),
+                "native quit left playback running"
+            );
+            Ok(())
+        }
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let source = root.join("source.onda");
+    let executable = root.join("onda");
+    fs::write(&source, "sample:\n  out1 = 0.0\n").unwrap();
+    fs::write(
+        &executable,
+        "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$3.pid\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut app = App::new(
+        None,
+        RunHostOptions {
+            onda_bin: executable.to_str().unwrap().to_owned(),
+            ..Default::default()
+        },
+    );
+    app.open(source);
+    let pid_file = root.join("source.onda.pid");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pid = loop {
+        if let Ok(contents) = fs::read_to_string(&pid_file) {
+            if let Some(pid) = contents.strip_suffix('\n') {
+                break pid.to_owned();
+            }
+        }
+        assert!(Instant::now() < deadline, "playback did not start");
+        thread::sleep(Duration::from_millis(5));
+    };
+    app.run(&mut QuitEventLoop(pid)).unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a native Wayland display"]

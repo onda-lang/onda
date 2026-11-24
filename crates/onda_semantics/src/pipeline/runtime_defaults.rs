@@ -146,6 +146,7 @@ pub(super) fn share_runtime_defaults(defs: &mut Vec<TypedFunction>) {
             name,
             compile_context: def.compile_context,
             runtime_context: false,
+            generated_inline_hint: None,
             publishes_print: false,
             method_of: None,
             type_params: Vec::new(),

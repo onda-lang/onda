@@ -17,8 +17,8 @@ use super::param_domain::{
 };
 use ast_index::{build_semantic_scope_index, normalize_file_key, normalize_file_key_for_path};
 use source_fallback::{
-    build_source_scope_index, identifier_is_in_import_path, identifier_is_in_use_namespace_name,
-    identifier_is_when_delegate_target, scan_identifiers,
+    build_source_scope_index, identifier_is_in_use_namespace_name,
+    identifier_is_when_delegate_target, import_path_columns, scan_identifiers,
 };
 
 pub(super) const SEMANTIC_TOKEN_TYPE_ENUM_MEMBER: u32 = 0;
@@ -362,18 +362,27 @@ fn semantic_tokens_for_document_with_optional_parse(
     source_fallback::collect_source_declaration_symbols(source, &mut source_decl_scope);
 
     let mut tokens = Vec::new();
+    let mut import_path: Option<(u32, std::ops::Range<u32>)> = None;
     scan_identifiers(
         source,
         |name, line, start, length, after_dot, is_call, in_ns_path, is_named_arg_label| {
-            if identifier_is_in_import_path(&source_lines, line, start) {
-                tokens.push(SemanticToken {
-                    line,
-                    start,
-                    length,
-                    token_type: SEMANTIC_TOKEN_TYPE_NAMESPACE,
-                    token_modifiers: 0,
-                });
+            if import_path
+                .as_ref()
+                .is_some_and(|(path_line, columns)| *path_line == line && columns.contains(&start))
+            {
                 return;
+            }
+            if name == "import" {
+                if let Some(columns) = import_path_columns(source_lines[line as usize]) {
+                    tokens.push(SemanticToken {
+                        line,
+                        start: columns.start,
+                        length: columns.end - columns.start,
+                        token_type: SEMANTIC_TOKEN_TYPE_NAMESPACE,
+                        token_modifiers: 0,
+                    });
+                    import_path = Some((line, columns));
+                }
             }
             if name == "print" && is_call {
                 tokens.push(SemanticToken {

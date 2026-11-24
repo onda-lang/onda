@@ -1,11 +1,11 @@
 import std/delay
 import processors/spectral_freeze
-include "../effects/processors/effect_audition.onda"
+import ../effects/processors/effect_audition
 
 params:
   auto_play = true
   live_input = false
-  freeze = true
+  freeze = false
   transpose = 0 {-24, 24, unit = "st"}
   smear = 0.22 {0.0, 1.0}
   width = 0.72 {0.0, 1.0}
@@ -24,7 +24,10 @@ event recapture():
 
 event bang():
   audition.bang()
-  freezer.recapture()
+  if live_input:
+    freezer.recapture()
+  else:
+    freezer.capture_after_source_change()
 
 block:
   freezer.freeze = freeze
@@ -32,7 +35,7 @@ block:
   freezer.smear = smear
 
   sample:
-    dry_l, dry_r = audition(auto_play = auto_play)
+    dry_l, dry_r = audition(auto_play = auto_play, muted = live_input)
     if live_input:
       dry_l = in1
       dry_r = in2

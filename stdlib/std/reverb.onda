@@ -2,6 +2,7 @@
 # Combines delayed reflections and diffusion with controls for decay and stereo character.
 
 import std/delay
+import std/smoothing
 
 namespace std::reverb:
   namespace Schroeder<CombCapacity = 8192, AllpassCapacity = 4096>:
@@ -15,10 +16,9 @@ namespace std::reverb:
     const _AllpassTuning: i32[_AllpassLines] = [556, 441, 579, 464]
 
     namespace _Diffusion = std::delay<AllpassCapacity>
-    namespace _CombDelay = std::delay<CombCapacity>
 
     struct _CombLine<T>:
-      delay: _CombDelay::Line<T>
+      history: T[CombCapacity]
       length: i32
       lowpass: T
       feedback: T
@@ -36,6 +36,7 @@ namespace std::reverb:
 
       init:
         comb: _CombLine<T>[_CombLines]
+        write_index = 0 {CombCapacity, wrap}
         for i in 0.._CombLines:
           line = comb[i]
           line.length = min(max(i32(T(_CombTuning[i]) * SR / _ReferenceRate), 1), CombCapacity - 1)
@@ -56,31 +57,29 @@ namespace std::reverb:
         # Damping shortens the high-frequency tail; this is the nominal low-frequency decay.
         for i in 0.._CombLines:
           line = comb[i]
-          line.feedback = 0.0
-          if decay_60db_s > 0.0 && decay_60db_s - decay_60db_s == 0.0:
-            line.feedback = exp(log(T(0.001)) * line.length / (decay_60db_s * SR))
-          line.normalization = sqrt((1.0 - line.feedback * line.feedback) * 2.0 / _CombLines)
+          line.feedback = std::smoothing::_decay_60db_coefficient(decay_60db_s, line.length)
+          line.normalization = sqrt((1.0 - line.feedback) * (1.0 + line.feedback) * 2.0 / _CombLines)
         coefficient_decay_s = decay_60db_s
 
       sample:
-        excitation = (in1 + in2) * 0.5
-        comb_l: T = 0.0
-        comb_r: T = 0.0
+        excitation = in1 * 0.5 + in2 * 0.5
+        diffuse_l: T = 0.0
+        diffuse_r: T = 0.0
 
         for i in 0.._CombLines:
           line = comb[i]
-          delayed = line.delay.read(line.length)
+          read_index = (write_index - line.length) {CombCapacity, wrap}
+          delayed = line.history[read_index]
           line.lowpass = delayed * (1.0 - damping) + line.lowpass * damping
-          line.delay.write(excitation + line.lowpass * line.feedback)
-          line.delay.advance()
+          # Normalize new input so decay changes preserve reflections already in flight.
+          line.history[write_index] = excitation * line.normalization + line.lowpass * line.feedback
 
           if i < _CombLines / 2:
-            comb_l += delayed * line.normalization
+            diffuse_l += delayed
           else:
-            comb_r += delayed * line.normalization
+            diffuse_r += delayed
+        write_index += 1
 
-        diffuse_l = comb_l
-        diffuse_r = comb_r
         for i in 0.._AllpassLines:
           line = allpass[i]
           if i < _AllpassLines / 2:

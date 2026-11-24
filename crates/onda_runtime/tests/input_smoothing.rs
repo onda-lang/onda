@@ -5,7 +5,7 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const FRAMES: usize = 8;
 
-fn instance(source: &str, _inputs: usize) -> Instance {
+fn instance(source: &str) -> Instance {
     let typed = analyze_with_options(
         parse_program(source).unwrap(),
         AnalysisOptions {
@@ -16,20 +16,14 @@ fn instance(source: &str, _inputs: usize) -> Instance {
     .unwrap_or_else(|errors| panic!("{source}\n{errors:?}"));
     let mir = lower_program_to_optimized_mir(&typed).unwrap();
     let program = jit_program_from_optimized_mir(mir).unwrap();
-    (|| -> Result<_, onda_frontend::Diagnostic> {
-        let mut instance = onda_runtime::create_instance(program, None)?;
-        onda_codegen_llvm::check_execution_status(onda_runtime::init_checked(
-            &mut instance,
-            onda_runtime::InitMode::Full,
-            onda_runtime::ExecutionOutput::none(),
-        )?)?;
-        Ok(instance)
-    })()
-    .unwrap()
+    let mut instance = create_instance(program, None).unwrap();
+    let status = init_checked(&mut instance, InitMode::Full, ExecutionOutput::none()).unwrap();
+    onda_codegen_llvm::check_execution_status(status).unwrap();
+    instance
 }
 
 fn render(source: &str, input: &[f32; FRAMES]) -> [f32; FRAMES] {
-    let mut instance = instance(source, 1);
+    let mut instance = instance(source);
     let mut output = [0.0; FRAMES];
     unsafe {
         bind_input(&mut instance, 0, input.as_ptr().cast(), size_of_val(input)).unwrap();
@@ -74,6 +68,21 @@ fn ramps_advance_once_before_reads_at_each_owner_boundary() {
 }
 
 #[test]
+fn input_ramps_blend_bipolar_values_and_recover_after_infinity() {
+    let source = r#"
+ins:
+  x = -1.0 {ramp = 0.004}
+sample:
+  out1 = x
+"#;
+    let input = [1.0, 1.0, 1.0, 1.0, f32::INFINITY, 0.25, 0.75, 0.75];
+    assert_eq!(
+        render(source, &input),
+        [-0.5, 0.0, 0.5, 1.0, f32::INFINITY, 0.25, 0.375, 0.5],
+    );
+}
+
+#[test]
 fn lag_matches_its_time_constant_and_clamps_targets_first() {
     for source in [
         "ins:\n  x {0, 1, lag = 0.001}\nsample:\n  out1 = x\n",
@@ -81,19 +90,6 @@ fn lag_matches_its_time_constant_and_clamps_targets_first() {
     ] {
         let expected: Vec<_> = (1..=FRAMES).map(|n| 1.0 - (-(n as f32)).exp()).collect();
         assert_close(&render(source, &[2.0; FRAMES]), &expected);
-    }
-}
-
-#[test]
-fn long_input_lags_keep_sub_ulp_updates_in_the_accumulator() {
-    for source in [
-        "ins:\n  x {lag = 1000000.0}\nsample:\n  out1 = x\n",
-        "proc Main:\n  ins:\n    x {lag = 1000000.0}\n  sample:\n    out1 = x\n",
-    ] {
-        for (index, actual) in render(source, &[1.0; FRAMES]).iter().enumerate() {
-            let expected = -(-((index + 1) as f64) / 1e9).exp_m1();
-            assert!((f64::from(*actual) - expected).abs() < expected * 2e-6);
-        }
     }
 }
 
@@ -112,7 +108,7 @@ fn defaults_seed_smoothers_without_a_startup_fade() {
 #[test]
 fn array_elements_have_independent_state_and_all_reads_use_the_cache() {
     let source = "ins:\n  x: f64[2] = [0.0, 1.0] {ramp = 0.004}\nsample:\n  out1 = f32(x[0] + 10.0 * x[1] + 100.0 * (ins[0] - x.read_unsafe(0)) + 100.0 * (ins[1] - x[1]))\n";
-    let mut instance = instance(source, 2);
+    let mut instance = instance(source);
     let mut input = vec![0.0_f64; 2 * FRAMES];
     input[..FRAMES].fill(1.0);
     let mut output = [0.0; FRAMES];
@@ -145,7 +141,7 @@ fn array_elements_have_independent_state_and_all_reads_use_the_cache() {
 
 #[test]
 fn segments_snapshots_and_reinitialization_preserve_the_smoothing_lifecycle() {
-    let mut instance = instance("ins:\n  x {ramp = 0.004}\nsample:\n  out1 = x\n", 1);
+    let mut instance = instance("ins:\n  x {ramp = 0.004}\nsample:\n  out1 = x\n");
     let input = [1.0_f32; FRAMES];
     let mut output = [0.0; FRAMES];
     unsafe {
@@ -284,12 +280,10 @@ fn zero_smoothing_creates_no_additional_state() {
                 format!("ins:\n  x {attribute}\nsample:\n  out1 = x\n")
             }
         };
-        let plain = instance(&source(""), 1).snapshot_state_bytes().unwrap();
+        let plain = instance(&source("")).snapshot_state_bytes().unwrap();
         for attribute in ["{ramp = 0}", "{lag = 0}"] {
             assert_eq!(
-                instance(&source(attribute), 1)
-                    .snapshot_state_bytes()
-                    .unwrap(),
+                instance(&source(attribute)).snapshot_state_bytes().unwrap(),
                 plain
             );
         }

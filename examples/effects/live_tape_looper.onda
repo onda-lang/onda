@@ -44,9 +44,11 @@ event bang():
   audition.bang()
 
 sample:
-  source_l, source_r = audition(auto_play = auto_play)
-  input_l = lerp(source_l, in1, live_input)
-  input_r = lerp(source_r, in2, live_input)
+  live = live_input == 1.0
+  input_l, input_r = audition(auto_play = auto_play, muted = live)
+  if live:
+    input_l = in1
+    input_r = in2
   target_samples = min(max(i32(loop_s * SR), 8), TapeCapacity)
 
   loop_l = 0.0

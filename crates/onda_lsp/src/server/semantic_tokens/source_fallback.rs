@@ -25,27 +25,17 @@ pub(super) fn build_source_scope_index(source: &str) -> SourceFallbackIndex {
     }
 }
 
-pub(super) fn identifier_is_in_import_path(source_lines: &[&str], line: u32, start: u32) -> bool {
-    let line_text = match source_lines.get(line as usize) {
-        Some(line_text) => *line_text,
-        None => return false,
-    };
-    let start = start as usize;
-    if start > line_text.len() {
-        return false;
+pub(super) fn import_path_columns(line: &str) -> Option<std::ops::Range<u32>> {
+    let rest = line.trim_start().strip_prefix("import")?;
+    let path = rest.strip_prefix(char::is_whitespace)?.trim_start();
+    let end = path
+        .find(|c: char| c.is_whitespace() || c == '#')
+        .unwrap_or(path.len());
+    if end == 0 {
+        return None;
     }
-    let trimmed = line_text.trim_start();
-    let indent = line_text.len().saturating_sub(trimmed.len());
-    let Some(rest) = trimmed.strip_prefix("import ") else {
-        return false;
-    };
-    if start < indent + "import ".len() {
-        return false;
-    }
-    let between = &rest[..start - indent - "import ".len()];
-    between
-        .bytes()
-        .all(|b| is_ident_continue_char(b) || b == b'/')
+    let start = line[..line.len() - path.len()].encode_utf16().count() as u32;
+    Some(start..start + path[..end].encode_utf16().count() as u32)
 }
 
 pub(super) fn identifier_is_in_use_namespace_name(
@@ -1188,10 +1178,6 @@ fn is_ident_continue(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn is_ident_continue_char(b: u8) -> bool {
-    is_ident_start(b) || b.is_ascii_digit()
-}
-
 fn extract_leading_ident(text: &str) -> Option<&str> {
     let bytes = text.as_bytes();
     if bytes.is_empty() || !is_ident_start(bytes[0]) {
@@ -1279,8 +1265,6 @@ pub(super) fn scan_identifiers(
         let ch = chars[index];
         if ch == '#' {
             while index < chars.len() && chars[index] != '\n' {
-                prev_prev_char = prev_char;
-                prev_char = chars[index];
                 advance_position(chars[index], &mut line, &mut column);
                 index += 1;
             }
@@ -1401,7 +1385,7 @@ pub(super) fn scan_identifiers(
             continue;
         }
 
-        if !ch.is_whitespace() {
+        if ch == '\n' || !ch.is_whitespace() {
             prev_prev_char = prev_char;
             prev_char = ch;
         }

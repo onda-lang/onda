@@ -1,4 +1,4 @@
-/// Independent permissions for native floating-point optimization. The default
+/// Independent permissions for native floating-point optimization. An empty policy
 /// preserves operation order, separate rounding, NaNs, infinities and signed zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

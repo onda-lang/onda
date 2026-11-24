@@ -110,7 +110,6 @@ namespace std::osc:
       if phase >= 1.0 || phase < 0.0:
         phase = wrap(phase, 0.0, T(1.0))
 
-
   def poly_blep<T>(t: T, dt: T) -> T:
     dt = abs(dt)
     zero = dt - dt

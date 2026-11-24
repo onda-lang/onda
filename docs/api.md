@@ -187,7 +187,10 @@ followed by its packed field tensors.
 
 All compilation and configuration-inspection entry points use `onda_compile_options_t`:
 
-- `fast_math != 0` permits floating-point arithmetic relaxations for faster processing.
+- `math_mode` selects `ONDA_FLOAT_MATH_DEFAULT` (zero), `ONDA_FLOAT_MATH_STRICT`, or
+  `ONDA_FLOAT_MATH_FAST`. The default allows reassociation, multiply-add contraction, and ignoring
+  the sign of zero. Strict mode preserves separate rounding and signed zero. Fast mode permits
+  the full set of LLVM floating-point relaxations.
 - `sample_rate` must be finite and positive.
 - `block_size` must be positive.
 - `const_inputs` is `NULL` when `const_input_count` is zero.
