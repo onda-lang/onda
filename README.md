@@ -100,8 +100,8 @@ onda run [input]
 onda run play <input>
 onda run render <input>
 onda project <directory> [--from <input.onda>]
-onda fmt [--check] <file>
 onda bench <input>
+onda fmt [--check] <file>
 onda daemon diagnose <input>
 onda daemon stdio
 onda lsp
@@ -184,11 +184,6 @@ onda project portable-sampler \
   --buffer sample=recording.wav
 ```
 
-### `onda fmt`
-
-Run `onda fmt file.onda` to format one source file in place.
-Run `onda fmt --check file.onda` to check the same style without writing.
-
 ### `onda bench`
 
 Benchmarks native Onda processing and reports timings, throughput, and estimated realtime DSP CPU use.
@@ -197,6 +192,11 @@ Compilation, warmup, and host overhead are excluded.
 ```bash
 onda bench examples/basic/sine.onda --runs 10 --blocks 1000 --block-size 128
 ```
+
+### `onda fmt`
+
+Run `onda fmt file.onda` to format one source file in place.
+Run `onda fmt --check file.onda` to check the same style without writing.
 
 ### `onda daemon diagnose`
 
