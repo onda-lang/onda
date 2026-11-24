@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use onda_codegen_llvm::TargetOptLevel;
+use onda_codegen_llvm::{FloatMathMode, TargetOptLevel};
 use onda_cpal::{
     configure_current_thread_fp_mode, sample_ring, AudioHost, InputEndpoint, OutputEndpoint,
     SampleConsumer, SampleProducer, StreamErrorState,
@@ -70,7 +70,7 @@ pub struct PlaybackLaunch {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub midi_input_device: Option<String>,
-    pub fast_math: bool,
+    pub math: FloatMathMode,
     pub show_meta: bool,
     pub control_json: bool,
     /// Compile and expose controls; defer initialization until a control `play` command.
@@ -841,7 +841,7 @@ fn spawn_run_render_thread(
             sample_rate: launch.sample_rate_hz as f32,
             block_size: launch.block_samples,
             param_smoothing_seconds: launch.param_smoothing_seconds,
-            fast_math: launch.fast_math,
+            math: launch.math,
             opt_level: launch.opt_level,
         };
         let mut session = DaemonSession::new(DaemonConfig::for_run(run_options));
@@ -2548,8 +2548,9 @@ mod tests {
     use super::{
         render_ahead_samples, run_control_response, run_device_lists_json,
         write_pending_delegate_batch, write_pending_output_batches, write_pending_print_batches,
-        DelegateSubscriptionGuard, MidiTimeline, PlaybackControlCommand, PlaybackControlRequest,
-        PlaybackLaunch, PrintTransport, RenderThreadContext, RunOutputBatch, ScopeCapture,
+        DelegateSubscriptionGuard, FloatMathMode, MidiTimeline, PlaybackControlCommand,
+        PlaybackControlRequest, PlaybackLaunch, PrintTransport, RenderThreadContext,
+        RunOutputBatch, ScopeCapture,
     };
     use onda_cpal::StreamErrorState;
     use onda_daemon::{
@@ -2616,7 +2617,7 @@ mod tests {
                         input_device: None,
                         output_device: None,
                         midi_input_device: None,
-                        fast_math: false,
+                        math: FloatMathMode::Strict,
                         show_meta: false,
                         control_json: true,
                         start_paused: false,

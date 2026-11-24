@@ -1,7 +1,7 @@
 #![cfg(feature = "llvm-orc")]
 use onda_codegen_llvm::{
     jit_program_from_optimized_mir_with_options, lower_optimized_mir_to_llvm_ir_with_options,
-    FloatMathPolicy, MirCompileOptions,
+    FloatMathMode, FloatMathPolicy, MirCompileOptions, MirTargetOptions, TargetOptLevel,
 };
 
 #[path = "../src/vector_math_spec.rs"]
@@ -39,11 +39,39 @@ fn compile(source: &str) -> onda_mir::OptimizedProgram {
 }
 
 #[test]
-fn permissions_are_independent_and_strict_by_default() {
+fn default_preset_enables_selected_permissions_and_strict_disables_them() {
     let mir = compile("ins 1\nsample:\n  out1 = in1 * 0.7 + 0.3\n");
-    let strict =
+    let default =
         lower_optimized_mir_to_llvm_ir_with_options(&mir, MirCompileOptions::default()).unwrap();
-    assert!(!strict.contains("fmul contract") && !strict.contains("fadd reassoc"));
+    assert!(default.contains("reassoc nsz contract"));
+    assert!(!default.contains("nnan") && !default.contains("ninf"));
+    for options in [
+        MirTargetOptions::default(),
+        MirTargetOptions {
+            target: onda_codegen_llvm::TargetConfig::for_triple("wasm32-unknown-unknown"),
+            ..MirTargetOptions::default()
+        },
+    ] {
+        let ir = onda_codegen_llvm::lower_optimized_mir_to_target_llvm_ir(&mir, &options).unwrap();
+        assert!(ir.contains("reassoc nsz contract"));
+    }
+    let strict = lower_optimized_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions::new(TargetOptLevel::O3, FloatMathMode::Strict),
+    )
+    .unwrap();
+    assert!(!strict.contains("contract") && !strict.contains("reassoc") && !strict.contains("nsz"));
+    let fast = lower_optimized_mir_to_llvm_ir_with_options(
+        &mir,
+        MirCompileOptions::new(TargetOptLevel::O3, FloatMathMode::Fast),
+    )
+    .unwrap();
+    assert!(fast.contains("fmul fast") || fast.contains("fadd fast"));
+}
+
+#[test]
+fn experimental_permissions_are_independent() {
+    let mir = compile("ins 1\nsample:\n  out1 = in1 * 0.7 + 0.3\n");
     let contract = lower_optimized_mir_to_llvm_ir_with_options(
         &mir,
         MirCompileOptions {
@@ -326,7 +354,10 @@ fn vector_helpers_are_embedded_for_native_and_cross_targets() {
             }
             assert!(!ir.contains("vector-function-abi-variant"));
             let artifact = lower_optimized_mir_to_object_artifact(&mir, &options).unwrap();
-            assert_eq!(artifact.metadata.compile.floating_point, None);
+            assert_eq!(
+                artifact.metadata.compile.floating_point,
+                Some(FloatMathMode::Default.policy())
+            );
             assert!(artifact.metadata.integration.link_libraries.is_empty());
         }
     }

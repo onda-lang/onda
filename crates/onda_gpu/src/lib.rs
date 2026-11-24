@@ -4,7 +4,9 @@ use onda_run::{RunController, RunHostOptions, RunThemeMode};
 use onda_ui::{FramePacer, Input, Key, PresentMode, PresentationOptions, RunUi, SurfaceRenderer};
 use serde_json::json;
 use std::{
+    cell::Cell,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -30,10 +32,7 @@ pub fn run(path: Option<&Path>, options: RunHostOptions) -> Result<(), String> {
     let mut event_loop = event_loop_builder().build().map_err(|e| e.to_string())?;
     let mut app = App::new(path, options);
     app.proxy = Some(event_loop.create_proxy());
-    event_loop
-        .run_app_on_demand(&mut app)
-        .map_err(|e| e.to_string())?;
-    app.error.map_or(Ok(()), Err)
+    app.run(&mut event_loop)
 }
 
 fn event_loop_builder() -> winit::event_loop::EventLoopBuilder {
@@ -51,7 +50,7 @@ struct App {
     path: Option<PathBuf>,
     options: RunHostOptions,
     default_param_smoothing_seconds: f64,
-    error: Option<String>,
+    error: Rc<Cell<Option<String>>>,
     controller_woken: bool,
     proxy: Option<winit::event_loop::EventLoopProxy>,
     rendered: Option<(u64, u64)>,
@@ -69,6 +68,16 @@ struct App {
     ime_enabled: bool,
 }
 impl App {
+    fn run(self, event_loop: &mut impl EventLoopExtRunOnDemand) -> Result<(), String> {
+        let error = Rc::clone(&self.error);
+        // AppKit can terminate the process after dropping the event handler.
+        // Give winit ownership so dropping the handler also stops playback.
+        event_loop
+            .run_app_on_demand(self)
+            .map_err(|e| e.to_string())?;
+        error.take().map_or(Ok(()), Err)
+    }
+
     fn new(path: Option<&Path>, options: RunHostOptions) -> Self {
         let mut app = Self {
             window: None,
@@ -80,7 +89,7 @@ impl App {
             path: path.map(Path::to_path_buf),
             default_param_smoothing_seconds: options.param_smoothing_seconds,
             options,
-            error: None,
+            error: Default::default(),
             controller_woken: true,
             proxy: None,
             rendered: None,
@@ -394,7 +403,7 @@ impl ApplicationHandler for App {
             Ok::<_, String>(())
         })();
         if let Err(error) = result {
-            self.error = Some(error);
+            self.error.set(Some(error));
             event_loop.exit();
         }
     }
@@ -436,7 +445,7 @@ impl ApplicationHandler for App {
                                 Some(Instant::now() + onda_run::VISUALIZATION_INTERVAL)
                         }
                         Err(error) => {
-                            self.error = Some(error);
+                            self.error.set(Some(error));
                             event_loop.exit();
                         }
                     }

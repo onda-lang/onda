@@ -11,26 +11,30 @@ proc TapeLine:
     feedback = 0.58
     tone = 3600.0
     wow = 0.002
-    wow_rate = 0.31
+    wow_rate = 0.31 => update_wow_rate
     drive = 1.4
-    transition_s = 0.04 {0.0, 1.0} => update_transition
+    lag_s = 0.04 {0.0, 1.0} => update_lag
 
   init:
     line = std::delay<TapeLineSamples>::Line()
-    smoothed_delay = delay_s
-    transition_coefficient = 0.0
-    wow_lfo = std::osc::Sine(freq = wow_rate)
-    flutter_lfo = std::osc::Sine(freq = wow_rate * 7.31)
+    delay_lag = std::smoothing::Lag<f64>()
+    delay_lag.reset(delay_s)
+    wow_lfo = std::osc::Sine()
+    flutter_lfo = std::osc::Sine()
     feedback_filter = std::filter::OnePole(cutoff = tone)
 
-  def update_transition():
-    transition_coefficient = std::smoothing::time_coefficient(transition_s)
+  def update_lag():
+    delay_lag.lag_s = lag_s
+
+  def update_wow_rate():
+    wow_lfo.freq = wow_rate
+    flutter_lfo.freq = wow_rate * 7.31
 
   sample:
-    drift = wow_lfo(freq = wow_rate) + flutter_lfo(freq = wow_rate * 7.31) * 0.18
-    smoothed_delay = delay_s + (smoothed_delay - delay_s) * transition_coefficient
+    drift = wow_lfo() + flutter_lfo() * 0.18
+    smoothed_delay = delay_lag(f64(delay_s))
     moving_delay = smoothed_delay * (1.0 + wow * drift)
-    delayed = line.readL(moving_delay * SR)
+    delayed = line.readL(f32(moving_delay * SR))
 
     feedback_filter.cutoff = tone
     dark_repeat = feedback_filter(delayed)
@@ -41,7 +45,7 @@ proc TapeLine:
 
 proc StereoTapeEcho:
   params:
-    time_s = 0.36
+    delay_s = 0.36
     feedback = 0.58
     tone = 3600.0
     wow = 0.0025
@@ -53,8 +57,8 @@ proc StereoTapeEcho:
     right = TapeLine(wow_rate = 0.34)
 
   sample:
-    left.delay_s = time_s
-    right.delay_s = time_s * 1.333
+    left.delay_s = delay_s
+    right.delay_s = delay_s * 1.333
     left.feedback = feedback
     right.feedback = feedback * 0.97
     left.tone = tone

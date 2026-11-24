@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 pub use view_state::{host_panel_state, log_panel_state, runtime_panel_state};
 
 use base64::Engine as _;
-pub use onda_codegen_llvm::{ParamDomain, ParamScalarType, ParamScale};
+pub use onda_codegen_llvm::{FloatMathMode, ParamDomain, ParamScalarType, ParamScale};
 use onda_daemon::{
     RunBufferChannels as DaemonRunBufferChannels, RunBuildError, RunEventInfo, RunEventParamInfo,
     RunParamInfo, INTERACTIVE_PARAM_SMOOTHING_SECONDS,
@@ -96,7 +96,7 @@ pub struct RunHostOptions {
     pub input_device: Option<String>,
     pub output_device: Option<String>,
     pub midi_input_device: Option<String>,
-    pub fast_math: bool,
+    pub math: FloatMathMode,
     /// Offer the Fast Math control in the native UI.
     pub show_fast_math: bool,
     pub show_meta: bool,
@@ -116,7 +116,7 @@ impl Default for RunHostOptions {
             input_device: None,
             output_device: None,
             midi_input_device: None,
-            fast_math: false,
+            math: FloatMathMode::default(),
             show_fast_math: true,
             show_meta: false,
             theme: None,
@@ -563,20 +563,20 @@ impl RunController {
         &mut self,
         sample_rate_hz: u32,
         block_samples: usize,
-        fast_math: bool,
+        math: FloatMathMode,
     ) -> Result<(), String> {
         if !(1..=768000).contains(&sample_rate_hz) || !(1..=65536).contains(&block_samples) {
             return Err("Invalid sample rate or block size".into());
         }
         if self.options.sample_rate_hz == sample_rate_hz
             && self.options.block_samples == block_samples
-            && self.options.fast_math == fast_math
+            && self.options.math == math
         {
             return Ok(());
         }
         self.options.sample_rate_hz = sample_rate_hz;
         self.options.block_samples = block_samples;
-        self.options.fast_math = fast_math;
+        self.options.math = math;
         self.restart_with_status("Recompiling...")
     }
 
@@ -2872,9 +2872,9 @@ mod tests {
         reconcile_preserved_events, reconcile_preserved_params, record_notification_is_visible,
         relevant_source_change_paths, run_param_json, source_change_paths, source_snapshot,
         source_snapshot_with_project, source_watch_root, watcher_gap_validation_paths,
-        ControllerEvent, EventSender, FileWatcher, ParamDomain, ParamScalarType, ParamScale,
-        PendingCommand, PreservedBufferBinding, RunEventInfo, RunEventParamInfo, RunHostOptions,
-        RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
+        ControllerEvent, EventSender, FileWatcher, FloatMathMode, ParamDomain, ParamScalarType,
+        ParamScale, PendingCommand, PreservedBufferBinding, RunEventInfo, RunEventParamInfo,
+        RunHostOptions, RunParamInfo, RunParamWire, SourceCompilationState, SourceWatchRevision,
     };
     use onda_daemon::RunEventValue;
     use serde_json::{json, Value};
@@ -2967,20 +2967,18 @@ mod tests {
         let mut controller = controller_without_child();
         let options = controller.options.clone();
         controller
-            .set_compile_settings(
-                options.sample_rate_hz,
-                options.block_samples,
-                options.fast_math,
-            )
+            .set_compile_settings(options.sample_rate_hz, options.block_samples, options.math)
             .unwrap();
-        assert!(controller.set_compile_settings(0, 512, true).is_err());
         assert!(controller
-            .set_compile_settings(48_000, 65537, true)
+            .set_compile_settings(0, 512, FloatMathMode::Fast)
+            .is_err());
+        assert!(controller
+            .set_compile_settings(48_000, 65537, FloatMathMode::Fast)
             .is_err());
         assert_eq!(controller.child_generation, 1);
         assert_eq!(controller.options.sample_rate_hz, options.sample_rate_hz);
         assert_eq!(controller.options.block_samples, options.block_samples);
-        assert_eq!(controller.options.fast_math, options.fast_math);
+        assert_eq!(controller.options.math, options.math);
         controller.processing_requested = false;
         controller.source_compilation =
             SourceCompilationState::Compiling(source_snapshot(Path::new("scope.onda"), &[]));

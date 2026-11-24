@@ -1,0 +1,63 @@
+import std/env
+import std/delay
+
+proc Exercise<T>:
+  outs<T> 6
+
+  init:
+    decay = std::env::DecayEnv<T>(decay_s = 8.0 / SR)
+    gated = std::env::ADSR<T>(attack_s = 4.0 / SR, decay_s = 2.0 / SR, sustain = 0.5, release_s = 4.0 / SR)
+    tap = std::delay<32>::Crossfade<T>(delay_samples = 2.0, fade_s = 4.0 / SR)
+    completions = 0
+    gated_completions = 0
+    frame = 0
+
+  when decay.finished():
+    completions += 1
+
+  when gated.finished():
+    gated_completions += 1
+
+  sample:
+    if frame % 16 == 0:
+      decay.start(T(0.25))
+      gated.start()
+    if frame % 16 == 2:
+      decay.decay_s = 4.0 / SR
+      decay.shape = std::smoothing::RampShape::SCurve
+      gated.attack_s = 2.0 / SR
+    if frame % 16 == 8:
+      gated.release()
+    if frame % 16 == 9:
+      gated.release_s = 2.0 / SR
+      tap.fade_s = 2.0 / SR
+    requested: T = 2.0
+    if frame >= 6:
+      requested = T(4 + frame % 4)
+    out1 = decay()
+    out2 = gated()
+    out3 = tap(T(frame + 1), delay_samples = requested)
+    out4 = T(completions)
+    out5 = T(gated_completions)
+    out6 = T(std::smoothing::lag_coefficient<T>(T(4.0) / SR))
+    frame += 1
+
+outs 12
+init:
+  narrow = Exercise<f32>()
+  wide = Exercise<f64>()
+sample:
+  a, b, c, d, e, f = narrow()
+  g, h, i, j, k, l = wide()
+  out1 = a
+  out2 = b
+  out3 = c
+  out4 = d
+  out5 = e
+  out6 = f
+  out7 = f32(g)
+  out8 = f32(h)
+  out9 = f32(i)
+  out10 = f32(j)
+  out11 = f32(k)
+  out12 = f32(l)

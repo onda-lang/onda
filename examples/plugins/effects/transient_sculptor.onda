@@ -5,8 +5,8 @@ params:
   attack_db = 5.0 {-12.0, 12.0, unit = "dB"}
   sustain_db = -2.0 {-12.0, 12.0, unit = "dB"}
   response = 8.0 {1.0, 24.0}
-  slow_attack_s = 0.018 {0.003, 0.08, scale = log, unit = "s"}
-  release_s = 0.16 {0.02, 0.8, scale = log, unit = "s"}
+  slow_rise_lag_s = 0.018 {0.003, 0.08, scale = log, unit = "s"}
+  fall_lag_s = 0.16 {0.02, 0.8, scale = log, unit = "s"}
   stereo_link = 0.8 {0.0, 1.0}
   mix = 1.0 {0.0, 1.0}
   level = 1.0 {0.0, 1.0}
@@ -18,14 +18,14 @@ init:
   slow_r = std::smoothing::LagUD()
 
 block:
-  fast_l.attack_s = 0.0005
-  fast_r.attack_s = 0.0005
-  fast_l.release_s = release_s * 0.22
-  fast_r.release_s = release_s * 0.22
-  slow_l.attack_s = slow_attack_s
-  slow_r.attack_s = slow_attack_s
-  slow_l.release_s = release_s
-  slow_r.release_s = release_s
+  fast_l.rise_lag_s = 0.0005
+  fast_r.rise_lag_s = 0.0005
+  fast_l.fall_lag_s = fall_lag_s * 0.22
+  fast_r.fall_lag_s = fall_lag_s * 0.22
+  slow_l.rise_lag_s = slow_rise_lag_s
+  slow_r.rise_lag_s = slow_rise_lag_s
+  slow_l.fall_lag_s = fall_lag_s
+  slow_r.fall_lag_s = fall_lag_s
 
   sample:
     quick_l = fast_l(abs(in1))

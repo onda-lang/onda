@@ -308,6 +308,10 @@
     `f32[2]`. Keep rejecting slices whose required length cannot be proved at compile time.
 
 - Generics follow-ups
+  - Revisit partial type arguments if more use cases emerge. For example,
+    `Player<f64>(clip = clip32)` could select playback precision and infer the
+    trailing sample type from the buffer. Define how multiple omitted parameters,
+    conflicting constraints, and unconstrained defaults would resolve.
   - Evaluate compile-time integer value parameters on defs and controlled static loop expansion.
     Replace manually enumerated FFT stage namespace specializations with concise generic code;
     specify specialization, checking of selected bodies, and code-size limits without exposing

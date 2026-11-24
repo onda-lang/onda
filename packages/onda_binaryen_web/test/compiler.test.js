@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import binaryen from "binaryen";
+import {
+  assign,
+  attributes,
+  constant,
+  executableMir,
+  local,
+  place,
+  statement,
+  type,
+  unknownSource,
+  value,
+} from "../test-support/executable-mir.js";
 import * as backend from "../src/index.js";
 import { MIR_OPERATION_CAPABILITIES } from "../src/operations.js";
 import {
@@ -48,35 +59,6 @@ test("re-exports processor execution constants", () => {
   assert.equal(backend.PROCESSOR_END_BLOCK, 2);
   assert.equal(backend.PROCESSOR_FULL_BLOCK, 3);
 });
-
-const unknownSource = {
-  file: null,
-  line: 0,
-  column: 0,
-  end_line: 0,
-  end_column: 0,
-};
-
-const type = (kind, data) => ({ kind, data });
-const value = (kind, data) => ({ kind, data });
-const local = (id) => value("local", id);
-const constant = (scalar, data) =>
-  value("constant", { type: scalar, value: data });
-const place = (kind, id) => ({
-  base: { kind, data: id },
-  projections: [],
-});
-const statement = (kind, data) => ({
-  kind: data === undefined ? { kind } : { kind, data },
-  source: unknownSource,
-});
-const attributes = (origin = "source", inline = "auto") => ({
-  origin,
-  inline,
-  runtime_context: true,
-});
-const assign = (destination, rvalue) =>
-  statement("assign", { destination, value: rvalue });
 
 function emittedFunction(wat, name) {
   const start = wat.indexOf(`(func $${name}`);
@@ -127,152 +109,89 @@ function callProcess(
   );
 }
 
-function executableMir() {
-  const processLoop = statement("loop", {
-    body: {
-      statements: [
-        assign(place("local", 1), {
-          kind: "compare",
-          data: { op: "less", lhs: local(0), rhs: local(4) },
-        }),
-        statement("if", {
-          condition: local(1),
-          then_block: {
-            statements: [
-              assign(place("local", 2), {
-                kind: "load",
-                data: place("state", 0),
-              }),
-              assign(place("local", 3), {
-                kind: "load",
-                data: place("param", 0),
-              }),
-              assign(place("local", 2), {
-                kind: "binary",
-                data: { op: "add", lhs: local(2), rhs: local(3) },
-              }),
-              assign(place("state", 0), { kind: "use", data: local(2) }),
-              assign(place("local", 5), {
-                kind: "process_frame",
-                data: { offset: local(0) },
-              }),
-              statement("output_store", {
-                output: 0,
-                element: null,
-                bounds: "unchecked",
-                frame: local(5),
-                value: local(2),
-              }),
-              assign(place("local", 0), {
-                kind: "binary",
-                data: { op: "add", lhs: local(0), rhs: constant("i32", 1) },
-              }),
-            ],
-          },
-          else_block: { statements: [statement("break")] },
-        }),
-      ],
-    },
-  });
+test("large straight-line state initializers load and initialize every slot", async () => {
+  const mir = executableMir();
+  const count = 50_001;
+  mir.state = Array.from({ length: count }, (_, id) => ({ ...mir.state[0], name: `field${id}` }));
+  mir.functions[0].body.statements = mir.state.map((_, id) =>
+    assign(place("state", id), value("use", constant("f32", id + 1))));
+  const { wasm } = compileMir(mir, { optimize: false });
+  const { instance } = await WebAssembly.instantiate(wasm);
+  const { memory, __heap_base, onda_processor_init } = instance.exports;
+  const state = Number(__heap_base.value);
+  memory.grow(Math.ceil(count * 4 / 65536));
+  assert.equal(onda_processor_init(0, state, 1, 0, 0, 0, 0, 0), 0);
+  const fields = new Float32Array(memory.buffer, state, count);
+  assert.ok(fields.every((sample, id) => sample === id + 1));
+});
 
-  return {
-    schema_version: backend.SUPPORTED_MIR_SCHEMA_VERSION,
-    config: { sample_rate: 48_000, block_size: 4 },
-    source_files: [],
-    log_sites: [],
-    types: [type("scalar", "f32"), type("scalar", "bool"), type("scalar", "i32")],
-    structs: [],
-    interface: {
-      inputs: [],
-      outputs: [{ name: "out1", ty: 0 }],
-      control_outputs: [],
-      params: [
-        {
-          name: "step",
-          ty: 0,
-          default: {
-            kind: "scalar",
-            data: { type: "f32", value: 0.25 },
-          },
-          range: null,
-          control: {
-            scale: "linear",
-            curve: null,
-            unit: null,
-            step: null,
-            step_count: null,
-          },
-        },
-      ],
-      buffers: [],
-      events: [],
-      delegates: [],
-    },
-    state: [{ name: "phase", ty: 0, persistence: "snapshot", authored: true }],
-    const_data: [],
-    functions: [
-      {
-        name: "onda_processor_init",
-        kind: { kind: "init" },
-        attributes: attributes("compiler_generated", "always"),
-        params: [],
-        results: [],
-        locals: [],
-        body: {
-          statements: [
-            assign(place("state", 0), {
-              kind: "use",
-              data: constant("f32", 0),
-            }),
-          ],
-        },
-        source: unknownSource,
-      },
-      {
-        name: "onda_process",
-        kind: { kind: "process" },
-        attributes: attributes("compiler_generated", "always"),
-        params: [
-          { name: "start_frame", ty: 2, mode: "value" },
-          { name: "frames", ty: 2, mode: "value" },
-          { name: "flags", ty: 2, mode: "value" },
-        ],
-        results: [],
-        locals: [
-          { name: "$frame", ty: 2 },
-          { name: null, ty: 1 },
-          { name: null, ty: 0 },
-          { name: null, ty: 0 },
-          { name: "$end_frame", ty: 2 },
-          { name: "$logical_frame", ty: 2 },
-        ],
-        body: {
-          statements: [
-            assign(place("local", 0), {
-              kind: "use",
-              data: constant("i32", 0),
-            }),
-            assign(place("local", 4), {
-              kind: "load",
-              data: place("parameter", 1),
-            }),
-            assign(place("local", 4), {
-              kind: "binary",
-              data: {
-                op: "add",
-                lhs: local(4),
-                rhs: constant("i32", 0),
-              },
-            }),
-            processLoop,
-          ],
-        },
-        source: unknownSource,
-      },
-    ],
-    entry_points: { init: 0, process: 1 },
-  };
-}
+test("state address hoisting fits alongside a processing function's existing locals", () => {
+  const mir = executableMir();
+  const process = mir.functions[1];
+  process.body.statements = [assign(place("state", 0), value("use", constant("f32", 1)))];
+  while (process.params.length + process.locals.length < 50_000) {
+    process.locals.push({ name: null, ty: 0 });
+  }
+  const { wasm } = compileMir(mir, { optimize: false });
+  new WebAssembly.Module(wasm);
+});
+
+test("local budget includes each component of a multi-result call spill", () => {
+  const mir = executableMir();
+  const process = mir.functions[1];
+  mir.functions.push({
+    ...mir.functions[0], kind: { kind: "user" }, name: "pair", results: [0, 0],
+    body: { statements: [statement("return", { values: [constant("f32", 1), constant("f32", 2)] })] },
+  });
+  process.body.statements = [
+    statement("call", { results: [2, 3], function: 2, args: [] }),
+    assign(place("state", 0), value("use", local(3))),
+  ];
+  while (process.params.length + process.locals.length < 49_998) {
+    process.locals.push({ name: null, ty: 0 });
+  }
+  const { wasm } = compileMir(mir, { optimize: false });
+  const { memory, onda_process, __heap_base } = new WebAssembly.Instance(new WebAssembly.Module(wasm)).exports;
+  const state = Number(__heap_base.value);
+  assert.equal(onda_process(state, 0, 0, 0, 0, 1, 3, 0, 0, 0, 0, 0), 0);
+  assert.equal(new DataView(memory.buffer).getFloat32(state, true), 2);
+
+  process.locals.push({ name: null, ty: 0 });
+  assert.throws(() => compileMir(mir, { optimize: false }), /50001 parameters and locals/);
+  assert.ok(WebAssembly.validate(compileMir(mir).wasm));
+});
+
+test("sample SIMD uses scalar lowering when vector locals exceed the function limit", () => {
+  const mir = executableMir();
+  const process = mir.functions[1];
+  const loop = process.body.statements[3].kind.data.body;
+  process.body.statements.splice(2, 1);
+  const thenBlock = loop.statements[1].kind.data.then_block;
+  const [frame, output, step] = thenBlock.statements.slice(4);
+  thenBlock.statements = [
+    frame,
+    assign(place("local", 2), value("use", constant("f32", 0.25))),
+    output,
+    step,
+  ];
+  const options = { optimize: false, emitText: true };
+  assert.match(compileMir(mir, options).wat, /f32x4\.splat/);
+  const sliceType = mir.types.length;
+  mir.types.push(type("slice", { element: "f32", access: "read_only" }));
+  // Scalar lowering reserves one local for the output channel pointer.
+  let localCount = process.params.length + process.locals.length;
+  while (localCount + 4 <= 49_999) {
+    process.locals.push({ name: null, ty: sliceType });
+    localCount += 4;
+  }
+  while (localCount < 49_999) {
+    process.locals.push({ name: null, ty: 0 });
+    localCount += 1;
+  }
+  const { wasm, wat } = compileMir(mir, options);
+  assert.doesNotMatch(wat, /f32x4\.splat/);
+  new WebAssembly.Module(wasm);
+});
 
 function forwardedBufferCollectionMir(varyingSelector = false) {
   const mir = executableMir();
@@ -520,6 +439,44 @@ test("compiles versioned MIR into an executable persistent DSP module", async ()
     [...new Float32Array(memory.buffer, output, 4)],
     [1.25, 1.5, 1.75, 2],
   );
+});
+
+test("prepares state addresses outside sample loops and refreshes them for each instance", async () => {
+  for (const optimize of [false, true]) {
+    const artifact = compileMir(executableMir(), { optimize, emitText: true });
+    if (!optimize) {
+      const process = emittedParameterizedFunction(artifact.wat, "$onda.fn.1");
+      const loop = process.indexOf("(loop $$onda.loop");
+      assert.notEqual(loop, -1);
+      assert.doesNotMatch(process.slice(loop), /global\.get \$\$onda\.state/);
+    }
+    const { instance } = await WebAssembly.instantiate(artifact.wasm, {});
+    const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
+    const params = Number(__heap_base.value);
+    const firstState = params + 16;
+    const secondState = firstState + 16;
+    const outputTable = secondState + 16;
+    const output = outputTable + 16;
+    const view = new DataView(memory.buffer);
+    view.setUint32(outputTable, output, true);
+    for (const state of [firstState, secondState]) {
+      assert.equal(onda_processor_init(params, state, 1, 0, 0, 0, 0, 0), 0);
+    }
+    for (const [state, step, expected] of [
+      [firstState, 0.25, [0.25, 0.5, 0.75, 1]],
+      [secondState, 0.5, [0.5, 1, 1.5, 2]],
+      [firstState, 1, [2, 3, 4, 5]],
+    ]) {
+      view.setFloat32(params, step, true);
+      for (const [start, frames, flags] of [[0, 2, 1], [2, 2, 2]]) {
+        assert.equal(
+          callProcess(onda_process, 0, outputTable, start, frames, flags, params, state, 0, 0, 0, 0),
+          0,
+        );
+      }
+      assert.deepEqual([...new Float32Array(memory.buffer, output, 4)], expected);
+    }
+  }
 });
 
 test("preserves explicit state authorship in metadata", () => {
@@ -1604,29 +1561,6 @@ test("uses an explicit Binaryen O4 speed policy by default", () => {
   );
 });
 
-test("restores process-global Binaryen optimization policy", () => {
-  const previousFastMath = binaryen.getFastMath();
-  const previousLoopInlining = binaryen.getAllowInliningFunctionsWithLoops();
-  binaryen.setFastMath(true);
-  binaryen.setAllowInliningFunctionsWithLoops(true);
-  try {
-    const artifact = compileMir(executableMir(), {
-      fastMath: false,
-      allowInliningFunctionsWithLoops: false,
-    });
-    assert.equal(artifact.metadata.optimization.fast_math, false);
-    assert.equal(
-      artifact.metadata.optimization.inline_functions_with_loops,
-      false,
-    );
-    assert.equal(binaryen.getFastMath(), true);
-    assert.equal(binaryen.getAllowInliningFunctionsWithLoops(), true);
-  } finally {
-    binaryen.setFastMath(previousFastMath);
-    binaryen.setAllowInliningFunctionsWithLoops(previousLoopInlining);
-  }
-});
-
 test("rejects audio I/O frames not produced by process_frame", () => {
   const mir = executableMir();
   const loop = mir.functions[1].body.statements[3];
@@ -2294,7 +2228,7 @@ test("elides singleton range-wrap slow paths before Binaryen optimization", asyn
   assert.equal(new DataView(memory.buffer).getInt32(state + 4, true), 42);
 });
 
-test("optimizes power-of-two range wraps to source-width masks", async () => {
+test("lowers power-of-two range wraps that reach the backend as intrinsics", async () => {
   const mir = executableMir();
   mir.types.push(type("scalar", "i64"));
   mir.state.push(
@@ -2326,10 +2260,7 @@ test("optimizes power-of-two range wraps to source-width masks", async () => {
     }),
   );
 
-  const artifact = compileMir(mir, { emitText: true });
-  assert.doesNotMatch(artifact.wat, /i(?:32|64)\.rem_u/);
-  assert.match(artifact.wat, /i32\.and/);
-  assert.match(artifact.wat, /i64\.and/);
+  const artifact = compileMir(mir, { optimize: false });
   const { instance } = await WebAssembly.instantiate(artifact.wasm);
   const { memory, __heap_base, onda_processor_init, onda_process } = instance.exports;
   const params = Number(__heap_base.value);

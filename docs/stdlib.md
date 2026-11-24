@@ -10,7 +10,7 @@ eyebrow: Language reference
 
 This page is generated from the standard library embedded in the compiler. Run `scripts/update_stdlib_docs.sh` on Unix or `scripts/update_stdlib_docs.ps1` on Windows after changing `stdlib/`; `npm run docs:stdlib` is the equivalent package command, and CI verifies that the checked-in reference is current. Declarations whose names begin with `_` are implementation helpers and are omitted.
 
-`std/prelude` is imported automatically. It loads `std/math`, `std/lookup`, and `std/random`, including the unqualified forwarding functions from the first two modules. Import the other modules explicitly before using their qualified APIs.
+Common utilities are loaded automatically by `std/prelude`; its import list is shown below. Import additional modules explicitly before using their qualified APIs.
 
 ## Modules
 
@@ -20,17 +20,17 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/complex`](#stdcomplex) | `Complex`, `polar` |
 | [`std/osc`](#stdosc) | `KSine`, `Phasor`, `Pulse`, `Saw`, `SawDown`, `Sine`, `Square`, `Triangle`, `poly_blep` |
 | [`std/filter`](#stdfilter) | `Biquad`, `BiquadCoefficients`, `DCBlock`, `OnePole`, `OnePoleMode`, `Resonator`, `Svf`, `SvfMode`, `design_highpass`, `design_lowpass` |
-| [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `DecayEnv`, `Stage`, `decay_coefficient` |
+| [`std/env`](#stdenv) | `ADSR`, `AR`, `ASR`, `Decay`, `DecayEnv` |
 | [`std/reverb`](#stdreverb) | `Schroeder` |
 | [`std/pitch_shift`](#stdpitch_shift) | `BufferSize`, `DualWindow` |
 | [`std/noise`](#stdnoise) | `Brown`, `Pink`, `White` |
 | [`std/levels`](#stdlevels) | `DB_PER_NAT`, `HALF_PI`, `MIN_FLOAT`, `Pan3db`, `db_to_gain`, `gain_to_db`, `pan_3db`, `pan_linear` |
-| [`std/mix`](#stdmix) | `ConstantSum`, `Crossfade`, `MonoToStereo`, `StereoToMono`, `chans` |
+| [`std/mix`](#stdmix) | `Crossfade`, `MonoToStereo`, `StereoToMono`, `WeightedSum`, `chans` |
 | [`std/gain`](#stdgain) | `Constant`, `Db`, `Smoothed`, `SmoothedDb` |
 | [`std/pitch`](#stdpitch) | `A4_HZ`, `MIDI_A4`, `MIN_FLOAT`, `hz_to_note`, `note_to_hz`, `ratio_between`, `ratio_from_semitones`, `semitones_from_ratio` |
-| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Ramp`, `RampShape`, `Slew`, `time_coefficient` |
+| [`std/smoothing`](#stdsmoothing) | `Lag`, `LagUD`, `Ramp`, `RampShape`, `Slew`, `lag_coefficient` |
 | [`std/dynamics`](#stddynamics) | `Compressor`, `Gate`, `Limiter`, `PeakFollower`, `RmsFollower`, `soft_knee_reduction_db` |
-| [`std/delay`](#stddelay) | `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
+| [`std/delay`](#stddelay) | `Allpass`, `Crossfade`, `CrossfadeDelay`, `Cubic`, `Delay`, `Integer`, `Line`, `Linear`, `Smooth` |
 | [`std/sample`](#stdsample) | `Player` |
 | [`std/data`](#stddata) | `Data` |
 | [`std/fft`](#stdfft) | `Blackman`, `FFT`, `Hamming`, `Hann`, `RealFFT`, `RealIFFT`, `RealTransform`, `Rectangular`, `STFT`, `StreamingWindowKind`, `WindowKind` |
@@ -40,6 +40,9 @@ This page is generated from the standard library embedded in the compiler. Run `
 | [`std/prelude`](#stdprelude) | Automatically imports `std/math`, `std/lookup`, `std/random` |
 
 ## `std/math`
+
+Numeric utilities for interpolation, wrapping, and mapping values between ranges.
+Also provides convenient conversions for audio levels and musical pitch.
 
 ```onda
 import std/math
@@ -102,6 +105,9 @@ def cpsoct(freq):
 
 ## `std/complex`
 
+Complex-number arithmetic with Cartesian and polar representations.
+Supports calculations involving magnitude, phase, and frequency-domain signals.
+
 ```onda
 import std/complex
 ```
@@ -147,6 +153,9 @@ struct Complex<T>:
 
 ## `std/osc`
 
+Periodic signal generators for synthesis and modulation.
+Provides common oscillator waveforms and phase ramps at audio or block rate.
+
 ```onda
 import std/osc
 ```
@@ -166,7 +175,7 @@ proc Sine:
   params:
     freq = 440.0 => update_freq
     amp = 1.0
-    phase_offset = 0.0 => update_phase_offset
+    phase_offset_rad = 0.0 => update_phase_offset
   events:
     reset(phase_cycles: f32 = 0.0):
 ```
@@ -178,7 +187,7 @@ proc KSine:
   params:
     freq = 1.0 => update_freq
     amp = 1.0
-    phase_offset = 0.0 => update_phase_offset
+    phase_offset_rad = 0.0 => update_phase_offset
   events:
     reset(phase_cycles: f32 = 0.0):
 ```
@@ -258,6 +267,10 @@ proc Triangle<T>:
 
 ## `std/filter`
 
+Filters for shaping frequency content, emphasizing resonances, and removing DC.
+Includes reusable filter processors and helpers for designing filter coefficients.
+Biquad stores coefficients and feedback in T. Use f64 for poles very close to DC.
+
 ```onda
 import std/filter
 ```
@@ -298,8 +311,8 @@ struct BiquadCoefficients<T>:
   b0: T = 1.0
   b1: T = 0.0
   b2: T = 0.0
-  a1: f64 = 0.0
-  a2: f64 = 0.0
+  a1: T = 0.0
+  a2: T = 0.0
 ```
 
 ### Processor `Biquad<T>`
@@ -320,7 +333,7 @@ proc OnePole<T>:
   ins<T> 1
   outs<T> 1
   params:
-    cutoff: T = 1000.0 {0.0, T(SR * 0.48)} => update_cutoff
+    cutoff: T = 1000.0 {0.0, T(SR * 0.48), unit = "Hz"} => update_cutoff
     mode: OnePoleMode = OnePoleMode::LowPass
 ```
 
@@ -339,8 +352,8 @@ proc Resonator<T>:
   ins<T> 1
   outs<T> 1
   params:
-    freq: T = 1000.0 {1.0, T(SR * 0.48)} => update_coefficients
-    bandwidth: T = 120.0 {1.0, T(SR * 0.48)} => update_coefficients
+    freq: T = 1000.0 {1.0, T(SR * 0.48), unit = "Hz"} => update_coefficients
+    bandwidth: T = 120.0 {1.0, T(SR * 0.48), unit = "Hz"} => update_coefficients
 ```
 
 ### Processor `Svf<T>`
@@ -350,7 +363,7 @@ proc Svf<T>:
   ins<T> 1
   outs<T> 1
   params:
-    private cutoff: T = 1000.0 {0.0, T(SR * 0.48)}
+    private cutoff: T = 1000.0 {0.0, T(SR * 0.48), unit = "Hz"}
     private q: T = 0.707107
     mode: SvfMode = SvfMode::LowPass
   events:
@@ -360,27 +373,26 @@ proc Svf<T>:
 
 ## `std/env`
 
+Triggered and gated envelopes for shaping amplitude and other control signals over time.
+Finite envelopes reach their endpoint after each stage's duration in seconds and
+emit finished() at the end. Each ramp captures its settings when it starts.
+
 ```onda
 import std/env
 ```
 
 Namespace: `std::env`.
 
-### Functions
+### Processor `Decay<T>`
 
 ```onda
-def decay_coefficient<T>(time_s: T):
-```
-
-### Enum `Stage`
-
-```onda
-enum Stage:
-  Idle
-  Attack
-  Decay
-  Sustain
-  Release
+proc Decay<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    decay_60db_s: T = 0.2 => update_decay
+  events:
+    reset():
 ```
 
 ### Processor `DecayEnv<T>`
@@ -389,9 +401,10 @@ enum Stage:
 proc DecayEnv<T>:
   outs<T> 1
   params:
-    decay_s: T = 0.2 => update_decay
-    end_level: T = 0.00001 {0.000000001, 1.0}
-    trigger: T = 0.0 {0.0, 1.0}
+    decay_s: T = 0.2
+    shape: std::smoothing::RampShape = std::smoothing::RampShape::Exponential
+    curve: T = -4.0 {-60.0, 60.0}
+    trigger: T = 0.0 {0.0, 1.0} => update_trigger
   delegates:
     finished()
   events:
@@ -405,9 +418,13 @@ proc DecayEnv<T>:
 proc AR<T>:
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_steps
-    release_s: T = 0.1 => update_steps
-    trigger: T = 0.0 {0.0, 1.0}
+    attack_s: T = 0.01
+    release_s: T = 0.1
+    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    attack_curve: T = -4.0 {-60.0, 60.0}
+    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    release_curve: T = -4.0 {-60.0, 60.0}
+    trigger: T = 0.0 {0.0, 1.0} => update_trigger
   delegates:
     finished()
   events:
@@ -421,10 +438,14 @@ proc AR<T>:
 proc ASR<T>:
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_shape
-    sustain: T = 1.0 {0.0, 1.0} => update_shape
-    release_s: T = 0.1 => update_shape
-    gate: T = 0.0 {0.0, 1.0}
+    attack_s: T = 0.01
+    sustain: T = 1.0 {0.0, 1.0} => update_sustain
+    release_s: T = 0.1
+    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    attack_curve: T = -4.0 {-60.0, 60.0}
+    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    release_curve: T = -4.0 {-60.0, 60.0}
+    gate: T = 0.0 {0.0, 1.0} => update_gate
   delegates:
     finished()
   events:
@@ -439,11 +460,17 @@ proc ASR<T>:
 proc ADSR<T>:
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_shape
-    decay_s: T = 0.1 => update_shape
-    sustain: T = 0.7 {0.0, 1.0} => update_shape
-    release_s: T = 0.2 => update_shape
-    gate: T = 0.0 {0.0, 1.0}
+    attack_s: T = 0.01
+    decay_s: T = 0.1
+    sustain: T = 0.7 {0.0, 1.0} => update_sustain
+    release_s: T = 0.2
+    attack_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    attack_curve: T = -4.0 {-60.0, 60.0}
+    decay_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    decay_curve: T = -4.0 {-60.0, 60.0}
+    release_shape: std::smoothing::RampShape = std::smoothing::RampShape::Linear
+    release_curve: T = -4.0 {-60.0, 60.0}
+    gate: T = 0.0 {0.0, 1.0} => update_gate
   delegates:
     finished()
   events:
@@ -455,6 +482,9 @@ proc ADSR<T>:
 
 ## `std/reverb`
 
+Artificial reverberation for adding space and a decaying tail to audio.
+Combines delayed reflections and diffusion with controls for decay and stereo character.
+
 ```onda
 import std/reverb
 ```
@@ -463,36 +493,6 @@ Namespace: `std::reverb`.
 
 ### Namespace `Schroeder<CombCapacity = 8192, AllpassCapacity = 4096>`
 
-#### Constants
-
-```onda
-const CombLines = 8
-const AllpassLines = 4
-const ReferenceRate = 48000
-const CombTuning: i32[CombLines] = [1116, 1188, 1277, 1356, 1139, 1211, 1300, 1379]
-const AllpassTuning: i32[AllpassLines] = [556, 441, 579, 464]
-```
-
-#### Struct `CombLine<T>`
-
-```onda
-struct CombLine<T>:
-  buffer: T[CombCapacity]
-  length: i32
-  index: i32 {CombCapacity, wrap}
-  lowpass: T
-```
-
-#### Struct `AllpassLine<T>`
-
-```onda
-struct AllpassLine<T>:
-  buffer: T[AllpassCapacity]
-  length: i32
-  index: i32 {AllpassCapacity, wrap}
-  def process(self, input: T):
-```
-
 #### Processor `Reverb<T>`
 
 ```onda
@@ -500,7 +500,7 @@ proc Reverb<T>:
   ins<T> 2
   outs<T> 2
   params:
-    room_size: T = 0.82 {0.0, 1.0}
+    decay_60db_s: T = 2.5 {0.0, 60.0, unit = "s"} => update_decay
     damping: T = 0.34 {0.0, 0.98}
     width: T = 0.92 {0.0, 1.0}
     mix: T = 1.0 {0.0, 1.0}
@@ -508,6 +508,9 @@ proc Reverb<T>:
 
 
 ## `std/pitch_shift`
+
+Real-time pitch transposition of incoming audio.
+Useful for harmonization, detuning, and pitch-shifted feedback effects.
 
 ```onda
 import std/pitch_shift
@@ -528,12 +531,15 @@ proc DualWindow<T>:
   ins<T> 1
   outs<T> 1
   params:
-    semitones: T = 12.0
-    window_s: T = 0.09 {T(16.0) / SR, T(BufferSize - 2) / SR}
+    semitones: T = 12.0 => update_pitch
+    window_s: T = 0.09 {T(16.0) / SR, T(BufferSize - 2) / SR, unit = "s"} => update_window
 ```
 
 
 ## `std/noise`
+
+Noise generators with white, pink, and brown spectral characteristics.
+Useful as audio sources, excitation signals, and random modulation.
 
 ```onda
 import std/noise
@@ -577,6 +583,9 @@ proc Brown<T>:
 
 ## `std/levels`
 
+Conversions between linear amplitude and decibels, plus stereo panning.
+Provides gain calculations and a panning processor for positioning mono signals.
+
 ```onda
 import std/levels
 ```
@@ -587,8 +596,8 @@ Namespace: `std::levels`.
 
 ```onda
 const HALF_PI: f64 = PI / 2.0
-const DB_PER_NAT: f64 = 8.685889638065037
-const MIN_FLOAT: f64 = 0.00000000000000000001
+const DB_PER_NAT = 8.685889638065037
+const MIN_FLOAT = 0.00000000000000000001
 ```
 
 ### Functions
@@ -612,6 +621,9 @@ proc Pan3db<T>:
 
 
 ## `std/mix`
+
+Signal routing, channel conversion, and mixing.
+Combines signals through sums, averages, weighted mixes, and crossfades.
 
 ```onda
 import std/mix
@@ -676,10 +688,10 @@ proc StereoToMono<T>:
     norm: T = 0.5
 ```
 
-### Processor `ConstantSum<T>`
+### Processor `WeightedSum<T>`
 
 ```onda
-proc ConstantSum<T>:
+proc WeightedSum<T>:
   ins<T> 2
   outs<T> 1
   params:
@@ -699,6 +711,12 @@ proc Crossfade<T>:
 
 
 ## `std/gain`
+
+Amplitude adjustment in linear gain or decibels.
+Supports both direct control and smoothed gain changes.
+Smoothed and SmoothedDb start at the requested initial gain and smooth later
+changes in linear amplitude. SmoothedDb converts its dB target before smoothing.
+lag_s is a time constant: about 63.2% of the remaining change in that time.
 
 ```onda
 import std/gain
@@ -734,7 +752,7 @@ proc Smoothed<T>:
   outs<T> 1
   params:
     gain: T = 1.0
-    time_s: T = 0.05 => update_time
+    lag_s: T = 0.05 => update_lag
 ```
 
 ### Processor `SmoothedDb<T>`
@@ -745,11 +763,14 @@ proc SmoothedDb<T>:
   outs<T> 1
   params:
     db: T = 0.0 => update_gain
-    time_s: T = 0.05 => update_time
+    lag_s: T = 0.05 => update_lag
 ```
 
 
 ## `std/pitch`
+
+Conversions between musical notes, frequencies, semitone intervals, and pitch ratios.
+Supports reference tuning when translating between note numbers and frequencies.
 
 ```onda
 import std/pitch
@@ -761,8 +782,8 @@ Namespace: `std::pitch`.
 
 ```onda
 const A4_HZ: f64 = 440.0
-const MIDI_A4: f64 = 69.0
-const MIN_FLOAT: f64 = 0.00000000000000000001
+const MIDI_A4 = 69.0
+const MIN_FLOAT = 0.00000000000000000001
 ```
 
 ### Functions
@@ -780,6 +801,12 @@ def ratio_between<T>(source_note: T, target_note: T):
 
 ## `std/smoothing`
 
+Tools for smoothing changing signals and controlling how values move over time.
+Lag covers about 63.2% of a step in lag_s. Slew limits the rate of change per second.
+A ramp reaches its target after ceil(duration_s * SR) samples and captures its
+shape at each target change. For Exponential, a negative curve moves early,
+a positive curve moves late, and zero is linear.
+
 ```onda
 import std/smoothing
 ```
@@ -789,7 +816,7 @@ Namespace: `std::smoothing`.
 ### Functions
 
 ```onda
-def time_coefficient<T>(time_s: T):
+def lag_coefficient<T>(lag_s: T) -> f64:
 ```
 
 ### Enum `RampShape`
@@ -798,6 +825,7 @@ def time_coefficient<T>(time_s: T):
 enum RampShape:
   Linear
   SCurve {label = "S-curve"}
+  Exponential
 ```
 
 ### Processor `Lag<T>`
@@ -807,7 +835,7 @@ proc Lag<T>:
   ins<T> 1
   outs<T> 1
   params:
-    time_s: T = 0.05 => update_time
+    lag_s: T = 0.05 => update_lag
   events:
     reset(value: T = 0.0):
 ```
@@ -819,8 +847,10 @@ proc LagUD<T>:
   ins<T> 1
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_attack
-    release_s: T = 0.1 => update_release
+    rise_lag_s: T = 0.01 => update_rise
+    fall_lag_s: T = 0.1 => update_fall
+  events:
+    reset(value: T = 0.0):
 ```
 
 ### Processor `Slew<T>`
@@ -832,6 +862,8 @@ proc Slew<T>:
   params:
     rise_per_s: T = 1.0 => update_rise
     fall_per_s: T = 1.0 => update_fall
+  events:
+    reset(value: T = 0.0):
 ```
 
 ### Processor `Ramp<T>`
@@ -841,14 +873,21 @@ proc Ramp<T>:
   ins<T> 1
   outs<T> 1
   params:
-    time_s: T = 0.05 => update_time
-    shape: RampShape = RampShape::Linear
+    duration_s: T = 0.05 => update_plan
+    shape: RampShape = RampShape::Linear => update_plan
+    curve: T = -4.0 {-60.0, 60.0} => update_plan
   events:
     reset(value: T = 0.0):
 ```
 
 
 ## `std/dynamics`
+
+Amplitude tracking and dynamic-range processing for audio signals.
+Provides envelope followers, compression, limiting, and gating.
+RmsFollower applies attack_lag_s and release_lag_s to squared amplitude.
+After one attack time constant, a unit step from silence reaches about 0.632
+in mean square, giving an RMS output of about 0.795.
 
 ```onda
 import std/dynamics
@@ -869,8 +908,8 @@ proc PeakFollower<T>:
   ins<T> 1
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_attack
-    release_s: T = 0.1 => update_release
+    attack_lag_s: T = 0.01 => update_attack
+    release_lag_s: T = 0.1 => update_release
   events:
     reset():
 ```
@@ -882,8 +921,8 @@ proc RmsFollower<T>:
   ins<T> 1
   outs<T> 1
   params:
-    attack_s: T = 0.01 => update_attack
-    release_s: T = 0.1 => update_release
+    attack_lag_s: T = 0.01 => update_attack
+    release_lag_s: T = 0.1 => update_release
   events:
     reset():
 ```
@@ -897,8 +936,8 @@ proc Compressor<T>:
   params:
     threshold_db: T = -18.0 => update_threshold
     ratio: T = 4.0 => update_ratio
-    attack_s: T = 0.01 => update_attack
-    release_s: T = 0.1 => update_release
+    attack_lag_s: T = 0.01 => update_attack
+    release_lag_s: T = 0.1 => update_release
     knee_db: T = 6.0 => update_knee
     makeup_db: T = 0.0 => update_makeup
   events:
@@ -913,7 +952,7 @@ proc Limiter<T>:
   outs<T> 2
   params:
     ceiling_db: T = -0.3 => update_ceiling
-    release_s: T = 0.05 => update_release
+    release_lag_s: T = 0.05 => update_release
   events:
     reset():
 ```
@@ -926,14 +965,22 @@ proc Gate<T>:
   outs<T> 2
   params:
     threshold_db: T = -48.0 => update_threshold
-    attack_s: T = 0.002 => update_attack
-    release_s: T = 0.08 => update_release
+    attack_lag_s: T = 0.002 => update_attack
+    release_lag_s: T = 0.08 => update_release
   events:
     reset():
 ```
 
 
 ## `std/delay`
+
+Delay lines and echo processors for shifting audio in time and building feedback effects.
+Supports interpolated reads, diffusion, and smooth transitions between delay positions.
+Capacity is at least two. Cubic uses a fixed one-sample tap with up to four slots.
+Delay and CrossfadeDelay use a fixed one-sample tap with up to three slots.
+With two slots, Linear, Smooth, and Crossfade pass the current sample through.
+The upper tap bounds in samples are Capacity - 2 for linear reads,
+max(Capacity - 3, 1) for Cubic, and max(Capacity - 2, 1) for feedback delays.
 
 ```onda
 import std/delay
@@ -955,6 +1002,19 @@ struct Line<T>:
   def clear(self):
 ```
 
+### Processor `Allpass<T>`
+
+```onda
+proc Allpass<T>:
+  ins<T> 1
+  outs<T> 1
+  params:
+    delay_samples = 1 {1, Capacity - 1, unit = "samples"}
+    feedback: T = 0.5 {-0.999, 0.999}
+  events:
+    reset():
+```
+
 ### Processor `Integer<T>`
 
 ```onda
@@ -962,7 +1022,7 @@ proc Integer<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples = 1 {0, Capacity - 1}
+    delay_samples = 1 {0, Capacity - 1, unit = "samples"}
   events:
     reset():
 ```
@@ -974,7 +1034,7 @@ proc Linear<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {0.0, Capacity - 2}
+    delay_samples: T = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
   events:
     reset():
 ```
@@ -986,7 +1046,7 @@ proc Cubic<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {1.0, Capacity - 3}
+    delay_samples: T = 1.0 {1.0, _MaxCubicTap, unit = "samples"}
   events:
     reset():
 ```
@@ -998,8 +1058,8 @@ proc Smooth<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {0.0, Capacity - 2}
-    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+    delay_samples: T = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
+    lag_s: T = 0.02 => update_lag
   events:
     reset():
 ```
@@ -1011,8 +1071,8 @@ proc Crossfade<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_samples: T = 1.0 {0.0, Capacity - 2}
-    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+    delay_samples: T = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
+    fade_s: T = 0.02
   events:
     reset():
 ```
@@ -1024,10 +1084,10 @@ proc Delay<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+    delay_s: T = 0.1 {T(1.0) / SR, T(_MaxFeedbackTap) / SR, unit = "s"}
     feedback: T = 0.0 {-0.999, 0.999}
     mix: T = 1.0 {0.0, 1.0}
-    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+    lag_s: T = 0.02 => update_lag
   events:
     reset():
 ```
@@ -1039,10 +1099,10 @@ proc CrossfadeDelay<T>:
   ins<T> 1
   outs<T> 1
   params:
-    delay_s: T = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+    delay_s: T = 0.1 {T(1.0) / SR, T(_MaxFeedbackTap) / SR, unit = "s"}
     feedback: T = 0.0 {-0.999, 0.999}
     mix: T = 1.0 {0.0, 1.0}
-    transition_s: T = 0.02 {0.0, 1.0} => update_transition
+    fade_s: T = 0.02
   events:
     reset():
 ```
@@ -1050,34 +1110,43 @@ proc CrossfadeDelay<T>:
 
 ## `std/sample`
 
+Playback of audio clips supplied through host-bound buffers.
+Supports variable speed, reverse playback, looping, and playback-position control.
+`Player<Precision, Sample>` uses `Precision` for playback position, speed, interpolation,
+and outputs. `Sample` is the clip's element type. Both default to `f32`.
+Use `Player<f64, f32>` to retain single-frame resolution past frame 16,777,216 in an `f32` clip.
+
 ```onda
 import std/sample
 ```
 
 Namespace: `std::sample<Channels = 2>`.
 
-### Processor `Player<T>`
+### Processor `Player<Precision, Sample>`
 
 ```onda
-proc Player<T>:
-  outs<T> Channels
+proc Player<Precision, Sample>:
+  outs<Precision> Channels
   params:
-    speed: T = 1.0
+    speed: Precision = 1.0
     looping = false
   buffers:
-    clip: T[]
+    clip: Sample[]
   delegates:
     finished()
     looped()
   events:
-    play(start_sample: f64 = 0.0):
+    play(start_sample: Precision = 0.0):
     stop():
-    seek(position: f64):
+    seek(position_samples: Precision):
     reset():
 ```
 
 
 ## `std/data`
+
+Fixed-size, multichannel sample storage for building stateful audio algorithms.
+Provides indexed writes, wrapped reads, and interpolation between stored samples.
 
 ```onda
 import std/data
@@ -1101,6 +1170,9 @@ struct Data<T>:
 
 
 ## `std/fft`
+
+Fourier transforms for working with audio in the frequency domain.
+Includes real and complex transforms, windowing, and streaming analysis and resynthesis.
 
 ```onda
 import std/fft
@@ -1275,6 +1347,9 @@ struct RealIFFT<T>:
 
 ## `std/convolution`
 
+Filters audio with an impulse response, for sampled acoustics and other linear effects.
+Provides direct and FFT-based convolution for responses of different lengths.
+
 ```onda
 import std/convolution
 ```
@@ -1348,6 +1423,9 @@ proc ZeroLatencyConvolver<T>:
 
 ## `std/lookup`
 
+Indexed reads and writes for arrays and audio buffers.
+Includes interpolated and wrapping reads for sample playback and wavetable lookup.
+
 ```onda
 import std/lookup
 ```
@@ -1391,6 +1469,9 @@ def readCW(buf, ch: i32, pos):
 
 ## `std/random`
 
+Seedable pseudorandom sequences for repeatable audio and control algorithms.
+Provides random values in unipolar, bipolar, and custom ranges.
+
 ```onda
 import std/random
 ```
@@ -1426,6 +1507,9 @@ struct Rng<T>:
 
 
 ## `std/prelude`
+
+Common utilities loaded automatically into every Onda program.
+Makes math, sample lookup, random generation, level conversion, and pitch helpers available.
 
 Imported automatically. It loads:
 

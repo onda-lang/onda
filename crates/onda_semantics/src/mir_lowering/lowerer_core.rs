@@ -1217,17 +1217,22 @@ impl<'a> FunctionLowerer<'a> {
         }
         self.initialize_scoped_processors(&mut body);
         let source = self.source_span(function_location(self.function));
+        let attributes = match self.function.generated_inline_hint {
+            Some(inline) => compiler_generated_function_attributes(inline),
+            // Resource captures add runtime operations to an authored helper.
+            None if self.runtime_globals.is_some() => {
+                compiler_generated_function_attributes(InlineHint::Auto)
+            }
+            None => FunctionAttributes {
+                runtime_context: self.function.publishes_print,
+                ..FunctionAttributes::default()
+            },
+        };
         Ok((
             onda_mir::Function {
                 name: self.emitted_name,
                 kind: onda_mir::FunctionKind::User,
-                attributes: if self.function.runtime_context {
-                    compiler_shared_function_attributes()
-                } else if self.runtime_globals.is_some() {
-                    compiler_generated_function_attributes()
-                } else {
-                    source_function_attributes(&self.function.name, self.function.publishes_print)
-                },
+                attributes,
                 params: self.params,
                 results: self.results,
                 locals: self.locals,

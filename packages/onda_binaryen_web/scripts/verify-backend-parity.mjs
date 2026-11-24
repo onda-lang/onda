@@ -38,6 +38,12 @@ const wasmConfigurations = [
 
 const scenarios = [
   {
+    name: "indexed proc hooks update shared fields only on transitions",
+    source: join(packageDir, "test/fixtures/indexed-guarded-fields.onda"),
+    blocks: 2,
+    expectedChannels: [[28, 28, 40, 40, 54, 54, 70, 70]],
+  },
+  {
     name: "named processor params preserve statement evaluation order",
     source: join(packageDir, "test/fixtures/processor-statement-param-order.onda"),
     blocks: 1,
@@ -1098,6 +1104,64 @@ const scenarios = [
     comparison: "approximate",
   },
   {
+    name: "captured envelope stages and queued crossfades preserve timing across snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-timing.onda"),
+    comparison: "approximate",
+    snapshotComparison: "approximate",
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      ...Array.from({ length: 8 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 8 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
+    name: "lag and decay, gain startup, and integer conversions survive snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-numeric-contracts.onda"),
+    comparison: "approximate",
+    snapshotComparison: "approximate",
+    actions: [
+      { kind: "render" },
+      { kind: "snapshot" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
+    name: "fixed transitions retain their deadline and disabled decay clears overflow",
+    source: join(packageDir, "test/fixtures/stdlib-fixed-transitions.onda"),
+    blocks: 2,
+    expectedChannels: [Array(8).fill(0), Array(8).fill(0), [0, 0, 0, 0, 0, 0, 1, 1], [0, 0, 1, 1, 1, 1, 1, 1]],
+  },
+  {
+    name: "envelope curvature and T60 tails preserve oversampled state across snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-envelope-curves.onda"),
+    comparison: "approximate",
+    snapshotComparison: "approximate",
+    actions: [
+      ...Array.from({ length: 3 }, () => ({ kind: "render" })),
+      { kind: "snapshot" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
+    name: "pitch and reverb parameter updates preserve oversampled state across snapshots",
+    source: join(packageDir, "test/fixtures/stdlib-parameter-updates.onda"),
+    comparison: "approximate",
+    snapshotComparison: "approximate",
+    actions: [
+      ...Array.from({ length: 3 }, () => ({ kind: "render" })),
+      { kind: "snapshot" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+      { kind: "restore" },
+      ...Array.from({ length: 16 }, () => ({ kind: "render" })),
+    ],
+  },
+  {
     name: "coefficient updates remain sample accurate across snapshots",
     source: join(packageDir, "test/fixtures/coefficient-updates.onda"),
     actions: [
@@ -1108,6 +1172,21 @@ const scenarios = [
       ...Array.from({ length: 12 }, () => ({ kind: "render" })),
     ],
     expectedChannels: Array.from({ length: 4 }, () => Array(100).fill(0)),
+  },
+  {
+    name: "short state reductions with a competing scalar loop stay scalar",
+    source: join(packageDir, "test/fixtures/competing-state-reductions.onda"),
+    optimizedInstructions: { "f32x4.add": false },
+    blocks: 2,
+  },
+  {
+    name: "mixed-precision voice reductions preserve addition order and saved state",
+    source: join(packageDir, "test/fixtures/ordered-state-reductions.onda"),
+    optimizedInstructions: { "f64x2.add": true },
+    actions: [
+      { kind: "render" }, { kind: "snapshot" }, { kind: "render" },
+      { kind: "restore" }, { kind: "render" },
+    ],
   },
   {
     name: "independent voice rendering retains ordered floating-point mixing",
@@ -1163,10 +1242,16 @@ try {
     const mirPath = join(temporary, `scenario-${scenarioIndex}.mir.msgpack`);
     compileSourceToMir(scenario.source, mirPath);
     const mir = readFileSync(mirPath);
-    const artifacts = wasmConfigurations.map((configuration) => ({
-      configuration,
-      artifact: compileMir(mir, configuration.options),
-    }));
+    const artifacts = wasmConfigurations.map((configuration) => {
+      const instructions = configuration.options.optimize === false ? {} : scenario.optimizedInstructions ?? {};
+      const artifact = compileMir(mir, { ...configuration.options, emitText: Object.keys(instructions).length > 0 });
+      for (const [instruction, expected] of Object.entries(instructions)) {
+        if (artifact.wat.includes(instruction) !== expected) {
+          throw new Error(`${scenario.name} expected ${instruction} presence to be ${expected}`);
+        }
+      }
+      return { configuration, artifact };
+    });
     const native = await renderNativeBlocks(scenario, artifacts[0].artifact.metadata);
     verifyChannelExpectations(`${scenario.name} (LLVM)`, scenario, native);
     verifySnapshotExpectations(
@@ -1198,6 +1283,7 @@ try {
         native.snapshots,
         wasm.snapshots,
         artifact.metadata,
+        scenario.snapshotComparison ?? "exact",
       );
       compareExecutionBatches(label, native, wasm);
       if (comparison.mode === "exact") exactSamples += comparison.samples;
@@ -1253,7 +1339,7 @@ async function renderNativeBlocks(scenario, metadata) {
       command: "initialize",
       sample_rate_hz: sampleRate,
       block_samples: blockSize,
-      fast_math: false,
+      math: "strict",
       // Match `onda compile`; interactive daemon defaults add persistent ramp state.
     });
     const start = await request({ command: "run_start", path: source });
@@ -2292,7 +2378,7 @@ function compareApproximateChannels(label, nativeChannels, wasmChannels) {
   return { mode: "approximate", samples, maximumAbsoluteError };
 }
 
-function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata) {
+function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata, mode) {
   if (nativeSnapshots.length !== wasmSnapshots.length) {
     throw new Error(
       `${label}: snapshot count differs (LLVM ${nativeSnapshots.length}, Wasm ${wasmSnapshots.length})`,
@@ -2312,6 +2398,24 @@ function compareSnapshots(label, nativeSnapshots, wasmSnapshots, metadata) {
           byte >= candidate.packed_snapshot_byte_offset
           && byte < candidate.packed_snapshot_byte_offset + candidate.byte_size,
         );
+        // Saved DSP floats use the scenario's numeric tolerance, just like its outputs.
+        // Layout, integers, and exact scenarios still require identical bytes.
+        if (mode === "approximate" && (state?.scalar === "f32" || state?.scalar === "f64")) {
+          const width = state.scalar === "f32" ? 4 : 8;
+          const element = Math.floor((byte - state.packed_snapshot_byte_offset) / width);
+          const offset = state.packed_snapshot_byte_offset + element * width;
+          const read = (bytes) => {
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            return width === 4 ? view.getFloat32(offset, true) : view.getFloat64(offset, true);
+          };
+          compareApproximateChannels(
+            `${label}: snapshot ${snapshot}, state '${state.name}', element ${element}`,
+            [[read(native)]],
+            [[read(wasm)]],
+          );
+          byte = offset + width - 1;
+          continue;
+        }
         const owner = state
           ? ` in state '${state.name}' (${state.scalar}, byte ${byte - state.packed_snapshot_byte_offset})`
           : "";

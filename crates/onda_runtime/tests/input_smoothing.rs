@@ -5,7 +5,7 @@ use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, Analy
 
 const FRAMES: usize = 8;
 
-fn instance(source: &str, _inputs: usize) -> Instance {
+fn instance(source: &str) -> Instance {
     let typed = analyze_with_options(
         parse_program(source).unwrap(),
         AnalysisOptions {
@@ -16,20 +16,14 @@ fn instance(source: &str, _inputs: usize) -> Instance {
     .unwrap_or_else(|errors| panic!("{source}\n{errors:?}"));
     let mir = lower_program_to_optimized_mir(&typed).unwrap();
     let program = jit_program_from_optimized_mir(mir).unwrap();
-    (|| -> Result<_, onda_frontend::Diagnostic> {
-        let mut instance = onda_runtime::create_instance(program, None)?;
-        onda_codegen_llvm::check_execution_status(onda_runtime::init_checked(
-            &mut instance,
-            onda_runtime::InitMode::Full,
-            onda_runtime::ExecutionOutput::none(),
-        )?)?;
-        Ok(instance)
-    })()
-    .unwrap()
+    let mut instance = create_instance(program, None).unwrap();
+    let status = init_checked(&mut instance, InitMode::Full, ExecutionOutput::none()).unwrap();
+    onda_codegen_llvm::check_execution_status(status).unwrap();
+    instance
 }
 
 fn render(source: &str, input: &[f32; FRAMES]) -> [f32; FRAMES] {
-    let mut instance = instance(source, 1);
+    let mut instance = instance(source);
     let mut output = [0.0; FRAMES];
     unsafe {
         bind_input(&mut instance, 0, input.as_ptr().cast(), size_of_val(input)).unwrap();
@@ -74,6 +68,21 @@ fn ramps_advance_once_before_reads_at_each_owner_boundary() {
 }
 
 #[test]
+fn input_ramps_blend_bipolar_values_and_recover_after_infinity() {
+    let source = r#"
+ins:
+  x = -1.0 {ramp = 0.004}
+sample:
+  out1 = x
+"#;
+    let input = [1.0, 1.0, 1.0, 1.0, f32::INFINITY, 0.25, 0.75, 0.75];
+    assert_eq!(
+        render(source, &input),
+        [-0.5, 0.0, 0.5, 1.0, f32::INFINITY, 0.25, 0.375, 0.5],
+    );
+}
+
+#[test]
 fn lag_matches_its_time_constant_and_clamps_targets_first() {
     for source in [
         "ins:\n  x {0, 1, lag = 0.001}\nsample:\n  out1 = x\n",
@@ -99,7 +108,7 @@ fn defaults_seed_smoothers_without_a_startup_fade() {
 #[test]
 fn array_elements_have_independent_state_and_all_reads_use_the_cache() {
     let source = "ins:\n  x: f64[2] = [0.0, 1.0] {ramp = 0.004}\nsample:\n  out1 = f32(x[0] + 10.0 * x[1] + 100.0 * (ins[0] - x.read_unsafe(0)) + 100.0 * (ins[1] - x[1]))\n";
-    let mut instance = instance(source, 2);
+    let mut instance = instance(source);
     let mut input = vec![0.0_f64; 2 * FRAMES];
     input[..FRAMES].fill(1.0);
     let mut output = [0.0; FRAMES];
@@ -132,7 +141,7 @@ fn array_elements_have_independent_state_and_all_reads_use_the_cache() {
 
 #[test]
 fn segments_snapshots_and_reinitialization_preserve_the_smoothing_lifecycle() {
-    let mut instance = instance("ins:\n  x {ramp = 0.004}\nsample:\n  out1 = x\n", 1);
+    let mut instance = instance("ins:\n  x {ramp = 0.004}\nsample:\n  out1 = x\n");
     let input = [1.0_f32; FRAMES];
     let mut output = [0.0; FRAMES];
     unsafe {
@@ -193,9 +202,10 @@ fn segments_snapshots_and_reinitialization_preserve_the_smoothing_lifecycle() {
 
 #[test]
 fn oversampling_matches_an_explicit_stdlib_smoother() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         let implicit = format!("ins:\n  x = 0.5 {{{attribute} = 0.004}}\nsample 4:\n  out1 = x\n");
-        let explicit = format!("import std/smoothing\nins:\n  x = 0.5\ninit:\n  smoother = std::smoothing::{processor}(time_s = 0.004)\n  smoother.reset(0.5)\nsample 4:\n  out1 = smoother(x)\n");
+        let explicit = format!("import std/smoothing\nins:\n  x = 0.5\ninit:\n  smoother = std::smoothing::{processor}({timing} = 0.004)\n  smoother.reset(0.5)\nsample 4:\n  out1 = smoother(x)\n");
         let input = [0.5, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
         assert_close(&render(&implicit, &input), &render(&explicit, &input));
     }
@@ -203,7 +213,8 @@ fn oversampling_matches_an_explicit_stdlib_smoother() {
 
 #[test]
 fn oversampled_proc_smoothing_uses_its_owner_context() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         for (default, range, duration) in [
             ("3000.0", "0.0, SR, ", "0.004"),
             ("0.0", "", "4.0 / SR"),
@@ -215,7 +226,7 @@ fn oversampled_proc_smoothing_uses_its_owner_context() {
                 ("Voice", "proc Parent:\n  ins 1\n  init:\n    voice = Voice()\n  sample:\n    out1 = voice(in1)\ninit:\n  parent = Parent()\nsample:\n  out1 = parent(in1)\n".into()),
             ] {
                 let implicit = format!("proc {owner}:\n  ins:\n    x = {default} {{{range}{attribute} = {duration}}}\n  sample 4:\n    out1 = x\n{tail}");
-                let explicit = format!("import std/smoothing\nproc {owner}:\n  ins:\n    x = {default}\n  init:\n    smoother = std::smoothing::{processor}(time_s = {duration})\n    smoother.reset(clamp({default}, 0.0, SR))\n  sample 4:\n    out1 = smoother(x)\n{tail}");
+                let explicit = format!("import std/smoothing\nproc {owner}:\n  ins:\n    x = {default}\n  init:\n    smoother = std::smoothing::{processor}({timing} = {duration})\n    smoother.reset(clamp({default}, 0.0, SR))\n  sample 4:\n    out1 = smoother(x)\n{tail}");
                 let input = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
                 assert_close(&render(&implicit, &input), &render(&explicit, &input));
             }
@@ -225,11 +236,12 @@ fn oversampled_proc_smoothing_uses_its_owner_context() {
 
 #[test]
 fn nested_proc_smoothing_inherits_its_callers_sample_rate() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         let implicit = format!(
             "proc Voice:\n  ins:\n    x = 0.5 {{{attribute} = 0.004}}\n  sample:\n    out1 = x\n"
         );
-        let explicit = format!("import std/smoothing\nproc Voice:\n  ins:\n    x = 0.5\n  init:\n    smoother = std::smoothing::{processor}(time_s = 0.004)\n    smoother.reset(0.5)\n  sample:\n    out1 = smoother(x)\n");
+        let explicit = format!("import std/smoothing\nproc Voice:\n  ins:\n    x = 0.5\n  init:\n    smoother = std::smoothing::{processor}({timing} = 0.004)\n    smoother.reset(0.5)\n  sample:\n    out1 = smoother(x)\n");
         let tail = "proc Main:\n  ins 1\n  init:\n    voice = Voice()\n  sample 4:\n    out1 = voice(in1)\n";
         let input = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.25, 0.25];
         assert_close(
@@ -241,10 +253,11 @@ fn nested_proc_smoothing_inherits_its_callers_sample_rate() {
 
 #[test]
 fn oversampled_generic_array_inputs_share_the_declared_smoothing_context() {
-    for (attribute, processor) in [("ramp", "Ramp"), ("lag", "Lag")] {
+    for (attribute, processor, timing) in [("ramp", "Ramp", "duration_s"), ("lag", "Lag", "lag_s")]
+    {
         for ty in ["f32", "f64"] {
             let implicit = format!("proc Voice<T>:\n  ins:\n    x: T[2] = [3000.0, 5000.0] {{0.0, SR, {attribute} = 4.0 / SR}}\n  sample 4:\n    out1 = f32(x[0] + x[1])\n");
-            let explicit = format!("import std/smoothing\nproc Voice<T>:\n  ins:\n    x: T[2]\n  init:\n    a = std::smoothing::{processor}<T>(time_s = 4.0 / SR)\n    b = std::smoothing::{processor}<T>(time_s = 4.0 / SR)\n    a.reset(clamp(3000.0, 0.0, SR))\n    b.reset(clamp(5000.0, 0.0, SR))\n  sample 4:\n    out1 = f32(a(x[0]) + b(x[1]))\n");
+            let explicit = format!("import std/smoothing\nproc Voice<T>:\n  ins:\n    x: T[2]\n  init:\n    a = std::smoothing::{processor}<T>({timing} = 4.0 / SR)\n    b = std::smoothing::{processor}<T>({timing} = 4.0 / SR)\n    a.reset(clamp(3000.0, 0.0, SR))\n    b.reset(clamp(5000.0, 0.0, SR))\n  sample 4:\n    out1 = f32(a(x[0]) + b(x[1]))\n");
             let tail = format!(
                 "init:\n  voice = Voice<{ty}>()\nsample:\n  out1 = voice([{ty}(in1), {ty}(in1)])\n"
             );
@@ -267,12 +280,10 @@ fn zero_smoothing_creates_no_additional_state() {
                 format!("ins:\n  x {attribute}\nsample:\n  out1 = x\n")
             }
         };
-        let plain = instance(&source(""), 1).snapshot_state_bytes().unwrap();
+        let plain = instance(&source("")).snapshot_state_bytes().unwrap();
         for attribute in ["{ramp = 0}", "{lag = 0}"] {
             assert_eq!(
-                instance(&source(attribute), 1)
-                    .snapshot_state_bytes()
-                    .unwrap(),
+                instance(&source(attribute)).snapshot_state_bytes().unwrap(),
                 plain
             );
         }

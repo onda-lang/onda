@@ -1,3 +1,6 @@
+# Numeric utilities for interpolation, wrapping, and mapping values between ranges.
+# Also provides convenient conversions for audio levels and musical pitch.
+
 import std/levels
 import std/pitch
 
@@ -24,9 +27,9 @@ namespace std::math:
 
   def sign<T>(x: T) -> T:
     if (x > 0):
-      return T(1)
+      return 1
     if (x < 0):
-      return T(-1)
+      return -1
     return x - x
 
   def fract(x):

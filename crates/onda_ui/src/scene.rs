@@ -225,7 +225,13 @@ impl Scene {
         );
         self.labels.last_mut().unwrap().style = style;
     }
-    pub fn paragraph(&mut self, text: &str, rect: [f32; 4], size: f32, color: [u8; 3]) {
+    pub fn paragraph(
+        &mut self,
+        text: &str,
+        rect: [f32; 4],
+        size: f32,
+        color: [u8; 3],
+    ) -> &mut Label {
         self.label(text, [rect[0], rect[1]], size, rect[2], color);
         let label = self.labels.last_mut().unwrap();
         label.style.mono = true;
@@ -234,6 +240,7 @@ impl Scene {
         label.height = None;
         label.clip_top = label.clip_top.max(rect[1]);
         label.clip_bottom = label.clip_bottom.min(rect[1] + rect[3]);
+        label
     }
     pub fn hit(&mut self, rect: [f32; 4], target: Target) {
         self.focus_target(rect, &target);

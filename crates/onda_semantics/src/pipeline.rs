@@ -1036,6 +1036,7 @@ pub fn analyze_with_options_and_inputs(
     let ProcessorDesugarResult {
         mut program,
         mut runtime_def_names,
+        generated_inline_hints,
         mut def_sample_oversample_factors,
         mut proc_step_oversample_meta,
         mut proc_instance_oversample_factors,
@@ -4662,9 +4663,15 @@ pub fn analyze_with_options_and_inputs(
                     .get(&d.name)
                     .map(|signature| signature.readonly_data_params.clone())
                     .unwrap_or_default();
+                let runtime_context = runtime_def_names.contains(&d.name);
+                let origin = crate::compile_context::lowered_function_origin(&d.name);
                 TypedFunction {
                     compile_context: None,
-                    runtime_context: runtime_def_names.contains(&d.name),
+                    runtime_context,
+                    generated_inline_hint: generated_inline_hints
+                        .get(origin)
+                        .copied()
+                        .or(runtime_context.then_some(onda_mir::InlineHint::Always)),
                     publishes_print: statements_publish_print(&d.body),
                     method_of: method_self_struct_internal.get(&d.name).cloned(),
                     type_params: d.type_params.clone(),

@@ -89,6 +89,7 @@ pub(super) enum FileLoadMode {
 pub(super) enum TopLevelItem {
     Code {
         text: String,
+        // First line of this contiguous chunk in the preprocessed document.
         start_line: usize,
         source_line_map: Vec<usize>,
     },
@@ -153,17 +154,18 @@ pub(super) fn split_top_level_items(
         let (code_part, _) = split_comment(line);
         let trimmed = code_part.trim();
 
+        let source_line = preprocessed_line_map.get(idx).copied().unwrap_or(line_no);
         if brace_depth == 0 {
-            let source_line = preprocessed_line_map.get(idx).copied().unwrap_or(line_no);
             if let Some(item) = parse_top_level_directive(trimmed, source_line)
                 .map_err(|diags| annotate_diagnostics_with_file(diags, file_path, 0))?
             {
                 if !code.trim().is_empty() {
                     items.push(TopLevelItem::Code {
-                        text: code.clone(),
+                        text: std::mem::take(&mut code),
                         start_line: code_start_line,
-                        source_line_map: code_line_map.clone(),
+                        source_line_map: std::mem::take(&mut code_line_map),
                     });
+                } else {
                     code.clear();
                     code_line_map.clear();
                 }
@@ -177,7 +179,7 @@ pub(super) fn split_top_level_items(
         }
         code.push_str(line);
         code.push('\n');
-        code_line_map.push(preprocessed_line_map.get(idx).copied().unwrap_or(line_no));
+        code_line_map.push(source_line);
 
         for (_, ch) in unquoted_chars(code_part) {
             match ch {
@@ -188,7 +190,7 @@ pub(super) fn split_top_level_items(
         }
         if brace_depth < 0 {
             return Err(annotate_diagnostics_with_file(
-                vec![Diagnostic::syntax("unmatched '}'", line_no, 1)],
+                vec![Diagnostic::syntax("unmatched '}'", source_line, 1)],
                 file_path,
                 0,
             ));

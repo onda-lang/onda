@@ -20,6 +20,7 @@ event bang():
 
 graph:
   auto_play >> audition.auto_play
+  @sample live_input == 1.0 >> audition.muted
   audition.out1 * (1.0 - live_input) + in1 * live_input >> reverb.in1
   audition.out2 * (1.0 - live_input) + in2 * live_input >> reverb.in2
   mix >> reverb.mix

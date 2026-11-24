@@ -1,4 +1,5 @@
 use super::App;
+use onda_run::FloatMathMode;
 use serde_json::Value;
 impl App {
     pub(super) fn clipboard(&mut self) -> Result<&mut arboard::Clipboard, String> {
@@ -69,14 +70,21 @@ impl App {
                     .as_u64()
                     .filter(|n| (1..=65536).contains(n))
                     .ok_or("Invalid block size")? as usize;
-                self.set_compile_settings(rate, block, self.options.fast_math)?;
+                self.set_compile_settings(rate, block, self.options.math)?;
             }
             "setFastMath" => {
                 let enabled = v["enabled"].as_bool().ok_or("Invalid Fast Math setting")?;
+                if enabled == self.options.math.is_fast() {
+                    return Ok(false);
+                }
                 self.set_compile_settings(
                     self.options.sample_rate_hz,
                     self.options.block_samples,
-                    enabled,
+                    if enabled {
+                        FloatMathMode::Fast
+                    } else {
+                        FloatMathMode::default()
+                    },
                 )?;
             }
             "setTheme" => {
@@ -206,13 +214,13 @@ impl App {
         &mut self,
         rate: u32,
         block: usize,
-        fast_math: bool,
+        math: FloatMathMode,
     ) -> Result<(), String> {
         self.options.sample_rate_hz = rate;
         self.options.block_samples = block;
-        self.options.fast_math = fast_math;
+        self.options.math = math;
         if let Some(controller) = &mut self.controller {
-            let result = controller.set_compile_settings(rate, block, fast_math);
+            let result = controller.set_compile_settings(rate, block, math);
             self.options = controller.options().clone();
             self.controller_woken = true;
             result?;

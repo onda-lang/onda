@@ -24,6 +24,14 @@ test("builds focused browser projects with exact local dependencies", () => {
     ],
   );
   assert.deepEqual(
+    Object.keys(catalog.projects["spectral/spectral_delay.onda"].sources),
+    [
+      "effects/processors/effect_audition.onda",
+      "spectral/processors/spectral_delay.onda",
+      "spectral/spectral_delay.onda",
+    ],
+  );
+  assert.deepEqual(
     Object.keys(catalog.projects["projects/wavetable_garden/code/main.onda"].sources),
     [
       "projects/wavetable_garden/code/main.onda",

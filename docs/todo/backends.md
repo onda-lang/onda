@@ -72,10 +72,19 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
   8-point base stage lowers to extensive shuffles and register spills; evaluate vectorization
   direction, width, interleaving, and register pressure with measured code quality rather than
   assuming wider vectors are faster. Keep target-specific cost decisions in the LLVM backend.
-- Broaden Binaryen/Wasm SIMD beyond slice fills and independent straight-line sample loops with
-  invariant controls. General array/voice loops and helper calls remain candidates. Start with
-  independent contiguous and mirrored-range kernels,
-  preserving numerical and memory semantics with correct scalar handling where required.
+- Use MIR's ordered-reduction proof to find candidates for late LLVM SLP. Evaluate outlining the
+  eligible loop during lowering, running function-scoped SLP after unrolling, and inlining the
+  helper back. Preserve the source-order sum. Compare against standard O3 on different bank sizes
+  and precisions, a direct convolver, and a processor that combines a bank with convolution.
+- Refine the Wasm profitability check for ordered state-bank reductions. Extend measurements to
+  alternating branches and additional architectures. Compare across bank sizes and amounts of work,
+  accounting for casts, shuffles, lane extraction, and scalar tails. The cheap `f64` index-cast
+  loop ran slower with Wasm SIMD in Node and faster in Chrome and Firefox. Preserve the measured
+  smoother and filter-bank gains and the source-order sum when tuning SIMD selection. See the
+  [same-MIR Wasm measurements](../../scripts/bench/README.md#ordered-state-bank-simd).
+- Extend Binaryen SIMD to independent contiguous and mirrored-range array kernels beyond the
+  fixed state banks covered by the ordered-reduction proof. Preserve numerical and memory
+  semantics with scalar handling where required.
 - Continue isolated real-spectrum reconstruction measurements now that shared MIR proofs enable
   vectorization of mirrored bin pairs. Check shuffle/spill costs and wider target coverage against
   complete-transform comparisons in the [benchmark results folder](../../scripts/bench/results/).
@@ -93,6 +102,24 @@ linking and execution on Linux, macOS, and Windows, including the native math-li
 - Keep backend pass policies evidence-driven. LLVM uses its standard O3 pipeline and Binaryen uses
   O4; global loop-inlining and StackIR experiments remain off because the complete workload matrix
   showed regressions.
+
+## Wasm math
+
+- Explore the pinned SLEEF release's documented Wasm path through its SSE2 inlinable headers and
+  Emscripten. Start with f32x4/f64x2 transcendental kernels and explicit per-function accuracy
+  contracts; extend proven independent loops to call vector helpers with scalar tails. Compare
+  complete DSP workloads, compilation cost and artifact size with the current internal `libm`
+  kernel across browser engines.
+- Validate large arguments, NaNs, infinities, signed zero and subnormals independently. SLEEF FMA
+  and remainder have different contracts from Onda's builtins, and relaxed SIMD multiply-add may
+  round twice; none is a strict drop-in replacement. Keep math inside self-contained Wasm modules.
+
+## Floating-point contraction
+
+- Extend measurements of the native default, which combines contraction with reassociation and
+  ignoring signed zero, to ARM64 and other x64 CPUs. Include complete convolution and feedback
+  examples, long-running threshold decisions, and snapshot replay. Compare against
+  `--strict-math` and distinguish tolerance-based agreement from bitwise equality.
 
 ## Native vector math
 

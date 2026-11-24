@@ -1,0 +1,39 @@
+import std/smoothing
+import std/env
+
+const Large: f64 = pow(f64(2.0), f64(1023.0))
+
+outs 4
+init:
+  ramp = std::smoothing::Ramp<f64>(duration_s = 7.0 / SR)
+  ramp.reset(Large)
+  steep = std::smoothing::Ramp<f64>(duration_s = 1024.0 / SR,
+    shape = std::smoothing::RampShape::Exponential, curve = 60.0)
+  steep.reset(Large)
+  # The ceiling yields seven samples even at non-power-of-two rates.
+  env = std::env::DecayEnv<f64>(decay_s = 6.75 / SR, shape = std::smoothing::RampShape::Linear)
+  env.start()
+  tail = std::env::Decay<f64>(decay_60db_s = 2.0)
+  frame = 0
+  finished = false
+when env.finished():
+  finished = true
+sample:
+  value = ramp(-Large)
+  out1 = f32(!(value >= -Large && value <= Large))
+  value = steep(Large * 0.25)
+  out2 = f32(!(value >= Large * 0.25 && value <= Large))
+  if frame == 1:
+    env.decay_s = 2.0 / SR
+    env.shape = std::smoothing::RampShape::SCurve
+  env()
+  out3 = f32(finished)
+
+  impulse: f64 = 0.5
+  if frame < 2:
+    impulse = Large * 1.8
+  elif frame == 2:
+    tail.decay_60db_s = 0.0
+  recovered = tail(impulse) == 0.5
+  out4 = f32(recovered)
+  frame += 1

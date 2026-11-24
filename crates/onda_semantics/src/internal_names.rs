@@ -5,10 +5,6 @@ pub const PROC_INDEX_EXPR_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_EXPR
 pub const PROC_INDEX_UNCHECKED_ARG: &str = crate::proc_state_rewrite::PROC_INDEX_UNCHECKED_ARG;
 pub use onda_frontend::METHOD_RECEIVER_ARG;
 
-pub fn is_compiler_generated_function_name(name: &str) -> bool {
-    name.contains(".__onda_proc_") || name.contains(".__onda_mono") || name.starts_with("__onda_")
-}
-
 pub(crate) fn is_reserved_internal_identifier(name: &str) -> bool {
     name.starts_with("__onda_")
 }
@@ -97,16 +93,6 @@ mod tests {
             runtime_proc_array_active_symbol("voices"),
             "__onda_proc_block_active_voices"
         );
-    }
-
-    #[test]
-    fn compiler_generated_function_names_cover_proc_helpers_and_internal_defs() {
-        assert!(is_compiler_generated_function_name(
-            "Voice.__onda_proc_step"
-        ));
-        assert!(is_compiler_generated_function_name("__onda_read_slot"));
-        assert!(!is_compiler_generated_function_name("Voice.__proc_helper"));
-        assert!(!is_compiler_generated_function_name("Voice.process"));
     }
 
     #[test]

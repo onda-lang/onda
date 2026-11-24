@@ -14,11 +14,14 @@ example guide for setup and end-user workflows; this file describes integration.
 | `run-view-host.js` | State/command adapter for the [GPU canvas](../gpu/README.md), readiness, logs, and saved presentation. |
 | `browser-scope.js`, `meter-worklet.js` | Visibility-driven waveform capture and 30 Hz peak/visualization publication. |
 | `audio-activation.js`, `browser-buffers.js`, `microphone.js`, `midi.js`, `param-smoothing.js` | Trusted audio activation, external buffers, input devices, and smoothing preferences. |
-| `layout.css`, `default.onda` | Shared layout and initial source. |
+| `layout.css` | Shared layout. |
 
 Hosts supply the DOM and `globalThis.__ONDA_PLAYGROUND_ASSETS__`.
 [bundle-web-playground.mjs](../../scripts/bundle-web-playground.mjs) bundles
 `live.js` and emits `playground.css`; both hosts load those outputs.
+The initial source is imported directly from
+[`examples/basic/saw_filter_saturator.onda`](../../examples/basic/saw_filter_saturator.onda),
+which also supplies the homepage example.
 
 ## Integration invariants
 

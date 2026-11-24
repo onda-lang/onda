@@ -19,8 +19,16 @@ the standalone sources directly in the browser playground.
 | `web/` | Browser and WebAssembly hosts. |
 
 Musical examples with built-in sequencing expose an `auto_play` parameter and a no-argument
-`bang()` event. Effects audition themselves by default and expose `live_input` when they can process
-host audio.
+`bang()` event. Effects, including granular cloud, spectral delay, and freeze, use the shared
+[`EffectAudition`](effects/processors/effect_audition.onda) sequence and expose `live_input` for
+host audio. Plug-in effects use live input only.
+
+When compiling an example with `onda-wasm`, use `examples` as the project root so imports
+can reach processors in sibling directories.
+
+```bash
+onda-wasm compile examples/spectral/spectral_freeze.onda --root examples --output spectral_freeze.wasm
+```
 
 Project examples carry their source and data bindings together:
 

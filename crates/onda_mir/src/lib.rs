@@ -11,12 +11,14 @@ mod format;
 mod ids;
 mod ir;
 mod json;
+mod local_references;
 mod loops;
 mod memory;
 mod messagepack;
 mod passes;
 pub mod payload;
 mod slice_lengths;
+mod transport;
 mod types;
 mod validate;
 
@@ -27,6 +29,9 @@ pub use json::{
     from_json, from_json_program, from_json_validated, from_json_with_producer_proofs, to_json,
     to_json_optimized, to_json_pretty, to_json_pretty_optimized, to_json_validated, MirJsonError,
 };
+pub use local_references::{
+    collect_direct_local_references, referenced_locals, rewrite_block_locals,
+};
 pub use loops::{counted_loop, AudioPort, CountedLoop, LoopAnalysis, PointwiseAudioLoop};
 pub use memory::{analyze_memory, MemoryAnalysis, StateRegion, StorageOrigins};
 pub use messagepack::{
@@ -34,8 +39,8 @@ pub use messagepack::{
     to_messagepack_optimized, MirMessagePackError,
 };
 pub use passes::{
-    canonicalize, collect_direct_local_references, optimize, prune_dead_values_and_parameters,
-    referenced_locals, rewrite_block_locals, schedule_vector_loops, OptimizedProgram, PassStats,
+    canonicalize, optimize, prune_dead_values_and_parameters, schedule_vector_loops,
+    OptimizedProgram, PassStats,
 };
 
 /// Removes parameters that are not referenced by internal MIR functions and

@@ -28,13 +28,11 @@ proc Voice:
     attack_s = 0.008
     decay_s = 0.16
     sustain = 0.68
-    release_s = 0.32
     cutoff = 1800.0
     resonance = 1.2
     filter_attack_s = 0.012
     filter_decay_s = 0.28
     filter_sustain = 0.18
-    filter_release_s = 0.4
     filter_env_octaves = 3.0
 
   init:
@@ -45,7 +43,7 @@ proc Voice:
     filter = std::filter::Svf()
 
   def update_pitch():
-    frequency = std::pitch::note_to_hz(f32(key) + bend)
+    frequency = std::pitch::note_to_hz(key + bend)
     detune_ratio = std::pitch::ratio_between(0.0, detune)
     saw_l.freq = frequency / detune_ratio
     saw_r.freq = frequency * detune_ratio
@@ -54,11 +52,9 @@ proc Voice:
     envelope.attack_s = attack_s
     envelope.decay_s = decay_s
     envelope.sustain = sustain
-    envelope.release_s = release_s
     filter_envelope.attack_s = filter_attack_s
     filter_envelope.decay_s = filter_decay_s
     filter_envelope.sustain = filter_sustain
-    filter_envelope.release_s = filter_release_s
 
   event start(key_value: i32, velocity_value, bend_value):
     key = key_value
@@ -75,7 +71,9 @@ proc Voice:
     bend = value
     update_pitch()
 
-  event release():
+  event release(release_s, filter_release_s):
+    envelope.release_s = release_s
+    filter_envelope.release_s = filter_release_s
     envelope.release()
     filter_envelope.release()
 
@@ -111,26 +109,22 @@ struct VoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value,
     cutoff_value,
     resonance_value,
     filter_attack_value,
     filter_decay_value,
     filter_sustain_value,
-    filter_release_value,
     filter_octaves_value
   ):
     voices[index].detune = detune_value
     voices[index].attack_s = attack_value
     voices[index].decay_s = decay_value
     voices[index].sustain = sustain_value
-    voices[index].release_s = release_value
     voices[index].cutoff = cutoff_value
     voices[index].resonance = resonance_value
     voices[index].filter_attack_s = filter_attack_value
     voices[index].filter_decay_s = filter_decay_value
     voices[index].filter_sustain = filter_sustain_value
-    voices[index].filter_release_s = filter_release_value
     voices[index].filter_env_octaves = filter_octaves_value
 
   def note_on(
@@ -145,13 +139,11 @@ struct VoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value,
     cutoff_value,
     resonance_value,
     filter_attack_value,
     filter_decay_value,
     filter_sustain_value,
-    filter_release_value,
     filter_octaves_value
   ):
     selected = -1
@@ -166,32 +158,35 @@ struct VoiceManager:
     self.ids[selected] = id
     self.channels[selected] = channel
     self.keys[selected] = key
-    self.pans[selected] = (-1.0 + f32(selected) * 2.0 / f32(VoiceCount - 1)) * spread
+    self.pans[selected] = (-1.0 + selected * 2.0 / (VoiceCount - 1)) * spread
     self.active[selected] = true
     self.held[selected] = true
     self.configure(
-      voices, selected, detune_value, attack_value,
-      decay_value, sustain_value, release_value, cutoff_value,
-      resonance_value, filter_attack_value, filter_decay_value,
-      filter_sustain_value, filter_release_value, filter_octaves_value
+      voices,
+      selected,
+      detune_value,
+      attack_value,
+      decay_value,
+      sustain_value,
+      cutoff_value,
+      resonance_value,
+      filter_attack_value,
+      filter_decay_value,
+      filter_sustain_value,
+      filter_octaves_value
     )
     voices[selected].start(key, velocity, self.bends[channel])
     self.next_voice = (selected + 1) % VoiceCount
 
-  def note_off(self, voices: Voice[], id: i32, channel: i32, key: i32):
+  def note_off(self, voices: Voice[], id: i32, channel: i32, key: i32, release_s, filter_release_s):
     for i in 0..VoiceCount:
       id_matches = id >= 0 && self.ids[i] == id && self.channels[i] == channel
       key_matches = id < 0 && self.channels[i] == channel && self.keys[i] == key
       if self.active[i] && self.held[i] && (id_matches || key_matches):
         self.held[i] = false
-        voices[i].release()
+        voices[i].release(release_s, filter_release_s)
 
-  def pitch_bend(
-    self,
-    voices: Voice[],
-    channel: i32,
-    value
-  ):
+  def pitch_bend(self, voices: Voice[], channel: i32, value):
     self.bends[channel] = (value - 0.5) * 2.0 * PitchBendSemitones
     for i in 0..VoiceCount:
       if self.active[i] && self.channels[i] == channel:
@@ -205,23 +200,29 @@ struct VoiceManager:
     attack_value,
     decay_value,
     sustain_value,
-    release_value,
     cutoff_value,
     resonance_value,
     filter_attack_value,
     filter_decay_value,
     filter_sustain_value,
-    filter_release_value,
     filter_octaves_value
   ):
     for i in 0..VoiceCount:
       if self.active[i]:
-        self.pans[i] = (-1.0 + f32(i) * 2.0 / f32(VoiceCount - 1)) * spread
+        self.pans[i] = (-1.0 + i * 2.0 / (VoiceCount - 1)) * spread
         self.configure(
-          voices, i, detune_value, attack_value,
-          decay_value, sustain_value, release_value, cutoff_value,
-          resonance_value, filter_attack_value, filter_decay_value,
-          filter_sustain_value, filter_release_value, filter_octaves_value
+          voices,
+          i,
+          detune_value,
+          attack_value,
+          decay_value,
+          sustain_value,
+          cutoff_value,
+          resonance_value,
+          filter_attack_value,
+          filter_decay_value,
+          filter_sustain_value,
+          filter_octaves_value
         )
 
   def finish(self, index: i32):
@@ -253,11 +254,11 @@ params:
   filter_env_octaves = 3.0 {0.0, 6.0}
   spread = 0.72 {0.0, 1.0}
   drive = 1.0 {1.0, 8.0}
-  reverb_room_size = 0.8 {0.0, 1.0}
+  reverb_decay_60db_s = 2.3 {0.1, 10.0, unit = "s"}
   reverb_damping = 0.3 {0.0, 0.99}
   reverb_width = 1.0 {0.0, 1.0}
   reverb_level = 1.0 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.5 {0.0, 1.0}
 
 init:
   voices: Voice[VoiceCount]
@@ -270,30 +271,32 @@ when voices.finished(index):
 
 event note_on(id: i32, channel: i32, key: i32, velocity):
   voice_manager.note_on(
-    voices, id, channel, key, velocity,
+    voices,
+    id,
+    channel,
+    key,
+    velocity,
     spread = spread,
     detune_value = detune,
     attack_value = attack_s,
     decay_value = decay_s,
     sustain_value = sustain,
-    release_value = release_s,
     cutoff_value = cutoff,
     resonance_value = resonance,
     filter_attack_value = filter_attack_s,
     filter_decay_value = filter_decay_s,
     filter_sustain_value = filter_sustain,
-    filter_release_value = filter_release_s,
     filter_octaves_value = filter_env_octaves
   )
 
 event note_off(id: i32, channel: i32, key: i32, velocity):
-  voice_manager.note_off(voices, id, channel, key)
+  voice_manager.note_off(voices, id, channel, key, release_s, filter_release_s)
 
 event pitch_bend(channel: i32, value):
   voice_manager.pitch_bend(voices, channel, value)
 
 block:
-  reverb.room_size = reverb_room_size
+  reverb.decay_60db_s = reverb_decay_60db_s
   reverb.damping = reverb_damping
   reverb.width = reverb_width
   voice_manager.update(
@@ -303,13 +306,11 @@ block:
     attack_value = attack_s,
     decay_value = decay_s,
     sustain_value = sustain,
-    release_value = release_s,
     cutoff_value = cutoff,
     resonance_value = resonance,
     filter_attack_value = filter_attack_s,
     filter_decay_value = filter_decay_s,
     filter_sustain_value = filter_sustain,
-    filter_release_value = filter_release_s,
     filter_octaves_value = filter_env_octaves
   )
 

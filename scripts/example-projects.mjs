@@ -43,7 +43,7 @@ function sourceDependencies(path, source, allSources) {
   for (const match of source.matchAll(/^\s*include\s+["']([^"']+\.(?:on|onda))["']/gm)) {
     dependencies.push(resolveDependency(directory, match[1], allSources, path));
   }
-  for (const match of source.matchAll(/^\s*import\s+([A-Za-z_][A-Za-z0-9_/-]*)\b/gm)) {
+  for (const match of source.matchAll(/^\s*import\s+([^\s#]+)/gm)) {
     const module = match[1];
     if (module.startsWith("std/")) continue;
     dependencies.push(resolveModule(directory, module, allSources, path));

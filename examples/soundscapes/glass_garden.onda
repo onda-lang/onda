@@ -12,29 +12,32 @@ const Leaps: i32[VoiceCount] = [5, 7, 4, 9, 2]
 
 proc GlassBloom:
   params:
-    decay_s = 0.7
+    duration_s = 3.1
     brightness = 0.68
 
-  delegate faded(note: f32)
+  delegate faded(note)
 
   init:
     current_note = 60.0
     freq = 261.626
+    strength = 0.0
     active = false
     carrier = std::osc::Sine()
     modulator = std::osc::Sine()
     high_partial = std::osc::Sine()
     air_partial = std::osc::Sine()
-    amplitude = std::env::DecayEnv(decay_s = decay_s, end_level = 0.008)
+    amplitude = std::env::DecayEnv()
 
-  event strike(note: f32, velocity: f32):
+  event strike(note, velocity):
     current_note = note
     freq = std::pitch::note_to_hz(note)
+    strength = max(velocity, 0.0)
     carrier.reset()
     modulator.reset()
     high_partial.reset()
     air_partial.reset()
-    amplitude.start(velocity)
+    amplitude.decay_s = duration_s
+    amplitude.start()
     active = true
 
   when amplitude.finished():
@@ -42,14 +45,14 @@ proc GlassBloom:
     faded(current_note)
 
   sample:
-    envelope = amplitude(decay_s = decay_s)
+    envelope = amplitude() * strength
     tone = 0.0
 
     if active:
       modulation = modulator(freq = freq * 1.414) * envelope * (2.0 + brightness * 7.0)
-      fundamental = carrier(freq = freq, phase_offset = modulation)
-      high = high_partial(freq = freq * 2.756, phase_offset = modulation * 0.24)
-      air = air_partial(freq = freq * 5.404, phase_offset = modulation * 0.08)
+      fundamental = carrier(freq = freq, phase_offset_rad = modulation)
+      high = high_partial(freq = freq * 2.756, phase_offset_rad = modulation * 0.24)
+      air = air_partial(freq = freq * 5.404, phase_offset_rad = modulation * 0.08)
       tone = (fundamental * 0.68 + high * 0.24 + air * 0.08 * brightness) * envelope
 
     out1 = tone
@@ -57,25 +60,29 @@ proc GlassBloom:
 params:
   auto_play = true
   root_note = 50 {36, 72}
-  pace = 0.72 {0.25, 2.0, unit = "s"}
+  pace = 3.1 {0.1, 6.0, unit = "s"}
   brightness = 0.68 {0.0, 1.0}
-  space = 0.44 {0.0, 0.8}
-  level = 1.0 {0.0, 1.0}
+  space = 0.5 {0.0, 0.8}
+  level = 0.7 {0.0, 1.0}
 
-delegate bloom_faded(voice: i32, note: f32)
+delegate bloom_faded(voice: i32, note)
 
 init:
   blooms: GlassBloom[VoiceCount] = GlassBloom()
-  delay_l = std::delay::Delay(delay_s = 0.31, feedback = 0.42, mix = 1.0)
-  delay_r = std::delay::Delay(delay_s = 0.47, feedback = 0.38, mix = 1.0)
+  delay_l = std::delay::Delay(delay_s = 0.3, feedback = 0.42, mix = 1.0)
+  delay_r = std::delay::Delay(delay_s = 0.5, feedback = 0.38, mix = 1.0)
   steps: i32[VoiceCount]
   pans: f32[VoiceCount]
   previous_auto_play = false
   pending_bang = false
   next_voice = 0
 
-event strike(note: f32 = 62.0, velocity: f32 = 0.72):
-  blooms[next_voice].decay_s = pace
+  for i in 0..VoiceCount:
+    steps[i] = Starts[i]
+    pans[i] = -0.84 + 1.68 * i / (VoiceCount - 1)
+
+event strike(note = 62.0, velocity = 0.72):
+  blooms[next_voice].duration_s = pace
   blooms[next_voice].brightness = brightness
   blooms[next_voice].strike(note, velocity)
   next_voice = (next_voice + 1) % VoiceCount
@@ -87,12 +94,7 @@ when blooms.faded(voice, note):
   bloom_faded(voice, note)
 
   if auto_play:
-    steps[voice] = (steps[voice] + Leaps[voice]) % ScaleLength
-    next_note = root_note + Scale[steps[voice]]
-    velocity = 0.48 + 0.07 * f32((steps[voice] + voice) % 5)
-    blooms[voice].decay_s = pace * (0.78 + 0.11 * f32(voice))
-    blooms[voice].brightness = brightness
-    blooms[voice].strike(next_note, velocity)
+    pending_bang = true
 
 sample:
   if auto_play && !previous_auto_play:
@@ -100,12 +102,12 @@ sample:
   previous_auto_play = auto_play
 
   if pending_bang:
-    for i in 0..VoiceCount:
-      steps[i] = Starts[i]
-      blooms[i].decay_s = pace * (0.78 + 0.11 * f32(i))
-      blooms[i].brightness = brightness
-      blooms[i].strike(root_note + Scale[steps[i]], 0.54 + 0.06 * f32(i))
-      pans[i] = -0.84 + 1.68 * f32(i) / f32(VoiceCount - 1)
+    velocity = 0.48 + 0.07 * ((steps[next_voice] + next_voice) % 5)
+    blooms[next_voice].duration_s = pace
+    blooms[next_voice].brightness = brightness
+    blooms[next_voice].strike(root_note + Scale[steps[next_voice]], velocity)
+    steps[next_voice] = (steps[next_voice] + Leaps[next_voice]) % ScaleLength
+    next_voice = (next_voice + 1) % VoiceCount
     pending_bang = false
 
   dry_l = 0.0

@@ -1,8 +1,20 @@
+# Delay lines and echo processors for shifting audio in time and building feedback effects.
+# Supports interpolated reads, diffusion, and smooth transitions between delay positions.
+# Capacity is at least two. Cubic uses a fixed one-sample tap with up to four slots.
+# Delay and CrossfadeDelay use a fixed one-sample tap with up to three slots.
+# With two slots, Linear, Smooth, and Crossfade pass the current sample through.
+# The upper tap bounds in samples are Capacity - 2 for linear reads,
+# max(Capacity - 3, 1) for Cubic, and max(Capacity - 2, 1) for feedback delays.
+
 import std/data
 import std/smoothing
 
 namespace std::delay<Capacity = SR * 2>:
-  assert(Capacity > 3)
+  assert(Capacity > 1)
+
+  const _MaxLinearTap = Capacity - 2
+  const _MaxCubicTap = max(Capacity - 3, 1)
+  const _MaxFeedbackTap = max(_MaxLinearTap, 1)
 
   struct Line<T>:
     data: std::data<Capacity>::Data<T>
@@ -12,10 +24,10 @@ namespace std::delay<Capacity = SR * 2>:
       return self.data.read(self.write_index - delay_samples)
 
     def readL(self, delay_samples: T):
-      return self.data.readL(T(self.write_index) - delay_samples)
+      return self.data.readL(self.write_index - delay_samples)
 
     def readC(self, delay_samples: T):
-      return self.data.readC(T(self.write_index) - delay_samples)
+      return self.data.readC(self.write_index - delay_samples)
 
     def write(self, value: T):
       self.data.storage[self.write_index] = value
@@ -27,12 +39,33 @@ namespace std::delay<Capacity = SR * 2>:
       self.data.storage[:] = 0.0
       self.write_index = 0
 
+  proc Allpass<T>:
+    ins<T> 1
+    outs<T> 1
+
+    params:
+      delay_samples = 1 {1, Capacity - 1, unit = "samples"}
+      feedback: T = 0.5 {-0.999, 0.999}
+
+    init:
+      line = Line<T>()
+
+    event reset():
+      line.clear()
+
+    sample:
+      delayed = line.read(delay_samples)
+      stored = in1 + delayed * feedback
+      line.write(stored)
+      line.advance()
+      out1 = delayed - stored * feedback
+
   proc Integer<T>:
     ins<T> 1
     outs<T> 1
 
     params:
-      delay_samples = 1 {0, Capacity - 1}
+      delay_samples = 1 {0, Capacity - 1, unit = "samples"}
 
     init:
       line = Line<T>()
@@ -50,7 +83,7 @@ namespace std::delay<Capacity = SR * 2>:
     outs<T> 1
 
     params<T>:
-      delay_samples = 1.0 {0.0, Capacity - 2}
+      delay_samples = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
 
     init:
       line = Line<T>()
@@ -59,16 +92,19 @@ namespace std::delay<Capacity = SR * 2>:
       line.clear()
 
     sample:
-      line.write(in1)
-      out1 = line.readL(delay_samples)
-      line.advance()
+      if _MaxLinearTap == 0:
+        out1 = in1
+      else:
+        line.write(in1)
+        out1 = line.readL(delay_samples)
+        line.advance()
 
   proc Cubic<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      delay_samples = 1.0 {1.0, Capacity - 3}
+      delay_samples = 1.0 {1.0, _MaxCubicTap, unit = "samples"}
 
     init:
       line = Line<T>()
@@ -78,7 +114,10 @@ namespace std::delay<Capacity = SR * 2>:
 
     sample:
       line.write(in1)
-      out1 = line.readC(delay_samples)
+      if _MaxCubicTap == 1:
+        out1 = line.read(1)
+      else:
+        out1 = line.readC(delay_samples)
       line.advance()
 
   proc Smooth<T>:
@@ -86,152 +125,141 @@ namespace std::delay<Capacity = SR * 2>:
     outs<T> 1
 
     params<T>:
-      delay_samples = 1.0 {0.0, Capacity - 2}
-      transition_s = 0.02 {0.0, 1.0} => update_transition
+      delay_samples = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
+      lag_s = 0.02 => update_lag
 
-    init<T>:
+    init:
       line = Line<T>()
-      current_delay = delay_samples
-      transition_coefficient = 0.0
+      tap = std::smoothing::Lag<T>()
+      tap.reset(delay_samples)
 
-    def update_transition():
-      transition_coefficient = std::smoothing::time_coefficient<T>(transition_s)
+    def update_lag():
+      tap.lag_s = lag_s
 
     event reset():
       line.clear()
-      current_delay = delay_samples
+      tap.reset(delay_samples)
 
     sample:
-      current_delay = delay_samples + (current_delay - delay_samples) * transition_coefficient
-      line.write(in1)
-      out1 = line.readL(current_delay)
-      line.advance()
+      if _MaxLinearTap == 0:
+        out1 = in1
+      else:
+        line.write(in1)
+        out1 = line.readL(tap(delay_samples))
+        line.advance()
+
+  # Finish each fade before accepting the latest requested tap position.
+  struct _CrossfadeTap<T>:
+    old_delay: T = 0.0
+    target_delay: T = 0.0
+    remaining: i64 = 0
+    phase_step: T = 0.0
+
+    def reset(self, delay_samples: T):
+      self.old_delay = delay_samples
+      self.target_delay = delay_samples
+      self.remaining = 0
+
+    def read(self, line: Line<T>, delay_samples: T, fade_s: T):
+      if self.remaining == 0 && delay_samples != self.target_delay:
+        self.old_delay = self.target_delay
+        self.target_delay = delay_samples
+        self.remaining = std::smoothing::_duration_samples(fade_s)
+        self.phase_step = 1.0 / T(max(self.remaining, 1))
+
+      target = line.readL(self.target_delay)
+      if self.remaining > 1:
+        self.remaining -= 1
+        return std::smoothing::_blend_at(
+          target,
+          line.readL(self.old_delay),
+          T(self.remaining) * self.phase_step
+        )
+      self.remaining = 0
+      return target
 
   proc Crossfade<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      delay_samples = 1.0 {0.0, Capacity - 2}
-      transition_s = 0.02 {0.0, 1.0} => update_transition
+      delay_samples = 1.0 {0.0, _MaxLinearTap, unit = "samples"}
+      fade_s = 0.02
 
-    init<T>:
+    init:
       line = Line<T>()
-      old_delay = delay_samples
-      target_delay = old_delay
-      fade = 1.0
-      transition_step = 1.0
-
-    def update_transition():
-      transition_step = 1.0 / max(transition_s * SR, T(1.0))
+      tap: _CrossfadeTap<T>
+      tap.reset(delay_samples)
 
     event reset():
       line.clear()
-      old_delay = delay_samples
-      target_delay = old_delay
-      fade = 1.0
+      tap.reset(delay_samples)
 
     sample:
-      requested = delay_samples
-      if fade >= 1.0 && requested != target_delay:
-        if transition_step >= 1.0:
-          old_delay = requested
-          target_delay = requested
-        else:
-          old_delay = target_delay
-          target_delay = requested
-          fade = 0.0
-
-      line.write(in1)
-      if fade < 1.0:
-        a = line.readL(old_delay)
-        b = line.readL(target_delay)
-        out1 = lerp(a, b, fade)
-        fade = min(fade + transition_step, T(1.0))
-        if fade >= 1.0:
-          old_delay = target_delay
+      if _MaxLinearTap == 0:
+        out1 = in1
       else:
-        out1 = line.readL(target_delay)
-
-      line.advance()
+        line.write(in1)
+        out1 = tap.read(line, delay_samples, fade_s)
+        line.advance()
 
   proc Delay<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+      delay_s = 0.1 {T(1.0) / SR, T(_MaxFeedbackTap) / SR, unit = "s"}
       feedback = 0.0 {-0.999, 0.999}
       mix = 1.0 {0.0, 1.0}
-      transition_s = 0.02 {0.0, 1.0} => update_transition
+      lag_s = 0.02 => update_lag
 
-    init<T>:
+    init:
       line = Line<T>()
-      current_delay = delay_s * SR
-      transition_coefficient = 0.0
+      tap = std::smoothing::Lag<T>()
+      tap.reset(delay_s * SR)
 
-    def update_transition():
-      transition_coefficient = std::smoothing::time_coefficient<T>(transition_s)
+    def update_lag():
+      tap.lag_s = lag_s
 
     event reset():
       line.clear()
-      current_delay = delay_s * SR
+      tap.reset(delay_s * SR)
 
     sample:
-      requested_delay = delay_s * SR
-      current_delay = requested_delay + (current_delay - requested_delay) * transition_coefficient
-      delayed = line.readL(current_delay)
+      delayed: T = 0.0
+      if _MaxFeedbackTap == 1:
+        delayed = line.read(1)
+      else:
+        delayed = line.readL(tap(delay_s * SR))
       line.write(in1 + delayed * feedback)
       line.advance()
-      out1 = lerp(in1, delayed, mix)
+      out1 = std::smoothing::_blend_at(in1, delayed, mix)
 
   proc CrossfadeDelay<T>:
     ins<T> 1
     outs<T> 1
 
     params<T>:
-      delay_s = 0.1 {T(1.0) / SR, T(Capacity - 2) / SR}
+      delay_s = 0.1 {T(1.0) / SR, T(_MaxFeedbackTap) / SR, unit = "s"}
       feedback = 0.0 {-0.999, 0.999}
       mix = 1.0 {0.0, 1.0}
-      transition_s = 0.02 {0.0, 1.0} => update_transition
+      fade_s = 0.02
 
-    init<T>:
+    init:
       line = Line<T>()
-      old_delay = delay_s * SR
-      target_delay = old_delay
-      fade = 1.0
-      transition_step = 1.0
-
-    def update_transition():
-      transition_step = 1.0 / max(transition_s * SR, T(1.0))
+      tap: _CrossfadeTap<T>
+      tap.reset(delay_s * SR)
 
     event reset():
       line.clear()
-      old_delay = delay_s * SR
-      target_delay = old_delay
-      fade = 1.0
+      tap.reset(delay_s * SR)
 
     sample:
-      requested_delay = delay_s * SR
-      if fade >= 1.0 && requested_delay != target_delay:
-        if transition_step >= 1.0:
-          old_delay = requested_delay
-          target_delay = requested_delay
-        else:
-          old_delay = target_delay
-          target_delay = requested_delay
-          fade = 0.0
-
-      if fade < 1.0:
-        a = line.readL(old_delay)
-        b = line.readL(target_delay)
-        delayed = lerp(a, b, fade)
-        fade = min(fade + transition_step, T(1.0))
-        if fade >= 1.0:
-          old_delay = target_delay
+      delayed: T = 0.0
+      if _MaxFeedbackTap == 1:
+        delayed = line.read(1)
       else:
-        delayed = line.readL(target_delay)
-
+        delayed = tap.read(line, delay_s * SR, fade_s)
       line.write(in1 + delayed * feedback)
       line.advance()
-      out1 = lerp(in1, delayed, mix)
+      out1 = std::smoothing::_blend_at(in1, delayed, mix)

@@ -628,7 +628,7 @@ impl<'a> FunctionLowerer<'a> {
             onda_mir::Function {
                 name: self.emitted_name,
                 kind: onda_mir::FunctionKind::Process,
-                attributes: compiler_generated_function_attributes(),
+                attributes: compiler_generated_function_attributes(InlineHint::Always),
                 params: onda_mir::process_function_params(i32_type),
                 results: Vec::new(),
                 locals: self.locals,

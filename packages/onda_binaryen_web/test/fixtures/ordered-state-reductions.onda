@@ -1,0 +1,23 @@
+# The middle terms lose significance if adjacent voices are added together first.
+const Large = 100000000000000000000.0
+
+proc Voice:
+  ins<f32> 1
+  init:
+    history: f64 = 0.0
+  sample:
+    history = history * 0.5 + in1
+    out1 = f32(history)
+
+ins 1
+outs 2
+init:
+  voices: Voice[9] = Voice()
+  levels: f32[9] = [Large, 1.0, -Large, 3.0, Large, -Large, 1.0, 2.0, 0.25]
+
+sample:
+  total = 0.0
+  for i in 0..9:
+    total += voices[i](levels[i] + in1)
+  out1 = total
+  out2 = voices[8].out1

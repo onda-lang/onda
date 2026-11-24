@@ -212,7 +212,9 @@ fn native_window_forwards_typed_overrides_and_current_bindings_on_reload() {
     wait_for_launches(&mut controller, 1);
     let replacement = fixture.0.join("new clip.wav");
     controller.bind_buffer_file("bank[1]", replacement.to_str().unwrap());
-    controller.set_compile_settings(44_100, 512, false).unwrap();
+    controller
+        .set_compile_settings(44_100, 512, onda_run::FloatMathMode::Strict)
+        .unwrap();
     wait_for_launches(&mut controller, 2);
     controller.clear_buffer("bank[1]");
     fs::write(fixture.0.join("main.onda"), "sample:\n  out1 = 0.25\n").unwrap();
@@ -220,6 +222,8 @@ fn native_window_forwards_typed_overrides_and_current_bindings_on_reload() {
     for (index, launch) in contents.split("\nEND\n").take(3).enumerate() {
         let args = launch.lines().collect::<Vec<_>>();
         assert!(args.starts_with(&["run", "play"]));
+        assert_eq!(args.contains(&"--strict-math"), index != 0);
+        assert!(!args.contains(&"--fast-math"));
         assert_eq!(args.iter().filter(|arg| **arg == "--const").count(), 2);
         for expected in ["Gain=0.5", "Values=[-0.5, -0.25]"] {
             assert!(

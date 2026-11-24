@@ -1,0 +1,32 @@
+proc Meter:
+  params:
+    active = 0.0 => update
+  init:
+    running = false
+    peak = 1.0
+    held = 2.0
+    last = 3.0
+  def update():
+    if active > 0.0:
+      if !running:
+        held = peak + last
+        peak += 1.0
+        running = true
+    else:
+      if running:
+        last = peak + held
+        peak -= 0.5
+        running = false
+  sample:
+    out1 = held + last
+
+init:
+  meters: Meter[4] = Meter()
+  frame = 0
+sample:
+  active = f32(frame < 2)
+  total = 0.0
+  for i in 0..4:
+    total += meters[i](active = active)
+  out1 = total
+  frame = (frame + 1) % 4

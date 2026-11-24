@@ -20,5 +20,8 @@ assets, and example catalog. `stage.sh` assembles `_site_source` with those asse
 documentation, and the homepage example. Rebuild and restage after changing
 browser code or examples. GitHub Pages uses the same build and staging workflow.
 
+The homepage and the default playground both use
+[`examples/basic/saw_filter_saturator.onda`](../examples/basic/saw_filter_saturator.onda).
+
 `docs/stdlib.md` is generated from the compiler's embedded standard library.
 Use `npm run check:stdlib-docs` to check that it is current.

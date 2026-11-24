@@ -1762,11 +1762,15 @@ fn range_of_rvalue(
                 crate::UnaryOp::LogicalNot => None,
             }
         }
-        Rvalue::Binary { op, lhs, rhs } => range_of_binary(
-            *op,
-            range_of_value(*lhs, environment)?,
-            range_of_value(*rhs, environment)?,
-        ),
+        Rvalue::Binary { op, lhs, rhs } => {
+            let lhs = range_of_value(*lhs, environment);
+            let rhs = range_of_value(*rhs, environment);
+            if *op == BinaryOp::BitAnd {
+                let full = IntegerRange::full(lhs.or(rhs)?.scalar);
+                return range_of_binary(*op, lhs.or(full)?, rhs.or(full)?);
+            }
+            range_of_binary(*op, lhs?, rhs?)
+        }
         Rvalue::Cast { value, to } => {
             let source = range_of_value(*value, environment)?;
             match (source.scalar, to) {

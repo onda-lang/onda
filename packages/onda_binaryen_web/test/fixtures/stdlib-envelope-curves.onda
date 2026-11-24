@@ -1,0 +1,65 @@
+import std/env
+
+proc Exercise<T>:
+  outs<T> 5
+
+  init:
+    envelope = std::env::DecayEnv<T>(decay_s = 32.0 / SR, curve = -4.0)
+    ramp = std::smoothing::Ramp<T>(duration_s = 32.0 / SR, shape = std::smoothing::RampShape::Exponential, curve = 4.0)
+    tail = std::env::Decay<T>(decay_60db_s = 48.0 / SR)
+    gated = std::env::ADSR<T>(attack_s = 8.0 / SR, decay_s = 8.0 / SR, sustain = 0.5, release_s = 12.0 / SR,
+      attack_shape = std::smoothing::RampShape::Exponential, attack_curve = -4.0,
+      decay_shape = std::smoothing::RampShape::Exponential, decay_curve = 4.0,
+      release_shape = std::smoothing::RampShape::Exponential, release_curve = -2.0)
+    frame = 0
+    completed = 0
+
+  when envelope.finished():
+    completed += 1
+
+  sample 4:
+    tick = frame % 64
+    impulse: T = 0.0
+    if tick == 0:
+      envelope.start()
+      gated.start()
+      impulse = 1.0
+    if tick == 8:
+      envelope.curve = -envelope.curve
+      ramp.curve = -ramp.curve
+    if tick == 16:
+      impulse = 0.5
+      tail.decay_60db_s = 24.0 / SR
+    if tick == 24:
+      gated.release()
+    if tick == 40:
+      tail.reset()
+    if tick == 48:
+      tail.decay_60db_s = 48.0 / SR
+    target: T = 1.0
+    if tick >= 32:
+      target = -1.0
+    out1 = envelope()
+    out2 = ramp(target)
+    out3 = tail(impulse)
+    out4 = gated()
+    out5 = T(completed)
+    frame += 1
+
+outs 10
+init:
+  narrow = Exercise<f32>()
+  wide = Exercise<f64>()
+sample:
+  a, b, c, d, e = narrow()
+  f, g, h, i, j = wide()
+  out1 = a
+  out2 = b
+  out3 = c
+  out4 = d
+  out5 = e
+  out6 = f32(f)
+  out7 = f32(g)
+  out8 = f32(h)
+  out9 = f32(i)
+  out10 = f32(j)

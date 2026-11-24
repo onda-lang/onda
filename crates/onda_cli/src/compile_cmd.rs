@@ -3,8 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use onda_codegen_llvm::{
-    lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir, MirCodegenError,
-    MirTargetOptions, TargetConfig,
+    lower_optimized_mir_to_object_artifact, lower_optimized_mir_to_target_llvm_ir, FloatMathMode,
+    MirCodegenError, MirTargetOptions, TargetConfig,
 };
 use onda_frontend::{parse_program_file, PrimitiveType};
 use onda_semantics::{
@@ -30,7 +30,7 @@ pub(crate) struct CompileRequest<'a> {
     pub const_overrides: &'a [(String, String)],
     pub list_consts: bool,
     pub show_meta: bool,
-    pub fast_math: bool,
+    pub math: FloatMathMode,
     pub target: TargetConfig,
 }
 
@@ -46,7 +46,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
         const_overrides,
         list_consts,
         show_meta,
-        fast_math,
+        math,
         target,
     } = request;
     let project_input = crate::project_cmd::resolve_entry(input)?;
@@ -104,11 +104,7 @@ pub(crate) fn run_compile(request: CompileRequest<'_>) -> Result<(), String> {
             .join("\n");
         format!("MIR lowering failed:\n{details}")
     })?;
-    let codegen_options = MirTargetOptions {
-        math: Default::default(),
-        fast_math,
-        target,
-    };
+    let codegen_options = MirTargetOptions::new(target, math);
 
     match emit {
         CompileEmit::Check => {

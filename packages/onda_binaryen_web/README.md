@@ -122,9 +122,8 @@ compares targeted edge cases and deterministic random bit patterns against Rust'
 `mul_add` oracle. Binaryen removes unused helper functions, so a program pays code size only for
 the math closure it calls. Generated modules need no default host imports.
 
-Compilation defaults to Binaryen O4 for speed, strict floating-point optimization, WebAssembly
-SIMD enabled, and Binaryen's ordinary inlining policy. Options are explicit and recorded in
-`artifact.metadata.optimization`:
+Compilation defaults to Binaryen O4, strict floating-point optimization, and WebAssembly SIMD.
+The selected options are recorded in `artifact.metadata.optimization`.
 
 ```js
 compileTrustedMir(mir, {
@@ -138,10 +137,14 @@ compileTrustedMir(mir, {
 });
 ```
 
-Loop-containing inlining remains opt-in because controlled measurements were workload-dependent:
-it helped the oversampling fixture but regressed the language and saturator fixtures. The compiler
-saves and restores Binaryen's process-global optimization settings around every module, so one
-compile cannot silently change another compile's numerical or inlining policy.
+The backend passes MIR inline hints to Binaryen's inliner. `always` requests inlining even
+for callees with loops, subject to Binaryen's combined-function size and iteration limits.
+`never` keeps shared callees out of the inliner. At O2 and above or shrink level 2,
+Binaryen's cost model applies to `auto`, `prefer`, and linked math routines. Modules with
+`always` run the inliner before identical functions can merge. Lower optimization levels
+run the inliner only for `always`. Setting `optimize: false` skips inlining entirely.
+`allowInliningFunctionsWithLoops` tunes the normal cost model. The compiler restores
+Binaryen's process-global settings after each build.
 
 O4 was selected by an affinity-pinned O3/O4 A/B over language, oversampling, saturator, and complete
 math workloads. It improved three workloads and left saturator effectively unchanged, at the cost
@@ -188,9 +191,6 @@ Current limitations are explicit:
 - scalar FMA and transcendental operations are software helpers on core Wasm targets, so LLVM may
   still use faster target instructions or platform libm implementations
 - recursive call graphs are rejected as unbounded realtime work
-- `inline: always` and `inline: never` are validated but remain advisory because Binaryen.js does
-  not expose per-function inline/no-inline annotations; its module optimizer chooses whether to
-  inline a call
 - this low-level package accepts MIR rather than source; the product-facing `onda-wasm` CLI lives in
   `@onda-lang/wasm-compiler`, while the native `onda compile` command does not yet emit linked Wasm
 - production consumers must package/cache Binaryen; Web Audio users can use the separate optional

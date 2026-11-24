@@ -31,9 +31,7 @@ struct LoadState {
     resolutions: Vec<SourceResolution>,
     resolution_set: HashSet<SourceResolution>,
     builtin_stack: Vec<String>,
-    top_level_const_names: HashSet<String>,
-    has_main_entry: bool,
-    has_unwrapped_entry: bool,
+    item_checks: ProgramItemChecks,
 }
 
 impl LoadState {
@@ -366,6 +364,20 @@ impl ParseLocContext {
             line_index: LineIndex::new(source),
         }
     }
+
+    fn source_line(&self, line: usize) -> usize {
+        if let Some(&mapped) = self.source_line_map.get(line.saturating_sub(1)) {
+            return mapped;
+        }
+        // Pest can point just past the last mapped line at EOF. Count from the
+        // last authored line so synthetic closing braces do not shift diagnostics.
+        let last = self
+            .source_line_map
+            .last()
+            .copied()
+            .unwrap_or(self.line_offset);
+        last.saturating_add(line.saturating_sub(self.source_line_map.len()))
+    }
 }
 
 /// Pest's `Position::line_col` scans the source prefix for every span. Keep
@@ -535,15 +547,8 @@ pub fn parse_program(source: &str) -> Result<Program, Vec<Diagnostic>> {
                     &[],
                     &source_line_map,
                     true,
-                    &mut state,
-                )
-                .map_err(|diags| {
-                    annotate_diagnostics_with_file(
-                        diags,
-                        &virtual_path,
-                        start_line.saturating_sub(1),
-                    )
-                })?;
+                    &mut state.item_checks,
+                )?;
                 blocks.append(&mut parsed.blocks);
             }
             TopLevelItem::Include { path, line } => {
@@ -739,8 +744,26 @@ fn parse_program_preprocessed(
     trace: &[String],
     source_line_map: &[usize],
     allow_main_entry: bool,
-    state: &mut LoadState,
+    item_checks: &mut ProgramItemChecks,
 ) -> Result<Program, Vec<Diagnostic>> {
+    with_program_syntax(
+        preprocessed,
+        file_path,
+        line_offset,
+        trace,
+        source_line_map,
+        |program_pair| item_checks.parse(program_pair, allow_main_entry),
+    )
+}
+
+pub(super) fn with_program_syntax<'a, T>(
+    preprocessed: &'a str,
+    file_path: &Path,
+    line_offset: usize,
+    trace: &[String],
+    source_line_map: &[usize],
+    visit: impl FnOnce(Pair<'a, Rule>) -> Result<T, Vec<Diagnostic>>,
+) -> Result<T, Vec<Diagnostic>> {
     let loc_context =
         ParseLocContext::new(preprocessed, file_path, line_offset, trace, source_line_map);
     with_parse_loc_context(loc_context, || {
@@ -750,21 +773,38 @@ fn parse_program_preprocessed(
             .next()
             .ok_or_else(|| vec![Diagnostic::syntax("empty parse result", 1, 1)])?;
         validate_numeric_literals(&program_pair)?;
-
-        let mut blocks = Vec::new();
-        for pair in program_pair.into_inner() {
-            parse_program_item(pair, allow_main_entry, &mut blocks, state)?;
-        }
-
-        Ok(Program { blocks })
+        visit(program_pair)
     })
+    .map_err(|diags| annotate_diagnostics_with_file(diags, file_path, line_offset))
+}
+
+/// Tracks top-level declarations across code chunks separated by directives.
+#[derive(Default)]
+pub(super) struct ProgramItemChecks {
+    top_level_const_names: HashSet<String>,
+    has_main_entry: bool,
+    has_unwrapped_entry: bool,
+}
+
+impl ProgramItemChecks {
+    pub(super) fn parse(
+        &mut self,
+        program: Pair<'_, Rule>,
+        allow_main_entry: bool,
+    ) -> Result<Program, Vec<Diagnostic>> {
+        let mut blocks = Vec::new();
+        for pair in program.into_inner() {
+            parse_program_item(pair, allow_main_entry, &mut blocks, self)?;
+        }
+        Ok(Program { blocks })
+    }
 }
 
 fn parse_program_item(
     pair: Pair<'_, Rule>,
     allow_main_entry: bool,
     blocks: &mut Vec<Block>,
-    state: &mut LoadState,
+    checks: &mut ProgramItemChecks,
 ) -> Result<(), Vec<Diagnostic>> {
     let rule = pair.as_rule();
     let is_entry_section = matches!(
@@ -788,13 +828,13 @@ fn parse_program_item(
             | Rule::graph_block
     );
     if is_entry_section {
-        if state.has_main_entry {
+        if checks.has_main_entry {
             return Err(vec![Diagnostic::semantic_span(
                 "top-level proc Main cannot be mixed with unwrapped top-level processor sections",
                 stmt_loc_from_pair(&pair).as_ref(),
             )]);
         }
-        state.has_unwrapped_entry = true;
+        checks.has_unwrapped_entry = true;
     }
 
     match rule {
@@ -806,7 +846,7 @@ fn parse_program_item(
         }
         Rule::const_block | Rule::config_const_block => {
             let decl = parse_const_decl(pair)?;
-            if !state.top_level_const_names.insert(decl.name.clone()) {
+            if !checks.top_level_const_names.insert(decl.name.clone()) {
                 return Err(vec![Diagnostic::semantic_span(
                     format!("duplicate top-level constant '{}'", decl.name),
                     decl.loc.as_ref(),
@@ -832,9 +872,9 @@ fn parse_program_item(
             if proc_def.name == "Main" {
                 let message = if !allow_main_entry {
                     Some("top-level proc Main is only allowed in an entry or included file")
-                } else if state.has_main_entry {
+                } else if checks.has_main_entry {
                     Some("duplicate top-level proc Main")
-                } else if state.has_unwrapped_entry {
+                } else if checks.has_unwrapped_entry {
                     Some("top-level proc Main cannot be mixed with unwrapped top-level processor sections")
                 } else if !proc_def.type_params.is_empty() {
                     Some("top-level proc Main cannot be generic")
@@ -847,7 +887,7 @@ fn parse_program_item(
                         proc_def.loc.as_ref(),
                     )]);
                 }
-                state.has_main_entry = true;
+                checks.has_main_entry = true;
             }
             blocks.push(Block::Proc(proc_def));
         }
@@ -921,15 +961,8 @@ fn load_program_blocks_from_file(
                         &trace,
                         &source_line_map,
                         !import_module_mode,
-                        state,
-                    )
-                    .map_err(|diags| {
-                        annotate_diagnostics_with_file(
-                            diags,
-                            &canonical,
-                            start_line.saturating_sub(1),
-                        )
-                    })?;
+                        &mut state.item_checks,
+                    )?;
                     if import_module_mode {
                         validate_imported_blocks(&parsed.blocks, &canonical)?;
                     }
@@ -1738,15 +1771,8 @@ fn load_builtin_module_blocks(
                         trace,
                         &source_line_map,
                         !import_module_mode,
-                        state,
-                    )
-                    .map_err(|diags| {
-                        annotate_diagnostics_with_file(
-                            diags,
-                            &virtual_path,
-                            start_line.saturating_sub(1),
-                        )
-                    })?;
+                        &mut state.item_checks,
+                    )?;
                     blocks.append(&mut parsed.blocks);
                 }
                 TopLevelItem::Include { path, .. } => {
@@ -1877,19 +1903,14 @@ pub(super) fn stmt_loc_from_pair(pair: &Pair<'_, Rule>) -> Span {
         let span = pair.as_span();
         let (line, column) = current.line_index.line_col(span.start());
         let (end_line, end_column) = current.line_index.line_col(span.end());
-        let mapped_line = current
-            .source_line_map
-            .get(line.saturating_sub(1))
-            .copied()
-            .unwrap_or_else(|| line.saturating_add(current.line_offset));
-        let mapped_end_line = current
-            .source_line_map
-            .get(end_line.saturating_sub(1))
-            .copied()
-            .unwrap_or_else(|| end_line.saturating_add(current.line_offset));
         current
             .source
-            .at(mapped_line, column, mapped_end_line, end_column)
+            .at(
+                current.source_line(line),
+                column,
+                current.source_line(end_line),
+                end_column,
+            )
             .span()
     })
 }
@@ -1905,19 +1926,12 @@ pub(super) fn parse_loc_from_raw(
         let Some(current) = context.last() else {
             return SourceLoc::new(None, line, column, end_line, end_column, Vec::new());
         };
-        let mapped_line = current
-            .source_line_map
-            .get(line.saturating_sub(1))
-            .copied()
-            .unwrap_or_else(|| line.saturating_add(current.line_offset));
-        let mapped_end_line = current
-            .source_line_map
-            .get(end_line.saturating_sub(1))
-            .copied()
-            .unwrap_or_else(|| end_line.saturating_add(current.line_offset));
-        current
-            .source
-            .at(mapped_line, column, mapped_end_line, end_column)
+        current.source.at(
+            current.source_line(line),
+            column,
+            current.source_line(end_line),
+            end_column,
+        )
     })
 }
 

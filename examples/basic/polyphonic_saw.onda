@@ -8,7 +8,7 @@ const NumVoices = 8
 
 proc Voice:
   params:
-    decay_s = 0.35
+    decay_s = 1.5
     amp = 1.0
 
   init:
@@ -22,12 +22,12 @@ proc Voice:
     freq = freq_hz
     cutoff = cutoff_hz
     osc.reset()
+    env.decay_s = decay_s
     env.start()
 
   sample:
     osc.freq = freq
     lpf.cutoff = cutoff
-    env.decay_s = decay_s
 
     level = env()
 
@@ -43,16 +43,16 @@ params:
   freq_max = 880.0 {20.0, 4000.0}
   cutoff_min = 300.0 {20.0, 20000.0}
   cutoff_max = 6000.0 {20.0, 20000.0}
-  decay_s = 0.35 {0.01, 4.0}
+  decay_s = 1.5 {0.01, 4.0, unit = "s"}
   amp = 1.0 {0.0, 1.0}
   bpm = 126.0 {45.0, 220.0, unit = "BPM"}
-  level = 1.0 {0.0, 1.0}
+  level = 0.6 {0.0, 1.0}
 
 init:
   voices: Voice[NumVoices] = Voice()
   next_voice = 0
   rng = std::random::Rng()
-  panners: std::levels::Pan3db<f32>[NumVoices] = std::levels::Pan3db<f32>()
+  panners: std::levels::Pan3db<f32>[NumVoices] = std::levels::Pan3db()
   clock = 0
   pending_bang = false
 
@@ -87,5 +87,5 @@ sample:
     left, right = panners[i](voice)
     mix_l = mix_l + left
     mix_r = mix_r + right
-  out1 = tanh(mix_l * level)
-  out2 = tanh(mix_r * level)
+  out1 = tanh(mix_l) * level
+  out2 = tanh(mix_r) * level

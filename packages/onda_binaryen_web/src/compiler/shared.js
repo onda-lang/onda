@@ -111,8 +111,13 @@ export const TRAPPING_DESCRIPTOR_BINARY_OPS = new Set([
   binaryen.RemUInt64,
 ]);
 
-export function collectMathKernelHelpers(mir) {
-  const result = new Set();
+export function roundHelperName(scalar) {
+  return `$onda.math.round.${scalar}`;
+}
+
+export function collectMathHelpers(mir) {
+  const kernel = new Set();
+  const round = new Set();
   for (const func of mir?.functions ?? []) {
     const localScalars = (func.locals ?? []).map((local) => {
       const type = mir.types?.[local.ty];
@@ -130,11 +135,12 @@ export function collectMathKernelHelpers(mir) {
         if (kind === "assign" && data?.value?.kind === "intrinsic") {
           const intrinsic = data.value.data?.intrinsic;
           const scalar = valueScalar(data.value.data?.args?.[0]);
-          if (
-            MATH_KERNEL_INTRINSICS.has(intrinsic)
-            && (scalar === "f32" || scalar === "f64")
-          ) {
-            result.add(`onda_math_${intrinsic}_${scalar}`);
+          if (scalar === "f32" || scalar === "f64") {
+            if (MATH_KERNEL_INTRINSICS.has(intrinsic)) {
+              kernel.add(`onda_math_${intrinsic}_${scalar}`);
+            } else if (intrinsic === "round") {
+              round.add(scalar);
+            }
           }
         } else if (
           kind === "assign"
@@ -143,7 +149,7 @@ export function collectMathKernelHelpers(mir) {
         ) {
           const scalar = valueScalar(data.value.data?.lhs);
           if (scalar === "f32" || scalar === "f64") {
-            result.add(`onda_math_remainder_${scalar}`);
+            kernel.add(`onda_math_remainder_${scalar}`);
           }
         } else if (kind === "if") {
           visitBlock(data?.then_block);
@@ -155,7 +161,7 @@ export function collectMathKernelHelpers(mir) {
     };
     visitBlock(func.body);
   }
-  return result;
+  return { kernel, round };
 }
 
 export function alignUp(value, alignment) {

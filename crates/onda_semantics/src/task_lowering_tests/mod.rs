@@ -761,7 +761,7 @@ sample:
 }
 
 #[test]
-fn top_level_task_resume_is_a_shared_compiler_function() {
+fn top_level_task_shares_resume_and_inlines_reset() {
     let source = r#"
 init:
   pin progress: i32 = 0
@@ -769,6 +769,8 @@ task prepare():
   progress += 1
   yield
   progress += 1
+event restart():
+  prepare.reset()
 block:
   await prepare()
   sample:
@@ -788,6 +790,13 @@ block:
         onda_mir::FunctionOrigin::CompilerGenerated
     );
     assert_eq!(resume.attributes.inline, onda_mir::InlineHint::Never);
+
+    let reset = mir
+        .functions
+        .iter()
+        .find(|function| function.name == task_reset_def("prepare"))
+        .expect("missing task reset function");
+    assert_eq!(reset.attributes.inline, onda_mir::InlineHint::Always);
 
     let result = mir
         .state

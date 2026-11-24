@@ -9,12 +9,13 @@ mod bench_cmd;
 mod compile_cmd;
 mod daemon_stdio;
 mod diag_print;
+mod fmt_cmd;
 mod project_cmd;
 mod run_cmd;
 
 use args::parse_args;
 use compile_cmd::run_compile;
-use onda_codegen_llvm::{TargetConfig, TargetOptLevel};
+use onda_codegen_llvm::{FloatMathMode, TargetConfig, TargetOptLevel};
 use onda_run::RunThemeMode;
 use run_cmd::{run_daemon, run_run};
 
@@ -30,7 +31,7 @@ const USAGE_BODY: &str = r#"Commands:
     
     [--emit <check|mir|mir-json|mir-messagepack|llvm-ir|obj>] [--output <path>] [--meta-out <path>]
     [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
-    [--opt-level <0|1|2|3>] [--fast-math]  
+    [--opt-level <0|1|2|3>] [--fast-math | --strict-math]
     [--dump-graph] [--list-consts] [--meta]
     [--target-spec <path>] [--target-features <feature-list>] 
     [--target-triple <triple>] [--target-cpu <name|host>] [--target-abi <name>] 
@@ -40,7 +41,7 @@ const USAGE_BODY: &str = r#"Commands:
   onda run [input]                   Open the interactive run window
     
     [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
-    [--opt-level <0|1|2|3>] [--fast-math] [--param-smoothing-ms <ms>]
+    [--opt-level <0|1|2|3>] [--fast-math | --strict-math] [--param-smoothing-ms <ms>]
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
     [--set <name=value>] [--buffer <name=path>] [--theme <dark|light>] [--meta]
   
@@ -48,7 +49,7 @@ const USAGE_BODY: &str = r#"Commands:
     
     [--dur <seconds> | --forever]
     [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
-    [--opt-level <0|1|2|3>] [--fast-math] [--param-smoothing-ms <ms>]
+    [--opt-level <0|1|2|3>] [--fast-math | --strict-math] [--param-smoothing-ms <ms>]
     [--input-device <name>] [--output-device <name>] [--midi-input-device <name>]
     [--set <name=value>] [--buffer <name=path>] [--control-json] [--start-paused] [--report-sources] [--meta]
   
@@ -56,7 +57,7 @@ const USAGE_BODY: &str = r#"Commands:
     
     [--output <path>] [--dur <seconds>]
     [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
-    [--opt-level <0|1|2|3>] [--fast-math] [--param-smoothing-ms <ms>]
+    [--opt-level <0|1|2|3>] [--fast-math | --strict-math] [--param-smoothing-ms <ms>]
     [--set <name=value>] [--buffer <name=path>] [--meta]
   
   onda project <directory>           Create or package an Onda project
@@ -67,9 +68,11 @@ const USAGE_BODY: &str = r#"Commands:
 
     [--runs <count>] [--blocks <count>] [--warmup-blocks <count>]
     [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
-    [--opt-level <0|1|2|3>] [--fast-math]
+    [--opt-level <0|1|2|3>] [--fast-math | --strict-math]
     [--set <name=value>] [--buffer <name=path>] [--meta] [--json]
   
+  onda fmt [--check] <file>          Format an Onda source file in place, or check its style
+
   onda daemon diagnose <input>       Run daemon-backed analysis and diagnostics
     
     [--sample-rate <hz>] [--block-size <frames>] [--const <name=value>]
@@ -87,6 +90,8 @@ Shared Options:
   --param-smoothing-ms   Run parameter smoothing in milliseconds (default: 30; 0 disables)
   --opt-level            LLVM optimization level (default: 3)
   --fast-math            Enable all LLVM floating-point arithmetic relaxations
+  --strict-math          Preserve strict floating-point arithmetic
+                         Default: allow reassociation, contraction, and ignoring signed zero
   --meta                 Print available metadata for the selected command
   --help, -h             Show this help
   --version, -v          Print the version
@@ -156,6 +161,10 @@ fn build_usage() -> String {
 enum Command {
     Help,
     Version,
+    Fmt {
+        input: PathBuf,
+        check: bool,
+    },
     Project {
         destination: PathBuf,
         source: Option<PathBuf>,
@@ -172,7 +181,7 @@ enum Command {
         const_overrides: Vec<(String, String)>,
         list_consts: bool,
         show_meta: bool,
-        fast_math: bool,
+        math: FloatMathMode,
         target: TargetConfig,
     },
     Lsp,
@@ -203,7 +212,7 @@ enum RunCommand {
         input_device: Option<String>,
         output_device: Option<String>,
         midi_input_device: Option<String>,
-        fast_math: bool,
+        math: FloatMathMode,
         show_meta: bool,
         control_json: bool,
         start_paused: bool,
@@ -220,7 +229,7 @@ enum RunCommand {
         block_samples: usize,
         param_smoothing_seconds: f64,
         opt_level: TargetOptLevel,
-        fast_math: bool,
+        math: FloatMathMode,
         show_meta: bool,
         param_sets: Vec<(String, onda_daemon::RunParamValue)>,
         buffer_bindings: Vec<(String, Option<PathBuf>)>,
@@ -237,7 +246,7 @@ enum RunCommand {
         input_device: Option<String>,
         output_device: Option<String>,
         midi_input_device: Option<String>,
-        fast_math: bool,
+        math: FloatMathMode,
         show_meta: bool,
         theme: Option<RunThemeMode>,
     },
@@ -287,7 +296,7 @@ fn main() {
             const_overrides,
             list_consts,
             show_meta,
-            fast_math,
+            math,
             target,
         } => run_compile(compile_cmd::CompileRequest {
             input: &input,
@@ -300,9 +309,10 @@ fn main() {
             const_overrides: &const_overrides,
             list_consts,
             show_meta,
-            fast_math,
+            math,
             target,
         }),
+        Command::Fmt { input, check } => fmt_cmd::run(&input, check),
         Command::Lsp => onda_lsp::run_stdio_loop(),
         Command::Bench(options) => bench_cmd::run_bench(options),
         Command::Run(cmd) => run_run(cmd),

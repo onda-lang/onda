@@ -3,9 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, MirCompileOptions, TargetOptLevel,
-};
+use onda_codegen_llvm::jit_program_from_optimized_mir;
 use onda_frontend::{parse_program, Diagnostic};
 use onda_runtime::bind_output;
 use onda_semantics::{analyze_with_options, lower_program_to_optimized_mir, AnalysisOptions};
@@ -20,13 +18,14 @@ outs {
 }
 params {
   freq = 440.0
+  level = 0.6
 }
 init {
   phase = 0.0
 }
 sample {
   phase = phase + freq * TWO_PI / SR
-  out1 = sin(phase)
+  out1 = sin(phase) * level
 }
 "#;
 
@@ -56,15 +55,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mir = lower_program_to_optimized_mir(&typed)
         .map_err(|errors| format!("MIR lowering failed: {errors:?}"))?;
-    let jit = jit_program_from_optimized_mir_with_options(
-        mir,
-        MirCompileOptions {
-            math: Default::default(),
-            fast_math: false,
-            opt_level: TargetOptLevel::O3,
-        },
-    )
-    .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;
+    let jit = jit_program_from_optimized_mir(mir)
+        .map_err(|d| format_diagnostics("ORC JIT lowering failed", &d))?;
 
     let mut instance = onda_runtime::create_instance(jit, None)
         .map_err(|error| format!("instance creation failed: {error:?}"))?;

@@ -1,5 +1,9 @@
 <h1>
-  <img src="assets/svg/onda-logo-dark-circle.svg" alt="onda logo" width="40" align="absmiddle" /> Onda 
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/svg/onda-logo-dark-circle.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/svg/onda-logo-circle.svg">
+    <img src="assets/svg/onda-logo-circle.svg" alt="onda logo" width="40" align="absmiddle" />
+  </picture> Onda
 </h1>
 
 Onda is an expressive and performant JIT-compiled audio programming language.
@@ -19,6 +23,7 @@ params:
   cutoff = 1200.0 {40.0, 12000.0}
   resonance = 1.0 {0.1, 8.0}
   drive = 1.0 {1.0, 10.0}
+  level = 0.7 {0.0, 1.0}
 
 def soft_clip(x):
   return tanh(x)
@@ -40,7 +45,7 @@ block:
 
   sample:
     tone = osc(freq = freq)
-    out1 = saturator(filter(tone), amount = drive)
+    out1 = saturator(filter(tone), amount = drive) * level
 ```
 
 Take a look at the `examples/` folder for more usage examples.
@@ -96,6 +101,7 @@ onda run play <input>
 onda run render <input>
 onda project <directory> [--from <input.onda>]
 onda bench <input>
+onda fmt [--check] <file>
 onda daemon diagnose <input>
 onda daemon stdio
 onda lsp
@@ -186,6 +192,11 @@ Compilation, warmup, and host overhead are excluded.
 ```bash
 onda bench examples/basic/sine.onda --runs 10 --blocks 1000 --block-size 128
 ```
+
+### `onda fmt`
+
+Run `onda fmt file.onda` to format one source file in place.
+Run `onda fmt --check file.onda` to check the same style without writing.
 
 ### `onda daemon diagnose`
 

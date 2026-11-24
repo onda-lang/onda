@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::proc_state_rewrite::{ProcArrayDeclaration, ProcArrayDeclarations};
 use crate::*;
 use onda_frontend::EventParamDecl;
+use onda_mir::InlineHint;
 
 #[cfg(test)]
 mod declaration_tests;
@@ -337,6 +338,8 @@ pub(crate) struct ProcessorDesugarResult {
     pub(crate) program: Program,
     pub(crate) input_smoothing_aliases: HashMap<String, String>,
     pub(crate) runtime_def_names: HashSet<String>,
+    /// Declaration policies consumed when building typed functions.
+    pub(crate) generated_inline_hints: HashMap<String, InlineHint>,
     pub(crate) def_sample_oversample_factors: HashMap<String, usize>,
     pub(crate) proc_step_oversample_meta: HashMap<String, ProcStepOversampleMeta>,
     pub(crate) proc_instance_oversample_factors: HashMap<String, usize>,
@@ -1643,6 +1646,20 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
+    // Tasks and delegate dispatch also lower to proc-local defs.
+    let authored_proc_locals: HashMap<String, HashSet<String>> = program
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let Block::Proc(proc) = block else {
+                return None;
+            };
+            (!proc.local_defs.is_empty()).then(|| {
+                let names = proc.local_defs.iter().map(|def| def.name.clone()).collect();
+                (proc.name.clone(), names)
+            })
+        })
+        .collect();
     let lowered_tasks = crate::task_lowering::lower_tasks(
         &mut program,
         options,
@@ -1651,11 +1668,15 @@ fn desugar_processors_impl(
         const_scope,
         errors,
     );
-    let mut runtime_def_names = lowered_tasks.runtime_defs;
+    let mut generated_inline_hints = lowered_tasks.runtime_defs;
+    let mut runtime_def_names = generated_inline_hints
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
     let mut entry =
         entry_adapter::EntryAdapter::prepare(&mut program, options, const_scope, errors);
     let mut prepared_delegates = prepare_delegate_source(&mut program, errors);
-    runtime_def_names.extend(prepared_delegates.runtime_defs.iter().cloned());
+    runtime_def_names.extend(prepared_delegates.runtime_defs);
     if let Some(Block::Init(init)) = program
         .blocks
         .iter_mut()
@@ -1698,6 +1719,7 @@ fn desugar_processors_impl(
             program,
             input_smoothing_aliases,
             runtime_def_names,
+            generated_inline_hints,
             def_sample_oversample_factors: HashMap::new(),
             proc_step_oversample_meta: HashMap::new(),
             proc_instance_oversample_factors: HashMap::new(),
@@ -1807,6 +1829,21 @@ fn desugar_processors_impl(
         options,
         &generated_defs,
     );
+    // Projection materialization has selected the shared wrapper names.
+    generated_inline_hints.extend(generated_defs.iter().filter_map(|block| match block {
+        Block::Def(def) => Some((def.name.clone(), InlineHint::Always)),
+        _ => None,
+    }));
+    for operation in processor_views.operations() {
+        if matches!(&operation.kind, crate::processor_views::ProcessorOperation::Local(name)
+            if authored_proc_locals.get(operation.projection.proc_name())
+                .is_some_and(|defs| defs.contains(name)))
+        {
+            if let Some(hint) = generated_inline_hints.get_mut(&operation.name) {
+                *hint = InlineHint::Prefer;
+            }
+        }
+    }
     processor_views.materialized_storage_views = materialized_storage_views;
     resource_recipes::defer_root_resources(&mut processor_views, &program.blocks, options);
     processor_views
@@ -1844,6 +1881,7 @@ fn desugar_processors_impl(
         program,
         input_smoothing_aliases,
         runtime_def_names,
+        generated_inline_hints,
         def_sample_oversample_factors,
         proc_step_oversample_meta,
         proc_instance_oversample_factors,

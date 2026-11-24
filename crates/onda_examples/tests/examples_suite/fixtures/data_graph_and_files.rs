@@ -890,4 +890,4 @@ sample {
 "#;
 
 const WASM_PLAYGROUND_FILE_EXAMPLE: &str =
-    include_str!("../../../../../ui/playground/default.onda");
+    include_str!("../../../../../examples/basic/saw_filter_saturator.onda");

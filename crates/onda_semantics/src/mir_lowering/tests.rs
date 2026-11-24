@@ -66,7 +66,7 @@ fn empty_function(name: &str, kind: FunctionKind) -> Function {
     Function {
         name: name.to_owned(),
         kind,
-        attributes: compiler_generated_function_attributes(),
+        attributes: compiler_generated_function_attributes(InlineHint::Always),
         params: Vec::new(),
         results: Vec::new(),
         locals: Vec::new(),
@@ -93,11 +93,71 @@ sample:
     let mir = lower_test_program(&typed).expect("delegate source should lower");
     assert_eq!(mir.interface.delegates.len(), 1);
     assert_eq!(mir.interface.delegates[0].name, "finished");
+    for function in &mir.functions {
+        assert_eq!(
+            function.attributes.inline,
+            InlineHint::Always,
+            "{}",
+            function.name
+        );
+    }
     let dump = format_program(&mir);
     assert!(
         dump.contains("publish_delegate @delegate0"),
         "delegate publication must survive MIR optimization:\n{dump}"
     );
+}
+
+#[test]
+fn prefers_authored_proc_local_defs_and_always_inlines_generated_dispatch() {
+    let source = r#"
+proc Shape<T>:
+  ins<T> 1
+  outs<T> 1
+  delegate stepped()
+  init:
+    offset: T = 0.0
+  when stepped():
+    offset = 0.125
+  def curve<U>(x: U) -> U:
+    return x * x
+  sample:
+    stepped()
+    out1 = curve(in1) + offset
+
+proc Parent:
+  init:
+    child = Shape<f32>()
+  sample:
+    out1 = child(in1)
+
+init:
+  direct = Shape<f32>()
+  nested = Parent()
+sample:
+  out1 = direct(in1) + nested(in1)
+"#;
+    let typed = analyze(parse_program(source).unwrap()).unwrap();
+    let mir = lower_test_program(&typed).unwrap();
+    let mut authored = 0;
+    let mut generated = 0;
+    for function in &mir.functions {
+        let Some(operation) = typed.processor_views.operation(&function.name) else {
+            continue;
+        };
+        if let crate::processor_views::ProcessorOperation::Local(name) = &operation.kind {
+            let expected = if name == "curve" {
+                authored += 1;
+                InlineHint::Prefer
+            } else {
+                generated += 1;
+                InlineHint::Always
+            };
+            assert_eq!(function.attributes.inline, expected, "{}", function.name);
+        }
+    }
+    assert_eq!(authored, 2, "both direct and nested helpers should lower");
+    assert!(generated > 0, "generated dispatch should lower");
 }
 
 #[test]
@@ -143,6 +203,16 @@ sample:
             .filter(|site| site.label.as_deref() == Some(label))
             .collect::<Vec<_>>()
     };
+    let specializations: Vec<_> = mir
+        .functions
+        .iter()
+        .filter(|f| crate::compile_context::lowered_function_origin(&f.name) == "report")
+        .collect();
+    assert_eq!(specializations.len(), 2);
+    for function in specializations {
+        assert_eq!(function.attributes.inline, InlineHint::Auto);
+        assert!(function.attributes.runtime_context);
+    }
     let report = sites("report");
     assert_eq!(
         report.len(),
@@ -195,6 +265,7 @@ sample:
         .find(|function| function.name == "report")
         .expect("typed report helper");
     assert!(!report.runtime_context);
+    assert!(report.generated_inline_hint.is_none());
     assert!(report.publishes_print);
 
     let mir = lower_test_program(&typed).expect("print helper source should lower");
@@ -207,7 +278,7 @@ sample:
         .expect("MIR report helper");
     assert!(report.attributes.runtime_context);
     assert_eq!(report.attributes.origin, onda_mir::FunctionOrigin::Source);
-    assert_eq!(report.attributes.inline, onda_mir::InlineHint::Auto);
+    assert_eq!(report.attributes.inline, InlineHint::Auto);
 }
 
 #[test]
@@ -459,7 +530,9 @@ sample:
     );
     assert!(
         process.contains("intrinsic range_clamp(i32(100), i32(0), i32(3))")
-            && process.contains("intrinsic range_wrap(i32(-1), i32(0), i32(3))"),
+            && process
+                .lines()
+                .any(|line| { line.contains("load_slice") && line.contains("[i32(3)] unchecked") }),
         "destructuring should enforce both destination storage invariants:\n{process}"
     );
 }

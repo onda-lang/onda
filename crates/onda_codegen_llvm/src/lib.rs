@@ -15,7 +15,7 @@ pub use onda_mir::{ParamDomain, ParamScale, ScalarType as ParamScalarType};
 
 mod aot_artifact;
 mod float_math;
-pub use float_math::FloatMathPolicy;
+pub use float_math::{FloatMathMode, FloatMathPolicy};
 #[cfg(any(feature = "llvm-orc", test))]
 mod mir_metadata;
 #[cfg(feature = "llvm-orc")]

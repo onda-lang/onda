@@ -6,7 +6,9 @@ import wavetable_voice
 
 const PatternLength = 12
 const Notes: i32[PatternLength] = [0, 7, 12, 3, 10, 15, 7, 19, 12, 5, 10, 22]
-const Accents: f32[PatternLength] = [1.0, 0.55, 0.72, 0.48, 0.84, 0.52, 0.68, 0.44, 0.78, 0.5, 0.64, 0.42]
+const Accents: f32[PatternLength] = [
+  1.0, 0.55, 0.72, 0.48, 0.84, 0.52, 0.68, 0.44, 0.78, 0.5, 0.64, 0.42
+]
 
 buffers:
   waves: f32 {4}
@@ -17,7 +19,7 @@ params:
   bpm = 104.0 {45.0, 180.0, unit = "BPM"}
   morph = 0.58 {0.0, 1.0}
   brightness = 0.54 {0.0, 1.0}
-  decay_s = 0.42 {0.08, 1.8, unit = "s"}
+  decay_s = 1.8 {0.08, 2.5, unit = "s"}
   space = 0.34 {0.0, 0.75}
   level = 1.0 {0.0, 1.0}
 
@@ -27,7 +29,7 @@ init:
   echo_l = std::delay::Delay(delay_s = 0.288, feedback = 0.38, mix = 1.0)
   echo_r = std::delay::Delay(delay_s = 0.433, feedback = 0.34, mix = 1.0)
   frequency = std::pitch::note_to_hz(f32(root_note))
-  envelope = std::env::DecayEnv(decay_s = decay_s)
+  envelope = std::env::DecayEnv()
   clock = 0
   step = 0
   pending_bang = false
@@ -42,13 +44,14 @@ sample:
 
   if pending_bang:
     frequency = std::pitch::note_to_hz(f32(root_note + Notes[step]))
+    envelope.decay_s = decay_s
     envelope.start(Accents[step])
     step = (step + 1) % PatternLength
     pending_bang = false
   clock = (clock + 1) % step_samples
 
   source = oscillator(frequency = frequency, morph = morph)
-  envelope_level = envelope(decay_s = decay_s)
+  envelope_level = envelope()
   filter_cutoff = clamp(260.0 + brightness * 5200.0 + envelope_level * 2800.0, 80.0, SR * 0.44)
   filter.update_coeffs(filter_cutoff, 0.9 + brightness * 2.6)
   voice = filter(source * envelope_level)

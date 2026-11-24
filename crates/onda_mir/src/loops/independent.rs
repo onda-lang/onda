@@ -3,7 +3,7 @@
 //! Unknown storage, wrapping addresses and unsupported control flow fail closed.
 use crate::*;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Affine {
@@ -83,6 +83,7 @@ enum Symbol {
     Unknown,
     Index(Affine),
     Region(Region),
+    Element(Region, Affine),
 }
 
 impl Symbol {
@@ -204,9 +205,21 @@ struct Proof<'a> {
     accesses: Vec<Access>,
     calls: Vec<FunctionId>,
     remaining: usize,
+    // The processor ABI separates audio storage from state. The frame local
+    // must also be invariant across the ordered bank loop.
+    audio_loop_writes: Option<HashSet<LocalId>>,
 }
 
 pub(super) fn prove(analysis: &super::LoopAnalysis<'_>, body: &Block) -> Option<()> {
+    prove_counted(analysis, body, super::counted_loop(body)?, None)
+}
+
+pub(super) fn prove_counted(
+    analysis: &super::LoopAnalysis<'_>,
+    body: &Block,
+    counted: super::CountedLoop<'_>,
+    audio_loop_writes: Option<HashSet<LocalId>>,
+) -> Option<()> {
     let super::LoopAnalysis {
         program,
         effects,
@@ -215,7 +228,6 @@ pub(super) fn prove(analysis: &super::LoopAnalysis<'_>, body: &Block) -> Option<
         ..
     } = analysis;
     let function = &program.functions[id.index()];
-    let counted = super::counted_loop(body)?;
     // A whole-function upper bound covers every possible trip count, even
     // when the limit changes. With a nonnegative start and unit increment,
     // the i32 counter cannot wrap before reaching this exclusive bound.
@@ -257,6 +269,7 @@ pub(super) fn prove(analysis: &super::LoopAnalysis<'_>, body: &Block) -> Option<
         accesses: Vec::new(),
         calls: vec![*id],
         remaining: 4096,
+        audio_loop_writes,
     };
     for statement in counted.body {
         if matches!(&statement.kind, StatementKind::Assign { destination: Place { base: PlaceBase::Local(local), .. }, .. } if *local == counted.index)
@@ -403,15 +416,22 @@ impl<'a> Proof<'a> {
         }
         Some(())
     }
+    fn element(&self, frame: &Frame<'_>, place: &Place) -> Option<(Region, Affine)> {
+        let base = self.base(frame, &place.base)?;
+        match place.projections.as_slice() {
+            [Projection::Index { index, .. }] => {
+                Some((base.region()?, frame.value(*index).index()?))
+            }
+            [] => match base {
+                Symbol::Element(region, index) => Some((region, index)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
     fn place_access(&mut self, frame: &Frame<'_>, place: &Place, write: bool) -> Option<()> {
-        let [Projection::Index { index, .. }] = place.projections.as_slice() else {
-            return None;
-        };
-        self.access(
-            self.base(frame, &place.base)?.region()?,
-            frame.value(*index).index()?,
-            write,
-        )
+        let (region, index) = self.element(frame, place)?;
+        self.access(region, index, write)
     }
     fn within_type(&self, index: Affine, ty: TypeId) -> Option<Symbol> {
         let (low, high) = index.range(self.domain)?;
@@ -477,6 +497,18 @@ impl<'a> Proof<'a> {
                 )?;
                 Symbol::Unknown
             }
+            Rvalue::InputLoad {
+                element: None,
+                frame: Value::Local(local),
+                ..
+            } if self.calls.len() == 1
+                && self
+                    .audio_loop_writes
+                    .as_ref()
+                    .is_some_and(|writes| !writes.contains(local)) =>
+            {
+                Symbol::Unknown
+            }
             Rvalue::Binary { op, lhs, rhs } => {
                 if matches!(
                     self.program.types[ty.index()],
@@ -526,6 +558,14 @@ impl<'a> Proof<'a> {
         parameter: &FunctionParam,
     ) -> Option<Symbol> {
         if parameter.mode != PassingMode::Value {
+            if matches!(self.program.types[parameter.ty.index()], Type::Scalar(_)) {
+                let CallArgument::Place(place) = argument else {
+                    return None;
+                };
+                let (region, index) = self.element(frame, place)?;
+                let (low, high) = index.range(self.domain)?;
+                return (low >= 0 && high < region.len).then_some(Symbol::Element(region, index));
+            }
             let Type::Array { element, len } = self.program.types[parameter.ty.index()] else {
                 return None;
             };

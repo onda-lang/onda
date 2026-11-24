@@ -17,21 +17,20 @@ namespace reference:
       write_index = 0 {BufferSize, wrap}
       phase: T = 0.0
 
-    block:
+    sample:
       ratio: T = std::pitch::ratio_between(T(0.0), semitones)
       window_samples: T = window_s * SR
       phase_increment: T = (T(1.0) - ratio) / window_samples
 
-      sample:
-        data.storage[write_index] = in1
-        phase = wrap(phase + phase_increment, T(0.0), T(1.0))
-        phase_b = wrap(phase + T(0.5), T(0.0), T(1.0))
+      data.storage[write_index] = in1
+      phase = wrap(phase + phase_increment, T(0.0), T(1.0))
+      phase_b = wrap(phase + T(0.5), T(0.0), T(1.0))
 
-        read_a = T(write_index) - phase * window_samples
-        read_b = T(write_index) - phase_b * window_samples
-        gain_a = T(0.5) - T(0.5) * cos(phase * TWO_PI)
-        gain_b = T(0.5) - T(0.5) * cos(phase_b * TWO_PI)
-        shifted = data.readL(read_a) * gain_a + data.readL(read_b) * gain_b
+      read_a = T(write_index) - phase * window_samples
+      read_b = T(write_index) - phase_b * window_samples
+      gain_a = T(0.5) - T(0.5) * cos(phase * TWO_PI)
+      gain_b = T(0.5) - T(0.5) * cos(phase_b * TWO_PI)
+      shifted = data.readL(read_a) * gain_a + data.readL(read_b) * gain_b
 
-        write_index += 1
-        out1 = shifted
+      write_index += 1
+      out1 = shifted

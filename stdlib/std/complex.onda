@@ -1,3 +1,6 @@
+# Complex-number arithmetic with Cartesian and polar representations.
+# Supports calculations involving magnitude, phase, and frequency-domain signals.
+
 namespace std::complex:
   struct Complex<T>:
     re: T = 0.0

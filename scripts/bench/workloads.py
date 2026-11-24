@@ -72,8 +72,96 @@ def processor(module, name, arguments="", inputs=1, init_extra="", call_extra=""
             f"sample:\n  {output} = p({invocation})\n")
 
 
+def transition_scenarios():
+    # Keep transitions active after warmup; steady-state probes miss this work.
+    cases = {
+        "smoothing-lag-modulated": processor("smoothing", "Lag", call_extra="lag_s = 0.001 + abs(in1) * 0.1"),
+        "pitch-dualwindow-modulated": processor("pitch_shift", "DualWindow", call_extra="semitones = in1 * 7.0, window_s = 0.09"),
+        "pitch-dualwindow-repeated-params": processor("pitch_shift", "DualWindow", call_extra="semitones = 7.0, window_s = 0.09"),
+        "env-adsr-cycle": """import std/env
+init:
+  p = std::env::ADSR(attack_s = 0.05, decay_s = 0.1, release_s = 0.15)
+  frame = 0
+sample:
+  if frame == 0:
+    p.start()
+  if frame == i32(SR / 4):
+    p.release()
+  frame = (frame + 1) % i32(SR / 2)
+  out1 = p()
+""",
+        "delay-crossfade-active": """import std/delay
+ins 1
+init:
+  p = std::delay<8192>::Crossfade(fade_s = 0.1)
+  frame = 0
+sample:
+  delay = 100.0
+  if frame >= 4096:
+    delay = 1000.0
+  out1 = p(in1, delay_samples = delay)
+  frame = (frame + 1) % 8192
+""",
+    }
+    for width in ["f32", "f64"]:
+        cases[f"smoothing-lag-bank-64-{width}"] = f"""import std/smoothing
+ins<{width}> 1
+outs<{width}> 1
+init:
+  bank: std::smoothing::Lag<{width}>[64] = std::smoothing::Lag<{width}>()
+sample:
+  total: {width} = 0.0
+  for i in 0..64:
+    total += bank[i](in1 + {width}(i) * 0.001)
+  out1 = total / 64.0
+"""
+    return cases
+
+
+def envelope_bank_scenarios():
+    cases = {}
+    for width in ["f32", "f64"]:
+        for mode in ["Linear", "SCurve", "Exponential", "idle", "sustain", "gate-audio"]:
+            shape = mode if mode in ["Linear", "SCurve", "Exponential"] else "Linear"
+            setup = ""
+            transitions = ""
+            arguments = ""
+            if mode == "sustain":
+                setup = "  for i in 0..64:\n    bank[i].start()\n"
+            elif mode == "gate-audio":
+                transitions = f"  gate = {width}(frame < 2048)\n  frame = (frame + 1) % 4096\n"
+                arguments = "gate = gate"
+            elif mode != "idle":
+                transitions = """  if frame == 0:
+    for i in 0..64:
+      bank[i].start()
+  if frame == 2048:
+    for i in 0..64:
+      bank[i].release()
+  frame = (frame + 1) % 4096
+"""
+            cases[f"env-bank-64-{mode.lower()}-{width}"] = f"""import std/env
+outs<{width}> 1
+init:
+  bank: std::env::ADSR<{width}>[64] = std::env::ADSR<{width}>(
+    attack_s = 0.01, decay_s = 0.02, release_s = 0.03,
+    attack_shape = std::smoothing::RampShape::{shape},
+    decay_shape = std::smoothing::RampShape::{shape},
+    release_shape = std::smoothing::RampShape::{shape})
+  frame = 0
+{setup}sample:
+{transitions}  total: {width} = 0.0
+  for i in 0..64:
+    total += bank[i]({arguments})
+  out1 = total / 64.0
+"""
+    return cases
+
+
 def scenarios():
     cases = {"passthrough": "ins 1\nsample:\n  out1 = in1\n"}
+    cases.update(transition_scenarios())
+    cases.update(envelope_bank_scenarios())
     for name in ["Sine", "Phasor", "Saw", "Pulse", "Triangle"]:
         cases[f"osc-{name.lower()}"] = processor("osc", name, inputs=0)
     cases["osc-sine-fm"] = processor("osc", "Sine", inputs=1).replace("p(in1)", "p(freq = 440.0 + in1 * 100.0)")

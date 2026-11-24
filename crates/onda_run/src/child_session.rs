@@ -6,8 +6,8 @@ use std::thread;
 
 use super::param_value_json::param_value_literal;
 use super::{
-    child_exit_error, ControllerEvent, RawReadyEvent, ReadyEvent, RunHostOptions, RunParamWire,
-    COMPUTER_KEYBOARD_MIDI_INPUT,
+    child_exit_error, ControllerEvent, FloatMathMode, RawReadyEvent, ReadyEvent, RunHostOptions,
+    RunParamWire, COMPUTER_KEYBOARD_MIDI_INPUT,
 };
 
 #[cfg(target_os = "windows")]
@@ -76,8 +76,14 @@ impl ChildSession {
         {
             cmd.arg("--midi-input-device").arg(midi_input_device);
         }
-        if options.fast_math {
-            cmd.arg("--fast-math");
+        match options.math {
+            FloatMathMode::Default => {}
+            FloatMathMode::Strict => {
+                cmd.arg("--strict-math");
+            }
+            FloatMathMode::Fast => {
+                cmd.arg("--fast-math");
+            }
         }
         if options.show_meta {
             cmd.arg("--meta");

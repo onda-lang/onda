@@ -108,8 +108,7 @@ button.project-file-add:hover, button.project-file-add:focus-visible { backgroun
   min-height: 30px;
   margin-bottom: -1px;
   overflow: hidden;
-  border: 1px solid transparent;
-  border-bottom-color: var(--line);
+  border: 1px solid var(--line);
   border-radius: 4px 4px 0 0;
   background: transparent;
   color: var(--muted);

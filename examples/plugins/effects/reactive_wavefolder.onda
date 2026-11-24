@@ -20,15 +20,15 @@ params:
   input_gain = 1.6 {0.25, 6.0}
   folds = 1.8 {1.0, 7.0}
   response = 4.0 {0.0, 12.0}
-  release_s = 0.12 {0.01, 1.0, scale = log, unit = "s"}
+  fall_lag_s = 0.12 {0.01, 1.0, scale = log, unit = "s"}
   tone = 5200.0 {200.0, 16000.0, scale = log, unit = "Hz"}
   resonance = 0.8 {0.5, 4.0}
   motion = 0.18 {0.0, 0.8}
   mix = 0.72 {0.0, 1.0}
-  level = 1.0 {0.0, 1.0}
+  level = 0.8 {0.0, 1.0}
 
 init:
-  detector = std::smoothing::LagUD(attack_s = 0.001, release_s = release_s)
+  detector = std::smoothing::LagUD(rise_lag_s = 0.001, fall_lag_s = fall_lag_s)
   folder_l = Wavefolder()
   folder_r = Wavefolder()
   tone_l = std::filter::Svf()
@@ -39,7 +39,7 @@ init:
   motion_r = std::osc::Sine(freq = 0.073)
 
 block:
-  detector.release_s = release_s
+  detector.fall_lag_s = fall_lag_s
   tone_l.update_coeffs(tone, resonance)
   tone_r.update_coeffs(tone * 0.94, resonance)
 

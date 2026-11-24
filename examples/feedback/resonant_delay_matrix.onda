@@ -1,88 +1,106 @@
 import std/delay
+import std/env
 import std/filter
 import std/osc
+import std/pitch
+import std/random
+import std/smoothing
 
-outs 2
+const LineCount = 4
+const Capacity = i32(SR * 0.04) + 4
+const Intervals: f32[LineCount] = [0.0, 7.0, 12.0, 19.0]
+const Phrase: f32[8] = [0.0, 0.0, 3.0, 7.0, 0.0, -5.0, 3.0, -2.0]
 
 params:
-  drive = 0.5 {0, 2}
-  spray = 0.65 {0.0, 1.0}
-  cutoff = 7200.0 {100.0, 18000.0}
-  ping = 155 {0, 8192}
-
-def sat(x):
-  return clamp(x - 0.28 * x * x * x, -1.0, 1.0)
-
-def fold(x):
-  y = x
-  if (y > 1.0):
-    y = 2.0 - y
-  elif (y < -1.0):
-    y = -2.0 - y
-  return y
+  auto_play = true
+  root_note = 43 {31, 67}
+  bpm = 76.0 {30.0, 180.0, unit = "BPM"}
+  bow = 0.7 {0.0, 1.0}
+  excitation = 0.2 {0.0, 1.0}
+  feedback = 0.98 {0.0, 1.15}
+  coupling = 0.3 {0.0, 1.0}
+  tension = 0.4 {0.0, 1.0}
+  damping = 4800.0 {600.0, 14000.0, scale = log, unit = "Hz"}
+  level = 0.6 {0.0, 1.0}
 
 init:
-  o1 = std::osc::Saw(freq = 95.0)
-  o2 = std::osc::Saw(freq = 141.0)
-  o3 = std::osc::Sine(freq = 203.0)
-  o4 = std::osc::Sine(freq = 257.0)
-  chaos = std::osc::Phasor(freq = 0.17)
+  lines: std::delay<Capacity>::Line<f32>[LineCount]
+  dampers: std::filter::OnePole<f32>[LineCount]
+  followers: std::smoothing::Lag<f32>[LineCount]
+  tuning: std::smoothing::Lag<f32>[LineCount]
+  envelopes: std::env::AR<f32>[LineCount]
+  exciters: std::osc::Saw<f32>[LineCount]
+  frequencies: f32[LineCount]
+  energy: f32[LineCount]
+  clock = 0
+  step = 0
+  transpose_ratio = 1.0
+  strike_left = 0
+  pending_bang = false
+  rng = std::random::Rng()
+  dc_l = std::filter::DCBlock()
+  dc_r = std::filter::DCBlock()
+  rng.seed(473)
+  for i in 0..LineCount:
+    tuning[i].lag_s = 0.08
+    followers[i].lag_s = 0.04
+    envelopes[i].attack_s = 0.04 + i * 0.07
+    envelopes[i].release_s = 1.3 + i * 0.2
+    tuning[i].reset(SR / (2.0 * std::pitch::note_to_hz(root_note + Intervals[i])))
 
-  d1 = std::delay::Delay(delay_s = 0.041, feedback = 0.86, mix = 1.0)
-  d2 = std::delay::Delay(delay_s = 0.053, feedback = 0.84, mix = 1.0)
-  d3 = std::delay::Delay(delay_s = 0.067, feedback = 0.83, mix = 1.0)
-  d4 = std::delay::Delay(delay_s = 0.079, feedback = 0.81, mix = 1.0)
+event bang():
+  pending_bang = true
 
-  lp_l = std::filter::OnePole(cutoff = 7200.0)
-  lp_r = std::filter::OnePole(cutoff = 6400.0)
+block:
+  step_samples = max(i32(SR * 120.0 / bpm), 1)
+  rotation_c = cos(coupling * PI * 0.25)
+  rotation_s = sin(coupling * PI * 0.25)
+  for i in 0..LineCount:
+    dampers[i].cutoff = damping
+    frequencies[i] = std::pitch::note_to_hz(root_note + Intervals[i])
 
-  fb1 = 0.0
-  fb2 = 0.0
-  fb3 = 0.0
-  fb4 = 0.0
-  n = 0
+  sample:
+    if auto_play && clock == 0:
+      transpose_ratio = std::pitch::ratio_from_semitones(Phrase[step])
+      step = (step + 1) % Phrase.len()
+      pending_bang = true
+    clock = (clock + 1) % step_samples
+    if pending_bang:
+      strike_left = i32(SR * 0.003)
+      for i in 0..LineCount:
+        envelopes[i].start()
+      pending_bang = false
 
-sample:
-  ph = chaos()
-  l1 = sin(ph * TWO_PI)
-  l2 = sin(ph * TWO_PI * 1.73 + 0.7)
-  l3 = sin(ph * TWO_PI * 2.41 + 1.9)
-  l4 = sin(ph * TWO_PI * 3.17 + 2.6)
+    strike = 0.0
+    if strike_left > 0:
+      strike = rng.bipolar() * 0.15
+      strike_left -= 1
 
-  o1.freq = 55.0 + 42.0 * (l1 + 1.0)
-  o2.freq = 73.0 + 54.0 * (l2 + 1.0)
-  o3.freq = 97.0 + 66.0 * (l3 + 1.0)
-  o4.freq = 121.0 + 77.0 * (l4 + 1.0)
+    taps: f32[LineCount]
+    for i in 0..LineCount:
+      frequency = frequencies[i] * transpose_ratio
+      stretch = 1.0 + tension * energy[(i + 1) % LineCount] * 0.08
+      delay_samples = tuning[i](SR / (2.0 * frequency * stretch))
+      taps[i] = lines[i].readL(delay_samples)
 
-  s1 = o1() * 0.22
-  s2 = o2() * 0.20
-  s3 = o3() * 0.24
-  s4 = o4() * 0.21
+    a = taps[0] * rotation_c + taps[1] * rotation_s
+    b = taps[1] * rotation_c - taps[0] * rotation_s
+    c = taps[2] * rotation_c + taps[3] * rotation_s
+    d = taps[3] * rotation_c - taps[2] * rotation_s
+    scattered: f32[LineCount] = [
+      a * rotation_c + c * rotation_s,
+      b * rotation_c + d * rotation_s,
+      c * rotation_c - a * rotation_s,
+      d * rotation_c - b * rotation_s
+    ]
+    for i in 0..LineCount:
+      pressure = envelopes[i]()
+      gain = feedback + bow * pressure * 0.12
+      returning = -dampers[i](scattered[i])
+      driven = exciters[i](freq = frequencies[i] * transpose_ratio) * pressure + strike
+      lines[i].write(tanh(returning * gain + driven * excitation))
+      lines[i].advance()
+      energy[i] = followers[i](taps[i] * taps[i])
 
-  imp = 0.0
-  if ((n % ping) == 0):
-    imp = spray
-  n = n + 1
-
-  x1 = sat((s1 + fb2 * (0.74 + 0.20 * l1) - fb4 * 0.41 + imp) * drive)
-  x2 = sat((s2 + fb3 * (0.66 - 0.18 * l2) + fb1 * 0.27) * drive)
-  x3 = sat((s3 + fb4 * (0.71 + 0.13 * l3) - fb2 * 0.29) * drive)
-  x4 = sat((s4 + fb1 * (0.69 - 0.16 * l4) + fb3 * 0.33) * drive)
-
-  y1 = d1(x1)
-  y2 = d2(x2)
-  y3 = d3(x3)
-  y4 = d4(x4)
-
-  fb1 = y1
-  fb2 = y2
-  fb3 = y3
-  fb4 = y4
-
-  lp_l.cutoff = cutoff
-  lp_r.cutoff = cutoff * 0.93
-
-  left = fold((y1 + y3 * 0.8 + (y2 - y4) * 0.35) * 0.9)
-  right = fold((y2 + y4 * 0.8 + (y1 - y3) * 0.35) * 0.9)
-  out1 = lp_l(left)
-  out2 = lp_r(right)
+    out1 = dc_l(tanh((taps[0] + taps[1] - taps[2] - taps[3]) * 0.5) * level)
+    out2 = dc_r(tanh((taps[0] - taps[1] - taps[2] + taps[3]) * 0.5) * level)

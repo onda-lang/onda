@@ -341,7 +341,7 @@ impl TransferredInstance {
 unsafe fn compile_program(src: &str) -> ProgramHandle {
     let src_c = CString::new(src).expect("source contains no NUL bytes");
     let options = onda_compile_options_t {
-        fast_math: 0,
+        math_mode: ONDA_FLOAT_MATH_DEFAULT,
         sample_rate: 48_000.0,
         block_size: 512,
         const_inputs: std::ptr::null(),
@@ -439,7 +439,7 @@ sample:
             },
         ];
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: inputs.as_ptr(),
@@ -473,7 +473,7 @@ fn c_api_compile_constant_inspection_returns_reusable_native_inputs() {
         ))
         .unwrap();
         let mut options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: std::ptr::null(),
@@ -608,7 +608,7 @@ fn c_api_compile_constants_reject_malformed_native_values() {
             values: invalid_bool.as_ptr().cast(),
         };
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: &input,
@@ -627,7 +627,7 @@ fn diagnostic_strings_have_an_explicit_reusable_lifecycle() {
         let invalid = CString::new("this is not valid Onda").unwrap();
         let valid = CString::new("outs { out1 }\nsample { out1 = 0.0 }\n").unwrap();
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: std::ptr::null(),
@@ -665,7 +665,7 @@ fn null_diagnostic_output_releases_generated_strings() {
     unsafe {
         let invalid = CString::new("this is not valid Onda").unwrap();
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: std::ptr::null(),
@@ -746,7 +746,7 @@ fn c_file_compile_returns_source_manifest_on_success_and_failure() {
 
         let path = CString::new(main.to_str().expect("UTF-8 entry path")).expect("C entry path");
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: std::ptr::null(),
@@ -953,7 +953,7 @@ fn c_file_compile_accepts_main_projects_with_defaults_and_watch_paths() {
 
         let project_path = CString::new(project.to_str().expect("UTF-8 project path")).unwrap();
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 4,
             const_inputs: std::ptr::null(),
@@ -1121,7 +1121,7 @@ fn c_project_compile_replays_an_exact_in_memory_source_graph() {
             target_path_utf8: dependency_path.as_ptr(),
         }];
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: std::ptr::null(),
@@ -1228,7 +1228,7 @@ fn c_project_image_and_typed_asset_api_round_trip() {
         let entry_c = CString::new(entry.to_string_lossy().as_bytes()).unwrap();
         let root_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 64,
             const_inputs: std::ptr::null(),
@@ -1681,7 +1681,7 @@ proc Main:
         assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
 
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 4,
             const_inputs: std::ptr::null(),
@@ -1827,7 +1827,7 @@ sample { samples[0] = 0.0 }
         assert!(!image.is_null(), "load failed: {}", diag_message(&diag));
         let image = ProjectImageHandle(image);
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 4,
             const_inputs: std::ptr::null(),
@@ -1925,7 +1925,7 @@ sample:
         )
         .expect("source contains no NUL bytes");
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 512,
             const_inputs: std::ptr::null(),
@@ -3425,7 +3425,7 @@ sample { out1 = 0.25 }
         .expect("source contains no NUL bytes");
 
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate: 48_000.0,
             block_size: 128,
             const_inputs: std::ptr::null(),
@@ -3828,7 +3828,7 @@ sample { out1 = SAMPLE_RATE }
         let sample_rate = 12_345.0_f32;
         let block_size = 64_i32;
         let options = onda_compile_options_t {
-            fast_math: 0,
+            math_mode: ONDA_FLOAT_MATH_DEFAULT,
             sample_rate,
             block_size,
             const_inputs: std::ptr::null(),

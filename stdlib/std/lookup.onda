@@ -1,3 +1,6 @@
+# Indexed reads and writes for arrays and audio buffers.
+# Includes interpolated and wrapping reads for sample playback and wavetable lookup.
+
 import std/math
 
 namespace std::lookup:
@@ -12,7 +15,7 @@ namespace std::lookup:
 
   def write(buf, ch: i32, i: i32, value):
     buf[ch, i] = value
-    
+
   def _split_position(pos):
     pos_floor = floor(pos)
     idx = i32(pos_floor)
@@ -48,38 +51,45 @@ namespace std::lookup:
     return a + (c - a) * t
 
   def readLW(buf, ch: i32, pos):
-    channel = buf[ch, :]
+    channel = buf[ch,:]
     return readLW(channel, pos)
 
-  def readC(buf, pos):
-    i1, t = _split_position(pos)
-    y0 = read(buf, i1 - 1)
-    y1 = read(buf, i1)
-    y2 = read(buf, i1 + 1)
-    y3 = read(buf, i1 + 2)
+  def _cubic_indices(index: i32, n: i32, looping: bool) -> (i32, i32, i32, i32):
+    if !looping:
+      # Clamp toward each boundary before applying offsets in i32.
+      return (max(index, 1) - 1, index, min(index, n - 2) + 1, min(index, n - 3) + 2)
+    i1 = _wrap_index(index, n)
+    i0 = i1 - 1
+    if i0 < 0:
+      i0 = n - 1
+    i2 = i1 + 1
+    if i2 == n:
+      i2 = 0
+    i3 = i2 + 1
+    if i3 == n:
+      i3 = 0
+    return (i0, i1, i2, i3)
+
+  def _read_cubic(channel, pos, looping: bool):
+    index, t = _split_position(pos)
+    i0, i1, i2, i3 = _cubic_indices(index, channel.len(), looping)
+    y0 = read(channel, i0)
+    y1 = read(channel, i1)
+    y2 = read(channel, i2)
+    y3 = read(channel, i3)
     return std::math::cubic_interp(y0, y1, y2, y3, t)
+
+  def readC(buf, pos):
+    return _read_cubic(buf[:], pos, false)
 
   def readC(buf, ch: i32, pos):
-    i1, t = _split_position(pos)
-    y0 = read(buf, ch, i1 - 1)
-    y1 = read(buf, ch, i1)
-    y2 = read(buf, ch, i1 + 1)
-    y3 = read(buf, ch, i1 + 2)
-    return std::math::cubic_interp(y0, y1, y2, y3, t)
+    return _read_cubic(buf[ch,:], pos, false)
 
   def readCW(buf, pos):
-    i1, t = _split_position(pos)
-    channel = buf[:]
-    n = channel.len()
-    y0 = read(channel, _wrap_index(i1 - 1, n))
-    y1 = read(channel, _wrap_index(i1, n))
-    y2 = read(channel, _wrap_index(i1 + 1, n))
-    y3 = read(channel, _wrap_index(i1 + 2, n))
-    return std::math::cubic_interp(y0, y1, y2, y3, t)
+    return _read_cubic(buf[:], pos, true)
 
   def readCW(buf, ch: i32, pos):
-    channel = buf[ch, :]
-    return readCW(channel, pos)
+    return _read_cubic(buf[ch,:], pos, true)
 
 def read(buf, i: i32):
   return std::lookup::read(buf, i)

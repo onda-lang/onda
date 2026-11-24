@@ -12,7 +12,7 @@ use std::slice;
 use std::sync::{Arc, OnceLock};
 
 use onda_codegen_llvm::{
-    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, JitProgram,
+    jit_program_from_optimized_mir_with_options, DeclaredBufferChannels, FloatMathMode, JitProgram,
     MirCompileOptions, ParamScale, RuntimeAllocator, TargetOptLevel,
 };
 use onda_frontend::{
@@ -398,13 +398,28 @@ pub unsafe extern "C" fn onda_print_batch_next(
     1
 }
 
+pub const ONDA_FLOAT_MATH_DEFAULT: i32 = FloatMathMode::Default as i32;
+pub const ONDA_FLOAT_MATH_STRICT: i32 = FloatMathMode::Strict as i32;
+pub const ONDA_FLOAT_MATH_FAST: i32 = FloatMathMode::Fast as i32;
+
 #[repr(C)]
 pub struct onda_compile_options_t {
-    pub fast_math: i32,
+    pub math_mode: i32,
     pub sample_rate: f32,
     pub block_size: i32,
     pub const_inputs: *const onda_compile_const_input_t,
     pub const_input_count: usize,
+}
+
+impl onda_compile_options_t {
+    fn math_mode(&self) -> Result<FloatMathMode, &'static str> {
+        match self.math_mode {
+            ONDA_FLOAT_MATH_DEFAULT => Ok(FloatMathMode::Default),
+            ONDA_FLOAT_MATH_STRICT => Ok(FloatMathMode::Strict),
+            ONDA_FLOAT_MATH_FAST => Ok(FloatMathMode::Fast),
+            _ => Err("compile options require a valid math_mode"),
+        }
+    }
 }
 
 #[repr(C)]
@@ -475,7 +490,10 @@ pub struct onda_buffer_asset_info_t {
 pub const ONDA_SOURCE_REFERENCE_INCLUDE: i32 = 0;
 pub const ONDA_SOURCE_REFERENCE_IMPORT: i32 = 1;
 
-fn compile_typed_mir(typed: TypedProgram, fast_math: bool) -> Result<JitProgram, Vec<Diagnostic>> {
+fn compile_typed_mir(
+    typed: TypedProgram,
+    math: FloatMathMode,
+) -> Result<JitProgram, Vec<Diagnostic>> {
     let mir = lower_program_to_optimized_mir(&typed).map_err(|errors| {
         errors
             .into_iter()
@@ -484,11 +502,7 @@ fn compile_typed_mir(typed: TypedProgram, fast_math: bool) -> Result<JitProgram,
     })?;
     jit_program_from_optimized_mir_with_options(
         mir,
-        MirCompileOptions {
-            math: Default::default(),
-            fast_math,
-            opt_level: TargetOptLevel::O3,
-        },
+        MirCompileOptions::new(TargetOptLevel::O3, math),
     )
 }
 
@@ -671,6 +685,7 @@ const STATIC_ERR_NULL_ARG: &str = "null argument";
 const STATIC_ERR_INVALID_ALLOCATOR: &str = "invalid allocator";
 
 fn validate_compile_options(options: &onda_compile_options_t) -> Result<(), &'static str> {
+    options.math_mode()?;
     if !options.sample_rate.is_finite() || options.sample_rate <= 0.0 {
         return Err("compile options require finite sample_rate > 0");
     }
@@ -1584,6 +1599,13 @@ unsafe fn compile_parsed_program(
     project: Option<ProjectCompilation>,
     out_diag: *mut onda_diag_t,
 ) -> *mut onda_program {
+    let math = match options.math_mode() {
+        Ok(math) => math,
+        Err(message) => {
+            write_diag(out_diag, runtime_diag(message));
+            return ptr::null_mut();
+        }
+    };
     let compile_inputs = match merged_compile_inputs(&parsed, options, project.as_ref()) {
         Ok(inputs) => inputs,
         Err(diag) => {
@@ -1646,7 +1668,7 @@ unsafe fn compile_parsed_program(
         Vec::new()
     };
 
-    let jit = match compile_typed_mir(typed, options.fast_math != 0) {
+    let jit = match compile_typed_mir(typed, math) {
         Ok(j) => j,
         Err(errs) => {
             let diag = errs

@@ -1,3 +1,4 @@
+import { defineFunction } from "./inlining.js";
 import binaryen from "binaryen";
 import { MirCompilerLowering } from "./lowering.js";
 import {
@@ -12,6 +13,7 @@ import {
   PRINT_RECORD_HEADER_SIZE,
   POINTER_GLOBALS,
   typeName,
+  roundHelperName,
   decodeI64Literal,
   decodeFloatLiteral,
 } from "./shared.js";
@@ -890,10 +892,7 @@ export class MirCompiler extends MirCompilerLowering {
         const layout = this.stateLayout[place.base.data];
         if (!layout) this.fail(`state id ${place.base.data} is out of range`);
         typeId = this.mir.state[place.base.data].ty;
-        address = this.module.i32.add(
-          this.module.global.get(POINTER_GLOBALS.state, binaryen.i32),
-          this.module.i32.const(layout.offset),
-        );
+        address = this.stateAddress(place.base.data, context);
         break;
       }
       case "param": {
@@ -946,6 +945,23 @@ export class MirCompiler extends MirCompilerLowering {
       typeId = type.data.element;
     }
     return address;
+  }
+
+  stateAddress(stateId, context) {
+    const cache = context.stateAddressCache;
+    const existing = cache?.get(stateId);
+    if (existing !== undefined) return this.module.local.get(existing, binaryen.i32);
+
+    const address = this.module.i32.add(
+      this.module.global.get(POINTER_GLOBALS.state, binaryen.i32),
+      this.module.i32.const(this.stateLayout[stateId].offset),
+    );
+    if (!cache) return address;
+
+    const local = this.allocateGeneratedLocal(context, "i32", `state.${stateId}.address`);
+    cache.set(stateId, local);
+    context.entryInitializers.push(this.module.local.set(local, address));
+    return this.module.local.get(local, binaryen.i32);
   }
 
   compileBoundedIndex(value, length, bounds, context) {
@@ -1297,7 +1313,7 @@ export class MirCompiler extends MirCompilerLowering {
       case "pow":
         return this.compileMathKernelCall(data.intrinsic, scalar, args);
       case "round":
-        return this.compileRoundHelper(scalar, args);
+        return this.module.call(roundHelperName(scalar), args, this.wasmType(scalar));
       default:
         this.fail(`unknown intrinsic '${String(data.intrinsic)}'`);
     }
@@ -1305,7 +1321,7 @@ export class MirCompiler extends MirCompilerLowering {
 
   compileMathKernelCall(intrinsic, scalar, args) {
     const name = `onda_math_${intrinsic}_${scalar}`;
-    if (!this.requiredMathHelpers.has(name)) {
+    if (!this.mathHelpers.kernel.has(name)) {
       this.fail(`math kernel was not reserved for helper '${name}'`);
     }
     return this.module.call(
@@ -1315,31 +1331,26 @@ export class MirCompiler extends MirCompilerLowering {
     );
   }
 
-  compileRoundHelper(scalar, args) {
-    const name = `$onda.math.round.${scalar}`;
-    if (!this.internalHelpers.has(name)) {
-      const wasm = this.module[scalar];
-      const get = () => this.module.local.get(0, this.wasmType(scalar));
-      const trunc = () => wasm.trunc(get());
-      const magnitude = wasm.abs(wasm.sub(get(), trunc()));
-      const rounded = wasm.add(
+  addRoundHelper(scalar) {
+    const wasm = this.module[scalar];
+    const get = () => this.module.local.get(0, this.wasmType(scalar));
+    const trunc = () => wasm.trunc(get());
+    const magnitude = wasm.abs(wasm.sub(get(), trunc()));
+    const rounded = wasm.add(
+      trunc(),
+      wasm.copysign(wasm.const(1), get()),
+    );
+    defineFunction(
+      this.module, this.signatureTypes, roundHelperName(scalar),
+      this.wasmType(scalar),
+      this.wasmType(scalar),
+      [],
+      this.module.select(
+        wasm.ge(magnitude, wasm.const(0.5)),
+        rounded,
         trunc(),
-        wasm.copysign(wasm.const(1), get()),
-      );
-      this.module.addFunction(
-        name,
-        this.wasmType(scalar),
-        this.wasmType(scalar),
-        [],
-        this.module.select(
-          wasm.ge(magnitude, wasm.const(0.5)),
-          rounded,
-          trunc(),
-        ),
-      );
-      this.internalHelpers.add(name);
-    }
-    return this.module.call(name, args, this.wasmType(scalar));
+      ),
+    );
   }
 
   loadScalar(scalar, address) {

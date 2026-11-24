@@ -47,16 +47,16 @@ MIR does not contain LLVM types, LLVM intrinsics, WebAssembly opcodes, ABI point
 alignment, or linker policy. Those belong below the MIR boundary.
 
 Source literals and contextual constants have already specialized before MIR construction. Every
-MIR scalar operation therefore has one concrete width. Backends must preserve the result as if each
-operation executed and rounded at that width; they must not introduce observable implicit wider
-intermediates. An explicit cast changes the width, and explicit `fma` retains its separately defined
-single-rounding semantics.
+MIR scalar operation therefore has one concrete width. With strict codegen, each operation rounds
+at that width. An explicit cast changes the width, and explicit `fma` rounds once. Backend
+floating-point options can permit changes to evaluation order, rounding, and signed zero. See the
+[LLVM and Binaryen policies](architecture.md#optimization-boundaries).
 
 Integer `add`, `subtract`, and `multiply` wrap at their declared width. Shift counts are masked to
-that width. Signed division and remainder fail on zero; `MIN / -1` wraps to `MIN`, and `MIN % -1`
-is zero. Floating-point equality is ordered, `!=` is true for NaN, and relational comparisons are
-false for NaN. Float-to-integer casts saturate to the destination range and convert NaN to zero.
-These rules are MIR semantics, not backend optimization choices.
+that width. Signed division and remainder fail on zero. `MIN / -1` wraps to `MIN`, and `MIN % -1`
+is zero. In strict arithmetic, floating-point equality is ordered, `!=` is true for NaN, and
+relational comparisons are false for NaN. Float-to-integer casts saturate to the destination range
+and convert NaN to zero.
 
 ## Form
 
@@ -116,8 +116,13 @@ scalars and arrays retain the derived integer invariant so snapshot restoration 
 
 Events name their handler function directly. Functions have one of four capability roles: init,
 process, event, or user function. Each function also carries backend-neutral origin and inline
-attributes. Compiler-generated hot glue therefore requests consistent treatment without a backend
-recognizing a mangled name.
+attributes. Top-level source defs and their specializations use `auto`. Authored proc-local defs use
+`prefer`, which requests `alwaysinline` on LLVM and leaves the decision to Binaryen's cost model.
+Lowering requests `always` for generated processor entry and dispatch functions, including event
+bodies, delegate dispatchers, and synchronous `when` handlers. Only shared top-level task resume
+functions request `never`. Reset inlines the program-counter store.
+Backends use these attributes for direct calls. Host event entry points and delegate publication
+retain their processor ABI.
 
 Types are logical. An array has an element type and length, but MIR does not decide its byte offset.
 A buffer has an element type, channel constraint, and access mode, but MIR does not represent its
@@ -663,6 +668,20 @@ corruption and JSON's lack of NaN/infinity literals. The safe JSON and MessagePa
 unsafe trusted decoders make the compiler-owned boundary explicit. `onda compile --emit mir-json`
 prints or writes JSON; `--emit mir-messagepack` requires `--output`.
 
+Optimized transports can include a sparse top-level `ordered_reductions` array.
+The zero-based `loop_ordinal` selects a loop in the process function in preorder,
+visiting the then branch before the else branch. Each entry records the induction
+and accumulator locals, the inclusive index bounds, the reduction term, and
+the addition's unique result local. The assignment to
+that local marks the end of the independent updates. The annotation also
+identifies the exit-condition local so a backend can restore the scalar loop's
+final values. Rust decoders ignore these derived facts.
+Every scalar local read by an update or by the reduction term must be invariant,
+be the induction variable, or have a definition earlier in that iteration. The
+producer also proves memory independence under the processor ABI's disjoint
+state and audio storage contract. Binaryen selects supported lane operations and preserves
+the scalar addition order.
+
 `onda_mir::format_program` remains the stable human-readable inspection format used by `--emit mir`.
 The formatter and both serialized transports have round-trip coverage.
 
@@ -710,11 +729,19 @@ SIMD with a scalar tail, while same-representation contiguous slice copy uses bu
 `memory.copy` and therefore retains memmove overlap semantics. Strided cases keep the scalar,
 direction-aware implementation. Binaryen validates and optimizes the emitted module.
 
-Binaryen O4, strict arithmetic, SIMD, and ordinary inlining heuristics are the defaults. Relaxed
-floating-point optimization is an explicit `fastMath` option. Inlining functions that contain loops
-is also explicit rather than default: measurements improved the oversampling case but regressed the
-language and saturator cases, so the backend does not force that global heuristic. Binaryen's
-process-global optimization controls are restored after every compilation.
+Binaryen defaults to O4, strict arithmetic, and SIMD. The backend translates MIR `always`
+and `never` into Binaryen function annotations. At O2 and above or shrink level 2, the
+standard inliner consumes them and uses its cost model for `auto`, `prefer`, and linked math routines.
+When a module contains `always`, the backend also runs the inliner before Binaryen merges identical
+definitions, while each call still has its own callee. If a size or iteration limit leaves identical
+callees to merge, the shared definition favors `never` first and heuristic inlining second.
+Lower optimization levels run an inlining pass only for `always` callees. These may contain
+loops and remain subject to Binaryen's combined-function size and iteration limits. If inlining
+produces deeply nested operands, the Wasm backend flattens the affected function into local
+assignments before recursive optimizations and emission.
+Disabling optimization skips inlining. `allowInliningFunctionsWithLoops` tunes the normal
+cost model, and `fastMath` enables relaxed arithmetic. The compiler restores Binaryen's
+process-global settings after each build.
 O4's more expensive IR flattening improved three of the four affinity-pinned backend workloads and
 left the fourth effectively unchanged; the browser pays that extra compilation cost once per
 artifact. StackIR generation remains disabled because it did not improve the complete workload

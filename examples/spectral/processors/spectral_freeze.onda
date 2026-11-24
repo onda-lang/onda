@@ -1,8 +1,17 @@
+import std/complex
 import std/fft
 import std/pitch
 import std/random
 
 namespace SpectralFreeze<N = 1024>:
+  const _Bins = (N >> 1) + 1
+
+  enum _FrameMode:
+    Empty
+    LiveSpectrum
+    Tracking
+    Holding
+
   proc Engine:
     params:
       freeze = true
@@ -13,98 +22,195 @@ namespace SpectralFreeze<N = 1024>:
       analysis = std::fft<N>::RealFFT()
       synthesis_l = std::fft<N>::RealIFFT()
       synthesis_r = std::fft<N>::RealIFFT()
-      magnitudes: f32[N]
-      phase_re_l: f32[N]
-      phase_im_l: f32[N]
-      phase_re_r: f32[N]
-      phase_im_r: f32[N]
-      drift: f32[N]
-      spectrum_re_l: f32[N]
-      spectrum_im_l: f32[N]
-      spectrum_re_r: f32[N]
-      spectrum_im_r: f32[N]
+      magnitudes: f32[_Bins]
+      captured_re: f32[_Bins]
+      previous_re: f32[_Bins]
+      previous_im: f32[_Bins]
+      deviations: f32[_Bins]
+      drift: f32[_Bins]
+      destinations: i32[_Bins]
+      phase_l: std::complex::Complex<f64>[_Bins]
+      phase_r: std::complex::Complex<f64>[_Bins]
+      rotation_l: std::complex::Complex<f64>[_Bins]
+      rotation_r: std::complex::Complex<f64>[_Bins]
+      spectrum_re_l: f32[_Bins]
+      spectrum_im_l: f32[_Bins]
+      spectrum_re_r: f32[_Bins]
+      spectrum_im_r: f32[_Bins]
       rng = std::random::Rng()
-      configured = false
-      has_capture = false
-      capture_hops = 12
+      for k in 0.._Bins:
+        drift[k] = rng.bipolar()
+      mode = _FrameMode::Empty
+      capture_pending = false
+      capture_wait = 0
+      mapped_ratio: f32 = 0.0
+      rotation_smear: f32 = 0.0
+      rotation_valid = false
 
-    event recapture():
-      capture_hops = 8
+    def _request_capture(wait_samples: i32):
+      capture_pending = true
+      capture_wait = wait_samples
+
+    events:
+      recapture():
+        _request_capture(0)
+
+      capture_after_source_change():
+        # Both analysis frames used to estimate frequency must contain
+        # the new source.
+        _request_capture(N + analysis.hop_size())
+
+    def next_peak(start: i32):
+      k = start
+      while k < _Bins - 1:
+        if magnitudes[k] > magnitudes[k + 1] && (k == 0 || magnitudes[k] >= magnitudes[k - 1]):
+          break
+        k += 1
+      return k
+
+    def peak_bin(k: i32):
+      center = magnitudes[k]
+      if k == 0 || k == _Bins - 1 || center == 0.0:
+        return f32(k)
+      # Interpolate the local peak in log magnitude for a sub-bin estimate.
+      left = log(max(magnitudes[k - 1] / center, 0.000001))
+      right = log(max(magnitudes[k + 1] / center, 0.000001))
+      if left + right == 0.0:
+        return f32(k)
+      return f32(k) + 0.5 * (left - right) / (left + right)
+
+    def capture(reset_phase: bool):
+      for k in 0.._Bins:
+        magnitudes[k] = analysis.magnitude(k)
+
+      peak = 0
+      following = 0
+      estimated_bin: f32 = 0.0
+      for k in 0.._Bins:
+        re = analysis.real(k)
+        im = analysis.imag(k)
+        captured_re[k] = re
+        prior_re = previous_re[k]
+        prior_im = previous_im[k]
+        prior_power = prior_re * prior_re + prior_im * prior_im
+        magnitude = magnitudes[k]
+        deviations[k] = 0.0
+        if magnitude > 0.0:
+          # A bin that grew by over 20 dB has unreliable previous phase.
+          if prior_power > 0.0 && prior_power >= magnitude * magnitude * 0.01:
+            advance = atan2(im * prior_re - re * prior_im, re * prior_re + im * prior_im)
+            deviations[k] = wrap(advance - PI * (k & 1), -PI, PI)
+          else:
+            # Use the nearest peak's estimate for its neighbouring bins too,
+            # so the partial keeps a common frequency through the hold.
+            if following == 0:
+              peak = next_peak(0)
+              following = next_peak(min(peak + 1, _Bins - 1))
+              estimated_bin = peak_bin(peak)
+            while following > peak && k - peak > following - k:
+              peak = following
+              following = next_peak(min(peak + 1, _Bins - 1))
+              estimated_bin = peak_bin(peak)
+            deviations[k] = PI * (estimated_bin - k)
+        previous_re[k] = re
+        previous_im[k] = im
+        if reset_phase:
+          phase_l[k].set_polar(1.0, f64(atan2(im, re)))
+          phase_r[k].copy(phase_l[k])
+      rotation_valid = false
+
+    def prepare_pitch(ratio: f32):
+      if ratio != mapped_ratio || !rotation_valid || smear != rotation_smear:
+        for k in 0.._Bins:
+          pitched = k * ratio
+          destination = i32(pitched + 0.5)
+          destinations[k] = destination
+          if destination == 0 || destination == _Bins - 1:
+            continue
+          advance = f64(PI) * wrap(f64(pitched), 0.0, 2.0) + f64(deviations[k]) * ratio
+          spread = f64(drift[k]) * smear * 0.045
+          # A held frame reuses its rotations. f64 keeps the unit phasors
+          # stable over long holds without normalization on each hop.
+          rotation_l[k].set_polar(1.0, advance + spread)
+          rotation_r[k].set_polar(1.0, advance - spread)
+        mapped_ratio = ratio
+        rotation_smear = smear
+        rotation_valid = true
+
+    def synthesize(ratio: f32, reset_phase: bool):
+      if !reset_phase:
+        prepare_pitch(ratio)
+      spectrum_re_l[:] = 0.0
+      spectrum_im_l[:] = 0.0
+      spectrum_re_r[:] = 0.0
+      spectrum_im_r[:] = 0.0
+
+      for k in 0.._Bins:
+        destination = destinations[k]
+        if reset_phase:
+          destination = i32(k * ratio + 0.5)
+        if destination == 0 || destination == _Bins - 1:
+          # Preserve the signed real value of an unchanged edge bin.
+          if k == destination:
+            amplitude = captured_re[k]
+            spectrum_re_l[k] = amplitude
+            spectrum_re_r[k] = amplitude
+          continue
+
+        left = phase_l[k]
+        right = phase_r[k]
+        if !reset_phase:
+          left.mul_assign(rotation_l[k])
+          right.mul_assign(rotation_r[k])
+        if destination >= 0 && destination < _Bins:
+          amplitude = magnitudes[k]
+          spectrum_re_l[destination] += f32(left.re) * amplitude
+          spectrum_im_l[destination] += f32(left.im) * amplitude
+          spectrum_re_r[destination] += f32(right.re) * amplitude
+          spectrum_im_r[destination] += f32(right.im) * amplitude
+
+      synthesis_l.load_complex(spectrum_re_l, spectrum_im_l)
+      synthesis_r.load_complex(spectrum_re_r, spectrum_im_r)
+
+    def remember_input():
+      for k in 0.._Bins:
+        previous_re[k] = analysis.real(k)
+        previous_im[k] = analysis.imag(k)
+
+    def process_frame(ratio: f32):
+      # Reconstruct neutral live input directly, preserving transient phase.
+      # A delayed freeze can keep playing this spectrum until its capture is due.
+      neutral_live = !freeze && ratio == 1.0 && smear == 0.0
+      waiting_on_live = freeze && capture_wait > 0 && mode == _FrameMode::LiveSpectrum
+      if neutral_live || waiting_on_live:
+        remember_input()
+        synthesis_l.load_complex(previous_re, previous_im)
+        synthesis_r.load_complex(previous_re, previous_im)
+        mode = _FrameMode::LiveSpectrum
+        return
+
+      if !freeze || (capture_wait == 0 && (mode != _FrameMode::Holding || capture_pending)):
+        reset_phase = freeze || mode != _FrameMode::Tracking
+        capture(reset_phase)
+        synthesize(ratio, reset_phase)
+        # Automatic startup uses a second frame to refine pitch. An explicit
+        # capture latches the requested frame even without previous phase.
+        if freeze && (mode != _FrameMode::Empty || capture_pending):
+          mode = _FrameMode::Holding
+        else:
+          mode = _FrameMode::Tracking
+        capture_pending = false
+      else:
+        remember_input()
+        synthesize(ratio, false)
 
     block:
-      if !configured:
-        for k in 0..N:
-          drift[k] = rng.bipolar()
-          phase_re_l[k] = 1.0
-          phase_re_r[k] = 1.0
-        configured = true
-
       ratio = std::pitch::ratio_between(0.0, transpose)
 
       sample:
+        capture_wait = max(capture_wait - 1, 0)
         if analysis.push(in1):
-          half = N >> 1
-          for k in 0..(half + 1):
-            spectrum_re_l[k] = 0.0
-            spectrum_im_l[k] = 0.0
-            spectrum_re_r[k] = 0.0
-            spectrum_im_r[k] = 0.0
-
-          capturing = freeze || capture_hops > 0
-          if (capturing):
-            for k in 1..half:
-              bin_re = analysis.real(k)
-              bin_im = analysis.imag(k)
-              magnitude = sqrt(bin_re * bin_re + bin_im * bin_im)
-              if (has_capture):
-                magnitudes[k] = magnitudes[k] + (magnitude - magnitudes[k]) * 0.36
-              else:
-                magnitudes[k] = magnitude
-
-              if (magnitude > 0.000001):
-                inv_magnitude = 1.0 / magnitude
-                phase_re_l[k] = bin_re * inv_magnitude
-                phase_im_l[k] = bin_im * inv_magnitude
-                phase_re_r[k] = phase_re_l[k]
-                phase_im_r[k] = phase_im_l[k]
-
-            has_capture = true
-            if !freeze && capture_hops > 0:
-              capture_hops = capture_hops - 1
-
-          if has_capture:
-            for k in 1..half:
-              destination = i32(k * ratio + 0.5)
-              if destination > 0 && destination < half:
-                # Each hop is N/2 samples, so a bin's nominal phase advance is
-                # PI * destination: +1 for even bins and -1 for odd bins.
-                advance = 1.0
-                if ((destination & 1) != 0):
-                  advance = -1.0
-
-                # Small-angle polynomial rotation gives each bin a stable,
-                # deterministic drift without a burst of sin/cos calls.
-                angle = drift[k] * smear * 0.045
-                angle2 = angle * angle
-                rot_re = (1.0 - angle2 * 0.5) * advance
-                rot_im = (angle * (1.0 - angle2 / 6.0)) * advance
-                next_re_l = phase_re_l[k] * rot_re - phase_im_l[k] * rot_im
-                next_im_l = phase_im_l[k] * rot_re + phase_re_l[k] * rot_im
-                next_re_r = phase_re_r[k] * rot_re + phase_im_r[k] * rot_im
-                next_im_r = phase_im_r[k] * rot_re - phase_re_r[k] * rot_im
-                phase_re_l[k] = next_re_l
-                phase_im_l[k] = next_im_l
-                phase_re_r[k] = next_re_r
-                phase_im_r[k] = next_im_r
-
-                amplitude = magnitudes[k]
-                spectrum_re_l[destination] = spectrum_re_l[destination] + next_re_l * amplitude
-                spectrum_im_l[destination] = spectrum_im_l[destination] + next_im_l * amplitude
-                spectrum_re_r[destination] = spectrum_re_r[destination] + next_re_r * amplitude
-                spectrum_im_r[destination] = spectrum_im_r[destination] + next_im_r * amplitude
-
-            synthesis_l.load_complex(spectrum_re_l, spectrum_im_l)
-            synthesis_r.load_complex(spectrum_re_r, spectrum_im_r)
+          process_frame(ratio)
 
         out1 = synthesis_l.tick()
         out2 = synthesis_r.tick()

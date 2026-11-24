@@ -3902,7 +3902,7 @@ fn source_with_current_line_placeholder(source: &str, offset: usize) -> String {
 }
 
 fn member_access_at_token(source: &str, token: &SourceToken) -> Option<(String, String)> {
-    let before = source[..token.byte_start].trim_end();
+    let before = source[..token.byte_start].trim_end_matches([' ', '\t', '\r']);
     let without_dot = before.strip_suffix('.')?;
     let receiver = scan_receiver_left(without_dot)?;
     Some((receiver, token.name.clone()))

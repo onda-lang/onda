@@ -555,9 +555,11 @@ pub struct TypedFunction {
     /// Context in which this concrete body was materialized.
     pub(crate) compile_context: Option<compile_context::CompileContext>,
     pub name: String,
-    /// Compiler-owned helpers that execute with access to the program's
-    /// runtime state and interface rather than in the lexical `def` scope.
+
+    /// Access to the executable owner’s runtime state.
     pub(crate) runtime_context: bool,
+    /// Inlining policy for a compiler-generated function.
+    pub(crate) generated_inline_hint: Option<onda_mir::InlineHint>,
     /// Authored lexical functions whose body directly publishes print output.
     pub(crate) publishes_print: bool,
     pub method_of: Option<String>,

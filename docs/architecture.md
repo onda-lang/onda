@@ -28,7 +28,7 @@ measurement procedures and dated results.
 | `onda_daemon` | Stateful session engine: in-memory analysis overlays and live run sessions. |
 | `onda_run` | Shared run controller / real-time playback transport used by the CLI and run hosts. |
 | `onda_scope` | Bounded min/max scope envelopes, display budgets, and a shared compact binary codec. |
-| `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and shared source formatting. |
+| `onda_lsp` | JSON-RPC language server: diagnostics, completion, navigation, semantic tokens, and AST pretty-printing. |
 | `onda_cli` | `onda` binary: argument parsing and `compile`/`bench`/`run`/`daemon`/`lsp` command dispatch. |
 | `onda_ui` | Host-independent Rust/wgpu run screen, interaction, text, shaders, Wasm canvas, and optional C interface. |
 | `onda_gpu` | Native winit adapter for the shared run screen, used by `onda run`. |
@@ -84,6 +84,9 @@ scheduling, and reusable proofs in one place while allowing target-specific code
 - `parser.rs`, `parser/` — parser entry plus submodules:
   - `parser/block_parsing.rs`, `parser/expr_stmt.rs` — block and expression/statement parsing.
   - `parser/preprocess.rs` — source preprocessing.
+  - `parser/formatting.rs` — source-preserving formatting for `onda fmt`. It shares the compiler's
+    indentation preprocessing and item parsing. Grammar spans guide reflow, and the syntax
+    comparison allows equivalent parentheses around an entire condition.
   - `parser/loading_support.rs`, `parser/module_loading.rs`, `parser/module_loading/namespaces.rs` — `import` / `include` / namespace resolution, authoritative non-stdlib source manifests with exact documents and resolved/unresolved dependency edges, symlink-free native filesystem loading, and filesystem-free replay of captured source graphs.
   - `parser/type_helpers.rs` — type-syntax helpers.
   - `parser/tests.rs` — parser tests.
@@ -238,10 +241,9 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   - `task_lowering.rs` — owner-local task validation and lowering through a typed CFG, backwards
     live-across-yield analysis, fixed continuation-frame construction, resumable state-machine
     generation, and structured `await`/`reset` expansion. Proc tasks and top-level tasks share the
-    same preparation path. Both use one generated resume helper per task; top-level helpers carry
-    explicit runtime-context metadata so they can address owner state without cloning their body at
-    each `await`. Reset invalidates only the program counter, leaving frame initialization to the
-    next start.
+    same preparation path. Both use one generated resume helper per task. Top-level resume helpers request `never`
+    in MIR so their callers share the state machine. Reset inlines a store to the program counter.
+    The next start initializes the frame.
   - `processor_lowering.rs`, `processor_lowering/` — proc desugaring, `nested_proc_lowering`, `nested_paths`, `proc_local_defs`, `shape_helpers`, `generated_blocks`, `generic_proc_rewrite`, `global_proc_rewrite`.
     `declarations` shares normalized ports, parameters and buffers across nominal and physical
     shape planning, child-surface checks, nested call signatures and delegate validation. Whole
@@ -342,6 +344,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   `analysis/resource_aliases` retains collection windows as a symbolic graph and translates
   demanded slot intervals through it, preserving precise resource identity without per-slot
   provenance expansion for dynamic windows.
+- `local_references.rs` — shared MIR traversal for local reads, storage references, and reindexing.
 - `memory.rs` — storage origins across slice definitions, reference arguments, and returns.
 - `loops.rs`, `loops/facts.rs` — counted-loop recognition and reusable per-function facts for
   pointwise audio, memory independence and native loop-cost queries.
@@ -516,7 +519,7 @@ scheduling, and reusable proofs in one place while allowing target-specific code
   unchecked-intrinsic signatures/documentation used across completion and navigation.
 - `server/namespace_resolution.rs`, `server/position.rs`, `server/path_utils.rs` — namespace, source-position, and path support.
 - `server/semantic_tokens/{mod,ast_index,source_fallback,tests}.rs` — semantic-token indexing, incomplete-source fallback, and tests.
-- `formatting.rs` — source formatting shared with the CLI.
+- `formatting.rs` — AST pretty-printing for graph inspection, documentation, and editor details.
 
 ### `onda_cli` (`crates/onda_cli/src`)
 - `main.rs`, `main_tests.rs` — binary entry and integration tests.
@@ -729,6 +732,8 @@ and invalidation in detail. The main opportunities exposed to backends are:
 - MIR common-subexpression elimination reuses pure scalar expressions whose operands and saved
   results remain stable. Memory and descriptor operations stay outside this pass; backend
   optimizers handle load/store forwarding using their own alias analysis.
+- After bounds checks are resolved, MIR lowers power-of-two integer wraps to source-width masks.
+  The masked offset preserves the original signed interval in subsequent range analysis.
 - MIR optimization propagates proven integer argument constants and removes unreachable functions,
   unused internal parameters, and forwarding arguments to a fixed point after semantic validation.
   Call-graph worklists propagate effects and integer ranges to affected functions. `OptimizedProgram`
@@ -780,15 +785,17 @@ and invalidation in detail. The main opportunities exposed to backends are:
   invalidate other copy facts; no loop-carried copy is assumed. The first iteration retains its original
   comparisons. LLVM's ordinary inlining and dependence analysis decide whether the remaining loop
   can vectorize. Binaryen keeps the original schedule.
-- The standard library keeps selected coefficient derivations at their update rate. `OnePole`,
-  `DecayEnv`, and `Pan3db` cache results only while their source parameters remain equal, with
+- The standard library keeps selected coefficient derivations at their update rate. `OnePole`
+  and `Pan3db` cache results only while their source parameters remain equal, with
   explicit validity state for initialization and recomputation at each changed assignment.
   NaNs recompute because they do not compare equal. These are processor-owned caches, not a
   compiler-wide promise to skip user parameter hooks; events, segments, and snapshots retain
   their ordinary semantics.
-- Native floating-point permissions independently control reassociation, contraction and ignoring
-  signed zero internally. They default off; the CLI exposes only `--fast-math` to enable all
-  arithmetic relaxations. Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
+- LLVM codegen enables reassociation, contraction and ignoring signed zero by default across
+  JIT and AOT entry points, including embedded use. Use `--strict-math` for strict arithmetic or
+  `--fast-math` for the full set of LLVM relaxations. Binaryen defaults to strict arithmetic and
+  exposes one fast-math switch covering its full set of relaxations.
+  Vector math is automatic: Linux/macOS x64 and ARM64, and Windows
   x64 MSVC, use SLEEF VFABI mappings selected from resolved LLVM CPU features. After application
   optimization, the backend resolves newly introduced fixed-width vector `exp2` intrinsics using
   the same legal target variants, links only the used ISA/precision bitcode, internalizes helpers with
@@ -804,7 +811,29 @@ and invalidation in detail. The main opportunities exposed to backends are:
 - Binaryen vectorizes proven independent straight-line f32/f64 sample loops with scalar tails.
   Runtime guards admit disjoint or exactly in-place audio buffers; partial overlap uses scalar code.
   Invariant reads include state and interface controls, whose MIR place base is `param`.
-  Carried state, calls, mixed precision and unsupported control flow retain scalar lowering.
+  A separate SIMD path uses the shared MIR counted-loop and dependence proofs carried in
+  optimized MIR to handle fixed-size state banks with independent element updates and an
+  ordered floating-point sum. It can inline straight-line calls and pack f32, f64, or mixed-precision
+  operations. It updates four elements at a time and adds their results in source order. A partial
+  final group runs the scalar loop. Banks below 16 iterations stay scalar when
+  the alternate branch runs a loop without an ordered-reduction proof. Unsupported shapes keep the scalar
+  implementation. The processor ABI guarantees that instance state is disjoint
+  from host audio storage.
+
+  The pass is enabled by default. Standard-library smoother and filter banks ran faster
+  across Node, Chrome, and Firefox. The cost of a cheap `f64` index-cast loop varied by
+  runtime. See the [ordered state-bank SIMD measurements](../scripts/bench/README.md#ordered-state-bank-simd).
+
+  Outside initialization, Binaryen can prepare fixed instance-state addresses at function entry.
+  If address caching or SIMD would exceed the Wasm local limit, it lowers the function again
+  with inline addresses and scalar loops. Dynamic indices and state reads stay at their use sites.
+  After inlining, the Wasm backend can compute field addresses at their guarded loads and
+  stores when at least twelve eligible pointers are live across the same loop decision.
+  Only functions with a loop containing enough address definitions and a two-sided branch
+  enter SSA preparation and cleanup for this optimization. Smaller groups and branches
+  testing a just-assigned literal keep their shared addresses. Each base and index must stay stable through its uses.
+  Fields derived from the same entry snapshot can share a base plus an i32 displacement.
+  Memory operations and bounds checks keep their evaluation order.
 
 ## Browser build and verification
 

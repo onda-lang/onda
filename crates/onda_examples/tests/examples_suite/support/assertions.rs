@@ -29,3 +29,10 @@ fn assert_non_silent(samples: &[f32], context: &str) {
         "expected non-silent output for {context}, peak={peak}, rms={rms}"
     );
 }
+
+fn assert_close_f64(actual: f64, expected: f64) {
+    assert!(
+        actual.is_finite() && (actual - expected).abs() < 2e-7,
+        "{actual} != {expected}"
+    );
+}

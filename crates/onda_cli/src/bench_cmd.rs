@@ -2,7 +2,7 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use onda_codegen_llvm::TargetOptLevel;
+use onda_codegen_llvm::{FloatMathMode, FloatMathPolicy, TargetOptLevel};
 use onda_daemon::{AnalysisSession, RunOptions, RunParamValue, RunSession};
 use serde::Serialize;
 
@@ -17,7 +17,7 @@ pub(crate) struct BenchOptions {
     pub sample_rate_hz: u32,
     pub block_samples: usize,
     pub opt_level: TargetOptLevel,
-    pub fast_math: bool,
+    pub math: FloatMathMode,
     pub show_meta: bool,
     pub json: bool,
     pub param_sets: Vec<(String, RunParamValue)>,
@@ -35,7 +35,7 @@ impl BenchOptions {
             sample_rate_hz: crate::DEFAULT_SAMPLE_RATE,
             block_samples: crate::DEFAULT_BLOCK_SAMPLES,
             opt_level: TargetOptLevel::O3,
-            fast_math: false,
+            math: FloatMathMode::default(),
             show_meta: false,
             json: false,
             param_sets: Vec::new(),
@@ -70,6 +70,8 @@ struct BenchReport<'a> {
     total_frames: usize,
     opt_level: &'static str,
     fast_math: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    floating_point: Option<FloatMathPolicy>,
     elapsed_seconds: f64,
     run_seconds: Vec<f64>,
     min_us_per_block: f64,
@@ -90,7 +92,7 @@ pub(crate) fn run_bench(options: BenchOptions) -> Result<(), String> {
         // Static benchmark overrides must take effect before the first measured block.
         param_smoothing_seconds: 0.0,
         opt_level: options.opt_level,
-        fast_math: options.fast_math,
+        math: options.math,
     };
     let project = crate::project_cmd::resolve_run_project(
         &options.input,
@@ -198,6 +200,7 @@ fn summarize<'a>(options: &'a BenchOptions, timings: &[Duration]) -> BenchReport
     let elapsed_seconds = run_seconds.iter().sum::<f64>();
     let total_blocks = options.runs * options.blocks;
     let seconds_per_frame = median / options.blocks as f64 / options.block_samples as f64;
+    let math = options.math.policy();
     BenchReport {
         input: &options.input,
         measurement: "native_processor",
@@ -209,7 +212,8 @@ fn summarize<'a>(options: &'a BenchOptions, timings: &[Duration]) -> BenchReport
         total_blocks,
         total_frames: total_blocks * options.block_samples,
         opt_level: options.opt_level.as_str(),
-        fast_math: options.fast_math,
+        fast_math: options.math.is_fast(),
+        floating_point: (math != FloatMathPolicy::default()).then_some(math),
         elapsed_seconds,
         min_us_per_block: sorted[0] * 1e6 / options.blocks as f64,
         median_us_per_block: median * 1e6 / options.blocks as f64,

@@ -13,6 +13,7 @@ fn returning_loops_without_breaks_terminate_the_function() {
             matches!(function.kind, FunctionKind::User) && function.name.contains("identity")
         })
         .expect("identity helper");
+    function.attributes.inline = onda_mir::InlineHint::Never;
     let body = std::mem::take(&mut function.body);
     let mut statement = body.statements[0].clone();
     statement.kind = StatementKind::Loop { body };

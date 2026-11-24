@@ -209,9 +209,10 @@ python3 scripts/bench/compare.py target/bench/arithmetic-o0 target/bench/arithme
 explicitly enables relaxed floating-point optimization. Fast math can change results, reduction
 order and exceptional-value behavior. Keep the intended numerical contract explicit when comparing.
 The benchmark harness additionally exposes `--fp-reassociate`, `--fp-contract`, and
-`--fp-no-signed-zeros` to independently investigate native arithmetic permissions. The `onda` CLI
-exposes only `--fast-math`. General reductions commonly need both reassociation and ignoring signed
-zero to vectorize. Contraction permits one fused rounding instead of two. Vector math automatically
+`--fp-no-signed-zeros` to independently investigate native arithmetic permissions. Pass all
+three to match the native `onda` CLI default. The CLI's `--strict-math` matches the harness
+default. General reductions commonly need both reassociation and ignoring signed zero to
+vectorize. Contraction permits one fused rounding instead of two. Vector math automatically
 uses embedded SLEEF 3.9.0 on Linux/macOS x64 and ARM64 and Windows x64 MSVC; other targets keep
 scalar math. JIT and AOT code include the helpers without an extra library dependency, including
 cross-compilation. SLEEF documents a 3.5 ULP bound for `u35` (sin, cos, tan, tanh, atan, atan2, log),
@@ -371,6 +372,42 @@ The [2026-07-17 results](results/2026-07-17.md) retain the original measurements
 investigation, and rejected global optimizer experiments. The [2026-10-23 results](results/2026-10-23.md)
 cover subsequent MIR, vector-math, and control-rate improvements. Historical results describe their
 recorded compiler and machine; use repeated paired measurements for current performance decisions.
+
+## Ordered state-bank SIMD
+
+Keep Binaryen's ordered state-bank SIMD pass enabled by default for eligible Wasm loops. The
+2026-11-21 A/B compared Wasm with and without this pass on all three runtimes and showed
+substantial gains for standard-library banks.
+The cheap `f64` index-cast loop took 93.1 ns/frame scalar and 117.8 ns/frame with SIMD in Node.
+It ran faster with SIMD in both browsers. An earlier pinned Node run showed the same direction
+on that loop, at 35.4 ns/frame scalar and 42.1 ns/frame with SIMD.
+
+| 64-element workload | Node 26.13.1 | Chrome 157 | Firefox 160 |
+| --- | ---: | ---: | ---: |
+| `Lag<f32>` | −58% | −58% | −51% |
+| `Lag<f64>` | −44% | −48% | −50% |
+| `Biquad<f32>` | −68% | −69% | −70% |
+| `Biquad<f64>` | −61% | −58% | −61% |
+| `Resonator<f32>` | −62% | −63% | −70% |
+| `Resonator<f64>` | −60% | −55% | −61% |
+| Cheap `f64` update with an index cast | +27% | −16% | −16% |
+
+The table shows the change in median processing time per frame. Each run pinned execution to one
+CPU on a Linux x64 Intel Core i9-14900HX, with 128-frame blocks at 48 kHz and Binaryen 132.0.0 O4.
+Node measured thread CPU time. Headless Chrome and Firefox measured elapsed time. Every pair
+produced bit-identical output and physical state at the validation checkpoints. All 54 browser
+catalog examples produced zero ordered-reduction plans in this run.
+
+To isolate the pass, compile the same optimized MIR twice with strict arithmetic. Clear only the
+`ordered_reductions` array for the scalar variant so other SIMD passes remain active. Time
+alternating runs of both warmed `onda_process` entry points with the same deterministic input.
+The `smoothing-lag-bank-64-f32` and `smoothing-lag-bank-64-f64` cases are in [workloads.py](workloads.py).
+
+Configure each `Biquad` with a low-pass design at `100 + 20 * i` Hz
+and Q of `0.70710678`, and each `Resonator` with that same frequency and its default bandwidth.
+Feed the same input to every filter, sum the outputs in index order, and divide by 64. The cheap
+loop updates `bank[i]` to `bank[i] * 0.5 + f64(i) * 0.03125`, sums in `f64`, and casts the result
+to `f32` for output.
 
 ## Saved artifacts and tests
 

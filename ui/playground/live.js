@@ -36,7 +36,7 @@ import {
   decodeProjectArchive,
   sourceGraphWithWorkspaceDocuments,
 } from "./project-archive.js";
-import defaultSource from "./default.onda";
+import defaultSource from "../../examples/basic/saw_filter_saturator.onda";
 
 const statusEl = document.querySelector("[data-status]");
 const editorEl = document.querySelector("[data-editor]");
@@ -446,104 +446,74 @@ async function smokeEditorBindings() {
     bubbles: true,
   }));
 
-  const source = view.state.doc.toString();
-  const definitionCandidate = source.includes("def soft_clip")
-    ? {
-        declaration: source.indexOf("def soft_clip") + "def ".length,
-        use: source.lastIndexOf("soft_clip("),
-      }
-    : {
-        declaration: source.indexOf("phase = 0.0"),
-        use: source.lastIndexOf("phase = phase + incr") + "phase = ".length,
-      };
-  view.dispatch({
-    selection: { anchor: definitionCandidate.use },
-    scrollIntoView: true,
-  });
-  await nextAnimationFrame();
-  const coords = view.coordsAtPos(definitionCandidate.use);
-  const definitionEvent = new MouseEvent("mousedown", {
-    button: 0,
-    ctrlKey: true,
-    clientX: (coords?.left ?? 0) + 1,
-    clientY: ((coords?.top ?? 0) + (coords?.bottom ?? 0)) / 2,
-    bubbles: true,
-    cancelable: true,
-  });
-  const definitionGestureHandled = coords ? !content.dispatchEvent(definitionEvent) : false;
-  const definitionNavigated = await projectEditor.pendingDefinitionNavigation;
-  const definitionLine = view.state.doc.lineAt(definitionCandidate.declaration).number;
-  const selectedLine = view.state.doc.lineAt(view.state.selection.main.head).number;
-  const localDefinitionHandled = definitionGestureHandled
-    && definitionNavigated
-    && projectEditor.active === initialPath
-    && selectedLine === definitionLine;
+  const source = `import std/osc
 
-  let stdlibDefinitionHandled = null;
-  let stdlibChainedDefinitionHandled = null;
-  let stdlibTabCloseHandled = null;
-  const stdlibUse = source.indexOf("std::osc::Saw");
-  if (stdlibUse >= 0) {
-    const sawOffset = stdlibUse + "std::osc::".length;
-    projectEditor.select(initialPath, offsetToSmokePosition(view.state.doc, sawOffset));
+def half_gain(x):
+  return x * 0.5
+
+init:
+  oscillator = std::osc::Saw()
+
+sample:
+  out1 = half_gain(oscillator())
+`;
+  const smokePath = "smoke-navigation.onda";
+  projectEditor.add(smokePath, source);
+  await languageServer.syncProject(projectEditor.compilerProject());
+
+  async function followDefinition(offset) {
+    if (offset < 0) return false;
+    projectEditor.select(projectEditor.active, offsetToSmokePosition(view.state.doc, offset));
     await nextAnimationFrame();
-    const sawCoords = view.coordsAtPos(sawOffset);
-    const stdlibEvent = new MouseEvent("mousedown", {
+    const coords = view.coordsAtPos(offset);
+    if (!coords) return false;
+    const event = new MouseEvent("mousedown", {
       button: 0,
       ctrlKey: true,
-      clientX: (sawCoords?.left ?? 0) + 1,
-      clientY: ((sawCoords?.top ?? 0) + (sawCoords?.bottom ?? 0)) / 2,
+      clientX: coords.left + 1,
+      clientY: (coords.top + coords.bottom) / 2,
       bubbles: true,
       cancelable: true,
     });
-    const stdlibGestureHandled = sawCoords ? !content.dispatchEvent(stdlibEvent) : false;
-    const stdlibNavigated = await projectEditor.pendingDefinitionNavigation;
-    const virtualInfo = projectEditor.documentInfo.get(projectEditor.active);
-    const virtualPath = projectEditor.active;
-    stdlibDefinitionHandled = stdlibGestureHandled
-      && stdlibNavigated
-      && virtualInfo?.kind === "library"
-      && virtualInfo.readOnly === true;
+    return !content.dispatchEvent(event) && await projectEditor.pendingDefinitionNavigation;
+  }
 
+  const currentLine = () => view.state.doc.lineAt(view.state.selection.main.head).number;
+  const definitionLine = view.state.doc.lineAt(source.indexOf("def half_gain")).number;
+  const localDefinitionHandled = await followDefinition(source.lastIndexOf("half_gain("))
+    && projectEditor.active === smokePath && currentLine() === definitionLine;
+
+  const stdlibNavigated = await followDefinition(source.indexOf("Saw()"));
+  const virtualPath = projectEditor.active;
+  const virtualInfo = projectEditor.documentInfo.get(virtualPath);
+  const stdlibDefinitionHandled = stdlibNavigated
+    && virtualInfo?.kind === "library" && virtualInfo.readOnly === true;
+  let stdlibChainedDefinitionHandled = false;
+  let stdlibTabCloseHandled = false;
+  if (stdlibDefinitionHandled) {
     const librarySource = view.state.doc.toString();
-    const phasorDeclaration = librarySource.indexOf("proc Phasor") + "proc ".length;
-    const phasorUse = librarySource.indexOf("Phasor", librarySource.indexOf("proc Saw"));
-    view.dispatch({ selection: { anchor: phasorUse }, scrollIntoView: true });
-    await nextAnimationFrame();
-    const phasorCoords = view.coordsAtPos(phasorUse);
-    const chainedEvent = new MouseEvent("mousedown", {
-      button: 0,
-      ctrlKey: true,
-      clientX: (phasorCoords?.left ?? 0) + 1,
-      clientY: ((phasorCoords?.top ?? 0) + (phasorCoords?.bottom ?? 0)) / 2,
-      bubbles: true,
-      cancelable: true,
-    });
-    const chainedGestureHandled = phasorCoords ? !content.dispatchEvent(chainedEvent) : false;
-    const chainedNavigated = await projectEditor.pendingDefinitionNavigation;
-    stdlibChainedDefinitionHandled = chainedGestureHandled
-      && chainedNavigated
+    const phasorDeclaration = librarySource.indexOf("proc Phasor");
+    const sawDeclaration = librarySource.indexOf("proc Saw");
+    const phasorUse = librarySource.indexOf("Phasor", sawDeclaration);
+    stdlibChainedDefinitionHandled = phasorDeclaration >= 0 && sawDeclaration >= 0
+      && await followDefinition(phasorUse)
       && projectEditor.active === virtualPath
-      && view.state.doc.lineAt(view.state.selection.main.head).number
-        === view.state.doc.lineAt(phasorDeclaration).number;
+      && currentLine() === view.state.doc.lineAt(phasorDeclaration).number;
 
     const libraryTab = [...fileTabsEl.querySelectorAll(".project-file")]
       .find((tab) => tab.dataset.path === virtualPath);
     libraryTab?.querySelector(".project-file-close")?.click();
     stdlibTabCloseHandled = !projectEditor.states.has(virtualPath)
-      && projectEditor.paths().length === initialProjectFileCount;
-    projectEditor.select(initialPath);
+      && projectEditor.paths().length === initialProjectFileCount + 1;
   }
 
-  const projectFileCount = projectEditor.paths().length;
-  const smokePath = "smoke-close.onda";
-  projectEditor.add(smokePath, "# Browser close-tab smoke test\n");
   const projectTab = [...fileTabsEl.querySelectorAll(".project-file")]
     .find((tab) => tab.dataset.path === smokePath);
     projectTab?.querySelector(".project-file-menu-trigger")?.click();
     document.querySelector(".project-file-menu-delete")?.click();
   const projectTabCloseHandled = !projectEditor.states.has(smokePath)
-    && projectEditor.paths().length === projectFileCount;
+    && projectEditor.paths().length === initialProjectFileCount;
+  projectEditor.select(initialPath);
 
   const originalFontSize = editorFontSizeControl.value;
   const projectMenu = editorFontSizeEl.closest("details");
@@ -985,7 +955,7 @@ async function loadToolchain() {
     onDiagnostics: (path, diagnostics) => projectEditor.setDocumentDiagnostics(path, diagnostics),
     onError: () => setErrorStatus(),
   });
-  const capabilities = await languageServer.initialize(analysisOptions());
+  const { capabilities } = await languageServer.initialize(analysisOptions());
   projectEditor.connectLanguageServer(languageServer, capabilities);
   await languageServer.syncProject(projectEditor.compilerProject());
   const initialProjectError = sharedSessionError ?? requestedExampleError;

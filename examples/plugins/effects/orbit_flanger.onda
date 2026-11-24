@@ -31,9 +31,9 @@ block:
 
   sample:
     sweep_l = lfo_l() * 0.5 + 0.5
-    sweep_r = lfo_r(phase_offset = PI * 0.5) * 0.5 + 0.5
-    delay_l = clamp((base_ms + depth_ms * sweep_l) * SR * 0.001, 1.0, f32(FlangerCapacity - 2))
-    delay_r = clamp((base_ms + depth_ms * sweep_r) * SR * 0.001, 1.0, f32(FlangerCapacity - 2))
+    sweep_r = lfo_r(phase_offset_rad = PI * 0.5) * 0.5 + 0.5
+    delay_l = clamp((base_ms + depth_ms * sweep_l) * SR * 0.001, 1.0, FlangerCapacity - 2)
+    delay_r = clamp((base_ms + depth_ms * sweep_r) * SR * 0.001, 1.0, FlangerCapacity - 2)
     wet_l = line_l.readL(delay_l)
     wet_r = line_r.readL(delay_r)
 

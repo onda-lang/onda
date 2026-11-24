@@ -15,7 +15,7 @@ proc ChorusTap:
     lfo = std::osc::Sine(freq = rate)
 
   sample:
-    modulation = lfo(freq = rate, phase_offset = phase_offset * TWO_PI)
+    modulation = lfo(freq = rate, phase_offset_rad = phase_offset * TWO_PI)
     delay_samples = (base_ms + depth_ms * modulation) * SR * 0.001
     out1 = line(in1, delay_samples = delay_samples)
 

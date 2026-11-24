@@ -1,5 +1,22 @@
 # Standard library TODO
 
+## Generated API documentation
+
+- Define source documentation syntax and attachment rules for modules, types, functions,
+  processors, parameters, audio ports, events, and delegates. Preserve the documentation through
+  parsing so tooling can consume it alongside the corresponding declarations.
+- Parse and preserve explanatory source comments too, including leading and trailing comments
+  associated with declarations. Define their attachment rules so they can contribute descriptions
+  to generated documentation without requiring a separate documentation annotation.
+- Generate descriptions, units, signal conventions, update timing, and lifecycle behavior in
+  `docs/stdlib.md` from source documentation, without separately maintained API prose.
+- Support unit metadata on unranged parameters without requiring an artificial range maximum;
+  units should describe the value without introducing DSP clamping.
+- Include inferred input/output types, counts, and rates in the generated interface without
+  requiring explicit source declarations. Keep implementation helpers out of the public reference.
+- Cover documentation extraction and generated output with tests and retain the generated-reference
+  freshness check. Share the documentation metadata with editor hover and completion support.
+
 ## Deferred DSP performance work
 
 Completed optimizations and dated performance comparisons live in the

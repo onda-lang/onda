@@ -12,7 +12,7 @@ params:
   auto_play = true
   fundamental = 110.0 {30, 2000, scale = log, unit = "Hz"}
   bpm = 104.0 {35, 200, unit = "BPM"}
-  decay_s = 1.6 {0.1, 6, unit = "s"}
+  decay_s = 6.85 {0.1, 12.0, unit = "s"}
   brightness = 0.75 {0, 1}
   stretch = 0.012 {0, 0.12}
   motion = 0.65 {0, 1}
@@ -28,9 +28,9 @@ params:
 init:
   sines: std::osc::Sine[PartialCount]
   envelopes: std::env::DecayEnv[PartialCount]
-  smooth_amplitude: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(time_s = 0.004)
-  smooth_left: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(time_s = 0.02)
-  smooth_right: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(time_s = 0.02)
+  smooth_amplitude: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(lag_s = 0.004)
+  smooth_left: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(lag_s = 0.02)
+  smooth_right: std::smoothing::Lag[PartialCount] = std::smoothing::Lag(lag_s = 0.02)
   echo_l = std::delay::Delay(delay_s = 0.29, feedback = 0.32, mix = 1.0)
   echo_r = std::delay::Delay(delay_s = 0.43, feedback = 0.28, mix = 1.0)
   partial_ratio: f32[PartialCount]

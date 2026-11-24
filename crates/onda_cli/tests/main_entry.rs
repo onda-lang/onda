@@ -3,6 +3,39 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn native_cli_emits_the_selected_float_math_permissions() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("math.onda");
+    fs::write(&source, "ins 3\nsample:\n  out1 = in1 * in2 + in3\n").unwrap();
+
+    for (flags, math_flags) in [
+        (&[][..], "reassoc nsz contract "),
+        (&["--strict-math"][..], ""),
+        (&["--fast-math"][..], "fast "),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_onda"))
+            .arg("compile")
+            .arg(&source)
+            .args(["--emit", "llvm-ir", "--opt-level", "0"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let ir = String::from_utf8(output.stdout).unwrap();
+        for op in ["fmul", "fadd"] {
+            assert!(
+                ir.contains(&format!(" = {op} {math_flags}float ")),
+                "{flags:?} {op}"
+            );
+        }
+    }
+}
+
+#[test]
 fn main_project_buffers_and_compile_metadata_use_authored_names() {
     let root = std::env::temp_dir().join(format!(
         "onda-main-project-{}-{}",

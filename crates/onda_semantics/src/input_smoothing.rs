@@ -14,7 +14,7 @@ pub(crate) fn templates(program: &Program) -> Vec<ProcessorDef> {
             Block::Proc(proc)
                 if matches!(
                     proc.name.as_str(),
-                    "std::smoothing::Ramp" | "std::smoothing::Lag"
+                    "std::smoothing::_LinearRamp" | "std::smoothing::Lag"
                 ) =>
             {
                 Some(proc.clone())
@@ -114,10 +114,9 @@ fn prepare_ports(
             port.smoothing = None;
             continue;
         }
-        let kind = smoothing.kind;
-        let processor = match kind {
-            InputSmoothingKind::Ramp => "std::smoothing::Ramp",
-            InputSmoothingKind::Lag => "std::smoothing::Lag",
+        let (processor, duration_param) = match smoothing.kind {
+            InputSmoothingKind::Ramp => ("std::smoothing::_LinearRamp", "duration_s"),
+            InputSmoothingKind::Lag => ("std::smoothing::Lag", "lag_s"),
         };
         let template = smoothers
             .templates
@@ -155,7 +154,7 @@ fn prepare_ports(
                     name: processor.clone(),
                     type_args: Vec::new(),
                     args: vec![CallArg {
-                        name: Some("time_s".to_owned()),
+                        name: Some(duration_param.to_owned()),
                         expr: typed_const_expr(time),
                     }],
                 },
@@ -168,7 +167,11 @@ fn prepare_ports(
                 loc: port.loc.clone(),
                 expr: call(format!("{instance}.reset"), vec![argument(default)]),
             });
-            let raw = if top_level && spec.is_array {
+            // Processor inputs are stepped by proc_prelude after their slots are flattened.
+            if !top_level {
+                continue;
+            }
+            let raw = if spec.is_array {
                 Expr::Index {
                     loc: port.loc.clone(),
                     base: port.name.clone(),
@@ -177,8 +180,8 @@ fn prepare_ports(
             } else {
                 Expr::var(slot.clone()).with_loc(port.loc.clone())
             };
-            let raw = if top_level {
-                spec.ranges[index].map_or(raw.clone(), |range| clamp_expr_to_range(raw, range))
+            let raw = if let Some(range) = spec.ranges[index] {
+                clamp_expr_to_range(raw, range)
             } else {
                 raw
             };

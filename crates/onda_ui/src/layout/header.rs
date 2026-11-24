@@ -66,9 +66,6 @@ fn source(ui: &RunUi, compact: bool) -> (&str, String) {
             let unit = if compact { "" } else { " samples" };
             details.push_str(&format!(" · {block}{unit}"));
         }
-        if ui.state["fastMath"] == true {
-            details.push_str(if compact { " · FM" } else { " · Fast Math" });
-        }
     }
     (path, details)
 }
@@ -503,7 +500,9 @@ pub(super) fn picker(ui: &RunUi, s: &mut Scene, p: Palette, rect: [f32; 4]) {
             ],
             crate::fonts::READING_SIZE,
             crate::theme::text(if ui.light { 0xb53333 } else { 0xff7e7e }),
-        );
+        )
+        .style
+        .centered = true;
     }
     if !selects.is_empty() || fast_math {
         let fast_width = if fast_math {

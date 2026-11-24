@@ -112,7 +112,7 @@ fn apply_run_settings(panel: &mut serde_json::Value, options: &RunHostOptions, h
         "canSetSampleRate": true,
         "canSetBlockSize": true,
         "supportsFastMath": options.show_fast_math,
-        "fastMath": options.fast_math,
+        "fastMath": options.math.is_fast(),
         "sampleRateHz": options.sample_rate_hz,
         "blockSamples": options.block_samples,
         "themeMode": options.theme,

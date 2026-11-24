@@ -17,7 +17,7 @@ proc Parent:
   ins 1
   init:
     child = Smoothed<f64>()
-    reference = std::smoothing::Ramp<f64>(time_s = 8.0 / SR)
+    reference = std::smoothing::Ramp<f64>(duration_s = 8.0 / SR)
     reference.reset(0.5)
   sample:
     out1 = f32(child(in1) - 3.0 * reference(f64(clamp(in1, 0.0, 1.0))))
@@ -33,8 +33,8 @@ proc Oversampled<T>:
     ramped = 3.0 {0.0, SR / HOST_SR, ramp = 4.0 / SR}
     lagged = 3.0 {0.0, SR / HOST_SR, lag = 4.0 / SR}
   init<T>:
-    ramp = std::smoothing::Ramp<T>(time_s = 4.0 / SR)
-    lag = std::smoothing::Lag<T>(time_s = 4.0 / SR)
+    ramp = std::smoothing::Ramp<T>(duration_s = 4.0 / SR)
+    lag = std::smoothing::Lag<T>(lag_s = 4.0 / SR)
     ramp.reset(3.0)
     lag.reset(3.0)
   sample 4:
@@ -43,7 +43,7 @@ proc Oversampled<T>:
 init:
   parent = Parent()
   lagged: Lagged[2]
-  reference = std::smoothing::Lag(time_s = 4.0 / SR)
+  reference = std::smoothing::Lag(lag_s = 4.0 / SR)
   reference.reset(0.25)
   oversampled = Oversampled<f64>()
   frame = 0

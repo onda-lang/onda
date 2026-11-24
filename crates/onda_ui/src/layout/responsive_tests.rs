@@ -352,6 +352,29 @@ fn event_actions_and_fields_stay_inside_their_cards_without_overlapping() {
 }
 
 #[test]
+fn loaded_header_shows_status_and_timing_without_fast_math() {
+    let mut ui = RunUi::default();
+    for fast_math in [true, false] {
+        ui.message(json!({"type":"state","state":{
+            "path":"tone.onda","status":"Running","sampleRateHz":48000,"blockSamples":512,
+            "supportsFastMath":true,"fastMath":fast_math
+        }}));
+        for width in [280.0, 1000.0] {
+            ui.resize(width, 840.0, 1.0);
+            ui.prepare_scene();
+            let status = &ui
+                .scene
+                .labels
+                .iter()
+                .find(|label| label.text.starts_with("Running"))
+                .unwrap()
+                .text;
+            assert!(status == "Running · 48k · 512" || status == "Running · 48 kHz · 512 samples");
+        }
+    }
+}
+
+#[test]
 fn source_picker_run_settings_stay_on_one_row() {
     use crate::interaction::SelectId;
     let mut ui = RunUi::default();

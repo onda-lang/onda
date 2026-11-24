@@ -1,43 +1,49 @@
+# Playback of audio clips supplied through host-bound buffers.
+# Supports variable speed, reverse playback, looping, and playback-position control.
+# `Player<Precision, Sample>` uses `Precision` for playback position, speed, interpolation,
+# and outputs. `Sample` is the clip's element type. Both default to `f32`.
+# Use `Player<f64, f32>` to retain single-frame resolution past frame 16,777,216 in an `f32` clip.
+
 import std/math
 import std/lookup
 
 namespace std::sample<Channels = 2>:
   assert(Channels > 0)
 
-  def _normalize_position(position: f64, samples: i32, looping: bool):
+  def _normalize_position<T>(position: T, samples: i32, looping: bool) -> T:
     if samples <= 1:
-      return f64(0.0)
+      return 0.0
     if looping:
-      return wrap(position, f64(0.0), f64(samples))
-    return clamp(position, f64(0.0), f64(samples - 1))
+      return wrap(position, 0.0, T(samples))
+    return clamp(position, 0.0, T(samples - 1))
 
-  proc Player<T>:
-    outs<T> Channels
+  proc Player<Precision, Sample>:
+    outs<Precision> Channels
 
     buffers:
-      clip: T[]
+      clip: Sample[]
 
     params:
-      speed: T = 1.0
+      speed: Precision = 1.0
       looping = false
 
     delegate finished()
     delegate looped()
 
     init:
-      playhead: f64 = 0.0
+      playhead: Precision = 0.0
       playing = false
 
     events:
-      play(start_sample: f64 = 0.0):
-        playhead = _normalize_position(start_sample, clip.samples(), looping)
+      play(start_sample: Precision = 0.0):
+        playhead = _normalize_position<Precision>(start_sample, clip.samples(), looping)
         playing = true
 
       stop():
         playing = false
 
-      seek(position: f64):
-        playhead = _normalize_position(position, clip.samples(), looping)
+      seek(position_samples: Precision):
+        playhead = _normalize_position<Precision>(position_samples, clip.samples(), looping)
 
       reset():
         playhead = 0.0
@@ -47,28 +53,35 @@ namespace std::sample<Channels = 2>:
       clip_bound = clip.bound()
       clip_samples = clip.samples()
       clip_channels = clip.chans()
-      step = f64(speed) * (clip.samplerate() / SR)
+      sample_rate_ratio = Precision(clip.samplerate()) / Precision(SR)
 
       sample:
         for channel in 0..Channels:
-            outs[channel] = T(0.0)
+          outs[channel] = 0.0
 
         if playing:
           if !clip_bound:
             playing = false
             finished()
           else:
+            frame = floor(playhead)
+            fraction = playhead - frame
+            i0, i1, i2, i3 = std::lookup::_cubic_indices(i32(frame), clip_samples, looping)
+
             for channel in 0..Channels:
               source_channel = min(channel, clip_channels - 1)
-              if looping:
-                outs[channel] = T(std::lookup::readCW(clip, source_channel, playhead))
-              else:
-                outs[channel] = T(std::lookup::readC(clip, source_channel, playhead))
+              outs[channel] = std::math::cubic_interp(
+                Precision(clip[source_channel, i0]),
+                Precision(clip[source_channel, i1]),
+                Precision(clip[source_channel, i2]),
+                Precision(clip[source_channel, i3]),
+                fraction
+              )
 
-            next_playhead = playhead + step
-            if next_playhead >= f64(clip_samples) || next_playhead < 0.0:
+            next_playhead = playhead + speed * sample_rate_ratio
+            if next_playhead >= clip_samples || next_playhead < 0.0:
               if looping:
-                playhead = wrap(next_playhead, f64(0.0), f64(clip_samples))
+                playhead = wrap(next_playhead, 0.0, Precision(clip_samples))
                 looped()
               else:
                 playing = false
